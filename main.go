@@ -14,6 +14,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -57,6 +58,16 @@ func defaultSock() string {
 func main() {
 	flag.Parse()
 
+	// Auth credentials come from the environment (UI_AUTH=user:pass), never
+	// argv — so they don't leak via `ps`. Safety guard: refuse to bind to a
+	// non-loopback address without auth, so this can't accidentally expose a
+	// writable shell on a public interface again.
+	authUser, authPass, hasAuth := parseAuth(os.Getenv("UI_AUTH"))
+	if !isLoopback(*listenAddr) && !hasAuth {
+		log.Fatalf("refusing to listen on non-loopback %q without auth — set UI_AUTH=user:pass "+
+			"(or front it with `tailscale serve` and keep -listen on 127.0.0.1)", *listenAddr)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -82,7 +93,8 @@ func main() {
 	mux.HandleFunc("/api/file", serveFile)
 	mux.HandleFunc("/", serveIndex)
 
-	srv := &http.Server{Addr: *listenAddr, Handler: mux}
+	handler := withAuth(mux, authUser, authPass, hasAuth)
+	srv := &http.Server{Addr: *listenAddr, Handler: handler}
 	go func() {
 		<-ctx.Done()
 		sh, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -90,6 +102,11 @@ func main() {
 		_ = srv.Shutdown(sh)
 	}()
 
+	if hasAuth {
+		log.Printf("auth:     enabled (basic, user %q)", authUser)
+	} else {
+		log.Printf("auth:     DISABLED (loopback only)")
+	}
 	log.Printf("UI:       http://%s", *listenAddr)
 	log.Printf("terminal: ttyd@127.0.0.1:%d running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	log.Printf("herdr:    %s", *herdrSock)
@@ -437,4 +454,54 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ---------------------------------------------------------------------------
+// auth
+// ---------------------------------------------------------------------------
+
+func parseAuth(s string) (user, pass string, ok bool) {
+	if s == "" {
+		return "", "", false
+	}
+	u, p, found := strings.Cut(s, ":")
+	if !found || u == "" {
+		return "", "", false
+	}
+	return u, p, true
+}
+
+// withAuth gates every request behind HTTP basic auth when enabled. The browser
+// caches the credentials per-origin, so a single login covers the page, the
+// proxied terminal (incl. its WebSocket), SSE, and the file APIs.
+func withAuth(next http.Handler, user, pass string, enabled bool) http.Handler {
+	if !enabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		userOK := subtle.ConstantTimeCompare([]byte(u), []byte(user)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(p), []byte(pass)) == 1
+		if !ok || !userOK || !passOK {
+			w.Header().Set("WWW-Authenticate", `Basic realm="herdr", charset="UTF-8"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	switch host {
+	case "", "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

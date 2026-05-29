@@ -31,11 +31,27 @@ Open <http://localhost:8090>.
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
 | `-poll`        | `2s`                             | fallback poll interval for cwd changes       |
 
+## Expose over Tailscale (plain HTTP, tailnet-only)
+
+The left pane is a **writable shell**, so never bind to `0.0.0.0` (on a VPS that
+is the *public* internet). Bind to the **tailscale interface IP** instead — only
+your tailnet can reach it. Auth is required for any non-loopback bind (guard).
+
+```bash
+# basic-auth creds via env (never argv), then bind to the tailscale IP:
+UI_AUTH="herdr:$(cat .authpass)" ./ttyd-iframe-demo -listen "$(tailscale ip -4):8090"
+```
+
+Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
+`http://citadel:8090/`. No TLS needed; WireGuard already encrypts the tailnet.
+
 ## Security
 
-The left pane is a **writable shell**. Everything binds to **loopback** by
-default. Do not change `-listen` to a public/tailnet address without putting
-auth in front of it (see "exposure" notes).
+- Binds to **loopback** by default; the terminal (ttyd) always stays on loopback.
+- `UI_AUTH=user:pass` enables HTTP basic auth across the page, terminal, SSE and
+  file APIs. The server **refuses to start** on a non-loopback `-listen` without it.
+- `/api/file` reads any absolute path as the running user — keep auth on, or
+  confine it before widening access.
 
 ## Endpoints
 
