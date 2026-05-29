@@ -222,6 +222,7 @@ type pane struct {
 type workspace struct {
 	WorkspaceID string `json:"workspace_id"`
 	Label       string `json:"label"`
+	Number      int    `json:"number"` // display order; changes when workspaces are reordered
 	Focused     bool   `json:"focused"`
 }
 
@@ -236,19 +237,35 @@ type Active struct {
 	TabLabel       string `json:"tab_label"`
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
+	PanesRev       int    `json:"panes_rev"` // bumps when the pane-grid layout (workspace order/membership) changes
 }
 
-func fetchActive() (Active, error) {
+// fetchActive returns the focused-pane state plus a layout signature. The
+// signature captures workspace order + pane membership (see layoutSignature), so
+// the caller can detect when the pane grid needs to re-render — e.g. after a
+// workspace is reordered in herdr — independently of focus changes.
+func fetchActive() (Active, string, error) {
 	res, err := herdrCall("pane.list", map[string]any{})
 	if err != nil {
-		return Active{}, err
+		return Active{}, "", err
 	}
 	var pl struct {
 		Panes []pane `json:"panes"`
 	}
 	if err := json.Unmarshal(res, &pl); err != nil {
-		return Active{}, err
+		return Active{}, "", err
 	}
+
+	// workspace.list does double duty: label the focused workspace and feed the
+	// layout signature (so a reorder/rename of a workspace is detected).
+	var wl struct {
+		Workspaces []workspace `json:"workspaces"`
+	}
+	if res, err := herdrCall("workspace.list", map[string]any{}); err == nil {
+		_ = json.Unmarshal(res, &wl)
+	}
+	sig := layoutSignature(pl.Panes, wl.Workspaces)
+
 	var fp *pane
 	for i := range pl.Panes {
 		if pl.Panes[i].Focused {
@@ -257,24 +274,16 @@ func fetchActive() (Active, error) {
 		}
 	}
 	if fp == nil {
-		return Active{}, fmt.Errorf("no focused pane")
+		return Active{}, sig, fmt.Errorf("no focused pane")
 	}
 	a := Active{
 		PaneID: fp.PaneID, Cwd: fp.Cwd, CwdSource: "shell", WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: fp.Agent, AgentStatus: fp.AgentStatus,
 	}
 	a.TabLabel = tabLabel(fp.TabID)
-	// resolve workspace label (best effort)
-	if res, err := herdrCall("workspace.list", map[string]any{}); err == nil {
-		var wl struct {
-			Workspaces []workspace `json:"workspaces"`
-		}
-		if json.Unmarshal(res, &wl) == nil {
-			for _, w := range wl.Workspaces {
-				if w.WorkspaceID == a.WorkspaceID {
-					a.WorkspaceLabel = w.Label
-				}
-			}
+	for _, w := range wl.Workspaces {
+		if w.WorkspaceID == a.WorkspaceID {
+			a.WorkspaceLabel = w.Label
 		}
 	}
 	// herdr's `cwd` is the shell's launch dir — stale once an agent owns the
@@ -287,7 +296,29 @@ func fetchActive() (Active, error) {
 			}
 		}
 	}
-	return a, nil
+	return a, sig, nil
+}
+
+// layoutSignature is a deterministic string of the workspace order (number +
+// id + label) and pane→workspace/tab membership. It deliberately omits focus and
+// cwd, so it changes when workspaces are reordered/renamed or panes are
+// added/removed/moved — but NOT on a mere focus change (the grid's focus
+// highlight is updated separately, without a full reload).
+func layoutSignature(panes []pane, wss []workspace) string {
+	ws := append([]workspace(nil), wss...)
+	sort.Slice(ws, func(i, j int) bool { return ws[i].Number < ws[j].Number })
+	var sb strings.Builder
+	for _, w := range ws {
+		fmt.Fprintf(&sb, "%d:%s:%s;", w.Number, w.WorkspaceID, w.Label)
+	}
+	sb.WriteByte('|')
+	keys := make([]string, 0, len(panes))
+	for _, p := range panes {
+		keys = append(keys, p.PaneID+":"+p.WorkspaceID+":"+p.TabID)
+	}
+	sort.Strings(keys)
+	sb.WriteString(strings.Join(keys, ";"))
+	return sb.String()
 }
 
 // tabLabel fetches a tab's display label (best effort, "" on failure).
@@ -776,17 +807,25 @@ func isBinary(b []byte) bool {
 	return false
 }
 
-// subscribeFocus opens a long-lived connection subscribed to focus events and
-// signals `trigger` whenever one arrives. Reconnects on failure.
-func subscribeFocus(ctx context.Context, trigger chan<- struct{}) {
+// subscribeEvents opens a long-lived connection subscribed to herdr events and
+// signals `trigger` whenever one arrives (the hub then re-fetches state).
+// Reconnects on failure. Beyond the *.focused events that drive the active-pane
+// view, it listens to the workspace/tab/pane lifecycle events — notably
+// workspace.updated, which fires when workspaces are reordered — so the pane
+// grid's order and membership stay live.
+func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", *herdrSock)
 		if err != nil {
 			time.Sleep(time.Second)
 			continue
 		}
-		sub := `{"id":"ui-sub","method":"events.subscribe","params":{"subscriptions":` +
-			`[{"type":"pane.focused"},{"type":"tab.focused"},{"type":"workspace.focused"}]}}` + "\n"
+		sub := `{"id":"ui-sub","method":"events.subscribe","params":{"subscriptions":[` +
+			`{"type":"workspace.created"},{"type":"workspace.updated"},{"type":"workspace.renamed"},` +
+			`{"type":"workspace.closed"},{"type":"workspace.focused"},` +
+			`{"type":"tab.created"},{"type":"tab.closed"},{"type":"tab.renamed"},{"type":"tab.focused"},` +
+			`{"type":"pane.created"},{"type":"pane.closed"},{"type":"pane.exited"},{"type":"pane.focused"}` +
+			`]}}` + "\n"
 		if _, err := conn.Write([]byte(sub)); err != nil {
 			conn.Close()
 			continue
@@ -811,6 +850,8 @@ func subscribeFocus(ctx context.Context, trigger chan<- struct{}) {
 type hub struct {
 	mu      sync.RWMutex
 	cur     Active
+	rev     int    // pane-grid layout revision (bumped when lastSig changes)
+	lastSig string // last seen layout signature
 	clients map[chan Active]struct{}
 }
 
@@ -820,16 +861,21 @@ func (h *hub) snapshot() Active { h.mu.RLock(); defer h.mu.RUnlock(); return h.c
 
 func (h *hub) run(ctx context.Context) {
 	trigger := make(chan struct{}, 1)
-	go subscribeFocus(ctx, trigger)
+	go subscribeEvents(ctx, trigger)
 	ticker := time.NewTicker(*pollEvery)
 	defer ticker.Stop()
 
 	refresh := func() {
-		a, err := fetchActive()
+		a, sig, err := fetchActive()
 		if err != nil {
 			return
 		}
 		h.mu.Lock()
+		if sig != h.lastSig {
+			h.lastSig = sig
+			h.rev++
+		}
+		a.PanesRev = h.rev
 		changed := a != h.cur
 		h.cur = a
 		clients := make([]chan Active, 0, len(h.clients))

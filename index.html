@@ -326,6 +326,7 @@ let diffCwd = null;        // repo dir last loaded in the Diff view
 let diffCollapsed = new Set(); // file paths collapsed in the Diff view
 let diffAllCollapsed = false;
 let browserInit = false;   // browser pane lazily initialized on first open
+let lastPanesRev = -1;     // server's pane-grid layout revision (workspace order/membership)
 
 // ---- file list ----
 async function loadDir(path) {
@@ -779,6 +780,15 @@ function applyActive(a) {
       Object.values(paneEls).forEach(c => c.classList.remove('focused'));
       if (paneEls[a.pane_id]) paneEls[a.pane_id].classList.add('focused');
     }
+  }
+
+  // pane-grid layout changed (workspaces reordered/renamed, panes added/removed):
+  // reload the grid so its order matches herdr. Only when the Panes tab is open —
+  // otherwise it refetches fresh on open anyway. Skip the first event (priming).
+  if (typeof a.panes_rev === 'number' && a.panes_rev !== lastPanesRev) {
+    const first = lastPanesRev === -1;
+    lastPanesRev = a.panes_rev;
+    if (!first && curView === 'panes') loadPanes();
   }
 }
 

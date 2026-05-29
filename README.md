@@ -105,6 +105,17 @@ then `tab.focus` (panes are one-per-tab in the common case; for a split tab this
 focuses the tab the pane belongs to). The grid is fetched on tab open and via
 its **⟳** refresh button.
 
+The grid also **re-syncs live** to match herdr's layout. The server computes a
+*layout signature* — the workspace order (each workspace's `number` + id +
+label) plus pane→workspace/tab membership — and bumps a `panes_rev` counter on
+the SSE stream whenever it changes. So when you **reorder workspaces** in herdr
+(their `number`s flip, which the grid sorts by), or rename a workspace, or add/
+remove a pane, the open grid reloads itself into the new order — no manual
+refresh. The signature deliberately omits focus and cwd, so a plain focus move
+just slides the highlight instead of rebuilding the grid. herdr's socket exposes
+no workspace-reorder *method* (reordering happens in its TUI), so this is driven
+by the `workspace.updated` event, with the 2 s poll as a backstop.
+
 **Right-click** a card for a context menu:
 
 - **Rename…** prompts for a new name and calls `tab.rename` — the cards are
