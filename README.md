@@ -36,7 +36,7 @@ Open <http://localhost:8090>.
 ### Development (`mise run dev`)
 
 ```bash
-mise run dev    # builds, then serves on http://<tailscale-ip>:8090 with frontend hot reload
+mise run dev    # builds, then serves on the tailscale IP (~:8090) with frontend hot reload
 ```
 
 `mise run dev` binds to the tailscale interface (`tailscale ip -4`, no auth — see
@@ -46,8 +46,14 @@ copy), and a livereload client is injected — so editing `index.html` refreshes
 browser automatically, **no rebuild**. A full reload also reconnects the terminal
 iframe (ttyd respawns the herdr client, which re-attaches to the persistent
 server). Go changes still need a restart (`Ctrl-C`, rerun the task). Also `mise run
-build` and `mise run test`. (`mise run dev` needs `:8090` free — stop any other
-instance bound to the tailscale IP first.)
+build` and `mise run test`.
+
+In `-dev` mode the requested ports **fall forward to the next free one** if
+they're taken — both the web port (`:8090` → `:8091` → …) and the ttyd port
+(`7682` → …) — so a second instance, or one running alongside a prod instance on
+`:8090`, just lands on the next slot. Watch the `UI: http://…` log line for the
+URL it actually bound. Outside `-dev` a busy port is a hard error (a prod
+instance never moves silently).
 
 ## Flags
 
@@ -62,7 +68,7 @@ instance bound to the tailscale IP first.)
 | `-proc-cwd`    | `true`                           | resolve agent panes' real cwd via `/proc`    |
 | `-theme`       | `auto`                           | `auto` follows herdr's config, or force a theme name |
 | `-insecure-no-auth` | `false`                     | allow a bare (no-auth) non-loopback bind     |
-| `-dev`         | `false`                          | serve `index.html`/`static` from disk + livereload (run from repo root) |
+| `-dev`         | `false`                          | serve `index.html`/`static` from disk + livereload; fall forward to the next free web/ttyd port if busy (run from repo root) |
 
 ## Theming (follows herdr)
 

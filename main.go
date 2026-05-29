@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// In dev we may move off a busy web port (below); the ttyd port can be busy
+	// too (e.g. another instance running), so scan it forward first — both the
+	// spawn arg and the proxy target read *ttydPort, so resolving it here keeps
+	// them in sync.
+	if *devMode && *spawnTtyd {
+		if p := freeLoopbackPort(*ttydPort, 50); p != *ttydPort {
+			log.Printf("dev:      ttyd port %d busy → using %d", *ttydPort, p)
+			*ttydPort = p
+		}
+	}
+
 	if *spawnTtyd {
 		if err := startTtyd(ctx); err != nil {
 			log.Fatalf("ttyd: %v", err)
@@ -160,7 +172,20 @@ func main() {
 	mux.HandleFunc("/", serveIndex)
 
 	handler := withAuth(mux, authUser, authPass, hasAuth)
-	srv := &http.Server{Addr: *listenAddr, Handler: handler}
+
+	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
+	// port if the requested one is taken. Outside dev a busy port is fatal — we
+	// don't want a prod instance silently landing somewhere unexpected.
+	ln, boundAddr, err := listenWithFallback(*listenAddr, *devMode, 50)
+	if err != nil {
+		log.Fatalf("listen %s: %v", *listenAddr, err)
+	}
+	if boundAddr != *listenAddr {
+		log.Printf("dev:      web port %s busy → using %s", *listenAddr, boundAddr)
+		*listenAddr = boundAddr // so the URL log + isLoopback reflect reality
+	}
+
+	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
 		sh, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -179,9 +204,50 @@ func main() {
 	log.Printf("UI:       http://%s", *listenAddr)
 	log.Printf("terminal: ttyd@127.0.0.1:%d running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	log.Printf("herdr:    %s", *herdrSock)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// listenWithFallback binds addr. If dev is true and the port is already in use,
+// it scans forward up to span ports (same host) and binds the first free one,
+// returning the listener and the address it actually bound. Outside dev (or for
+// any non-EADDRINUSE error) it returns the bind error so the caller can fail.
+func listenWithFallback(addr string, dev bool, span int) (net.Listener, string, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil || !dev || !errors.Is(err, syscall.EADDRINUSE) {
+		return ln, addr, err
+	}
+	host, portStr, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		return nil, addr, err
+	}
+	start, convErr := strconv.Atoi(portStr)
+	if convErr != nil {
+		return nil, addr, err
+	}
+	for p := start + 1; p <= start+span; p++ {
+		cand := net.JoinHostPort(host, strconv.Itoa(p))
+		if l, e := net.Listen("tcp", cand); e == nil {
+			return l, cand, nil
+		}
+	}
+	return nil, addr, fmt.Errorf("no free port in %d..%d: %w", start, start+span, err)
+}
+
+// freeLoopbackPort returns the first bindable 127.0.0.1 port at/after start
+// (scanning up to span ahead). Used to pick a ttyd port in dev. Falls back to
+// start if none is free, letting ttyd surface the conflict. Note the small
+// bind-then-close race — fine for loopback dev use.
+func freeLoopbackPort(start, span int) int {
+	for p := start; p <= start+span; p++ {
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+		if err == nil {
+			_ = l.Close()
+			return p
+		}
+	}
+	return start
 }
 
 // ---------------------------------------------------------------------------

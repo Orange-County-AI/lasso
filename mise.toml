@@ -17,7 +17,8 @@ depends = ["build"]
 run = '''
 ip="$(tailscale ip -4 | head -n1)"
 [ -n "$ip" ] || { echo "no tailscale IPv4 found — is tailscale up? (tailscale status)" >&2; exit 1; }
-echo "herdr-viewer (dev) → http://$ip:8090  ·  frontend hot reload ON"
+echo "herdr-viewer (dev) on $ip — requesting :8090 (auto-picks the next free port if busy)"
+echo "see the 'UI: http://...' line below for the actual URL · frontend hot reload ON"
 echo "edit index.html and the browser refreshes; restart this task for Go changes."
 exec ./herdr-viewer -listen "$ip:8090" -insecure-no-auth -dev
 '''
