@@ -58,9 +58,21 @@ var (
 	themeName   = flag.String("theme", "auto", "color theme: \"auto\" reads herdr's config.toml, or force one of catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal")
 )
 
-// theme is resolved once at startup (mirroring herdr's config) and drives both
-// the embedded terminal's palette and the sidebar CSS.
+// theme is resolved at startup (mirroring herdr's config) and drives both the
+// embedded terminal's palette and the sidebar CSS. The hub re-resolves it live
+// (see hub.curTheme); this global only seeds the initial page + ttyd spawn.
 var theme resolvedTheme
+
+// themePayload is the JSON served at /api/theme: the resolved theme's CSS
+// variables (for the sidebar) and xterm.js ITheme (for the live terminal), so
+// the browser can repaint both when herdr's theme changes without a reload.
+type themePayload struct {
+	Name       string          `json:"name"`
+	Resolved   string          `json:"resolved"`
+	Customized bool            `json:"customized"`
+	CSS        string          `json:"css"`   // :root declaration lines
+	Xterm      json.RawMessage `json:"xterm"` // xterm.js ITheme object
+}
 
 func defaultSock() string {
 	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
@@ -112,6 +124,16 @@ func main() {
 	mux.Handle("/terminal/", proxy)
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, hub.snapshot())
+	})
+	mux.HandleFunc("/api/theme", func(w http.ResponseWriter, r *http.Request) {
+		rt := hub.themeSnapshot()
+		writeJSON(w, themePayload{
+			Name:       rt.Name,
+			Resolved:   rt.Resolved,
+			Customized: rt.Customized,
+			CSS:        rt.cssVars(),
+			Xterm:      json.RawMessage(rt.xtermJSON()),
+		})
 	})
 	mux.HandleFunc("/api/events", hub.serveSSE)
 	mux.HandleFunc("/api/files", serveFiles)
@@ -251,6 +273,7 @@ type Active struct {
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
 	PanesRev       int    `json:"panes_rev"` // bumps when the pane-grid layout (workspace order/membership) changes
+	ThemeRev       int    `json:"theme_rev"` // bumps when herdr's resolved theme changes (config.toml edited)
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
@@ -861,16 +884,23 @@ func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 // ---------------------------------------------------------------------------
 
 type hub struct {
-	mu      sync.RWMutex
-	cur     Active
-	rev     int    // pane-grid layout revision (bumped when lastSig changes)
-	lastSig string // last seen layout signature
-	clients map[chan Active]struct{}
+	mu       sync.RWMutex
+	cur      Active
+	rev      int    // pane-grid layout revision (bumped when lastSig changes)
+	lastSig  string // last seen layout signature
+	themeRev int    // theme revision (bumped when the resolved theme changes)
+	curTheme resolvedTheme
+	clients  map[chan Active]struct{}
 }
 
-func newHub() *hub { return &hub{clients: map[chan Active]struct{}{}} }
+// newHub seeds the hub's theme with the one resolved at startup, so the first
+// poll only bumps themeRev if config.toml has actually changed since boot.
+func newHub() *hub {
+	return &hub{curTheme: theme, clients: map[chan Active]struct{}{}}
+}
 
-func (h *hub) snapshot() Active { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
+func (h *hub) snapshot() Active             { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
+func (h *hub) themeSnapshot() resolvedTheme { h.mu.RLock(); defer h.mu.RUnlock(); return h.curTheme }
 
 func (h *hub) run(ctx context.Context) {
 	trigger := make(chan struct{}, 1)
@@ -883,12 +913,26 @@ func (h *hub) run(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		// Re-resolve herdr's theme from config.toml every tick (cheap file read +
+		// parse) so an edit to [theme].name is picked up live. Done outside the
+		// lock to avoid holding it during I/O.
+		rt := loadHerdrTheme(*themeName)
 		h.mu.Lock()
 		if sig != h.lastSig {
 			h.lastSig = sig
 			h.rev++
 		}
+		if rt != h.curTheme {
+			h.curTheme = rt
+			h.themeRev++
+			if rt.Customized {
+				log.Printf("theme:    reloaded %q -> %s (+custom overrides)", rt.Name, rt.Resolved)
+			} else {
+				log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
+			}
+		}
 		a.PanesRev = h.rev
+		a.ThemeRev = h.themeRev
 		changed := a != h.cur
 		h.cur = a
 		clients := make([]chan Active, 0, len(h.clients))

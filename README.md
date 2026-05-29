@@ -67,10 +67,19 @@ herdr's default).
 
 Note herdr paints most of its own TUI chrome with explicit RGB, independent of
 the xterm palette; the xterm theme mainly governs the default background and the
-ANSI colors that programs running *inside* a pane emit. Resolution happens once
-at startup — restart the demo after changing herdr's theme (just as herdr needs
-`herdr server reload-config`). Force a specific theme with `-theme <name>`
-regardless of config.
+ANSI colors that programs running *inside* a pane emit. Force a specific theme
+with `-theme <name>` regardless of config.
+
+**Live updates.** The theme is re-resolved on the same poll that tracks the
+active pane (`-poll`, default 2 s), so editing `[theme].name` in
+`config.toml` repaints the UI **without a restart** — no need to even
+`herdr server reload-config`. When the resolved palette changes the server
+bumps a `theme_rev` on the SSE stream; the browser then fetches `/api/theme`
+and (a) rewrites the injected `:root` variables — which cascades to the
+sidebar, file viewer, diff and markdown — and (b) sets `term.options.theme`
+on the embedded xterm.js instance (ttyd exposes it as `window.term`, and the
+iframe is same-origin), so the **live terminal repaints in place** with no
+reconnect and no lost scrollback.
 
 ## Active-pane cwd tracking (and the agent-pane caveat)
 

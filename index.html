@@ -399,6 +399,8 @@ let diffCollapsed = new Set(); // file paths collapsed in the Diff view
 let diffAllCollapsed = false;
 let browserInit = false;   // browser pane lazily initialized on first open
 let lastPanesRev = -1;     // server's pane-grid layout revision (workspace order/membership)
+let lastThemeRev = -1;     // server's theme revision (bumps when herdr's config.toml theme changes)
+let lastXtermTheme = null; // last xterm.js ITheme applied to the terminal (reapplied on iframe reload)
 
 // ---- file list ----
 async function loadDir(path) {
@@ -988,6 +990,42 @@ function applyActive(a) {
     lastPanesRev = a.panes_rev;
     if (!first && curView === 'panes') loadPanes();
   }
+
+  // herdr's theme changed (config.toml [theme].name edited): repaint live.
+  // Unlike the pane grid, we apply on the priming event too — so a page (re)load
+  // always converges to the server's current theme even if config drifted since
+  // the server started / the page rendered.
+  if (typeof a.theme_rev === 'number' && a.theme_rev !== lastThemeRev) {
+    lastThemeRev = a.theme_rev;
+    refreshTheme();
+  }
+}
+
+// refreshTheme pulls the resolved palette and repaints both halves of the UI:
+// the sidebar (rewrite the injected :root vars — cascades to the file viewer,
+// diff, markdown and syntax colors) and the live terminal (set the xterm.js
+// theme inside the same-origin ttyd iframe — no reconnect, scrollback intact).
+async function refreshTheme() {
+  let t;
+  try { t = await (await fetch('/api/theme')).json(); }
+  catch (e) { return; }
+  const st = document.getElementById('herdr-theme');
+  if (st) st.textContent = '/* live: herdr theme ' + t.resolved + ' */\n  :root {\n' + t.css + '  }';
+  lastXtermTheme = t.xterm;
+  applyTermTheme(t.xterm, 0);
+}
+
+// applyTermTheme sets xterm.js's theme on the terminal running inside the ttyd
+// iframe. ttyd 1.7.4 exposes the Terminal instance as window.term, and the
+// iframe is same-origin (proxied under /terminal/), so the parent can reach it.
+// The terminal may not be ready when a theme event arrives (iframe still
+// loading / ws not yet open), so retry a few times.
+function applyTermTheme(theme, tries) {
+  try {
+    const w = document.getElementById('term').contentWindow;
+    if (w && w.term && w.term.options) { w.term.options.theme = theme; return; }
+  } catch (e) { /* same-origin: shouldn't throw, but never let it break the SSE */ }
+  if (tries < 20) setTimeout(() => applyTermTheme(theme, tries + 1), 250);
 }
 
 function connectSSE() {
@@ -995,6 +1033,12 @@ function connectSSE() {
   es.addEventListener('active', e => applyActive(JSON.parse(e.data)));
   es.onerror = () => { $('#live').classList.remove('live'); };
 }
+
+// If the terminal iframe reloads (e.g. ttyd reconnects), the fresh xterm starts
+// from ttyd's startup theme — reapply the latest one so it stays in sync.
+document.getElementById('term').addEventListener('load', () => {
+  if (lastXtermTheme) applyTermTheme(lastXtermTheme, 0);
+});
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
 $('#diff-follow').onchange = () => { if ($('#diff-follow').checked && activeCwd) { diffCwd = activeCwd; if (curView === 'diff') loadDiff(); } };
