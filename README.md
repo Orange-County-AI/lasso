@@ -3,10 +3,12 @@
 A single Go binary that serves a two-column web UI:
 
 - **Left** — `herdr` running inside a `ttyd` terminal, embedded in an `<iframe>`.
-- **Right** — a file viewer that follows herdr's **focused pane** `cwd`, live.
-  Collapsible via the `»` button in its header (the terminal then fills the
-  width); a floating `«` button brings it back. The state persists in
-  `localStorage`. The divider between the panes is also drag-resizable.
+- **Right** — two tabs: a **Files** view that follows herdr's **focused pane**
+  `cwd` live, and a **Panes** view (a grid of every herdr pane that focuses one
+  in the terminal when clicked). Collapsible via the `»` button in the tab strip
+  (the terminal then fills the width); a floating `«` button brings it back. The
+  state persists in `localStorage`. The divider between the panes is also
+  drag-resizable.
 
 The Go server reverse-proxies the terminal (WebSocket upgrade handled natively
 by `httputil.ReverseProxy`) and talks to the herdr server over its
@@ -83,6 +85,20 @@ process's `/proc/<pid>/cwd`. The result is surfaced with a provenance badge:
 The UI always offers a manual **path box** and a **⟳ active** button, so a stale
 guess is never a dead end. Disable the `/proc` step with `-proc-cwd=false`.
 
+## Pane grid (the Panes tab)
+
+The right column's **Panes** tab lists every herdr pane as a card, grouped by
+workspace, showing the tab label, cwd, and (for agent panes) the agent + status.
+The focused pane is highlighted, and that highlight stays in sync with herdr
+however focus changes — clicking a card, or navigating directly in the terminal
+(the highlight follows the same SSE focus stream the Files view uses).
+
+Clicking a card focuses that pane in the terminal. herdr's socket has **no
+`pane.focus`** method, so the server focuses a pane by calling `workspace.focus`
+then `tab.focus` (panes are one-per-tab in the common case; for a split tab this
+focuses the tab the pane belongs to). The grid is fetched on tab open and via
+its **⟳** refresh button.
+
 ## Expose over Tailscale (plain HTTP, tailnet-only)
 
 The left pane is a **writable shell**, so never bind to `0.0.0.0` (on a VPS that
@@ -120,3 +136,5 @@ Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
 - `GET /api/events` — SSE stream of active-pane changes
 - `GET /api/files?path=` — directory listing
 - `GET /api/file?path=` — file preview (2 MiB cap)
+- `GET /api/panes` — every pane with workspace/tab labels, agent, and focus state
+- `POST /api/focus` — focus a pane `{workspace_id, tab_id}` (→ `workspace.focus` + `tab.focus`)

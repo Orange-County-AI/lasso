@@ -61,6 +61,45 @@
   /* collapsed: hide the sidebar + splitter, let the terminal fill the width */
   #app.collapsed #right, #app.collapsed #splitter { display: none; }
 
+  /* tab strip + swappable views inside the right column */
+  .tabs { display: flex; align-items: stretch; flex: 0 0 auto;
+    border-bottom: 1px solid var(--border); background: var(--bg); }
+  .tabs .tab { background: transparent; color: var(--muted); border: 0;
+    border-bottom: 2px solid transparent; padding: 7px 14px; font: inherit; font-size: 12px;
+    cursor: pointer; }
+  .tabs .tab:hover { color: var(--fg); }
+  .tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tabs #collapse { align-self: center; margin-right: 8px; }
+  .view { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; overflow: hidden; }
+  .view.active { display: flex; }
+
+  /* pane grid */
+  #panegrid { flex: 1 1 auto; overflow: auto; padding: 10px; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+    align-content: start; align-items: start; }  /* start, not stretch — else cards collapse */
+  .pgroup { grid-column: 1 / -1; display: flex; gap: 6px; align-items: baseline;
+    color: var(--muted); font-size: 11px; margin-top: 8px; padding-bottom: 2px;
+    border-bottom: 1px solid var(--border); }
+  .pgroup:first-child { margin-top: 0; }
+  .pgroup .gw { color: var(--accent); }
+  /* block layout (not flex) so the card grows to fit its content — a flex
+     column grid item gets squashed to the auto row height and clips to nothing.
+     no overflow:hidden on the card either: it collapses the card's content
+     contribution so the auto grid row undersizes and the next group overlaps.
+     The text lines below clip themselves (overflow+ellipsis). */
+  .pcard { border: 1px solid var(--border); border-radius: 6px; padding: 8px 9px; cursor: pointer;
+    background: var(--bg); transition: border-color .12s, background .12s; }
+  .pcard:hover { border-color: var(--accent); background: var(--hover); }
+  .pcard.focused { border-color: var(--accent); background: var(--accent-dim); }
+  .pcard .ptitle { color: var(--fg); font-size: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .pcard .pmeta { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; margin-top: 2px; }
+  .pcard .pagent { font-size: 10px; color: var(--muted); white-space: nowrap; margin-top: 2px; }
+  .pcard .pagent.working { color: var(--warn); }
+  .pcard .pagent.blocked { color: var(--bad); }
+  .pcard .pagent.idle, .pcard .pagent.done { color: var(--good); }
+
   header.bar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .pill { padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border);
@@ -120,29 +159,47 @@
   <div id="splitter"></div>
   <button id="reopen" title="show file viewer">«</button>
   <div id="right">
-    <header class="bar">
-      <div class="row">
-        <span class="dot" id="live"></span>
-        <span class="pill ws" id="ws">workspace —</span>
-        <span class="pill" id="tab">tab —</span>
-        <span class="pill agent" id="agent" style="display:none"></span>
-        <span class="pill src" id="src"></span>
-        <button class="iconbtn" id="collapse" title="collapse file viewer">»</button>
+    <nav class="tabs">
+      <button class="tab active" data-view="files">Files</button>
+      <button class="tab" data-view="panes">Panes</button>
+      <button class="iconbtn" id="collapse" title="collapse sidebar">»</button>
+    </nav>
+
+    <section class="view active" id="view-files">
+      <header class="bar">
+        <div class="row">
+          <span class="dot" id="live"></span>
+          <span class="pill ws" id="ws">workspace —</span>
+          <span class="pill" id="tab">tab —</span>
+          <span class="pill agent" id="agent" style="display:none"></span>
+          <span class="pill src" id="src"></span>
+        </div>
+        <div class="cwd">
+          <span class="crumbs" id="crumbs">—</span>
+          <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
+        </div>
+        <div class="goto">
+          <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
+          <button id="jump" title="jump to the active pane's directory">⟳ active</button>
+        </div>
+      </header>
+      <div id="files"><div class="empty">waiting for herdr…</div></div>
+      <div id="preview">
+        <div class="phdr"><span id="pname"></span><span class="x" onclick="closePreview()">✕ close</span></div>
+        <div id="pbody"></div>
       </div>
-      <div class="cwd">
-        <span class="crumbs" id="crumbs">—</span>
-        <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
-      </div>
-      <div class="goto">
-        <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
-        <button id="jump" title="jump to the active pane's directory">⟳ active</button>
-      </div>
-    </header>
-    <div id="files"><div class="empty">waiting for herdr…</div></div>
-    <div id="preview">
-      <div class="phdr"><span id="pname"></span><span class="x" onclick="closePreview()">✕ close</span></div>
-      <div id="pbody"></div>
-    </div>
+    </section>
+
+    <section class="view" id="view-panes">
+      <header class="bar">
+        <div class="row">
+          <span class="pill ws" id="panes-count">panes —</span>
+          <span class="pill" id="panes-msg" style="display:none"></span>
+          <button class="iconbtn" id="panes-refresh" title="refresh pane list">⟳</button>
+        </div>
+      </header>
+      <div id="panegrid"><div class="empty">loading panes…</div></div>
+    </section>
   </div>
 </div>
 
@@ -150,7 +207,10 @@
 const $ = s => document.querySelector(s);
 let curPath = null;        // dir currently shown in the file list
 let activeCwd = null;      // cwd of herdr's focused pane
+let activePaneID = null;   // pane_id of herdr's focused pane
 let selected = null;
+let curView = 'files';     // which right-column view is showing
+let paneEls = {};          // pane_id -> grid card element (for focus highlighting)
 
 // ---- file list ----
 async function loadDir(path) {
@@ -235,6 +295,95 @@ async function openFile(path, el) {
 }
 function closePreview() { $('#preview').classList.remove('open'); if (selected) selected.classList.remove('sel'); }
 
+// ---- view tabs (Files / Panes) ----
+function switchView(name) {
+  curView = name;
+  document.querySelectorAll('.tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  if (name === 'panes') loadPanes();
+}
+document.querySelectorAll('.tabs .tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+
+// ---- pane grid ----
+async function loadPanes() {
+  const g = $('#panegrid');
+  try {
+    const r = await fetch('/api/panes');
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    renderPanes(data.panes || []);
+  } catch (e) {
+    paneEls = {};
+    g.innerHTML = '<div class="empty">cannot list panes<br>' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderPanes(panes) {
+  const g = $('#panegrid');
+  $('#panes-count').textContent = panes.length + ' pane' + (panes.length === 1 ? '' : 's');
+  g.innerHTML = '';
+  paneEls = {};
+  if (!panes.length) { g.innerHTML = '<div class="empty">no panes</div>'; return; }
+  let curWs = null;
+  for (const p of panes) {
+    if (p.workspace_id !== curWs) {                          // workspace group header
+      curWs = p.workspace_id;
+      const h = document.createElement('div');
+      h.className = 'pgroup';
+      h.innerHTML = '<span class="gw">' + escapeHtml(p.workspace_label || p.workspace_id) + '</span>';
+      g.appendChild(h);
+    }
+    const card = paneCard(p);
+    paneEls[p.pane_id] = card;
+    g.appendChild(card);
+  }
+}
+
+function paneCard(p) {
+  const d = document.createElement('div');
+  d.className = 'pcard' + (p.focused ? ' focused' : '');
+  const title = p.tab_label || p.pane_id;
+  const cwd = (p.cwd || '').replace(/^\/home\/[^/]+/, '~');
+  let agent = '';
+  if (p.agent || (p.agent_status && p.agent_status !== 'unknown')) {
+    agent = '<div class="pagent ' + (p.agent_status || '') + '">● ' +
+      escapeHtml(p.agent || 'agent') + (p.agent_status ? ' · ' + escapeHtml(p.agent_status) : '') + '</div>';
+  }
+  d.innerHTML =
+    '<div class="ptitle">' + escapeHtml(title) + '</div>' +
+    (cwd ? '<div class="pmeta">' + escapeHtml(cwd) + '</div>' : '') + agent;
+  d.title = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join('\n');
+  d.onclick = () => focusPane(p, d);
+  return d;
+}
+
+async function focusPane(p, el) {
+  try {
+    const r = await fetch('/api/focus', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_id: p.workspace_id, tab_id: p.tab_id }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    Object.values(paneEls).forEach(c => c.classList.remove('focused'));   // optimistic; SSE confirms
+    if (el) el.classList.add('focused');
+    showPaneMsg('');
+    try { document.getElementById('term').contentWindow.focus(); } catch (e) {}   // hand keyboard to the terminal
+  } catch (e) {
+    showPaneMsg('focus failed: ' + e.message, true);
+  }
+}
+
+function showPaneMsg(msg, bad) {
+  const el = $('#panes-msg');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = msg;
+  el.style.color = bad ? 'var(--bad)' : 'var(--muted)';
+  el.style.borderColor = bad ? 'var(--bad)' : 'var(--border)';
+}
+
+$('#panes-refresh').onclick = () => loadPanes();
+
 // ---- active pane (SSE) ----
 function applyActive(a) {
   $('#live').classList.add('live');
@@ -258,6 +407,15 @@ function applyActive(a) {
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
+  }
+
+  // keep the pane grid's focus highlight in sync with herdr
+  if (a.pane_id && a.pane_id !== activePaneID) {
+    activePaneID = a.pane_id;
+    if (Object.keys(paneEls).length) {
+      Object.values(paneEls).forEach(c => c.classList.remove('focused'));
+      if (paneEls[a.pane_id]) paneEls[a.pane_id].classList.add('focused');
+    }
   }
 }
 

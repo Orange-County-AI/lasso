@@ -108,6 +108,8 @@ func main() {
 	mux.HandleFunc("/api/events", hub.serveSSE)
 	mux.HandleFunc("/api/files", serveFiles)
 	mux.HandleFunc("/api/file", serveFile)
+	mux.HandleFunc("/api/panes", servePanes)
+	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/", serveIndex)
 
 	handler := withAuth(mux, authUser, authPass, hasAuth)
@@ -355,6 +357,139 @@ func agentRealCwd(agent, label string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ---------------------------------------------------------------------------
+// pane grid: list every pane + focus one
+// ---------------------------------------------------------------------------
+
+// paneView is a herdr pane enriched with its workspace/tab labels (and ordering
+// numbers, used server-side for sorting) for display in the right column's grid.
+type paneView struct {
+	PaneID         string `json:"pane_id"`
+	WorkspaceID    string `json:"workspace_id"`
+	WorkspaceLabel string `json:"workspace_label"`
+	TabID          string `json:"tab_id"`
+	TabLabel       string `json:"tab_label"`
+	Cwd            string `json:"cwd"`
+	Agent          string `json:"agent"`
+	AgentStatus    string `json:"agent_status"`
+	Focused        bool   `json:"focused"`
+}
+
+// fetchPanes lists every pane and joins in workspace/tab labels, returning them
+// grouped by workspace (then tab) order — the order herdr itself shows.
+func fetchPanes() ([]paneView, error) {
+	res, err := herdrCall("pane.list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var pl struct {
+		Panes []pane `json:"panes"`
+	}
+	if err := json.Unmarshal(res, &pl); err != nil {
+		return nil, err
+	}
+
+	type meta struct {
+		label  string
+		number int
+	}
+	tabs := map[string]meta{}
+	if r, err := herdrCall("tab.list", map[string]any{}); err == nil {
+		var tl struct {
+			Tabs []struct {
+				TabID  string `json:"tab_id"`
+				Label  string `json:"label"`
+				Number int    `json:"number"`
+			} `json:"tabs"`
+		}
+		if json.Unmarshal(r, &tl) == nil {
+			for _, t := range tl.Tabs {
+				tabs[t.TabID] = meta{t.Label, t.Number}
+			}
+		}
+	}
+	wss := map[string]meta{}
+	if r, err := herdrCall("workspace.list", map[string]any{}); err == nil {
+		var wl struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+				Number      int    `json:"number"`
+			} `json:"workspaces"`
+		}
+		if json.Unmarshal(r, &wl) == nil {
+			for _, w := range wl.Workspaces {
+				wss[w.WorkspaceID] = meta{w.Label, w.Number}
+			}
+		}
+	}
+
+	out := make([]paneView, 0, len(pl.Panes))
+	for _, p := range pl.Panes {
+		out = append(out, paneView{
+			PaneID:         p.PaneID,
+			WorkspaceID:    p.WorkspaceID,
+			WorkspaceLabel: wss[p.WorkspaceID].label,
+			TabID:          p.TabID,
+			TabLabel:       tabs[p.TabID].label,
+			Cwd:            p.Cwd,
+			Agent:          p.Agent,
+			AgentStatus:    p.AgentStatus,
+			Focused:        p.Focused,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if wi, wj := wss[out[i].WorkspaceID].number, wss[out[j].WorkspaceID].number; wi != wj {
+			return wi < wj
+		}
+		if ti, tj := tabs[out[i].TabID].number, tabs[out[j].TabID].number; ti != tj {
+			return ti < tj
+		}
+		return out[i].PaneID < out[j].PaneID
+	})
+	return out, nil
+}
+
+func servePanes(w http.ResponseWriter, r *http.Request) {
+	panes, err := fetchPanes()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"panes": panes})
+}
+
+// serveFocus focuses a pane. herdr exposes no pane.focus, so focusing a pane
+// means focusing its workspace and then its tab (panes live one-per-tab in the
+// common case; for split tabs this focuses the tab the pane belongs to).
+func serveFocus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		WorkspaceID string `json:"workspace_id"`
+		TabID       string `json:"tab_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.WorkspaceID == "" || req.TabID == "" {
+		http.Error(w, "workspace_id and tab_id required", http.StatusBadRequest)
+		return
+	}
+	if _, err := herdrCall("workspace.focus", map[string]any{"workspace_id": req.WorkspaceID}); err != nil {
+		http.Error(w, "workspace.focus: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := herdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
+		http.Error(w, "tab.focus: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // subscribeFocus opens a long-lived connection subscribed to focus events and
