@@ -1084,7 +1084,7 @@ $('#set-update').onclick = async () => {
     if (d.output) { out.style.display = ''; out.textContent = d.output; }
     if (r.ok && d.ok) {
       st.className = 'smsg good';
-      st.textContent = 'updated — restart herdr to apply';
+      st.textContent = 'updated — running sessions handed off live to the new version';
       loadVersion();
     } else {
       st.className = 'smsg bad';

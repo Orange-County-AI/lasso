@@ -915,12 +915,20 @@ func latestHerdrVersion(ctx context.Context) (string, error) {
 	return strings.TrimPrefix(tag, "v"), nil
 }
 
-// serveUpdate runs `herdr update` and returns its combined output. This is the
-// supported out-of-session update path: `herdr update` refuses to run from
-// *inside* a herdr session, but the viewer is a separate process supervising
-// ttyd — so it installs the new binary cleanly. The running herdr server keeps
-// the old version until it's restarted; the command's own output says so and we
-// pass it straight through.
+// serveUpdate runs `herdr update --handoff` and returns its combined output.
+// This is the supported out-of-session update path: `herdr update` refuses to
+// run from *inside* a herdr session, but the viewer is a separate process
+// supervising ttyd — so it installs the new binary cleanly.
+//
+// --handoff is what makes this work without a TTY. When a newer release would
+// require running herdr servers to restart, a plain non-interactive
+// `herdr update` aborts ("run from an interactive terminal, or stop those
+// targets"). --handoff is the non-interactive equivalent of the interactive
+// prompt: it performs a live server handoff for every target that supports it
+// (protocol 11+), so the update lands without anyone stopping a session.
+// Targets too old to hand off still block the update — those genuinely have to
+// be stopped first, and the command's own output says which ones; we pass it
+// straight through.
 func serveUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -934,7 +942,7 @@ func serveUpdate(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, herdrBinary(), "update")
+	cmd := exec.CommandContext(ctx, herdrBinary(), "update", "--handoff")
 	cmd.Stdin = nil             // no TTY/stdin: run non-interactively, never block on a prompt
 	cmd.Env = outsideHerdrEnv() // see helper: makes update run as an out-of-session process
 	out, err := cmd.CombinedOutput()
