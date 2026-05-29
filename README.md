@@ -13,11 +13,14 @@ A single Go binary that serves a two-column web UI:
     (outside the herdr session, where it's allowed — it refuses to self-update from
     *inside* a session) and shows the installed version.
 - **Right** — three tabs:
+  - **Diff** (default) — the git diff of the focused pane's repo, in the spirit
+    of Fulcrum's diff view. Shows working-tree changes (falling back to the
+    branch-vs-base diff when the tree is clean), or flip **vs primary branch** to
+    always diff the whole branch against the primary branch. The tab carries an
+    amber badge with the count of uncommitted changes whenever the tree is dirty.
   - **Files** — a file browser that follows herdr's **focused pane** `cwd` live;
     click a file to open it full-screen with rich markdown preview and syntax
     highlighting (see [File viewer](#file-viewer)).
-  - **Diff** — the git diff of the focused pane's repo (working tree, or the
-    branch-vs-base diff when the tree is clean), in the spirit of Fulcrum's diff view.
   - **Browser** — an embedded `<iframe>` web preview with a URL bar, for viewing
     a dev server running in a pane.
 
@@ -223,16 +226,26 @@ pane's `cwd` — it follows the active pane the same way the Files view does
 root (`git rev-parse --show-toplevel`) from that directory and builds the diff
 the way Fulcrum's diff view does:
 
-- **Working-tree changes** — staged (`git diff --cached`) + unstaged (`git diff`).
-- **Branch-vs-base fallback** — if the tree is clean, it diffs against the
-  merge-base with the default branch (`origin/HEAD`, else `main`/`master`), so a
-  finished feature branch still shows its work. A `vs <base>` pill marks this mode.
+- **Working-tree changes** (default) — staged (`git diff --cached`) + unstaged
+  (`git diff`). If the tree is clean, it falls back to the branch-vs-base diff
+  against the merge-base with the default branch (`origin/HEAD`, else
+  `main`/`master`), so a finished feature branch still shows its work.
+- **vs primary branch** — toggle it on to *always* diff the whole branch
+  (`merge-base(base, HEAD)..HEAD`) against the primary branch, regardless of
+  whether the tree is dirty — useful for reviewing everything a branch adds over
+  `main`. A `vs <base>` pill marks this mode and **untracked** is disabled (there
+  are no working-tree files to add).
+
+Either way, the tab shows an amber badge with the **count of uncommitted
+changes** (`git status --short`) whenever the working tree is dirty, so you can
+tell there's local work even while looking at the branch diff.
 
 The diff is parsed client-side into per-file blocks: each file is a collapsible
 header with `+adds`/`−dels` counts, and the lines are colored (added/removed/
-context/hunk) in the active theme. Toolbar toggles: **ignore whitespace** (`-w`),
-**untracked** (synthesizes an all-added diff for untracked files, which `git diff`
-omits), **wrap**, plus **collapse all** and a **⟳** refresh. Large diffs are
+context/hunk) in the active theme. Toolbar toggles: **vs primary branch**,
+**ignore whitespace** (`-w`), **untracked** (synthesizes an all-added diff for
+untracked files, which `git diff` omits), **wrap**, plus **collapse all** and a
+**⟳** refresh. Large diffs are
 capped at 2 MiB (a `diff truncated` pill shows when that happens). The view
 refreshes on tab open, on a cwd change (when following), and on demand.
 
@@ -297,4 +310,4 @@ Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
 - `POST /api/focus` — focus a pane `{workspace_id, tab_id}` (→ `workspace.focus` + `tab.focus`)
 - `POST /api/rename` — rename a tab `{tab_id, label}` (→ `tab.rename`)
 - `POST /api/close` — close panes `{pane_ids: [...]}` (→ `pane.close` each); returns `{closed, errors}`
-- `GET /api/diff?path=&ignoreWhitespace=&includeUntracked=` — git diff of the repo containing `path`; returns `{repo, branch, diff, files, isBranchDiff, baseBranch, truncated}`
+- `GET /api/diff?path=&mode=&baseBranch=&ignoreWhitespace=&includeUntracked=` — git diff of the repo containing `path` (`mode=branch` forces the branch-vs-base comparison; `baseBranch` overrides the base it compares against); returns `{repo, branch, diff, files, isBranchDiff, baseBranch, truncated, dirty}`

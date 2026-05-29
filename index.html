@@ -72,6 +72,9 @@
     cursor: pointer; white-space: nowrap; }
   .tabs .tab:hover, .tabs .ltab:hover { color: var(--fg); }
   .tabs .tab.active, .tabs .ltab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  /* dirty-file count badge on the Diff tab (amber when the working tree is dirty) */
+  .tbadge { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 10px; font-weight: 600;
+    background: var(--warn, #d08770); color: var(--bg); vertical-align: middle; }
   .tabs #collapse { align-self: center; margin-right: 8px; }
   .view { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; overflow: hidden; }
   .view.active { display: flex; }
@@ -359,13 +362,13 @@
   <button id="reopen" title="show file viewer">«</button>
   <div id="right">
     <nav class="tabs">
-      <button class="tab active" data-view="files">Files</button>
-      <button class="tab" data-view="diff">Diff</button>
+      <button class="tab active" data-view="diff">Diff<span class="tbadge" id="diff-dirty" style="display:none"></span></button>
+      <button class="tab" data-view="files">Files</button>
       <button class="tab" data-view="browser">Browser</button>
       <button class="iconbtn" id="collapse" title="collapse sidebar">»</button>
     </nav>
 
-    <section class="view active" id="view-files">
+    <section class="view" id="view-files">
       <header class="bar">
         <div class="row">
           <span class="pill agent" id="agent" style="display:none"></span>
@@ -383,7 +386,7 @@
       <div id="files"><div class="empty">waiting for herdr…</div></div>
     </section>
 
-    <section class="view" id="view-diff">
+    <section class="view active" id="view-diff">
       <header class="bar">
         <div class="row">
           <span class="pill ws" id="diff-branch">—</span>
@@ -396,6 +399,7 @@
           <label class="follow"><input type="checkbox" id="diff-follow" checked> follow active pane</label>
         </div>
         <div class="row" style="margin-top:6px; gap:12px;">
+          <label class="opt" id="diff-branchmode-label" title="compare the whole branch against the primary branch instead of the working tree"><input type="checkbox" id="diff-branchmode"> vs primary branch</label>
           <label class="opt"><input type="checkbox" id="diff-ws"> ignore whitespace</label>
           <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
           <label class="opt"><input type="checkbox" id="diff-wrap"> wrap</label>
@@ -438,7 +442,7 @@ let curPath = null;        // dir currently shown in the file list
 let activeCwd = null;      // cwd of herdr's focused pane
 let activePaneID = null;   // pane_id of herdr's focused pane
 let selected = null;
-let curView = 'files';     // which right-column view is showing
+let curView = 'diff';      // which right-column view is showing
 let curLeftView = 'herdr'; // which left-column view is showing (herdr / grid / settings)
 let settingsInit = false;  // settings tab lazily initialized on first open
 let paneEls = {};          // pane_id -> grid card element (for focus highlighting)
@@ -887,9 +891,12 @@ async function loadDiff() {
   if (!base) { list.innerHTML = '<div class="empty">no active directory yet</div>'; return; }
   diffCwd = base;
   $('#diff-repo').textContent = tilde(base);
+  const branchMode = $('#diff-branchmode').checked;
   const params = new URLSearchParams({ path: base });
+  if (branchMode) params.set('mode', 'branch');
   if ($('#diff-ws').checked) params.set('ignoreWhitespace', 'true');
-  if ($('#diff-untracked').checked) params.set('includeUntracked', 'true');
+  if (!branchMode && $('#diff-untracked').checked) params.set('includeUntracked', 'true');
+  $('#diff-untracked').disabled = branchMode;   // untracked files only exist in the working tree
   try {
     const r = await fetch('/api/diff?' + params);
     if (!r.ok) throw new Error(await r.text());
@@ -898,13 +905,24 @@ async function loadDiff() {
     list.innerHTML = '<div class="empty">cannot diff this directory<br>' + escapeHtml(e.message) + '</div>';
     $('#diff-branch').textContent = '—';
     $('#diff-base').style.display = 'none';
+    setDirtyBadge(0);
     showDiffMsg('');
   }
+}
+
+// reflect the working-tree dirty-file count on the Diff tab (hidden when clean,
+// shown in either view mode so you can tell there are uncommitted changes even
+// while looking at the branch diff).
+function setDirtyBadge(n) {
+  const b = $('#diff-dirty');
+  if (n > 0) { b.style.display = ''; b.textContent = n; b.title = n + ' uncommitted change' + (n === 1 ? '' : 's'); }
+  else b.style.display = 'none';
 }
 
 function renderDiff(data) {
   $('#diff-branch').textContent = data.branch || '—';
   $('#diff-repo').textContent = tilde(data.repo || diffCwd || '');
+  setDirtyBadge(data.dirty || 0);
   const baseEl = $('#diff-base');
   if (data.isBranchDiff && data.baseBranch) { baseEl.style.display = ''; baseEl.textContent = 'vs ' + data.baseBranch; }
   else baseEl.style.display = 'none';
@@ -913,7 +931,11 @@ function renderDiff(data) {
   const files = parseDiff(data.diff || '');
   const list = $('#difflist');
   if (!files.length) {
-    list.innerHTML = '<div class="empty">no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '') + '</div>';
+    const branchMode = $('#diff-branchmode').checked;
+    const msg = branchMode
+      ? (data.baseBranch ? 'no changes vs ' + escapeHtml(data.baseBranch) : 'no base branch to compare against')
+      : 'no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '');
+    list.innerHTML = '<div class="empty">' + msg + '</div>';
     return;
   }
   list.innerHTML = '';
@@ -985,6 +1007,7 @@ function showDiffMsg(msg, bad) {
 }
 
 $('#diff-refresh').onclick = () => loadDiff();
+$('#diff-branchmode').onchange = () => loadDiff();
 $('#diff-ws').onchange = () => loadDiff();
 $('#diff-untracked').onchange = () => loadDiff();
 $('#diff-wrap').onchange = () => $('#difflist').classList.toggle('wrap', $('#diff-wrap').checked);

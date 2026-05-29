@@ -1045,10 +1045,16 @@ func gitOut(dir string, args ...string) (string, error) {
 }
 
 // serveDiff returns the git diff for the repo containing ?path=. It mirrors the
-// way Fulcrum builds its diff view: show working-tree changes (unstaged +
-// staged), and if the tree is clean fall back to the branch diff against the
-// merge-base with the default branch (so a finished feature branch still shows
-// its work). Optional ?ignoreWhitespace and ?includeUntracked toggles.
+// way Fulcrum builds its diff view. Two modes, selected by ?mode=:
+//   - working (default): show working-tree changes (unstaged + staged), and if
+//     the tree is clean fall back to the branch diff against the merge-base with
+//     the default branch (so a finished feature branch still shows its work).
+//   - branch: always diff merge-base(base, HEAD)..HEAD, ignoring the working
+//     tree — useful for seeing the whole branch vs the primary branch.
+//
+// Optional ?ignoreWhitespace, ?includeUntracked, and ?baseBranch (override the
+// branch the comparison runs against) toggles. The response always reports the
+// working-tree dirty-file count so the UI can flag dirtiness in either mode.
 func serveDiff(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Clean(r.URL.Query().Get("path"))
 	if !filepath.IsAbs(path) {
@@ -1057,6 +1063,8 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	ignoreWS := r.URL.Query().Get("ignoreWhitespace") == "true"
 	includeUntracked := r.URL.Query().Get("includeUntracked") == "true"
+	mode := r.URL.Query().Get("mode")               // "branch" forces the base-branch comparison
+	baseOverride := r.URL.Query().Get("baseBranch") // optional explicit base for the comparison
 
 	root, err := gitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -1073,29 +1081,33 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 		return base
 	}
 
-	staged := mustGit(root, wsArg("diff", "--cached")...)
-	unstaged := mustGit(root, wsArg("diff")...)
-	files := parseStatus(mustGit(root, "status", "--short"))
+	// working-tree status is always read so the dirty count is accurate even when
+	// showing the branch diff.
+	status := parseStatus(mustGit(root, "status", "--short"))
+	dirty := len(status)
 
-	combined := staged + unstaged
-	if includeUntracked {
-		for _, f := range files {
-			if f.Status == "untracked" {
-				combined += untrackedDiff(root, f.Path)
-			}
-		}
-	}
-
+	var combined string
+	var files []diffFile
 	isBranchDiff := false
 	baseBranch := ""
-	if strings.TrimSpace(combined) == "" {
-		if baseBranch = defaultBranch(root, branch); baseBranch != "" {
-			if mb := strings.TrimSpace(mustGit(root, "merge-base", baseBranch, "HEAD")); mb != "" {
-				if bd := mustGit(root, append(wsArg("diff"), mb+"..HEAD")...); strings.TrimSpace(bd) != "" {
-					combined = bd
-					isBranchDiff = true
-					files = parseNameStatus(mustGit(root, "diff", "--name-status", mb+"..HEAD"))
+
+	if mode == "branch" {
+		combined, baseBranch, files, _ = branchVsBase(root, branch, baseOverride, wsArg)
+		isBranchDiff = true
+	} else {
+		combined = mustGit(root, wsArg("diff", "--cached")...) + mustGit(root, wsArg("diff")...)
+		files = status
+		if includeUntracked {
+			for _, f := range files {
+				if f.Status == "untracked" {
+					combined += untrackedDiff(root, f.Path)
 				}
+			}
+		}
+		if strings.TrimSpace(combined) == "" {
+			if bd, base, bfiles, ok := branchVsBase(root, branch, baseOverride, wsArg); ok && strings.TrimSpace(bd) != "" {
+				combined, baseBranch, files = bd, base, bfiles
+				isBranchDiff = true
 			}
 		}
 	}
@@ -1109,7 +1121,30 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"repo": root, "branch": branch, "diff": combined, "files": files,
 		"isBranchDiff": isBranchDiff, "baseBranch": baseBranch, "truncated": truncated,
+		"dirty": dirty,
 	})
+}
+
+// branchVsBase returns the diff of merge-base(base, HEAD)..HEAD, the resolved
+// base branch, and the changed-file list. base defaults to the repo's primary
+// branch (override wins when non-empty). ok is false when no base branch exists
+// (e.g. HEAD already is the primary branch) — baseBranch is still returned so
+// the caller can report what it tried to compare against.
+func branchVsBase(root, current, override string, wsArg func(...string) []string) (diff, baseBranch string, files []diffFile, ok bool) {
+	baseBranch = override
+	if baseBranch == "" {
+		baseBranch = defaultBranch(root, current)
+	}
+	if baseBranch == "" {
+		return "", "", nil, false
+	}
+	mb := strings.TrimSpace(mustGit(root, "merge-base", baseBranch, "HEAD"))
+	if mb == "" {
+		return "", baseBranch, nil, false
+	}
+	diff = mustGit(root, append(wsArg("diff"), mb+"..HEAD")...)
+	files = parseNameStatus(mustGit(root, "diff", "--name-status", mb+"..HEAD"))
+	return diff, baseBranch, files, true
 }
 
 // mustGit runs a git command, returning "" on error (the diff endpoint treats
