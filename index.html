@@ -6,10 +6,12 @@
 <title>herdr + file viewer</title>
 <style>
   :root {
-    /* Rosé Pine */
+    /* Fallback palette (Rosé Pine). The server injects a <style> after this
+       one with the active herdr theme's variables, which override these. */
     --bg: #191724;        /* base — matches terminal bg */
     --panel: #1f1d2e;     /* surface */
     --border: #26233a;    /* overlay */
+    --hover: #26233a;     /* hover/elevated surface */
     --fg: #e0def4;        /* text */
     --muted: #6e6a86;     /* muted */
     --accent: #9ccfd8;    /* foam */
@@ -26,7 +28,7 @@
 
   /* left: terminal */
   #left { flex: 1 1 60%; min-width: 240px; display: flex; flex-direction: column; }
-  #left iframe { border: 0; width: 100%; height: 100%; display: block; background: #191724; }
+  #left iframe { border: 0; width: 100%; height: 100%; display: block; background: var(--bg); }
 
   /* drag handle */
   #splitter { flex: 0 0 6px; cursor: col-resize; background: var(--border);
@@ -37,7 +39,7 @@
   #right { flex: 1 1 40%; min-width: 280px; display: flex; flex-direction: column;
     background: var(--panel); border-left: 1px solid var(--border); overflow: hidden; }
 
-  header.bar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: #191724; }
+  header.bar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .pill { padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border);
     font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -50,11 +52,11 @@
   .pill.src.stale { display: inline; color: var(--warn); border-color: var(--warn); }
 
   .goto { margin-top: 6px; display: flex; gap: 6px; }
-  .goto input { flex: 1 1 auto; min-width: 0; background: #191724; color: var(--fg);
+  .goto input { flex: 1 1 auto; min-width: 0; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px;
     font: inherit; font-size: 12px; }
   .goto input:focus { outline: 0; border-color: var(--accent); }
-  .goto button { background: #21202e; color: var(--muted); border: 1px solid var(--border);
+  .goto button { background: var(--hover); color: var(--muted); border: 1px solid var(--border);
     border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 11px; cursor: pointer;
     white-space: nowrap; }
   .goto button:hover { color: var(--accent); border-color: var(--accent); }
@@ -71,7 +73,7 @@
   #files { flex: 1 1 auto; overflow: auto; }
   .entry { display: flex; align-items: center; gap: 8px; padding: 3px 12px; cursor: pointer;
     white-space: nowrap; }
-  .entry:hover { background: #21202e; }
+  .entry:hover { background: var(--hover); }
   .entry.sel { background: var(--accent-dim); }
   .entry .nm { overflow: hidden; text-overflow: ellipsis; }
   .entry.d .nm { color: var(--dir); }
@@ -79,15 +81,16 @@
   .ico { width: 14px; text-align: center; opacity: .8; }
 
   #preview { flex: 0 0 auto; max-height: 45%; overflow: auto; border-top: 1px solid var(--border);
-    display: none; background: #191724; }
+    display: none; background: var(--bg); }
   #preview.open { display: block; }
-  #preview .phdr { position: sticky; top: 0; background: #191724; padding: 6px 12px;
+  #preview .phdr { position: sticky; top: 0; background: var(--bg); padding: 6px 12px;
     border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
   #preview .phdr .x { margin-left: auto; cursor: pointer; color: var(--muted); }
   #preview pre { margin: 0; padding: 10px 12px; white-space: pre; font-size: 12px; }
   #preview img { max-width: 100%; display: block; padding: 10px; }
   .empty { color: var(--muted); padding: 16px 12px; }
 </style>
+<!--THEME-->
 </head>
 <body>
 <div id="app">

@@ -47,7 +47,12 @@ var (
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
 	procCwd     = flag.Bool("proc-cwd", true, "for agent panes, recover the real cwd from the agent process via /proc (herdr reports the stale shell cwd)")
+	themeName   = flag.String("theme", "auto", "color theme: \"auto\" reads herdr's config.toml, or force one of catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal")
 )
+
+// theme is resolved once at startup (mirroring herdr's config) and drives both
+// the embedded terminal's palette and the sidebar CSS.
+var theme resolvedTheme
 
 func defaultSock() string {
 	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
@@ -68,6 +73,16 @@ func main() {
 	if !isLoopback(*listenAddr) && !hasAuth && !*allowNoAuth {
 		log.Fatalf("refusing to listen on non-loopback %q without auth — set UI_AUTH=user:pass, "+
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
+	}
+
+	theme = loadHerdrTheme(*themeName)
+	if theme.Customized {
+		log.Printf("theme:    %q -> %s (+custom overrides)", theme.Name, theme.Resolved)
+	} else {
+		log.Printf("theme:    %q -> %s", theme.Name, theme.Resolved)
+	}
+	if err := renderIndex(); err != nil {
+		log.Fatalf("render index: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -124,19 +139,11 @@ func main() {
 // ttyd child process
 // ---------------------------------------------------------------------------
 
-// rosePineXtermTheme is an xterm.js ITheme (background/foreground/cursor + the
-// 16 ANSI colors) matching Rosé Pine, so the terminal palette lines up with
-// herdr's theme and the sidebar. Passed to ttyd via `-t theme=<json>`, which
-// forwards it to xterm.js in the browser.
-const rosePineXtermTheme = `{` +
-	`"background":"#191724","foreground":"#e0def4",` +
-	`"cursor":"#e0def4","cursorAccent":"#191724","selectionBackground":"#403d52",` +
-	`"black":"#26233a","red":"#eb6f92","green":"#31748f","yellow":"#f6c177",` +
-	`"blue":"#9ccfd8","magenta":"#c4a7e7","cyan":"#ebbcba","white":"#e0def4",` +
-	`"brightBlack":"#6e6a86","brightRed":"#eb6f92","brightGreen":"#31748f","brightYellow":"#f6c177",` +
-	`"brightBlue":"#9ccfd8","brightMagenta":"#c4a7e7","brightCyan":"#ebbcba","brightWhite":"#e0def4"}`
-
 func startTtyd(ctx context.Context) error {
+	// The xterm.js ITheme (background/foreground/cursor + 16 ANSI colors) is
+	// derived from herdr's selected theme, so the terminal palette lines up
+	// with herdr's chrome and the sidebar. Passed to ttyd via `-t theme=<json>`,
+	// which forwards it to xterm.js in the browser.
 	args := []string{
 		"-i", "lo", // loopback only
 		"-p", fmt.Sprint(*ttydPort),
@@ -144,7 +151,7 @@ func startTtyd(ctx context.Context) error {
 		"-W",                           // writable
 		"-t", "disableLeaveAlert=true", // no confirm dialog inside the iframe
 		"-t", "fontSize=13",
-		"-t", "theme=" + rosePineXtermTheme,
+		"-t", "theme=" + theme.xtermJSON(),
 	}
 	args = append(args, strings.Fields(*termCmd)...)
 	cmd := exec.Command("ttyd", args...)
@@ -544,14 +551,37 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 // misc
 // ---------------------------------------------------------------------------
 
+// indexHTML is index.html with the active theme's CSS variables injected,
+// rendered once at startup.
+var indexHTML []byte
+
+// renderIndex injects a <style> block (overriding the static :root fallback)
+// carrying the resolved theme's CSS variables, in place of the <!--THEME-->
+// marker (or appended before </head> if the marker is absent).
+func renderIndex() error {
+	b, err := staticFS.ReadFile("index.html")
+	if err != nil {
+		return err
+	}
+	style := "<style id=\"herdr-theme\">/* resolved from herdr theme: " + theme.Resolved +
+		" */\n  :root {\n" + theme.cssVars() + "  }</style>"
+	s := string(b)
+	if strings.Contains(s, "<!--THEME-->") {
+		s = strings.Replace(s, "<!--THEME-->", style, 1)
+	} else {
+		s = strings.Replace(s, "</head>", style+"\n</head>", 1)
+	}
+	indexHTML = []byte(s)
+	return nil
+}
+
 func serveIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-	b, _ := staticFS.ReadFile("index.html")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(b)
+	_, _ = w.Write(indexHTML)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

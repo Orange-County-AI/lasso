@@ -31,7 +31,33 @@ Open <http://localhost:8090>.
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
 | `-poll`        | `2s`                             | fallback poll interval for cwd changes       |
 | `-proc-cwd`    | `true`                           | resolve agent panes' real cwd via `/proc`    |
+| `-theme`       | `auto`                           | `auto` follows herdr's config, or force a theme name |
 | `-insecure-no-auth` | `false`                     | allow a bare (no-auth) non-loopback bind     |
+
+## Theming (follows herdr)
+
+Both panes adopt whichever theme you've selected in `~/.config/herdr/config.toml`
+(`[theme].name`), so the demo matches herdr instead of hardcoding one palette.
+herdr exposes no theme method on its socket, so the server resolves the theme at
+startup the same way herdr does: it reads the configured **name**, applies any
+`[theme.custom]` per-token overrides, then the legacy `[ui].accent`. Built-ins:
+`catppuccin`, `tokyo-night`, `dracula`, `nord`, `gruvbox`, `one-dark`,
+`solarized`, `kanagawa`, `rose-pine`, `vesper`, `terminal` (unknown → catppuccin,
+herdr's default).
+
+- The **sidebar** CSS variables come from herdr's own 16-token UI palette
+  (transcribed from herdr's source), so the chrome matches herdr's chrome.
+- The **terminal** (xterm.js, via ttyd `-t theme=`) gets its background /
+  foreground / cursor from those same UI tokens (so the iframe blends with
+  herdr) plus the scheme's **canonical 16-color ANSI palette** (so colored output
+  inside panes — git, `ls`, agents — looks right).
+
+Note herdr paints most of its own TUI chrome with explicit RGB, independent of
+the xterm palette; the xterm theme mainly governs the default background and the
+ANSI colors that programs running *inside* a pane emit. Resolution happens once
+at startup — restart the demo after changing herdr's theme (just as herdr needs
+`herdr server reload-config`). Force a specific theme with `-theme <name>`
+regardless of config.
 
 ## Active-pane cwd tracking (and the agent-pane caveat)
 
