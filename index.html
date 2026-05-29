@@ -83,6 +83,8 @@
      Terminal tab with `herdr update` pre-typed */
   .pill.clickable { cursor: pointer; }
   .pill.clickable:hover { background: var(--accent-dim); }
+  /* lead-in caption scoping the version pills to herdr (not this viewer) */
+  .rowlabel { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin-right: 2px; }
 
   /* pane grid */
   #panegrid { flex: 1 1 auto; overflow: auto; padding: 10px; display: grid;
@@ -329,6 +331,7 @@
     <section class="view" id="lview-settings">
       <header class="bar">
         <div class="row">
+          <span class="rowlabel">herdr</span>
           <span class="pill" id="set-installed">installed —</span>
           <span class="pill" id="set-latest">latest —</span>
           <button class="iconbtn" id="set-refresh" title="check for updates">⟳</button>
