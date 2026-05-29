@@ -65,8 +65,8 @@
   .tabs { display: flex; align-items: stretch; flex: 0 0 auto;
     border-bottom: 1px solid var(--border); background: var(--bg); }
   .tabs .tab { background: transparent; color: var(--muted); border: 0;
-    border-bottom: 2px solid transparent; padding: 7px 14px; font: inherit; font-size: 12px;
-    cursor: pointer; }
+    border-bottom: 2px solid transparent; padding: 7px 11px; font: inherit; font-size: 12px;
+    cursor: pointer; white-space: nowrap; }
   .tabs .tab:hover { color: var(--fg); }
   .tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tabs #collapse { align-self: center; margin-right: 8px; }
@@ -178,6 +178,46 @@
   #preview pre { margin: 0; padding: 10px 12px; white-space: pre; font-size: 12px; }
   #preview img { max-width: 100%; display: block; padding: 10px; }
   .empty { color: var(--muted); padding: 16px 12px; }
+
+  /* small inline option checkboxes (diff toolbar) */
+  .opt { color: var(--muted); font-size: 11px; cursor: pointer; display: flex;
+    align-items: center; gap: 4px; white-space: nowrap; }
+  .opt input { margin: 0; }
+
+  /* diff viewer */
+  #difflist { flex: 1 1 auto; overflow: auto; }
+  .dfile { border-bottom: 1px solid var(--border); }
+  .dfhead { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px; background: var(--panel); cursor: pointer; border-bottom: 1px solid var(--border); }
+  .dfhead:hover { background: var(--hover); }
+  .dfhead .caret { color: var(--muted); width: 10px; flex: 0 0 auto; }
+  .dfhead .dfname { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dfhead .dfstat { margin-left: auto; font-size: 11px; white-space: nowrap; flex: 0 0 auto; }
+  .dfhead .dfstat .add { color: var(--good); } .dfhead .dfstat .del { color: var(--bad); }
+  .dfbody { background: var(--bg); }
+  .dline { display: flex; font-size: 12px; line-height: 1.45; }
+  .dline .sign { flex: 0 0 16px; text-align: center; color: var(--muted); user-select: none; }
+  .dline .txt { white-space: pre; overflow: visible; }
+  #difflist.wrap .dline .txt { white-space: pre-wrap; word-break: break-all; }
+  .dline.add { background: color-mix(in srgb, var(--good) 15%, transparent); }
+  .dline.add .sign { color: var(--good); }
+  .dline.del { background: color-mix(in srgb, var(--bad) 15%, transparent); }
+  .dline.del .sign { color: var(--bad); }
+  .dline.ctx .txt { color: var(--muted); }
+  .dline.hunk { color: var(--accent); background: var(--accent-dim); }
+  .dline.hunk .txt { white-space: pre-wrap; }
+  .dline.meta .txt { color: var(--muted); font-style: italic; }
+
+  /* browser pane */
+  .brbar { display: flex; gap: 6px; align-items: center; flex: 0 0 auto;
+    padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .brbar input { flex: 1 1 auto; min-width: 0; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px; font: inherit; font-size: 12px; }
+  .brbar input:focus { outline: 0; border-color: var(--accent); }
+  .brbtn { background: var(--hover); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .brbtn:hover { color: var(--accent); border-color: var(--accent); }
+  #brframe { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 </style>
 <!--THEME-->
 </head>
@@ -190,6 +230,8 @@
     <nav class="tabs">
       <button class="tab active" data-view="files">Files</button>
       <button class="tab" data-view="panes">Panes</button>
+      <button class="tab" data-view="diff">Diff</button>
+      <button class="tab" data-view="browser">Browser</button>
       <button class="iconbtn" id="collapse" title="collapse sidebar">»</button>
     </nav>
 
@@ -234,6 +276,38 @@
       <div id="panegrid"><div class="empty">loading panes…</div></div>
       <div class="hint" id="panes-hint">click to focus · ⌘/ctrl/shift-click to multi-select · right-click for rename / close</div>
     </section>
+
+    <section class="view" id="view-diff">
+      <header class="bar">
+        <div class="row">
+          <span class="pill ws" id="diff-branch">—</span>
+          <span class="pill" id="diff-base" style="display:none"></span>
+          <span class="pill" id="diff-msg" style="display:none"></span>
+          <button class="iconbtn" id="diff-refresh" title="refresh diff">⟳</button>
+        </div>
+        <div class="cwd">
+          <span class="crumbs" id="diff-repo">—</span>
+          <label class="follow"><input type="checkbox" id="diff-follow" checked> follow active pane</label>
+        </div>
+        <div class="row" style="margin-top:6px; gap:12px;">
+          <label class="opt"><input type="checkbox" id="diff-ws"> ignore whitespace</label>
+          <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
+          <label class="opt"><input type="checkbox" id="diff-wrap"> wrap</label>
+          <button class="selbtn" id="diff-collapse" style="margin-left:auto">collapse all</button>
+        </div>
+      </header>
+      <div id="difflist"><div class="empty">loading diff…</div></div>
+    </section>
+
+    <section class="view" id="view-browser">
+      <div class="brbar">
+        <button class="brbtn" id="br-reload" title="reload">⟳</button>
+        <input id="br-url" type="text" spellcheck="false" autocomplete="off" placeholder="http://host:3000">
+        <button class="brbtn" id="br-go">go</button>
+        <button class="brbtn" id="br-open" title="open in new tab">↗</button>
+      </div>
+      <iframe id="brframe" title="browser preview" referrerpolicy="no-referrer"></iframe>
+    </section>
   </div>
   <div class="ctxmenu" id="ctxmenu"></div>
 </div>
@@ -248,6 +322,10 @@ let curView = 'files';     // which right-column view is showing
 let paneEls = {};          // pane_id -> grid card element (for focus highlighting)
 let paneData = {};         // pane_id -> pane object (for context-menu actions)
 let selectedPanes = new Set(); // pane_ids selected for bulk actions
+let diffCwd = null;        // repo dir last loaded in the Diff view
+let diffCollapsed = new Set(); // file paths collapsed in the Diff view
+let diffAllCollapsed = false;
+let browserInit = false;   // browser pane lazily initialized on first open
 
 // ---- file list ----
 async function loadDir(path) {
@@ -338,6 +416,8 @@ function switchView(name) {
   document.querySelectorAll('.tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'panes') loadPanes();
+  else if (name === 'diff') loadDiff();
+  else if (name === 'browser') initBrowser();
 }
 document.querySelectorAll('.tabs .tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
 
@@ -522,6 +602,150 @@ function showPaneMsg(msg, bad) {
 
 $('#panes-refresh').onclick = () => loadPanes();
 
+// ---- diff viewer ----
+async function loadDiff() {
+  const base = diffCwd || activeCwd;
+  const list = $('#difflist');
+  if (!base) { list.innerHTML = '<div class="empty">no active directory yet</div>'; return; }
+  diffCwd = base;
+  $('#diff-repo').textContent = tilde(base);
+  const params = new URLSearchParams({ path: base });
+  if ($('#diff-ws').checked) params.set('ignoreWhitespace', 'true');
+  if ($('#diff-untracked').checked) params.set('includeUntracked', 'true');
+  try {
+    const r = await fetch('/api/diff?' + params);
+    if (!r.ok) throw new Error(await r.text());
+    renderDiff(await r.json());
+  } catch (e) {
+    list.innerHTML = '<div class="empty">cannot diff this directory<br>' + escapeHtml(e.message) + '</div>';
+    $('#diff-branch').textContent = '—';
+    $('#diff-base').style.display = 'none';
+    showDiffMsg('');
+  }
+}
+
+function renderDiff(data) {
+  $('#diff-branch').textContent = data.branch || '—';
+  $('#diff-repo').textContent = tilde(data.repo || diffCwd || '');
+  const baseEl = $('#diff-base');
+  if (data.isBranchDiff && data.baseBranch) { baseEl.style.display = ''; baseEl.textContent = 'vs ' + data.baseBranch; }
+  else baseEl.style.display = 'none';
+  showDiffMsg(data.truncated ? 'diff truncated (large)' : '', data.truncated);
+
+  const files = parseDiff(data.diff || '');
+  const list = $('#difflist');
+  if (!files.length) {
+    list.innerHTML = '<div class="empty">no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '') + '</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const f of files) list.appendChild(diffFileEl(f));
+}
+
+// minimal unified-diff parser: split into per-file blocks of typed lines
+function parseDiff(text) {
+  const files = [];
+  let cur = null;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      cur = { path: '', lines: [], add: 0, del: 0 };
+      files.push(cur);
+      const m = line.match(/ b\/(.+)$/);
+      if (m) cur.path = m[1];
+      continue;
+    }
+    if (!cur) continue;
+    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('+++ ')) { const m = line.match(/^\+\+\+ b\/(.+)$/); if (m) cur.path = m[1]; continue; }
+    if (line.startsWith('@@')) { cur.lines.push({ t: 'hunk', s: line }); continue; }
+    if (line.startsWith('+')) { cur.lines.push({ t: 'add', s: line.slice(1) }); cur.add++; continue; }
+    if (line.startsWith('-')) { cur.lines.push({ t: 'del', s: line.slice(1) }); cur.del++; continue; }
+    if (line.startsWith(' ')) { cur.lines.push({ t: 'ctx', s: line.slice(1) }); continue; }
+    if (line.startsWith('Binary ')) { cur.lines.push({ t: 'meta', s: line }); continue; }
+    // index/new file/mode/rename/"\ No newline" lines — not shown
+  }
+  return files;
+}
+
+function diffFileEl(f) {
+  const wrap = document.createElement('div');
+  wrap.className = 'dfile';
+  const collapsed = diffCollapsed.has(f.path);
+  const head = document.createElement('div');
+  head.className = 'dfhead';
+  head.innerHTML = '<span class="caret">' + (collapsed ? '▸' : '▾') + '</span>' +
+    '<span class="dfname">' + escapeHtml(f.path || '(unknown)') + '</span>' +
+    '<span class="dfstat"><span class="add">+' + f.add + '</span> <span class="del">−' + f.del + '</span></span>';
+  const body = document.createElement('div');
+  body.className = 'dfbody';
+  if (collapsed) body.style.display = 'none';
+  for (const ln of f.lines) {
+    const d = document.createElement('div');
+    d.className = 'dline ' + ln.t;
+    const sign = ln.t === 'add' ? '+' : ln.t === 'del' ? '-' : '';
+    d.innerHTML = '<span class="sign">' + sign + '</span><span class="txt">' + escapeHtml(ln.s) + '</span>';
+    body.appendChild(d);
+  }
+  head.onclick = () => {
+    const c = !diffCollapsed.has(f.path);
+    if (c) diffCollapsed.add(f.path); else diffCollapsed.delete(f.path);
+    body.style.display = c ? 'none' : '';
+    head.querySelector('.caret').textContent = c ? '▸' : '▾';
+  };
+  wrap.appendChild(head);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function showDiffMsg(msg, bad) {
+  const el = $('#diff-msg');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = msg;
+  el.style.color = bad ? 'var(--warn)' : 'var(--muted)';
+  el.style.borderColor = bad ? 'var(--warn)' : 'var(--border)';
+}
+
+$('#diff-refresh').onclick = () => loadDiff();
+$('#diff-ws').onchange = () => loadDiff();
+$('#diff-untracked').onchange = () => loadDiff();
+$('#diff-wrap').onchange = () => $('#difflist').classList.toggle('wrap', $('#diff-wrap').checked);
+$('#diff-collapse').onclick = () => {
+  diffAllCollapsed = !diffAllCollapsed;
+  $('#diff-collapse').textContent = diffAllCollapsed ? 'expand all' : 'collapse all';
+  document.querySelectorAll('#difflist .dfile').forEach(fe => {
+    const name = fe.querySelector('.dfname').textContent;
+    if (diffAllCollapsed) diffCollapsed.add(name); else diffCollapsed.delete(name);
+    fe.querySelector('.dfbody').style.display = diffAllCollapsed ? 'none' : '';
+    fe.querySelector('.caret').textContent = diffAllCollapsed ? '▸' : '▾';
+  });
+};
+
+// ---- browser pane ----
+function initBrowser() {
+  if (browserInit) return;
+  browserInit = true;
+  let url = '';
+  try { url = localStorage.getItem('browserUrl') || ''; } catch (e) {}
+  // default to the host this UI was reached on (the tailscale IP / MagicDNS
+  // name the user typed), port 3000 — the usual dev-server port
+  if (!url) url = location.protocol + '//' + location.hostname + ':3000';
+  $('#br-url').value = url;
+  navBrowser(url);
+}
+function navBrowser(raw) {
+  let u = (raw || '').trim();
+  if (!u) return;
+  if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+  $('#br-url').value = u;
+  $('#brframe').src = u;
+  try { localStorage.setItem('browserUrl', u); } catch (e) {}
+}
+$('#br-go').onclick = () => navBrowser($('#br-url').value);
+$('#br-url').addEventListener('keydown', e => { if (e.key === 'Enter') navBrowser(e.target.value); });
+$('#br-reload').onclick = () => { const f = $('#brframe'); f.src = f.src; };
+$('#br-open').onclick = () => { const u = $('#br-url').value.trim(); if (u) window.open(/^https?:\/\//i.test(u) ? u : 'http://' + u, '_blank'); };
+
 // ---- active pane (SSE) ----
 function applyActive(a) {
   $('#live').classList.add('live');
@@ -545,6 +769,7 @@ function applyActive(a) {
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
+    if ($('#diff-follow').checked) { diffCwd = a.cwd; if (curView === 'diff') loadDiff(); }
   }
 
   // keep the pane grid's focus highlight in sync with herdr
@@ -564,6 +789,7 @@ function connectSSE() {
 }
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
+$('#diff-follow').onchange = () => { if ($('#diff-follow').checked && activeCwd) { diffCwd = activeCwd; if (curView === 'diff') loadDiff(); } };
 
 // manual path entry + jump-to-active — always available, so a wrong/stale guess is never a dead end
 $('#path').addEventListener('keydown', e => {
@@ -607,6 +833,7 @@ $('#jump').onclick = () => { if (activeCwd) loadDir(activeCwd); };
 
 // ---- helpers ----
 function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function tilde(p){ return (p||'').replace(/^\/home\/[^/]+/, '~'); }
 function fmtSize(n){ if(n==null)return''; const u=['B','K','M','G']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+u[i]; }
 
 // boot

@@ -112,6 +112,7 @@ func main() {
 	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/close", serveClose)
+	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/", serveIndex)
 
 	handler := withAuth(mux, authUser, authPass, hasAuth)
@@ -550,6 +551,229 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
+}
+
+// ---------------------------------------------------------------------------
+// git diff: working-tree (or branch-vs-base) diff for the active pane's repo
+// ---------------------------------------------------------------------------
+
+// diffFile is one changed file in `git status`/`git diff --name-status`.
+type diffFile struct {
+	Path   string `json:"path"`
+	Status string `json:"status"` // added | deleted | modified | renamed | untracked
+	Staged bool   `json:"staged"`
+}
+
+const (
+	maxDiff      = 2 << 20   // 2 MiB cap on the unified-diff payload
+	maxUntracked = 256 << 10 // 256 KiB per synthesized untracked-file diff
+)
+
+// gitOut runs `git -C dir args...` and returns stdout, surfacing git's stderr
+// in the error so the browser can show why a repo couldn't be diffed.
+func gitOut(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
+				return "", fmt.Errorf("%s", msg)
+			}
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
+// serveDiff returns the git diff for the repo containing ?path=. It mirrors the
+// way Fulcrum builds its diff view: show working-tree changes (unstaged +
+// staged), and if the tree is clean fall back to the branch diff against the
+// merge-base with the default branch (so a finished feature branch still shows
+// its work). Optional ?ignoreWhitespace and ?includeUntracked toggles.
+func serveDiff(w http.ResponseWriter, r *http.Request) {
+	path := filepath.Clean(r.URL.Query().Get("path"))
+	if !filepath.IsAbs(path) {
+		http.Error(w, "path must be absolute", http.StatusBadRequest)
+		return
+	}
+	ignoreWS := r.URL.Query().Get("ignoreWhitespace") == "true"
+	includeUntracked := r.URL.Query().Get("includeUntracked") == "true"
+
+	root, err := gitOut(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		http.Error(w, "not a git repo: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	root = strings.TrimSpace(root)
+	branch := strings.TrimSpace(mustGit(root, "rev-parse", "--abbrev-ref", "HEAD"))
+
+	wsArg := func(base ...string) []string {
+		if ignoreWS {
+			return append(base, "-w")
+		}
+		return base
+	}
+
+	staged := mustGit(root, wsArg("diff", "--cached")...)
+	unstaged := mustGit(root, wsArg("diff")...)
+	files := parseStatus(mustGit(root, "status", "--short"))
+
+	combined := staged + unstaged
+	if includeUntracked {
+		for _, f := range files {
+			if f.Status == "untracked" {
+				combined += untrackedDiff(root, f.Path)
+			}
+		}
+	}
+
+	isBranchDiff := false
+	baseBranch := ""
+	if strings.TrimSpace(combined) == "" {
+		if baseBranch = defaultBranch(root, branch); baseBranch != "" {
+			if mb := strings.TrimSpace(mustGit(root, "merge-base", baseBranch, "HEAD")); mb != "" {
+				if bd := mustGit(root, append(wsArg("diff"), mb+"..HEAD")...); strings.TrimSpace(bd) != "" {
+					combined = bd
+					isBranchDiff = true
+					files = parseNameStatus(mustGit(root, "diff", "--name-status", mb+"..HEAD"))
+				}
+			}
+		}
+	}
+
+	truncated := false
+	if len(combined) > maxDiff {
+		combined = combined[:maxDiff]
+		truncated = true
+	}
+
+	writeJSON(w, map[string]any{
+		"repo": root, "branch": branch, "diff": combined, "files": files,
+		"isBranchDiff": isBranchDiff, "baseBranch": baseBranch, "truncated": truncated,
+	})
+}
+
+// mustGit runs a git command, returning "" on error (the diff endpoint treats
+// a missing sub-result as empty rather than failing the whole request).
+func mustGit(dir string, args ...string) string {
+	out, _ := gitOut(dir, args...)
+	return out
+}
+
+// parseStatus turns `git status --short` porcelain into file entries.
+func parseStatus(s string) []diffFile {
+	var out []diffFile
+	for _, line := range strings.Split(s, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		x, y := line[0], line[1]
+		p := strings.TrimSpace(line[3:])
+		if i := strings.Index(p, " -> "); i >= 0 { // rename: "old -> new"
+			p = p[i+4:]
+		}
+		st := "modified"
+		switch {
+		case x == '?' && y == '?':
+			st = "untracked"
+		case x == 'A' || y == 'A':
+			st = "added"
+		case x == 'D' || y == 'D':
+			st = "deleted"
+		case x == 'R':
+			st = "renamed"
+		}
+		out = append(out, diffFile{Path: p, Status: st, Staged: x != ' ' && x != '?'})
+	}
+	return out
+}
+
+// parseNameStatus turns `git diff --name-status` into file entries (used for the
+// branch-vs-base fallback, where there's no working-tree status to read).
+func parseNameStatus(s string) []diffFile {
+	var out []diffFile
+	for _, line := range strings.Split(s, "\n") {
+		parts := strings.Split(strings.TrimSpace(line), "\t")
+		if len(parts) < 2 || parts[0] == "" {
+			continue
+		}
+		st := "modified"
+		switch parts[0][0] {
+		case 'A':
+			st = "added"
+		case 'D':
+			st = "deleted"
+		case 'R':
+			st = "renamed"
+		}
+		out = append(out, diffFile{Path: parts[len(parts)-1], Status: st})
+	}
+	return out
+}
+
+// defaultBranch resolves the repo's base branch for a branch-vs-base diff:
+// origin/HEAD if set, else main/master — never the current branch (that would
+// diff a branch against itself).
+func defaultBranch(root, current string) string {
+	if ref, err := gitOut(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		ref = strings.TrimSpace(ref) // e.g. "origin/main"
+		if i := strings.LastIndex(ref, "/"); i >= 0 {
+			ref = ref[i+1:]
+		}
+		if ref != "" && ref != current {
+			return ref
+		}
+	}
+	for _, b := range []string{"main", "master"} {
+		if b == current {
+			continue
+		}
+		if _, err := gitOut(root, "rev-parse", "--verify", "--quiet", b); err == nil {
+			return b
+		}
+	}
+	return ""
+}
+
+// untrackedDiff synthesizes an "all added" unified diff for an untracked file
+// (git diff omits untracked files), so the Diff view can preview new files too.
+func untrackedDiff(root, rel string) string {
+	full := filepath.Join(root, rel)
+	info, err := os.Stat(full)
+	if err != nil || info.IsDir() || info.Size() > maxUntracked {
+		return ""
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return ""
+	}
+	header := fmt.Sprintf("diff --git a/%s b/%s\nnew file\n", rel, rel)
+	if isBinary(data) {
+		return header + "Binary file (untracked)\n"
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("--- /dev/null\n")
+	fmt.Fprintf(&b, "+++ b/%s\n", rel)
+	fmt.Fprintf(&b, "@@ -0,0 +1,%d @@\n", len(lines))
+	for _, ln := range lines {
+		b.WriteString("+" + ln + "\n")
+	}
+	return b.String()
+}
+
+func isBinary(b []byte) bool {
+	n := len(b)
+	if n > 8000 {
+		n = 8000
+	}
+	for i := 0; i < n; i++ {
+		if b[i] == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // subscribeFocus opens a long-lived connection subscribed to focus events and

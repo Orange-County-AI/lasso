@@ -3,13 +3,18 @@
 A single Go binary that serves a two-column web UI:
 
 - **Left** — `herdr` running inside a `ttyd` terminal, embedded in an `<iframe>`.
-- **Right** — two tabs: a **Files** view that follows herdr's **focused pane**
-  `cwd` live, and a **Panes** view (a grid of every herdr pane — click to focus
-  it in the terminal, right-click to rename/close, ⌘/ctrl/shift-click to
-  multi-select and bulk-close). Collapsible via the `»` button in the tab strip
-  (the terminal then fills the width); a floating `«` button brings it back. The
-  state persists in `localStorage`. The divider between the panes is also
-  drag-resizable.
+- **Right** — four tabs:
+  - **Files** — a file browser that follows herdr's **focused pane** `cwd` live.
+  - **Panes** — a grid of every herdr pane (click to focus it in the terminal,
+    right-click to rename/close, ⌘/ctrl/shift-click to multi-select and bulk-close).
+  - **Diff** — the git diff of the focused pane's repo (working tree, or the
+    branch-vs-base diff when the tree is clean), in the spirit of Fulcrum's diff view.
+  - **Browser** — an embedded `<iframe>` web preview with a URL bar, for viewing
+    a dev server running in a pane.
+
+  The column is collapsible via the `»` button in the tab strip (the terminal
+  then fills the width); a floating `«` button brings it back. The state persists
+  in `localStorage`. The divider between the panes is also drag-resizable.
 
 The Go server reverse-proxies the terminal (WebSocket upgrade handled natively
 by `httputil.ReverseProxy`) and talks to the herdr server over its
@@ -117,6 +122,46 @@ every refresh, so a pane that vanished underneath you is closed cleanly (its
 stale id just comes back as a reported error). Close is **confirmed** first
 since it terminates the terminal — and any agent running in it.
 
+## Diff view (the Diff tab)
+
+The **Diff** tab shows the git diff of the repository containing the focused
+pane's `cwd` — it follows the active pane the same way the Files view does
+(toggle **follow active pane** off to pin it). The server resolves the repo
+root (`git rev-parse --show-toplevel`) from that directory and builds the diff
+the way Fulcrum's diff view does:
+
+- **Working-tree changes** — staged (`git diff --cached`) + unstaged (`git diff`).
+- **Branch-vs-base fallback** — if the tree is clean, it diffs against the
+  merge-base with the default branch (`origin/HEAD`, else `main`/`master`), so a
+  finished feature branch still shows its work. A `vs <base>` pill marks this mode.
+
+The diff is parsed client-side into per-file blocks: each file is a collapsible
+header with `+adds`/`−dels` counts, and the lines are colored (added/removed/
+context/hunk) in the active theme. Toolbar toggles: **ignore whitespace** (`-w`),
+**untracked** (synthesizes an all-added diff for untracked files, which `git diff`
+omits), **wrap**, plus **collapse all** and a **⟳** refresh. Large diffs are
+capped at 2 MiB (a `diff truncated` pill shows when that happens). The view
+refreshes on tab open, on a cwd change (when following), and on demand.
+
+## Browser pane (the Browser tab)
+
+The **Browser** tab is a plain `<iframe>` web preview with a URL bar
+(navigate, **⟳** reload, **↗** open-in-new-tab) — the same approach Fulcrum
+takes. The default URL is `http://<this-host>:3000`, where `<this-host>` is
+whatever you reached the UI on (the tailscale IP or MagicDNS name, via
+`location.hostname`) and `3000` is the usual dev-server port; the last URL you
+visit is remembered in `localStorage`.
+
+Two caveats, both inherent to iframing:
+
+- **Reachability** — the iframe loads from *your* browser, over the tailnet. A
+  dev server bound to the VPS's `localhost` won't be reachable; bind it to the
+  tailscale IP (or `0.0.0.0`) so the tailnet can see it. This is why the default
+  points at the tailscale host, not `localhost`.
+- **Framing** — sites that send `X-Frame-Options: DENY` / a restrictive
+  `frame-ancestors` CSP won't render in the iframe (use **↗** to open them in a
+  real tab). Dev servers generally don't set these, so previews work.
+
 ## Expose over Tailscale (plain HTTP, tailnet-only)
 
 The left pane is a **writable shell**, so never bind to `0.0.0.0` (on a VPS that
@@ -158,3 +203,4 @@ Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
 - `POST /api/focus` — focus a pane `{workspace_id, tab_id}` (→ `workspace.focus` + `tab.focus`)
 - `POST /api/rename` — rename a tab `{tab_id, label}` (→ `tab.rename`)
 - `POST /api/close` — close panes `{pane_ids: [...]}` (→ `pane.close` each); returns `{closed, errors}`
+- `GET /api/diff?path=&ignoreWhitespace=&includeUntracked=` — git diff of the repo containing `path`; returns `{repo, branch, diff, files, isBranchDiff, baseBranch, truncated}`
