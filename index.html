@@ -1034,11 +1034,51 @@ function connectSSE() {
   es.onerror = () => { $('#live').classList.remove('live'); };
 }
 
+// wireTerminalIframe attaches behavior to the same-origin ttyd iframe document:
+//   (1) suppress the native context menu so right-click only triggers herdr's
+//       own handling (the mousedown/mouseup xterm forwards to herdr is untouched);
+//   (2) intercept image paste — save the image server-side and insert its path
+//       at the cursor, since xterm can only paste text.
+// Each iframe (re)load yields a fresh document, so it's re-run from the load
+// handler below; __herdrWired guards against double-attaching on one document.
+function wireTerminalIframe() {
+  let doc;
+  try { doc = document.getElementById('term').contentWindow.document; } catch (e) { return; }
+  if (!doc || doc.__herdrWired) return;
+  doc.__herdrWired = true;
+
+  doc.addEventListener('contextmenu', e => e.preventDefault(), true);
+
+  doc.addEventListener('paste', async (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const imgItem = Array.from(items).find(it => it.kind === 'file' && it.type.startsWith('image/'));
+    if (!imgItem) return;                        // text paste: let xterm handle it
+    const file = imgItem.getAsFile();
+    if (!file) return;
+    e.preventDefault(); e.stopPropagation();     // stop xterm's empty-text paste
+    try {
+      const res = await fetch('/api/paste-image', {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'image/png' },
+        body: file,
+      });
+      if (!res.ok) return;
+      const { path } = await res.json();
+      const w = document.getElementById('term').contentWindow;
+      if (w && w.term && typeof w.term.paste === 'function') w.term.paste(path + ' ');
+    } catch (err) { /* swallow: never break the terminal */ }
+  }, true);                                       // capture phase: run before xterm
+}
+
 // If the terminal iframe reloads (e.g. ttyd reconnects), the fresh xterm starts
-// from ttyd's startup theme — reapply the latest one so it stays in sync.
+// from ttyd's startup theme — reapply the latest one so it stays in sync, and
+// re-wire the fresh document.
 document.getElementById('term').addEventListener('load', () => {
   if (lastXtermTheme) applyTermTheme(lastXtermTheme, 0);
+  wireTerminalIframe();
 });
+wireTerminalIframe();   // in case the iframe already loaded before this ran
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
 $('#diff-follow').onchange = () => { if ($('#diff-follow').checked && activeCwd) { diffCwd = activeCwd; if (curView === 'diff') loadDiff(); } };

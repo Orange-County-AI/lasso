@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -157,6 +158,7 @@ func main() {
 	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/close", serveClose)
+	mux.HandleFunc("/api/paste-image", servePasteImage)
 	mux.HandleFunc("/api/diff", serveDiff)
 	if *devMode {
 		// Serve the vendored libs from disk too, so an edit there shows on refresh.
@@ -787,6 +789,73 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
+}
+
+// ---------------------------------------------------------------------------
+// image paste: save a clipboard image to disk so the agent in the focused
+// pane (e.g. Claude Code) can read it by path
+// ---------------------------------------------------------------------------
+
+// maxPasteImage caps the request body so a runaway/hostile paste can't fill
+// the disk. Screenshots are well under this.
+const maxPasteImage = 25 << 20 // 25 MiB
+
+// pasteImageExt maps an image content-type to a file extension. Anything not
+// listed is rejected — this endpoint only ever writes image files.
+var pasteImageExt = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
+	"image/jpg":  ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
+// pasteImageDir is the directory pasted clipboard images are written to,
+// resolved once. Prefers the user cache dir (~/.cache on Linux), falling back
+// to the OS temp dir.
+func pasteImageDir() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "herdr-viewer", "pasted-images")
+}
+
+// servePasteImage accepts a raw image body (Content-Type set to the image MIME
+// type), writes it to pasteImageDir() with a timestamped name, and returns the
+// absolute path. The browser then inserts that path at the terminal cursor.
+func servePasteImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	ext, ok := pasteImageExt[strings.ToLower(strings.TrimSpace(ct))]
+	if !ok {
+		http.Error(w, "unsupported image content-type "+ct, http.StatusUnsupportedMediaType)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPasteImage))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(body) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	dir := pasteImageDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	name := "clipboard-" + time.Now().Format("2006-01-02-150405") + ext
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"path": path})
 }
 
 // ---------------------------------------------------------------------------
