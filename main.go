@@ -113,28 +113,37 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// In dev we may move off a busy web port (below); the ttyd port can be busy
-	// too (e.g. another instance running), so scan it forward first — both the
-	// spawn arg and the proxy target read *ttydPort, so resolving it here keeps
-	// them in sync.
-	if *devMode && *spawnTtyd {
-		if p := freeLoopbackPort(*ttydPort, 50); p != *ttydPort {
-			log.Printf("dev:      ttyd port %d busy → using %d", *ttydPort, p)
-			*ttydPort = p
-		}
-	}
-
+	// When we spawn ttyd ourselves, give each instance its own private unix
+	// socket (keyed by PID) instead of a shared TCP port — so a prod instance
+	// and several dev instances can run at once without ever colliding on a
+	// port or, worse, silently proxying onto each other's terminal. Only the
+	// external-ttyd path (-spawn-ttyd=false) still uses *ttydPort. We resolve the
+	// path here (the proxy needs it) but defer the spawn until after the web port
+	// binds, so a startup failure doesn't leak an orphaned ttyd.
+	var ttydSock string
 	if *spawnTtyd {
-		if err := startTtyd(ctx); err != nil {
-			log.Fatalf("ttyd: %v", err)
-		}
+		ttydSock = filepath.Join(os.TempDir(), fmt.Sprintf("herdr-viewer-ttyd-%d.sock", os.Getpid()))
 	}
 
 	hub := newHub()
 	go hub.run(ctx)
 
-	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
-	proxy := httputil.NewSingleHostReverseProxy(target) // handles WS upgrade natively
+	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
+	var proxy *httputil.ReverseProxy
+	if *spawnTtyd {
+		// Reach our own ttyd over its private unix socket. The host in the URL is
+		// a placeholder — the custom DialContext ignores it and dials the socket.
+		proxy = httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "ttyd.sock"})
+		proxy.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", ttydSock)
+			},
+		}
+	} else {
+		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
+		proxy = httputil.NewSingleHostReverseProxy(target)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/terminal/", proxy)
@@ -187,6 +196,15 @@ func main() {
 		*listenAddr = boundAddr // so the URL log + isLoopback reflect reality
 	}
 
+	// Spawn ttyd only after the web port is ours — so a busy-port exit above
+	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
+	// log.Fatalf bypasses).
+	if *spawnTtyd {
+		if err := startTtyd(ctx, ttydSock); err != nil {
+			log.Fatalf("ttyd: %v", err)
+		}
+	}
+
 	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
@@ -204,7 +222,11 @@ func main() {
 		log.Printf("auth:     DISABLED (loopback only)")
 	}
 	log.Printf("UI:       http://%s", *listenAddr)
-	log.Printf("terminal: ttyd@127.0.0.1:%d running %q (proxied at /terminal/)", *ttydPort, *termCmd)
+	if *spawnTtyd {
+		log.Printf("terminal: ttyd@%s running %q (proxied at /terminal/)", ttydSock, *termCmd)
+	} else {
+		log.Printf("terminal: ttyd@127.0.0.1:%d (external) running %q (proxied at /terminal/)", *ttydPort, *termCmd)
+	}
 	log.Printf("herdr:    %s", *herdrSock)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
@@ -237,33 +259,23 @@ func listenWithFallback(addr string, dev bool, span int) (net.Listener, string, 
 	return nil, addr, fmt.Errorf("no free port in %d..%d: %w", start, start+span, err)
 }
 
-// freeLoopbackPort returns the first bindable 127.0.0.1 port at/after start
-// (scanning up to span ahead). Used to pick a ttyd port in dev. Falls back to
-// start if none is free, letting ttyd surface the conflict. Note the small
-// bind-then-close race — fine for loopback dev use.
-func freeLoopbackPort(start, span int) int {
-	for p := start; p <= start+span; p++ {
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
-		if err == nil {
-			_ = l.Close()
-			return p
-		}
-	}
-	return start
-}
-
 // ---------------------------------------------------------------------------
 // ttyd child process
 // ---------------------------------------------------------------------------
 
-func startTtyd(ctx context.Context) error {
+func startTtyd(ctx context.Context, sock string) error {
+	// Bind a private unix socket (one per instance) rather than a shared TCP
+	// port, so concurrent prod/dev instances can't collide or cross-connect.
+	// Clear any stale socket left by a crashed prior run with this PID so ttyd
+	// can bind.
+	_ = os.Remove(sock)
+
 	// The xterm.js ITheme (background/foreground/cursor + 16 ANSI colors) is
 	// derived from herdr's selected theme, so the terminal palette lines up
 	// with herdr's chrome and the sidebar. Passed to ttyd via `-t theme=<json>`,
 	// which forwards it to xterm.js in the browser.
 	args := []string{
-		"-i", "lo", // loopback only
-		"-p", fmt.Sprint(*ttydPort),
+		"-i", sock, // private unix socket (ttyd accepts a socket path here)
 		"-b", "/terminal", // base path so assets/ws resolve under the proxy
 		"-W",                           // writable
 		"-t", "disableLeaveAlert=true", // no confirm dialog inside the iframe
@@ -283,7 +295,7 @@ func startTtyd(ctx context.Context) error {
 		// kill the whole process group (ttyd + the shell it spawned)
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}()
-	go func() { _ = cmd.Wait() }()
+	go func() { _ = cmd.Wait(); _ = os.Remove(sock) }()
 	return nil
 }
 

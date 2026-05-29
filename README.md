@@ -48,19 +48,24 @@ iframe (ttyd respawns the herdr client, which re-attaches to the persistent
 server). Go changes still need a restart (`Ctrl-C`, rerun the task). Also `mise run
 build` and `mise run test`.
 
-In `-dev` mode the requested ports **fall forward to the next free one** if
-they're taken — both the web port (`:8090` → `:8091` → …) and the ttyd port
-(`7682` → …) — so a second instance, or one running alongside a prod instance on
-`:8090`, just lands on the next slot. Watch the `UI: http://…` log line for the
-URL it actually bound. Outside `-dev` a busy port is a hard error (a prod
-instance never moves silently).
+Each instance spawns its **own** ttyd on a private unix socket
+(`$TMPDIR/herdr-viewer-ttyd-<pid>.sock`), not a shared TCP port — so a prod
+instance and any number of dev instances run side by side without ever colliding
+on a port or proxying onto each other's terminal. The socket is removed on exit.
+(The `-ttyd-port` flag only applies with `-spawn-ttyd=false`, where you point the
+proxy at an externally-run ttyd.)
+
+In `-dev` mode the requested **web** port **falls forward to the next free one**
+if it's taken (`:8090` → `:8091` → …), so a second instance just lands on the next
+slot — watch the `UI: http://…` log line for the URL it actually bound. Outside
+`-dev` a busy web port is a hard error (a prod instance never moves silently).
 
 ## Flags
 
 | flag           | default                          | meaning                                      |
 |----------------|----------------------------------|----------------------------------------------|
 | `-listen`      | `127.0.0.1:8090`                 | web server address                           |
-| `-ttyd-port`   | `7682`                           | loopback port for ttyd                       |
+| `-ttyd-port`   | `7682`                           | loopback port for an external ttyd (only used with `-spawn-ttyd=false`; a spawned ttyd uses a private unix socket) |
 | `-term-cmd`    | `herdr`                          | command ttyd runs                            |
 | `-herdr-sock`  | `~/.config/herdr/herdr.sock`     | herdr API socket                             |
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
@@ -68,7 +73,7 @@ instance never moves silently).
 | `-proc-cwd`    | `true`                           | resolve agent panes' real cwd via `/proc`    |
 | `-theme`       | `auto`                           | `auto` follows herdr's config, or force a theme name |
 | `-insecure-no-auth` | `false`                     | allow a bare (no-auth) non-loopback bind     |
-| `-dev`         | `false`                          | serve `index.html`/`static` from disk + livereload; fall forward to the next free web/ttyd port if busy (run from repo root) |
+| `-dev`         | `false`                          | serve `index.html`/`static` from disk + livereload; fall forward to the next free web port if busy (run from repo root) |
 
 ## Theming (follows herdr)
 
