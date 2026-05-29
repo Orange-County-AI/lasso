@@ -56,7 +56,8 @@
 
   /* right: file viewer */
   #right { flex: 1 1 40%; min-width: 280px; display: flex; flex-direction: column;
-    background: var(--panel); border-left: 1px solid var(--border); overflow: hidden; }
+    background: var(--panel); border-left: 1px solid var(--border); overflow: hidden;
+    position: relative; }  /* positioning context for the full-column file viewer */
 
   /* collapsed: hide the sidebar + splitter, let the terminal fill the width */
   #app.collapsed #right, #app.collapsed #splitter { display: none; }
@@ -171,8 +172,8 @@
 
   .empty { color: var(--muted); padding: 16px 12px; }
 
-  /* full-screen file viewer (opens over everything when a file is selected) */
-  #viewer { position: fixed; inset: 0; z-index: 60; display: none; flex-direction: column;
+  /* file viewer — fills the right column (over the tabs/list), terminal stays visible */
+  #viewer { position: absolute; inset: 0; z-index: 10; display: none; flex-direction: column;
     background: var(--bg); }
   #viewer.open { display: flex; }
   .vhdr { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 12px;
@@ -365,22 +366,22 @@
       </div>
       <iframe id="brframe" title="browser preview" referrerpolicy="no-referrer"></iframe>
     </section>
+
+    <div id="viewer">
+      <header class="vhdr">
+        <button class="vbtn" id="v-back" title="back to files (Esc)">← files</button>
+        <span class="vpath" id="v-path"></span>
+        <span class="vbadge" id="v-trunc" style="display:none">truncated</span>
+        <span class="vspace"></span>
+        <button class="vbtn" id="v-mode" style="display:none" title="toggle rendered / raw">Raw</button>
+        <button class="vbtn" id="v-wrap" style="display:none" title="toggle line wrap">Wrap</button>
+        <button class="vbtn" id="v-open" title="open raw file in a new tab">↗</button>
+        <button class="vbtn" id="v-close" title="close (Esc)">✕</button>
+      </header>
+      <div class="vbody" id="v-body"></div>
+    </div>
   </div>
   <div class="ctxmenu" id="ctxmenu"></div>
-</div>
-
-<div id="viewer">
-  <header class="vhdr">
-    <button class="vbtn" id="v-back" title="back to files (Esc)">← files</button>
-    <span class="vpath" id="v-path"></span>
-    <span class="vbadge" id="v-trunc" style="display:none">truncated</span>
-    <span class="vspace"></span>
-    <button class="vbtn" id="v-mode" style="display:none" title="toggle rendered / raw">Raw</button>
-    <button class="vbtn" id="v-wrap" style="display:none" title="toggle line wrap">Wrap</button>
-    <button class="vbtn" id="v-open" title="open raw file in a new tab">↗</button>
-    <button class="vbtn" id="v-close" title="close (Esc)">✕</button>
-  </header>
-  <div class="vbody" id="v-body"></div>
 </div>
 
 <script>

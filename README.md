@@ -137,9 +137,9 @@ since it terminates the terminal — and any agent running in it.
 
 ## File viewer
 
-Clicking a file in the **Files** tab opens it in a **full-screen viewer** that
-overlays the whole UI (← / ✕ / Esc to return to the list), modeled on Fulcrum's
-replace-view editor:
+Clicking a file in the **Files** tab opens it in a viewer that **fills the right
+column** — the terminal stays visible on the left (← / ✕ / Esc returns to the
+list), modeled on Fulcrum's replace-view editor:
 
 - **Markdown** (`.md`, `.markdown`, …) renders as rich formatted HTML via
   [marked](https://marked.js.org), sanitized with
