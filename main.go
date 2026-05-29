@@ -824,6 +824,25 @@ func herdrBinary() string {
 // the same on-disk binary.
 var updateMu sync.Mutex
 
+// outsideHerdrEnv returns the current environment minus the markers herdr uses
+// to detect it's running *inside* a session (HERDR_ENV is set to "1" in every
+// pane; HERDR_PANE_ID / HERDR_SESSION identify the pane/session). `herdr update`
+// refuses to self-update from inside a session — but the viewer supervises ttyd
+// from outside it, so we strip these in case the viewer itself was launched from
+// a herdr pane and inherited them.
+func outsideHerdrEnv() []string {
+	drop := map[string]bool{"HERDR_ENV": true, "HERDR_PANE_ID": true, "HERDR_SESSION": true}
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // serveVersion returns the installed herdr version (`herdr --version`) for the
 // Settings tab. Best effort — a non-zero exit with some output (e.g. a banner
 // on stderr) is still surfaced rather than failed.
@@ -857,7 +876,8 @@ func serveUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, herdrBinary(), "update")
-	cmd.Stdin = nil // no TTY/stdin: run non-interactively, never block on a prompt
+	cmd.Stdin = nil             // no TTY/stdin: run non-interactively, never block on a prompt
+	cmd.Env = outsideHerdrEnv() // see helper: makes update run as an out-of-session process
 	out, err := cmd.CombinedOutput()
 	resp := map[string]any{"ok": err == nil, "output": string(out)}
 	if err != nil {

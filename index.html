@@ -343,11 +343,6 @@
       </header>
       <div class="settings">
         <div class="scard">
-          <div class="stitle">Update herdr</div>
-          <div class="sdesc">Downloads and installs the latest herdr release, then restart
-            the session (close it in the terminal and reopen) to pick it up. Runs
-            <code>herdr update</code> from the viewer process — outside the herdr session,
-            where it's allowed.</div>
           <div class="srow">
             <button class="sbtn" id="set-update">Update herdr</button>
             <span class="smsg" id="set-status"></span>
@@ -748,7 +743,7 @@ function paneCard(p) {
   d.title = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join('\n');
   d.onclick = (e) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey) toggleSelect(p.pane_id);  // multi-select
-    else { clearSelection(); focusPane(p, d); }                          // plain click: focus
+    else { clearSelection(); focusPane(p, d); switchLeft('term'); }      // plain click: focus + show terminal
   };
   d.oncontextmenu = (e) => { e.preventDefault(); openCtxMenu(e, p); };
   return d;
@@ -1045,7 +1040,7 @@ $('#set-update').onclick = async () => {
     if (d.output) { out.style.display = ''; out.textContent = d.output; }
     if (r.ok && d.ok) {
       st.className = 'smsg good';
-      st.textContent = 'done — restart herdr (close it in the terminal, reopen) to use the new version';
+      st.textContent = 'updated — restart herdr to apply';
       loadVersion();
     } else {
       st.className = 'smsg bad';
