@@ -221,8 +221,7 @@ ones.
 ## Diff view (the Diff tab)
 
 The **Diff** tab shows the git diff of the repository containing the focused
-pane's `cwd` — it follows the active pane the same way the Files view does
-(toggle **follow active pane** off to pin it). The server resolves the repo
+pane's `cwd` — it always follows the active pane. The server resolves the repo
 root (`git rev-parse --show-toplevel`) from that directory and builds the diff
 the way Fulcrum's diff view does:
 
@@ -240,13 +239,14 @@ changes** (`git status --short`) whenever the working tree is dirty, so you can
 tell there's local work even while looking at the branch diff.
 
 The diff is parsed client-side into per-file blocks: each file is a collapsible
-header with `+adds`/`−dels` counts, and the lines are colored (added/removed/
-context/hunk) in the active theme. Toolbar toggles: **vs primary branch**,
-**ignore whitespace** (`-w`), **untracked** (synthesizes an all-added diff for
-untracked files, which `git diff` omits), **wrap**, plus **collapse all** and a
-**⟳** refresh. Large diffs are
-capped at 2 MiB (a `diff truncated` pill shows when that happens). The view
-refreshes on tab open, on a cwd change (when following), and on demand.
+header with `+adds`/`−dels` counts (**collapsed by default** — click a header or
+**expand all** to open them), and the lines are colored (added/removed/context/
+hunk) in the active theme. Toolbar toggles: **vs primary branch**, **untracked**
+(synthesizes an all-added diff for untracked files, which `git diff` omits),
+**ignore whitespace** (`-w`, on by default), **wrap** (on by default), plus
+**expand all** / **collapse all** and a **⟳** refresh. Large diffs are capped at
+2 MiB (a `diff truncated` pill shows when that happens). The view refreshes on
+tab open, on a cwd change, and on demand.
 
 ## Browser pane (the Browser tab)
 

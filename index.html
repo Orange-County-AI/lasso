@@ -394,19 +394,15 @@
           <span class="pill" id="diff-msg" style="display:none"></span>
           <button class="iconbtn" id="diff-refresh" title="refresh diff">⟳</button>
         </div>
-        <div class="cwd">
-          <span class="crumbs" id="diff-repo">—</span>
-          <label class="follow"><input type="checkbox" id="diff-follow" checked> follow active pane</label>
-        </div>
         <div class="row" style="margin-top:6px; gap:12px;">
           <label class="opt" id="diff-branchmode-label" title="compare the whole branch against the primary branch instead of the working tree"><input type="checkbox" id="diff-branchmode"> vs primary branch</label>
-          <label class="opt"><input type="checkbox" id="diff-ws"> ignore whitespace</label>
           <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
-          <label class="opt"><input type="checkbox" id="diff-wrap"> wrap</label>
-          <button class="selbtn" id="diff-collapse" style="margin-left:auto">collapse all</button>
+          <label class="opt"><input type="checkbox" id="diff-ws" checked> ignore whitespace</label>
+          <label class="opt"><input type="checkbox" id="diff-wrap" checked> wrap</label>
+          <button class="selbtn" id="diff-collapse" style="margin-left:auto">expand all</button>
         </div>
       </header>
-      <div id="difflist"><div class="empty">loading diff…</div></div>
+      <div id="difflist" class="wrap"><div class="empty">loading diff…</div></div>
     </section>
 
     <section class="view" id="view-browser">
@@ -450,7 +446,8 @@ let paneData = {};         // pane_id -> pane object (for context-menu actions)
 let selectedPanes = new Set(); // pane_ids selected for bulk actions
 let diffCwd = null;        // repo dir last loaded in the Diff view
 let diffCollapsed = new Set(); // file paths collapsed in the Diff view
-let diffAllCollapsed = false;
+let diffSeen = new Set();      // file paths rendered at least once (so we only auto-collapse new ones)
+let diffAllCollapsed = true;   // files start collapsed by default
 let browserInit = false;   // browser pane lazily initialized on first open
 let lastPanesRev = -1;     // server's pane-grid layout revision (workspace order/membership)
 let lastThemeRev = -1;     // server's theme revision (bumps when herdr's config.toml theme changes)
@@ -890,7 +887,6 @@ async function loadDiff() {
   const list = $('#difflist');
   if (!base) { list.innerHTML = '<div class="empty">no active directory yet</div>'; return; }
   diffCwd = base;
-  $('#diff-repo').textContent = tilde(base);
   const branchMode = $('#diff-branchmode').checked;
   const params = new URLSearchParams({ path: base });
   if (branchMode) params.set('mode', 'branch');
@@ -921,7 +917,6 @@ function setDirtyBadge(n) {
 
 function renderDiff(data) {
   $('#diff-branch').textContent = data.branch || '—';
-  $('#diff-repo').textContent = tilde(data.repo || diffCwd || '');
   setDirtyBadge(data.dirty || 0);
   const baseEl = $('#diff-base');
   if (data.isBranchDiff && data.baseBranch) { baseEl.style.display = ''; baseEl.textContent = 'vs ' + data.baseBranch; }
@@ -939,7 +934,12 @@ function renderDiff(data) {
     return;
   }
   list.innerHTML = '';
-  for (const f of files) list.appendChild(diffFileEl(f));
+  for (const f of files) {
+    // files start collapsed by default; only remember an explicit expand/collapse
+    // the user makes (so their choice survives a refresh, but new files fold up).
+    if (!diffSeen.has(f.path)) { diffSeen.add(f.path); diffCollapsed.add(f.path); }
+    list.appendChild(diffFileEl(f));
+  }
 }
 
 // minimal unified-diff parser: split into per-file blocks of typed lines
@@ -1115,7 +1115,7 @@ function applyActive(a) {
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
-    if ($('#diff-follow').checked) { diffCwd = a.cwd; if (curView === 'diff') loadDiff(); }
+    diffCwd = a.cwd; if (curView === 'diff') loadDiff();   // the Diff view always follows the active pane
   }
 
   // keep the pane grid's focus highlight in sync with herdr
@@ -1225,7 +1225,6 @@ document.getElementById('term').addEventListener('load', () => {
 wireTerminalIframe();   // in case the iframe already loaded before this ran
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
-$('#diff-follow').onchange = () => { if ($('#diff-follow').checked && activeCwd) { diffCwd = activeCwd; if (curView === 'diff') loadDiff(); } };
 
 // manual path entry + jump-to-active — always available, so a wrong/stale guess is never a dead end
 $('#path').addEventListener('keydown', e => {
