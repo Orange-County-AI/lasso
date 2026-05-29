@@ -30,6 +30,29 @@ Open <http://localhost:8090>.
 | `-herdr-sock`  | `~/.config/herdr/herdr.sock`     | herdr API socket                             |
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
 | `-poll`        | `2s`                             | fallback poll interval for cwd changes       |
+| `-proc-cwd`    | `true`                           | resolve agent panes' real cwd via `/proc`    |
+| `-insecure-no-auth` | `false`                     | allow a bare (no-auth) non-loopback bind     |
+
+## Active-pane cwd tracking (and the agent-pane caveat)
+
+herdr's `pane.cwd` is the **shell's** cwd (tracked via OSC 7). For plain shell
+panes that's live and correct. But once an **agent** (e.g. `claude`) becomes the
+pane's foreground process, the shell stops emitting OSC 7, so herdr's `cwd`
+freezes at the shell's launch dir (often `/home/<user>`) — the file viewer would
+then show the wrong directory.
+
+herdr exposes no pane→PID key, so for agent panes the server recovers the real
+cwd from `/proc`: it matches the herdr **tab label** against the agent process's
+command line (whose first non-flag arg is the task title) and reads that
+process's `/proc/<pid>/cwd`. The result is surfaced with a provenance badge:
+
+- **`cwd ✓ process`** — real cwd, resolved from the agent process.
+- **`⚠ shell cwd`** — agent pane the resolver couldn't pin (ambiguous/no match);
+  showing herdr's stale shell dir. Use the path box.
+- *(blank)* — a shell pane; herdr's cwd is trusted.
+
+The UI always offers a manual **path box** and a **⟳ active** button, so a stale
+guess is never a dead end. Disable the `/proc` step with `-proc-cwd=false`.
 
 ## Expose over Tailscale (plain HTTP, tailnet-only)
 

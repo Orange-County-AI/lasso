@@ -45,6 +45,19 @@
   .pill.agent.working { color: var(--warn); border-color: var(--warn); }
   .pill.agent.blocked { color: var(--bad); border-color: var(--bad); }
   .pill.agent.idle, .pill.agent.done { color: var(--good); border-color: var(--good); }
+  .pill.src { display: none; }
+  .pill.src.process { display: inline; color: var(--good); border-color: var(--good); }
+  .pill.src.stale { display: inline; color: var(--warn); border-color: var(--warn); }
+
+  .goto { margin-top: 6px; display: flex; gap: 6px; }
+  .goto input { flex: 1 1 auto; min-width: 0; background: #191724; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px;
+    font: inherit; font-size: 12px; }
+  .goto input:focus { outline: 0; border-color: var(--accent); }
+  .goto button { background: #21202e; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 11px; cursor: pointer;
+    white-space: nowrap; }
+  .goto button:hover { color: var(--accent); border-color: var(--accent); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
   .dot.live { background: var(--good); box-shadow: 0 0 6px var(--good); }
 
@@ -87,10 +100,15 @@
         <span class="pill ws" id="ws">workspace —</span>
         <span class="pill" id="tab">tab —</span>
         <span class="pill agent" id="agent" style="display:none"></span>
+        <span class="pill src" id="src"></span>
       </div>
       <div class="cwd">
         <span class="crumbs" id="crumbs">—</span>
         <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
+      </div>
+      <div class="goto">
+        <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
+        <button id="jump" title="jump to the active pane's directory">⟳ active</button>
       </div>
     </header>
     <div id="files"><div class="empty">waiting for herdr…</div></div>
@@ -122,6 +140,8 @@ async function loadDir(path) {
 
 function renderDir(data) {
   renderCrumbs(data.path);
+  const pin = $('#path');                                   // reflect location (unless user is typing)
+  if (pin && document.activeElement !== pin) pin.value = data.path;
   const f = $('#files');
   f.innerHTML = '';
   if (data.parent && data.parent !== data.path) {
@@ -200,6 +220,14 @@ function applyActive(a) {
     ag.textContent = (a.agent || 'agent') + (a.agent_status ? ' · ' + a.agent_status : '');
   } else ag.style.display = 'none';
 
+  // provenance of the cwd: process = real (resolved from the agent process),
+  // stale = agent pane we couldn't resolve (herdr's shell launch dir), shell = trustworthy
+  const src = $('#src');
+  src.className = 'pill src ' + (a.cwd_source || '');
+  if (a.cwd_source === 'process') { src.textContent = 'cwd ✓ process'; src.title = "real cwd, resolved from the agent process"; }
+  else if (a.cwd_source === 'stale') { src.textContent = '⚠ shell cwd'; src.title = "agent pane — herdr only knows the shell's launch dir; couldn't pin the agent's real cwd. Use the path box."; }
+  else { src.textContent = ''; }
+
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
@@ -213,6 +241,13 @@ function connectSSE() {
 }
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
+
+// manual path entry + jump-to-active — always available, so a wrong/stale guess is never a dead end
+$('#path').addEventListener('keydown', e => {
+  const v = e.target.value.trim();
+  if (e.key === 'Enter' && v) loadDir(v);
+});
+$('#jump').onclick = () => { if (activeCwd) loadDir(activeCwd); };
 
 // ---- splitter ----
 (function () {

@@ -46,6 +46,7 @@ var (
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
+	procCwd     = flag.Bool("proc-cwd", true, "for agent panes, recover the real cwd from the agent process via /proc (herdr reports the stale shell cwd)")
 )
 
 func defaultSock() string {
@@ -216,9 +217,11 @@ type workspace struct {
 type Active struct {
 	PaneID         string `json:"pane_id"`
 	Cwd            string `json:"cwd"`
+	CwdSource      string `json:"cwd_source"` // "shell" (herdr, reliable) | "process" (/proc, enriched) | "stale" (agent, couldn't resolve)
 	WorkspaceID    string `json:"workspace_id"`
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
+	TabLabel       string `json:"tab_label"`
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
 }
@@ -245,9 +248,10 @@ func fetchActive() (Active, error) {
 		return Active{}, fmt.Errorf("no focused pane")
 	}
 	a := Active{
-		PaneID: fp.PaneID, Cwd: fp.Cwd, WorkspaceID: fp.WorkspaceID,
+		PaneID: fp.PaneID, Cwd: fp.Cwd, CwdSource: "shell", WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: fp.Agent, AgentStatus: fp.AgentStatus,
 	}
+	a.TabLabel = tabLabel(fp.TabID)
 	// resolve workspace label (best effort)
 	if res, err := herdrCall("workspace.list", map[string]any{}); err == nil {
 		var wl struct {
@@ -261,7 +265,89 @@ func fetchActive() (Active, error) {
 			}
 		}
 	}
+	// herdr's `cwd` is the shell's launch dir — stale once an agent owns the
+	// pane. For agent panes, recover the real cwd from the agent process.
+	if fp.Agent != "" {
+		a.CwdSource = "stale"
+		if *procCwd {
+			if real, ok := agentRealCwd(fp.Agent, a.TabLabel); ok {
+				a.Cwd, a.CwdSource = real, "process"
+			}
+		}
+	}
 	return a, nil
+}
+
+// tabLabel fetches a tab's display label (best effort, "" on failure).
+func tabLabel(tabID string) string {
+	res, err := herdrCall("tab.get", map[string]any{"tab_id": tabID})
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Tab struct {
+			Label string `json:"label"`
+		} `json:"tab"`
+	}
+	if json.Unmarshal(res, &r) != nil {
+		return ""
+	}
+	return r.Tab.Label
+}
+
+// agentRealCwd recovers an agent pane's true working directory: it matches the
+// herdr tab label against the command line of a running agent process (whose
+// first non-flag arg is the task title) and returns that process's
+// /proc/<pid>/cwd. Returns ok=false if there's no unambiguous match, so the
+// caller can fall back to herdr's (stale) value rather than show a wrong dir.
+func agentRealCwd(agent, label string) (string, bool) {
+	label = strings.TrimRight(strings.TrimSpace(label), "….") // drop truncation ellipsis/dots
+	label = strings.TrimSpace(label)
+	if agent == "" || len(label) < 4 { // too-short labels invite false matches
+		return "", false
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return "", false
+	}
+	cwds := map[string]struct{}{}
+	for _, e := range entries {
+		name := e.Name()
+		if name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + name + "/cmdline")
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if !strings.Contains(argv[0], agent) { // e.g. ".../bin/claude"
+			continue
+		}
+		var title string
+		for _, arg := range argv[1:] {
+			if !strings.HasPrefix(arg, "-") {
+				title = arg
+				break
+			}
+		}
+		if title == "" || !strings.HasPrefix(title, label) {
+			continue
+		}
+		cwd, err := os.Readlink("/proc/" + name + "/cwd")
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(cwd); err == nil && fi.IsDir() {
+			cwds[cwd] = struct{}{}
+		}
+	}
+	if len(cwds) == 1 { // unambiguous
+		for c := range cwds {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 // subscribeFocus opens a long-lived connection subscribed to focus events and
