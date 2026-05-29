@@ -323,6 +323,15 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 		"-W",                           // writable
 		"-t", "disableLeaveAlert=true", // no confirm dialog inside the iframe
 		"-t", "fontSize=13",
+		// Keep a solid block cursor even when xterm thinks it's unfocused.
+		// We live in an iframe whose focus is handed over programmatically
+		// (contentWindow.focus()), which doesn't always flip xterm's internal
+		// focus flag — so without this it falls back to the default "outline"
+		// inactive cursor, which reads as a hollow box / bare underline (most
+		// glaring in TUIs like helix that rely on a block cursor). xterm has
+		// dedicated handling that keeps the glyph under an inactive block
+		// readable, so this stays legible.
+		"-t", "cursorInactiveStyle=block",
 		"-t", "theme=" + theme.xtermJSON(),
 	}
 	args = append(args, strings.Fields(command)...)
