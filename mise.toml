@@ -1,0 +1,23 @@
+# mise tasks for herdr-viewer.
+#   mise run dev    — serve on the tailscale interface with frontend hot reload
+#   mise run build  — build the binary
+#   mise run test   — run the Go tests
+
+[tasks.build]
+description = "Build the herdr-viewer binary"
+run = "go build -o herdr-viewer ."
+
+[tasks.test]
+description = "Run the Go test suite"
+run = "go test ./..."
+
+[tasks.dev]
+description = "Serve on the tailscale IP (:8090, no auth) with frontend hot reload"
+depends = ["build"]
+run = '''
+ip="$(tailscale ip -4 | head -n1)"
+[ -n "$ip" ] || { echo "no tailscale IPv4 found — is tailscale up? (tailscale status)" >&2; exit 1; }
+echo "herdr-viewer (dev) → http://$ip:8090  ·  frontend hot reload ON"
+echo "edit index.html and the browser refreshes; restart this task for Go changes."
+exec ./herdr-viewer -listen "$ip:8090" -insecure-no-auth -dev
+'''

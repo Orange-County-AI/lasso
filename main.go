@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -56,6 +57,7 @@ var (
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
 	procCwd     = flag.Bool("proc-cwd", true, "for agent panes, recover the real cwd from the agent process via /proc (herdr reports the stale shell cwd)")
+	devMode     = flag.Bool("dev", false, "dev mode: serve index.html + static from disk (live, not the embedded copy) and inject a livereload client that refreshes the browser when index.html changes — no rebuild needed for frontend edits. Run from the repo root.")
 	themeName   = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
 )
 
@@ -144,7 +146,13 @@ func main() {
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/close", serveClose)
 	mux.HandleFunc("/api/diff", serveDiff)
-	if sub, err := fs.Sub(staticAssets, "static"); err == nil {
+	if *devMode {
+		// Serve the vendored libs from disk too, so an edit there shows on refresh.
+		mux.Handle("/static/", http.StripPrefix("/static/", noCache(http.FileServer(http.Dir(devStaticDir)))))
+		mux.HandleFunc("/api/livereload", serveLiveReload)
+		go watchFrontend(ctx)
+		log.Printf("dev:      ON — serving index.html + %s/ from disk, livereload enabled", devStaticDir)
+	} else if sub, err := fs.Sub(staticAssets, "static"); err == nil {
 		mux.Handle("/static/", http.StripPrefix("/static/", cacheControl(http.FileServer(http.FS(sub)))))
 	} else {
 		log.Fatalf("static fs: %v", err)
@@ -1169,17 +1177,21 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // indexHTML is index.html with the active theme's CSS variables injected,
-// rendered once at startup.
+// rendered once at startup (the served copy in normal mode; -dev re-renders
+// from disk per request).
 var indexHTML []byte
 
-// renderIndex injects a <style> block (overriding the static :root fallback)
+// devIndexPath/devStaticDir are the on-disk frontend, served live in -dev mode.
+const (
+	devIndexPath = "index.html"
+	devStaticDir = "static"
+)
+
+// renderIndexFrom injects a <style> block (overriding the static :root fallback)
 // carrying the resolved theme's CSS variables, in place of the <!--THEME-->
-// marker (or appended before </head> if the marker is absent).
-func renderIndex() error {
-	b, err := staticFS.ReadFile("index.html")
-	if err != nil {
-		return err
-	}
+// marker (or appended before </head> if the marker is absent). In -dev mode it
+// also injects a livereload client just before </body>.
+func renderIndexFrom(b []byte) []byte {
 	style := "<style id=\"herdr-theme\">/* resolved from herdr theme: " + theme.Resolved +
 		" */\n  :root {\n" + theme.cssVars() + "  }</style>"
 	s := string(b)
@@ -1188,7 +1200,19 @@ func renderIndex() error {
 	} else {
 		s = strings.Replace(s, "</head>", style+"\n</head>", 1)
 	}
-	indexHTML = []byte(s)
+	if *devMode {
+		s = strings.Replace(s, "</body>", liveReloadSnippet+"\n</body>", 1)
+	}
+	return []byte(s)
+}
+
+// renderIndex renders the embedded index.html once at startup (normal mode).
+func renderIndex() error {
+	b, err := staticFS.ReadFile("index.html")
+	if err != nil {
+		return err
+	}
+	indexHTML = renderIndexFrom(b)
 	return nil
 }
 
@@ -1202,13 +1226,108 @@ func cacheControl(h http.Handler) http.Handler {
 	})
 }
 
+// noCache disables caching — used for disk-served assets in -dev mode so edits
+// always show on refresh.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		h.ServeHTTP(w, r)
+	})
+}
+
 func serveIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
+	body := indexHTML
+	if *devMode {
+		// Live: re-read from disk and re-render so frontend edits show on refresh.
+		if b, err := os.ReadFile(devIndexPath); err == nil {
+			body = renderIndexFrom(b)
+		} else {
+			log.Printf("dev: reading %s failed, serving embedded copy: %v", devIndexPath, err)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(body)
+}
+
+// ---------------------------------------------------------------------------
+// dev livereload: watch index.html on disk and refresh the browser on change.
+// Active only under -dev; serves no purpose (and isn't injected) otherwise.
+// ---------------------------------------------------------------------------
+
+// liveReloadSnippet is injected before </body> in -dev mode. It reloads the
+// page when /api/livereload signals a change. A full reload also reconnects the
+// terminal iframe (ttyd respawns the herdr client, which re-attaches to the
+// persistent server) — acceptable for a dev loop on frontend edits.
+const liveReloadSnippet = `<script>/* dev livereload */
+(function () {
+  var es = new EventSource('/api/livereload');
+  es.addEventListener('reload', function () { location.reload(); });
+})();</script>`
+
+// devReloadGen bumps whenever index.html changes on disk; livereload clients
+// poll it and reload when it moves.
+var devReloadGen int64
+
+// watchFrontend polls index.html's mtime and bumps devReloadGen on change.
+func watchFrontend(ctx context.Context) {
+	var last time.Time
+	t := time.NewTicker(300 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fi, err := os.Stat(devIndexPath)
+			if err != nil {
+				continue
+			}
+			if m := fi.ModTime(); m.After(last) {
+				if !last.IsZero() {
+					atomic.AddInt64(&devReloadGen, 1)
+					log.Printf("dev: %s changed → reloading browsers", devIndexPath)
+				}
+				last = m
+			}
+		}
+	}
+}
+
+// serveLiveReload is an SSE stream that emits a "reload" event when index.html
+// changes. Dev-only.
+func serveLiveReload(w http.ResponseWriter, r *http.Request) {
+	if !*devMode {
+		http.NotFound(w, r)
+		return
+	}
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "no flush", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	last := atomic.LoadInt64(&devReloadGen)
+	t := time.NewTicker(250 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-t.C:
+			if cur := atomic.LoadInt64(&devReloadGen); cur != last {
+				last = cur
+				fmt.Fprintf(w, "event: reload\ndata: %d\n\n", cur)
+				fl.Flush()
+			}
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

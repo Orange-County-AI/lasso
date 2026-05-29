@@ -33,6 +33,22 @@ go build -o herdr-viewer .
 
 Open <http://localhost:8090>.
 
+### Development (`mise run dev`)
+
+```bash
+mise run dev    # builds, then serves on http://<tailscale-ip>:8090 with frontend hot reload
+```
+
+`mise run dev` binds to the tailscale interface (`tailscale ip -4`, no auth — see
+[Expose over Tailscale](#expose-over-tailscale-plain-http-tailnet-only)) and runs
+with `-dev`: `index.html` and `static/` are served **from disk** (not the embedded
+copy), and a livereload client is injected — so editing `index.html` refreshes the
+browser automatically, **no rebuild**. A full reload also reconnects the terminal
+iframe (ttyd respawns the herdr client, which re-attaches to the persistent
+server). Go changes still need a restart (`Ctrl-C`, rerun the task). Also `mise run
+build` and `mise run test`. (`mise run dev` needs `:8090` free — stop any other
+instance bound to the tailscale IP first.)
+
 ## Flags
 
 | flag           | default                          | meaning                                      |
@@ -46,6 +62,7 @@ Open <http://localhost:8090>.
 | `-proc-cwd`    | `true`                           | resolve agent panes' real cwd via `/proc`    |
 | `-theme`       | `auto`                           | `auto` follows herdr's config, or force a theme name |
 | `-insecure-no-auth` | `false`                     | allow a bare (no-auth) non-loopback bind     |
+| `-dev`         | `false`                          | serve `index.html`/`static` from disk + livereload (run from repo root) |
 
 ## Theming (follows herdr)
 
