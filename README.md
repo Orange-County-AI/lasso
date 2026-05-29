@@ -4,7 +4,9 @@ A single Go binary that serves a two-column web UI:
 
 - **Left** — `herdr` running inside a `ttyd` terminal, embedded in an `<iframe>`.
 - **Right** — four tabs:
-  - **Files** — a file browser that follows herdr's **focused pane** `cwd` live.
+  - **Files** — a file browser that follows herdr's **focused pane** `cwd` live;
+    click a file to open it full-screen with rich markdown preview and syntax
+    highlighting (see [File viewer](#file-viewer)).
   - **Panes** — a grid of every herdr pane (click to focus it in the terminal,
     right-click to rename/close, ⌘/ctrl/shift-click to multi-select and bulk-close).
   - **Diff** — the git diff of the focused pane's repo (working tree, or the
@@ -133,6 +135,32 @@ every refresh, so a pane that vanished underneath you is closed cleanly (its
 stale id just comes back as a reported error). Close is **confirmed** first
 since it terminates the terminal — and any agent running in it.
 
+## File viewer
+
+Clicking a file in the **Files** tab opens it in a **full-screen viewer** that
+overlays the whole UI (← / ✕ / Esc to return to the list), modeled on Fulcrum's
+replace-view editor:
+
+- **Markdown** (`.md`, `.markdown`, …) renders as rich formatted HTML via
+  [marked](https://marked.js.org), sanitized with
+  [DOMPurify](https://github.com/cypress-io/dompurify) and themed to match herdr.
+  A **Raw** toggle flips between the rendered view and the highlighted source.
+- **Code / text** is syntax-highlighted with
+  [highlight.js](https://highlightjs.org): the language is picked from the file
+  extension (falling back to auto-detect), and the tokens are colored from the
+  active herdr theme's palette — not a fixed highlight.js stylesheet — so the code
+  matches everything else. A **Wrap** toggle controls line wrapping.
+- **Images** render inline (on a checkerboard so transparency is visible).
+- **↗** opens the raw file in a new browser tab.
+
+These three libraries are **vendored** under `static/` and embedded into the
+binary (`go:embed`), loaded lazily on the first file open — there's **no runtime
+CDN dependency**, which suits a tailnet-only tool. Files over 2 MiB aren't
+fetched (the server's preview cap); files over ~400 KiB are shown without
+highlighting (a badge notes this) so a huge file doesn't hang the tab. Markdown
+is sanitized because the viewer can open files from any repo, including untrusted
+ones.
+
 ## Diff view (the Diff tab)
 
 The **Diff** tab shows the git diff of the repository containing the focused
@@ -205,6 +233,7 @@ Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
 ## Endpoints
 
 - `GET /` — UI
+- `/static/*` — vendored viewer libs (marked, highlight.js, DOMPurify), embedded
 - `/terminal/*` — reverse proxy to ttyd
 - `GET /api/active` — current focused pane `{cwd, workspace, tab, agent, ...}`
 - `GET /api/events` — SSE stream of active-pane changes

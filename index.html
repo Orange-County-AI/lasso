@@ -169,15 +169,76 @@
   .entry .sz { margin-left: auto; color: var(--muted); font-size: 11px; }
   .ico { width: 14px; text-align: center; opacity: .8; }
 
-  #preview { flex: 0 0 auto; max-height: 45%; overflow: auto; border-top: 1px solid var(--border);
-    display: none; background: var(--bg); }
-  #preview.open { display: block; }
-  #preview .phdr { position: sticky; top: 0; background: var(--bg); padding: 6px 12px;
-    border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
-  #preview .phdr .x { margin-left: auto; cursor: pointer; color: var(--muted); }
-  #preview pre { margin: 0; padding: 10px 12px; white-space: pre; font-size: 12px; }
-  #preview img { max-width: 100%; display: block; padding: 10px; }
   .empty { color: var(--muted); padding: 16px 12px; }
+
+  /* full-screen file viewer (opens over everything when a file is selected) */
+  #viewer { position: fixed; inset: 0; z-index: 60; display: none; flex-direction: column;
+    background: var(--bg); }
+  #viewer.open { display: flex; }
+  .vhdr { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .vhdr .vpath { color: var(--fg); font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .vhdr .vspace { margin-left: auto; }
+  .vbadge { color: var(--warn); border: 1px solid var(--warn); border-radius: 10px;
+    padding: 1px 7px; font-size: 10px; white-space: nowrap; }
+  .vbtn { background: var(--hover); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .vbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .vbtn.on { color: var(--accent); border-color: var(--accent); }
+  .vbody { flex: 1 1 auto; overflow: auto; }
+  .vloading { color: var(--muted); padding: 20px; }
+  .vimg { padding: 16px; display: flex; align-items: flex-start; justify-content: center; }
+  .vimg img { max-width: 100%; object-fit: contain;
+    background: repeating-conic-gradient(#80808022 0% 25%, transparent 0% 50%) 50% / 22px 22px; }
+  pre.vcode { margin: 0; padding: 14px 16px; font-size: 12.5px; line-height: 1.5; tab-size: 4;
+    white-space: pre; }
+  pre.vcode.wrap { white-space: pre-wrap; word-break: break-word; }
+  pre.vcode code { background: none; padding: 0; border: 0; font: inherit; color: var(--fg); }
+
+  /* syntax highlighting — highlight.js tokens mapped to the active herdr theme */
+  .hljs { color: var(--fg); background: transparent; }
+  .hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-section, .hljs-built_in, .hljs-name, .hljs-tag,
+  .hljs-meta-keyword { color: var(--accent); }
+  .hljs-string, .hljs-regexp, .hljs-addition, .hljs-symbol, .hljs-bullet { color: var(--good); }
+  .hljs-number, .hljs-literal, .hljs-boolean { color: var(--warn); }
+  .hljs-title, .hljs-title.function_, .hljs-selector-id, .hljs-selector-class { color: var(--dir); }
+  .hljs-type, .hljs-title.class_, .hljs-class .hljs-title, .hljs-attribute, .hljs-params { color: var(--warn); }
+  .hljs-variable, .hljs-template-variable, .hljs-attr { color: var(--fg); }
+  .hljs-meta { color: var(--muted); }
+  .hljs-deletion { color: var(--bad); }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong { font-weight: 700; }
+  .hljs-link { color: var(--accent); text-decoration: underline; }
+
+  /* rendered markdown */
+  .md-body { padding: 20px 26px 48px; max-width: 900px; margin: 0 auto; color: var(--fg);
+    line-height: 1.65; font-size: 14px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .md-body :first-child { margin-top: 0; }
+  .md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5 { color: var(--fg);
+    line-height: 1.3; margin: 1.4em 0 .6em; }
+  .md-body h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .md-body h2 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: .25em; }
+  .md-body h3 { font-size: 1.2em; }
+  .md-body p { margin: .7em 0; }
+  .md-body a { color: var(--accent); text-decoration: none; }
+  .md-body a:hover { text-decoration: underline; }
+  .md-body code { font-family: ui-monospace, monospace; font-size: .88em; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 4px; padding: .1em .35em; }
+  .md-body pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 14px; overflow: auto; margin: .8em 0; }
+  .md-body pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5; }
+  .md-body ul, .md-body ol { padding-left: 1.6em; margin: .6em 0; }
+  .md-body li { margin: .25em 0; }
+  .md-body blockquote { margin: .8em 0; padding: .2em 1em; border-left: 3px solid var(--accent);
+    color: var(--muted); background: var(--accent-dim); }
+  .md-body table { border-collapse: collapse; margin: .8em 0; display: block; overflow: auto; }
+  .md-body th, .md-body td { border: 1px solid var(--border); padding: 6px 11px; }
+  .md-body th { background: var(--panel); }
+  .md-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.4em 0; }
+  .md-body img { max-width: 100%; }
 
   /* small inline option checkboxes (diff toolbar) */
   .opt { color: var(--muted); font-size: 11px; cursor: pointer; display: flex;
@@ -254,10 +315,6 @@
         </div>
       </header>
       <div id="files"><div class="empty">waiting for herdr…</div></div>
-      <div id="preview">
-        <div class="phdr"><span id="pname"></span><span class="x" onclick="closePreview()">✕ close</span></div>
-        <div id="pbody"></div>
-      </div>
     </section>
 
     <section class="view" id="view-panes">
@@ -310,6 +367,20 @@
     </section>
   </div>
   <div class="ctxmenu" id="ctxmenu"></div>
+</div>
+
+<div id="viewer">
+  <header class="vhdr">
+    <button class="vbtn" id="v-back" title="back to files (Esc)">← files</button>
+    <span class="vpath" id="v-path"></span>
+    <span class="vbadge" id="v-trunc" style="display:none">truncated</span>
+    <span class="vspace"></span>
+    <button class="vbtn" id="v-mode" style="display:none" title="toggle rendered / raw">Raw</button>
+    <button class="vbtn" id="v-wrap" style="display:none" title="toggle line wrap">Wrap</button>
+    <button class="vbtn" id="v-open" title="open raw file in a new tab">↗</button>
+    <button class="vbtn" id="v-close" title="close (Esc)">✕</button>
+  </header>
+  <div class="vbody" id="v-body"></div>
 </div>
 
 <script>
@@ -386,30 +457,153 @@ function renderCrumbs(path) {
   c.querySelectorAll('a').forEach(a => a.onclick = () => loadDir(a.dataset.p));
 }
 
-// ---- preview ----
-const IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+// ---- full-screen file viewer (markdown render + syntax highlighting) ----
+const IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+const MD_RE = /\.(md|markdown|mdown|mkd|mkdn|mdwn)$/i;
+const HILITE_CAP = 400 * 1024;   // don't syntax-highlight files larger than this
+let viewerFile = null;           // { path, text } currently shown
+let mdRendered = true;           // markdown view mode: rendered vs raw source
+
+// vendored libs (marked, highlight.js, DOMPurify) are loaded lazily on first
+// file open, so the initial page stays light.
+let libsPromise = null;
+function ensureLibs() {
+  if (!libsPromise) {
+    libsPromise = Promise.all([
+      loadScript('/static/marked.min.js'),
+      loadScript('/static/highlight.min.js'),
+      loadScript('/static/purify.min.js'),
+    ]).catch(e => { libsPromise = null; throw e; });
+  }
+  return libsPromise;
+}
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = () => res(); s.onerror = () => rej(new Error('failed to load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
 async function openFile(path, el) {
   if (selected) selected.classList.remove('sel');
   if (el) { el.classList.add('sel'); selected = el; }
-  $('#pname').textContent = path;
-  const body = $('#pbody');
-  $('#preview').classList.add('open');
-  if (IMG.test(path)) {
-    body.innerHTML = '<img src="/api/file?path=' + encodeURIComponent(path) + '">';
+  viewerFile = { path };
+  $('#v-path').textContent = path; $('#v-path').title = path;
+  $('#v-trunc').style.display = 'none';
+  $('#v-mode').style.display = 'none';
+  $('#v-wrap').style.display = 'none';
+  const body = $('#v-body');
+  body.className = 'vbody';
+  $('#viewer').classList.add('open');
+
+  if (IMG_RE.test(path)) {
+    body.innerHTML = '<div class="vimg"><img src="/api/file?path=' + encodeURIComponent(path) + '"></div>';
     return;
   }
-  body.innerHTML = '<pre>loading…</pre>';
+  body.innerHTML = '<div class="vloading">loading…</div>';
+  let txt;
   try {
     const r = await fetch('/api/file?path=' + encodeURIComponent(path));
-    const txt = await r.text();
-    const pre = document.createElement('pre');
-    pre.textContent = txt;
-    body.innerHTML = ''; body.appendChild(pre);
-  } catch (e) {
-    body.innerHTML = '<pre>error: ' + e.message + '</pre>';
+    if (!r.ok) throw new Error(await r.text());
+    txt = await r.text();
+  } catch (e) { body.innerHTML = '<div class="vloading">error: ' + escapeHtml(e.message) + '</div>'; return; }
+  if (viewerFile.path !== path) return;   // a newer open superseded this one
+  viewerFile.text = txt;
+
+  if (MD_RE.test(path)) {
+    mdRendered = true;
+    $('#v-mode').style.display = '';
+    await renderMarkdown();
+  } else {
+    $('#v-wrap').style.display = '';
+    await renderCodeInto($('#v-body'), txt, langForPath(path));
   }
 }
-function closePreview() { $('#preview').classList.remove('open'); if (selected) selected.classList.remove('sel'); }
+
+async function renderMarkdown() {
+  const body = $('#v-body');
+  if (!mdRendered) {                       // raw source — highlighted as markdown
+    $('#v-mode').textContent = 'Rendered';
+    body.className = 'vbody';
+    await renderCodeInto(body, viewerFile.text, 'markdown');
+    return;
+  }
+  $('#v-mode').textContent = 'Raw';
+  try { await ensureLibs(); } catch (e) {  // fall back to plain text if libs fail
+    body.className = 'vbody';
+    const pre = document.createElement('pre'); pre.className = 'vcode';
+    pre.appendChild(Object.assign(document.createElement('code'), { textContent: viewerFile.text }));
+    body.innerHTML = ''; body.appendChild(pre);
+    return;
+  }
+  const dirty = marked.parse(viewerFile.text, { gfm: true, breaks: false });
+  body.className = 'vbody md-body';
+  body.innerHTML = DOMPurify.sanitize(dirty);
+  body.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
+}
+
+async function renderCodeInto(container, text, lang) {
+  const pre = document.createElement('pre');
+  pre.className = 'vcode' + ($('#v-wrap').classList.contains('on') ? ' wrap' : '');
+  const code = document.createElement('code');
+  if (text.length > HILITE_CAP) {
+    code.textContent = text;               // too large to highlight responsively
+    $('#v-trunc').style.display = ''; $('#v-trunc').textContent = 'large file — no highlight';
+  } else {
+    try {
+      await ensureLibs();
+      if (lang && hljs.getLanguage(lang)) {
+        code.className = 'hljs language-' + lang;
+        code.innerHTML = hljs.highlight(text, { language: lang }).value;
+      } else {
+        const r = hljs.highlightAuto(text);
+        code.className = 'hljs'; code.innerHTML = r.value;
+      }
+    } catch (e) { code.textContent = text; }   // libs failed → plain text
+  }
+  pre.appendChild(code);
+  container.innerHTML = ''; container.appendChild(pre);
+}
+
+// file extension -> highlight.js language id (falls back to auto-detect)
+const LANGS = {
+  js:'javascript', mjs:'javascript', cjs:'javascript', jsx:'javascript',
+  ts:'typescript', tsx:'typescript', mts:'typescript', cts:'typescript',
+  go:'go', py:'python', pyw:'python', rb:'ruby', rs:'rust', java:'java', kt:'kotlin',
+  c:'c', h:'c', cpp:'cpp', cc:'cpp', cxx:'cpp', hpp:'cpp', hh:'cpp', cs:'csharp',
+  php:'php', swift:'swift', scala:'scala', sh:'bash', bash:'bash', zsh:'bash', fish:'bash',
+  ps1:'powershell', sql:'sql', json:'json', jsonc:'json', json5:'json',
+  yaml:'yaml', yml:'yaml', toml:'ini', ini:'ini', cfg:'ini', conf:'ini', properties:'ini',
+  xml:'xml', html:'xml', htm:'xml', svg:'xml', vue:'xml', css:'css', scss:'scss',
+  sass:'scss', less:'less', md:'markdown', markdown:'markdown', lua:'lua', pl:'perl',
+  r:'r', dart:'dart', ex:'elixir', exs:'elixir', erl:'erlang', hs:'haskell',
+  clj:'clojure', diff:'diff', patch:'diff', graphql:'graphql', gql:'graphql',
+  proto:'protobuf', tf:'ini', hcl:'ini', dockerfile:'dockerfile', makefile:'makefile', mk:'makefile',
+};
+function langForPath(p) {
+  const base = (p.split('/').pop() || '').toLowerCase();
+  if (base === 'dockerfile') return 'dockerfile';
+  if (base === 'makefile') return 'makefile';
+  const ext = base.includes('.') ? base.split('.').pop() : '';
+  return LANGS[ext] || '';
+}
+
+function closeViewer() {
+  $('#viewer').classList.remove('open');
+  if (selected) { selected.classList.remove('sel'); selected = null; }
+  viewerFile = null;
+}
+$('#v-back').onclick = closeViewer;
+$('#v-close').onclick = closeViewer;
+$('#v-mode').onclick = () => { mdRendered = !mdRendered; renderMarkdown(); };
+$('#v-wrap').onclick = () => {
+  const on = $('#v-wrap').classList.toggle('on');
+  const pre = $('#v-body').querySelector('pre.vcode');
+  if (pre) pre.classList.toggle('wrap', on);
+};
+$('#v-open').onclick = () => { if (viewerFile) window.open('/api/file?path=' + encodeURIComponent(viewerFile.path), '_blank'); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#viewer').classList.contains('open')) closeViewer(); });
 
 // ---- view tabs (Files / Panes) ----
 function switchView(name) {

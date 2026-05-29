@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -37,6 +38,13 @@ import (
 
 //go:embed index.html
 var staticFS embed.FS
+
+// staticAssets holds vendored client libraries (marked, highlight.js, DOMPurify)
+// served under /static/ — so the file viewer's markdown rendering and syntax
+// highlighting work without a build step or any runtime CDN dependency.
+//
+//go:embed static
+var staticAssets embed.FS
 
 var (
 	listenAddr  = flag.String("listen", "127.0.0.1:8090", "address for the web server (loopback by default — the terminal is a writable shell)")
@@ -113,6 +121,11 @@ func main() {
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/close", serveClose)
 	mux.HandleFunc("/api/diff", serveDiff)
+	if sub, err := fs.Sub(staticAssets, "static"); err == nil {
+		mux.Handle("/static/", http.StripPrefix("/static/", cacheControl(http.FileServer(http.FS(sub)))))
+	} else {
+		log.Fatalf("static fs: %v", err)
+	}
 	mux.HandleFunc("/", serveIndex)
 
 	handler := withAuth(mux, authUser, authPass, hasAuth)
@@ -1038,6 +1051,16 @@ func renderIndex() error {
 	}
 	indexHTML = []byte(s)
 	return nil
+}
+
+// cacheControl adds a modest cache lifetime to the vendored static assets (they
+// change only when the binary is rebuilt; a short max-age avoids re-fetching the
+// viewer libs on every page load).
+func cacheControl(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		h.ServeHTTP(w, r)
+	})
 }
 
 func serveIndex(w http.ResponseWriter, r *http.Request) {
