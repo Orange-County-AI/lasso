@@ -9,10 +9,11 @@ A single Go binary that serves a two-column web UI:
   - **Grid** — a grid of every herdr pane, grouped by workspace (click to focus it
     in the terminal, right-click to rename/close, ⌘/ctrl/shift-click to
     multi-select and bulk-close).
-  - **Settings** — update herdr: runs `herdr update` from the viewer process
-    (outside the herdr session, where it's allowed — it refuses to self-update from
-    *inside* a session) and shows the installed version.
-- **Right** — three tabs:
+  - **Settings** — shows the installed herdr version and the latest published
+    release. To update, use the **Terminal** tab (see Right) and run
+    `herdr update` there — a real TTY is required for herdr to hand running
+    sessions over to the new version live.
+- **Right** — four tabs:
   - **Diff** (default) — the git diff of the focused pane's repo, in the spirit
     of Fulcrum's diff view. Shows working-tree changes (empty when the tree is
     clean), or flip **vs primary branch** to diff the whole branch against the
@@ -23,6 +24,9 @@ A single Go binary that serves a two-column web UI:
     highlighting (see [File viewer](#file-viewer)).
   - **Browser** — an embedded `<iframe>` web preview with a URL bar, for viewing
     a dev server running in a pane.
+  - **Terminal** — a plain shell (`$SHELL`, falling back to `bash`/`sh`) in its
+    own `ttyd`, running *outside* any herdr session — the place to run
+    interactive commands like `herdr update`. Absent with `-spawn-ttyd=false`.
 
   The right column is collapsible via the `»` button in the tab strip (the terminal
   then fills the width); a floating `«` button brings it back. The state persists
@@ -58,12 +62,15 @@ iframe (ttyd respawns the herdr client, which re-attaches to the persistent
 server). Go changes still need a restart (`Ctrl-C`, rerun the task). Also `mise run
 build` and `mise run test`.
 
-Each instance spawns its **own** ttyd on a private unix socket
-(`$TMPDIR/herdr-viewer-ttyd-<pid>.sock`), not a shared TCP port — so a prod
-instance and any number of dev instances run side by side without ever colliding
-on a port or proxying onto each other's terminal. The socket is removed on exit.
-(The `-ttyd-port` flag only applies with `-spawn-ttyd=false`, where you point the
-proxy at an externally-run ttyd.)
+Each instance spawns its **own** ttyds on private unix sockets, not shared TCP
+ports — so a prod instance and any number of dev instances run side by side
+without ever colliding on a port or proxying onto each other's terminal. There
+are two: the herdr terminal (`$TMPDIR/herdr-viewer-ttyd-<pid>.sock`, proxied at
+`/terminal/`) and the out-of-herdr shell behind the Terminal tab
+(`$TMPDIR/herdr-viewer-shell-<pid>.sock`, proxied at `/shell/`). Both sockets are
+removed on exit. (The `-ttyd-port` flag only applies with `-spawn-ttyd=false`,
+where you point the proxy at an externally-run ttyd for the herdr terminal; the
+shell terminal is viewer-spawned only and is absent in that mode.)
 
 In `-dev` mode the requested **web** port **falls forward to the next free one**
 if it's taken (`:8090` → `:8091` → …), so a second instance just lands on the next
@@ -77,6 +84,7 @@ slot — watch the `UI: http://…` log line for the URL it actually bound. Outs
 | `-listen`      | `127.0.0.1:8090`                 | web server address                           |
 | `-ttyd-port`   | `7682`                           | loopback port for an external ttyd (only used with `-spawn-ttyd=false`; a spawned ttyd uses a private unix socket) |
 | `-term-cmd`    | `herdr`                          | command ttyd runs                            |
+| `-shell-cmd`   | _(empty)_                        | command for the Terminal tab's shell (empty = `$SHELL`, then `bash`, then `sh`) |
 | `-herdr-sock`  | `~/.config/herdr/herdr.sock`     | herdr API socket                             |
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
 | `-poll`        | `2s`                             | fallback poll interval for cwd changes       |
