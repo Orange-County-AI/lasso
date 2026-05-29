@@ -35,9 +35,26 @@
     transition: background .15s; }
   #splitter:hover, #splitter.dragging { background: var(--accent); }
 
+  /* small icon button (collapse toggle in the header) */
+  .iconbtn { margin-left: auto; background: var(--hover); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 7px; line-height: 18px;
+    font: inherit; font-size: 13px; cursor: pointer; }
+  .iconbtn:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* floating tab to bring the sidebar back; only shown while collapsed */
+  #reopen { position: fixed; top: 8px; right: 8px; z-index: 10; display: none;
+    background: var(--panel); color: var(--accent); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 9px; font: inherit; font-size: 14px; cursor: pointer;
+    box-shadow: 0 1px 6px rgba(0,0,0,.35); }
+  #reopen:hover { border-color: var(--accent); }
+  #app.collapsed #reopen { display: block; }
+
   /* right: file viewer */
   #right { flex: 1 1 40%; min-width: 280px; display: flex; flex-direction: column;
     background: var(--panel); border-left: 1px solid var(--border); overflow: hidden; }
+
+  /* collapsed: hide the sidebar + splitter, let the terminal fill the width */
+  #app.collapsed #right, #app.collapsed #splitter { display: none; }
 
   header.bar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -96,6 +113,7 @@
 <div id="app">
   <div id="left"><iframe id="term" src="/terminal/" title="herdr terminal"></iframe></div>
   <div id="splitter"></div>
+  <button id="reopen" title="show file viewer">«</button>
   <div id="right">
     <header class="bar">
       <div class="row">
@@ -104,6 +122,7 @@
         <span class="pill" id="tab">tab —</span>
         <span class="pill agent" id="agent" style="display:none"></span>
         <span class="pill src" id="src"></span>
+        <button class="iconbtn" id="collapse" title="collapse file viewer">»</button>
       </div>
       <div class="cwd">
         <span class="crumbs" id="crumbs">—</span>
@@ -263,6 +282,26 @@ $('#jump').onclick = () => { if (activeCwd) loadDir(activeCwd); };
     left.style.flex = '0 0 ' + pct + '%';
   };
   window.onmouseup = () => { drag = false; sp.classList.remove('dragging'); };
+})();
+
+// ---- collapsible sidebar ----
+(function () {
+  const app = $('#app'), left = $('#left');
+  let savedFlex = '';
+  function setCollapsed(on) {
+    if (on) {
+      savedFlex = left.style.flex;   // remember any dragged split width
+      left.style.flex = '';          // let CSS grow the terminal to fill
+      app.classList.add('collapsed');
+    } else {
+      app.classList.remove('collapsed');
+      if (savedFlex) left.style.flex = savedFlex;
+    }
+    try { localStorage.setItem('sidebarCollapsed', on ? '1' : '0'); } catch (e) {}
+  }
+  $('#collapse').onclick = () => setCollapsed(true);
+  $('#reopen').onclick = () => setCollapsed(false);
+  try { if (localStorage.getItem('sidebarCollapsed') === '1') setCollapsed(true); } catch (e) {}
 })();
 
 // ---- helpers ----

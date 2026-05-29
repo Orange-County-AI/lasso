@@ -4,6 +4,9 @@ A single Go binary that serves a two-column web UI:
 
 - **Left** — `herdr` running inside a `ttyd` terminal, embedded in an `<iframe>`.
 - **Right** — a file viewer that follows herdr's **focused pane** `cwd`, live.
+  Collapsible via the `»` button in its header (the terminal then fills the
+  width); a floating `«` button brings it back. The state persists in
+  `localStorage`. The divider between the panes is also drag-resizable.
 
 The Go server reverse-proxies the terminal (WebSocket upgrade handled natively
 by `httputil.ReverseProxy`) and talks to the herdr server over its
