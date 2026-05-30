@@ -86,15 +86,10 @@
   /* lead-in caption scoping the version pills to herdr (not this viewer) */
   .rowlabel { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin-right: 2px; }
 
-  /* pane grid */
+  /* pane grid — one flat grid; each card is tagged with its workspace */
   #panegrid { flex: 1 1 auto; overflow: auto; padding: 10px; display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px;
     align-content: start; align-items: start; }  /* start, not stretch — else cards collapse */
-  .pgroup { grid-column: 1 / -1; display: flex; gap: 6px; align-items: baseline;
-    color: var(--muted); font-size: 11px; margin-top: 8px; padding-bottom: 2px;
-    border-bottom: 1px solid var(--border); }
-  .pgroup:first-child { margin-top: 0; }
-  .pgroup .gw { color: var(--accent); }
   /* block layout (not flex) so the card grows to fit its content — a flex
      column grid item gets squashed to the auto row height and clips to nothing.
      no overflow:hidden on the card either: it collapses the card's content
@@ -110,6 +105,8 @@
   .pcard.selected::after { content: '✓'; position: absolute; top: 3px; right: 5px;
     color: var(--accent); font-size: 11px; line-height: 1; }
   .pcard.selected .ptitle { padding-right: 12px; }   /* keep the title clear of the badge */
+  .pcard .pws { color: var(--accent); font-size: 10px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; margin-bottom: 3px; }
   .pcard .ptitle { color: var(--fg); font-size: 12px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   .pcard .pmeta { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden;
@@ -298,12 +295,8 @@
     </section>
 
     <section class="view" id="lview-grid">
-      <header class="bar">
-        <div class="row">
-          <span class="pill ws" id="panes-count">panes —</span>
-          <span class="pill" id="panes-msg" style="display:none"></span>
-          <button class="iconbtn" id="panes-refresh" title="refresh pane list">⟳</button>
-        </div>
+      <header class="bar" id="gridbar" style="display:none">
+        <span class="pill" id="panes-msg" style="display:none"></span>
         <div class="row selbar" id="selbar" style="display:none">
           <span class="pill ws" id="selcount">0 selected</span>
           <button class="selbtn danger" id="sel-close">Close selected</button>
@@ -686,22 +679,13 @@ async function loadPanes() {
 
 function renderPanes(panes) {
   const g = $('#panegrid');
-  $('#panes-count').textContent = panes.length + ' pane' + (panes.length === 1 ? '' : 's');
   g.innerHTML = '';
   paneEls = {};
   paneData = {};
   const present = new Set(panes.map(p => p.pane_id));        // drop selections for vanished panes
   for (const id of [...selectedPanes]) if (!present.has(id)) selectedPanes.delete(id);
   if (!panes.length) { g.innerHTML = '<div class="empty">no panes</div>'; updateSelBar(); return; }
-  let curWs = null;
   for (const p of panes) {
-    if (p.workspace_id !== curWs) {                          // workspace group header
-      curWs = p.workspace_id;
-      const h = document.createElement('div');
-      h.className = 'pgroup';
-      h.innerHTML = '<span class="gw">' + escapeHtml(p.workspace_label || p.workspace_id) + '</span>';
-      g.appendChild(h);
-    }
     const card = paneCard(p);
     paneEls[p.pane_id] = card;
     paneData[p.pane_id] = p;
@@ -720,7 +704,9 @@ function paneCard(p) {
     agent = '<div class="pagent ' + (p.agent_status || '') + '">● ' +
       escapeHtml(p.agent || 'agent') + (p.agent_status ? ' · ' + escapeHtml(p.agent_status) : '') + '</div>';
   }
+  const ws = escapeHtml(p.workspace_label || p.workspace_id || '');
   d.innerHTML =
+    (ws ? '<div class="pws">' + ws + '</div>' : '') +
     '<div class="ptitle">' + escapeHtml(title) + '</div>' +
     (cwd ? '<div class="pmeta">' + escapeHtml(cwd) + '</div>' : '') + agent;
   d.title = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join('\n');
@@ -765,6 +751,13 @@ function updateSelBar() {
   const n = selectedPanes.size;
   $('#selbar').style.display = n ? '' : 'none';
   $('#selcount').textContent = n + ' selected';
+  syncGridBar();
+}
+// the grid header only exists for the selection bar / transient messages — show
+// it only when one of those is visible, so the default view is just the grid.
+function syncGridBar() {
+  const show = $('#selbar').style.display !== 'none' || $('#panes-msg').style.display !== 'none';
+  $('#gridbar').style.display = show ? '' : 'none';
 }
 $('#sel-clear').onclick = () => clearSelection();
 $('#sel-close').onclick = () => closePanes([...selectedPanes]);
@@ -842,14 +835,13 @@ async function closePanes(paneIds) {
 
 function showPaneMsg(msg, bad) {
   const el = $('#panes-msg');
-  if (!msg) { el.style.display = 'none'; return; }
+  if (!msg) { el.style.display = 'none'; syncGridBar(); return; }
   el.style.display = '';
   el.textContent = msg;
   el.style.color = bad ? 'var(--bad)' : 'var(--muted)';
   el.style.borderColor = bad ? 'var(--bad)' : 'var(--border)';
+  syncGridBar();
 }
-
-$('#panes-refresh').onclick = () => loadPanes();
 
 // ---- diff viewer ----
 let diffLoading = false;   // in-flight guard so the poll never stacks fetches on a slow repo
