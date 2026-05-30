@@ -146,30 +146,15 @@
   .pill { padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border);
     font-size: 11px; color: var(--muted); white-space: nowrap; }
   .pill.ws { color: var(--accent); border-color: var(--accent-dim); }
-  .pill.agent.working { color: var(--warn); border-color: var(--warn); }
-  .pill.agent.blocked { color: var(--bad); border-color: var(--bad); }
-  .pill.agent.idle, .pill.agent.done { color: var(--good); border-color: var(--good); }
-  .pill.src { display: none; }
-  .pill.src.process { display: inline; color: var(--good); border-color: var(--good); }
-  .pill.src.stale { display: inline; color: var(--warn); border-color: var(--warn); }
   .pill.good { color: var(--good); border-color: var(--good); }
   .pill.warn { color: var(--warn); border-color: var(--warn); }
 
-  .goto { margin-top: 6px; display: flex; gap: 6px; }
+  .goto { display: flex; align-items: center; gap: 10px; }
   .goto input { flex: 1 1 auto; min-width: 0; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px;
     font: inherit; font-size: 12px; }
   .goto input:focus { outline: 0; border-color: var(--accent); }
-  .goto button { background: var(--hover); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 11px; cursor: pointer;
-    white-space: nowrap; }
-  .goto button:hover { color: var(--accent); border-color: var(--accent); }
-
-  .cwd { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
-  .cwd .crumbs { color: var(--fg); word-break: break-all; }
-  .cwd .crumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
-  .cwd .crumbs a:hover { text-decoration: underline; }
-  label.follow { margin-left: auto; color: var(--muted); font-size: 11px; cursor: pointer;
+  label.follow { color: var(--muted); font-size: 11px; cursor: pointer;
     display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 
   #files { flex: 1 1 auto; overflow: auto; }
@@ -352,17 +337,9 @@
 
     <section class="view" id="view-files">
       <header class="bar">
-        <div class="row">
-          <span class="pill agent" id="agent" style="display:none"></span>
-          <span class="pill src" id="src"></span>
-        </div>
-        <div class="cwd">
-          <span class="crumbs" id="crumbs">—</span>
-          <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
-        </div>
         <div class="goto">
           <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
-          <button id="jump" title="jump to the active pane's directory">⟳ active</button>
+          <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
         </div>
       </header>
       <div id="files"><div class="empty">waiting for herdr…</div></div>
@@ -453,7 +430,6 @@ async function loadDir(path) {
 }
 
 function renderDir(data) {
-  renderCrumbs(data.path);
   const pin = $('#path');                                   // reflect location (unless user is typing)
   if (pin && document.activeElement !== pin) pin.value = data.path;
   const f = $('#files');
@@ -482,20 +458,6 @@ function entryEl(e, full, isUp) {
     else openFile(full, div);
   };
   return div;
-}
-
-function renderCrumbs(path) {
-  const parts = path.split('/').filter(Boolean);
-  let acc = '';
-  const sep = '<span style="color:var(--muted)">/</span>';
-  const frags = ['<a data-p="/">/</a>'];   // root; the first segment reuses this slash (no extra sep)
-  parts.forEach((p, i) => {
-    acc += '/' + p;
-    frags.push((i === 0 ? '' : sep) + '<a data-p="' + acc + '">' + escapeHtml(p) + '</a>');
-  });
-  const c = $('#crumbs');
-  c.innerHTML = frags.join('');
-  c.querySelectorAll('a').forEach(a => a.onclick = () => loadDir(a.dataset.p));
 }
 
 // ---- full-screen file viewer (markdown render + syntax highlighting) ----
@@ -1095,21 +1057,6 @@ function typeIntoShell(text, tries) {
 
 // ---- active pane (SSE) ----
 function applyActive(a) {
-  const ag = $('#agent');
-  if (a.agent || (a.agent_status && a.agent_status !== 'unknown')) {
-    ag.style.display = '';
-    ag.className = 'pill agent ' + (a.agent_status || '');
-    ag.textContent = (a.agent || 'agent') + (a.agent_status ? ' · ' + a.agent_status : '');
-  } else ag.style.display = 'none';
-
-  // provenance of the cwd: process = real (resolved from the agent process),
-  // stale = agent pane we couldn't resolve (herdr's shell launch dir), shell = trustworthy
-  const src = $('#src');
-  src.className = 'pill src ' + (a.cwd_source || '');
-  if (a.cwd_source === 'process') { src.textContent = 'cwd ✓ process'; src.title = "real cwd, resolved from the agent process"; }
-  else if (a.cwd_source === 'stale') { src.textContent = '⚠ shell cwd'; src.title = "agent pane — herdr only knows the shell's launch dir; couldn't pin the agent's real cwd. Use the path box."; }
-  else { src.textContent = ''; }
-
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
@@ -1297,12 +1244,12 @@ bootTermFrame('shellframe', false);
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
 
-// manual path entry + jump-to-active — always available, so a wrong/stale guess is never a dead end
+// manual path entry — editing the path means the user is steering, so stop following the active pane
+$('#path').addEventListener('input', () => { $('#follow').checked = false; });
 $('#path').addEventListener('keydown', e => {
   const v = e.target.value.trim();
   if (e.key === 'Enter' && v) loadDir(v);
 });
-$('#jump').onclick = () => { if (activeCwd) loadDir(activeCwd); };
 
 // ---- splitter ----
 (function () {
