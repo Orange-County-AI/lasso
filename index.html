@@ -86,15 +86,10 @@
   /* lead-in caption scoping the version pills to herdr (not this viewer) */
   .rowlabel { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin-right: 2px; }
 
-  /* pane grid */
+  /* pane grid — one flat grid; each card is tagged with its workspace */
   #panegrid { flex: 1 1 auto; overflow: auto; padding: 10px; display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px;
     align-content: start; align-items: start; }  /* start, not stretch — else cards collapse */
-  .pgroup { grid-column: 1 / -1; display: flex; gap: 6px; align-items: baseline;
-    color: var(--muted); font-size: 11px; margin-top: 8px; padding-bottom: 2px;
-    border-bottom: 1px solid var(--border); }
-  .pgroup:first-child { margin-top: 0; }
-  .pgroup .gw { color: var(--accent); }
   /* block layout (not flex) so the card grows to fit its content — a flex
      column grid item gets squashed to the auto row height and clips to nothing.
      no overflow:hidden on the card either: it collapses the card's content
@@ -110,6 +105,8 @@
   .pcard.selected::after { content: '✓'; position: absolute; top: 3px; right: 5px;
     color: var(--accent); font-size: 11px; line-height: 1; }
   .pcard.selected .ptitle { padding-right: 12px; }   /* keep the title clear of the badge */
+  .pcard .pws { color: var(--accent); font-size: 10px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; margin-bottom: 3px; }
   .pcard .ptitle { color: var(--fg); font-size: 12px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   .pcard .pmeta { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden;
@@ -148,6 +145,7 @@
   .pill.ws { color: var(--accent); border-color: var(--accent-dim); }
   .pill.path { white-space: normal; word-break: break-all; }
   .pill.good { color: var(--good); border-color: var(--good); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
   .pill.warn { color: var(--warn); border-color: var(--warn); }
 
   .goto { display: flex; align-items: center; gap: 10px; }
@@ -240,11 +238,6 @@
   .md-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.4em 0; }
   .md-body img { max-width: 100%; }
 
-  /* small inline option checkboxes (diff toolbar) */
-  .opt { color: var(--muted); font-size: 11px; cursor: pointer; display: flex;
-    align-items: center; gap: 4px; white-space: nowrap; }
-  .opt input { margin: 0; }
-
   /* diff viewer */
   #difflist { flex: 1 1 auto; overflow: auto; }
   .dfile { border-bottom: 1px solid var(--border); }
@@ -298,12 +291,8 @@
     </section>
 
     <section class="view" id="lview-grid">
-      <header class="bar">
-        <div class="row">
-          <span class="pill ws" id="panes-count">panes —</span>
-          <span class="pill" id="panes-msg" style="display:none"></span>
-          <button class="iconbtn" id="panes-refresh" title="refresh pane list">⟳</button>
-        </div>
+      <header class="bar" id="gridbar" style="display:none">
+        <span class="pill" id="panes-msg" style="display:none"></span>
         <div class="row selbar" id="selbar" style="display:none">
           <span class="pill ws" id="selcount">0 selected</span>
           <button class="selbtn danger" id="sel-close">Close selected</button>
@@ -350,14 +339,12 @@
       <header class="bar">
         <div class="row">
           <span class="pill ws path" id="diff-branch">—</span>
+          <span class="pill" id="diff-state" style="display:none"></span>
           <span class="pill" id="diff-base" style="display:none"></span>
+          <span class="pill" id="diff-files" style="display:none"></span>
+          <span class="pill good" id="diff-add" style="display:none"></span>
+          <span class="pill bad" id="diff-del" style="display:none"></span>
           <span class="pill" id="diff-msg" style="display:none"></span>
-        </div>
-        <div class="row" style="margin-top:6px; gap:12px;">
-          <label class="opt" id="diff-branchmode-label" title="compare the whole branch against the primary branch instead of the working tree"><input type="checkbox" id="diff-branchmode"> vs primary branch</label>
-          <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
-          <label class="opt"><input type="checkbox" id="diff-ws" checked> ignore whitespace</label>
-          <label class="opt"><input type="checkbox" id="diff-wrap" checked> wrap</label>
           <button class="selbtn" id="diff-collapse" style="margin-left:auto">expand all</button>
         </div>
       </header>
@@ -686,22 +673,13 @@ async function loadPanes() {
 
 function renderPanes(panes) {
   const g = $('#panegrid');
-  $('#panes-count').textContent = panes.length + ' pane' + (panes.length === 1 ? '' : 's');
   g.innerHTML = '';
   paneEls = {};
   paneData = {};
   const present = new Set(panes.map(p => p.pane_id));        // drop selections for vanished panes
   for (const id of [...selectedPanes]) if (!present.has(id)) selectedPanes.delete(id);
   if (!panes.length) { g.innerHTML = '<div class="empty">no panes</div>'; updateSelBar(); return; }
-  let curWs = null;
   for (const p of panes) {
-    if (p.workspace_id !== curWs) {                          // workspace group header
-      curWs = p.workspace_id;
-      const h = document.createElement('div');
-      h.className = 'pgroup';
-      h.innerHTML = '<span class="gw">' + escapeHtml(p.workspace_label || p.workspace_id) + '</span>';
-      g.appendChild(h);
-    }
     const card = paneCard(p);
     paneEls[p.pane_id] = card;
     paneData[p.pane_id] = p;
@@ -720,7 +698,9 @@ function paneCard(p) {
     agent = '<div class="pagent ' + (p.agent_status || '') + '">● ' +
       escapeHtml(p.agent || 'agent') + (p.agent_status ? ' · ' + escapeHtml(p.agent_status) : '') + '</div>';
   }
+  const ws = escapeHtml(p.workspace_label || p.workspace_id || '');
   d.innerHTML =
+    (ws ? '<div class="pws">' + ws + '</div>' : '') +
     '<div class="ptitle">' + escapeHtml(title) + '</div>' +
     (cwd ? '<div class="pmeta">' + escapeHtml(cwd) + '</div>' : '') + agent;
   d.title = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join('\n');
@@ -765,6 +745,13 @@ function updateSelBar() {
   const n = selectedPanes.size;
   $('#selbar').style.display = n ? '' : 'none';
   $('#selcount').textContent = n + ' selected';
+  syncGridBar();
+}
+// the grid header only exists for the selection bar / transient messages — show
+// it only when one of those is visible, so the default view is just the grid.
+function syncGridBar() {
+  const show = $('#selbar').style.display !== 'none' || $('#panes-msg').style.display !== 'none';
+  $('#gridbar').style.display = show ? '' : 'none';
 }
 $('#sel-clear').onclick = () => clearSelection();
 $('#sel-close').onclick = () => closePanes([...selectedPanes]);
@@ -842,14 +829,13 @@ async function closePanes(paneIds) {
 
 function showPaneMsg(msg, bad) {
   const el = $('#panes-msg');
-  if (!msg) { el.style.display = 'none'; return; }
+  if (!msg) { el.style.display = 'none'; syncGridBar(); return; }
   el.style.display = '';
   el.textContent = msg;
   el.style.color = bad ? 'var(--bad)' : 'var(--muted)';
   el.style.borderColor = bad ? 'var(--bad)' : 'var(--border)';
+  syncGridBar();
 }
-
-$('#panes-refresh').onclick = () => loadPanes();
 
 // ---- diff viewer ----
 let diffLoading = false;   // in-flight guard so the poll never stacks fetches on a slow repo
@@ -860,12 +846,10 @@ async function loadDiff() {
   if (diffLoading) return;
   diffLoading = true;
   diffCwd = base;
-  const branchMode = $('#diff-branchmode').checked;
-  const params = new URLSearchParams({ path: base });
-  if (branchMode) params.set('mode', 'branch');
-  if ($('#diff-ws').checked) params.set('ignoreWhitespace', 'true');
-  if (!branchMode && $('#diff-untracked').checked) params.set('includeUntracked', 'true');
-  $('#diff-untracked').disabled = branchMode;   // untracked files only exist in the working tree
+  // the diff pane has no toggles: it auto-picks the working tree when it's dirty
+  // and the branch-vs-primary comparison when it's clean, always ignoring
+  // whitespace and including untracked files.
+  const params = new URLSearchParams({ path: base, mode: 'auto', ignoreWhitespace: 'true', includeUntracked: 'true' });
   try {
     const r = await fetch('/api/diff?' + params);
     if (!r.ok) throw new Error(await r.text());
@@ -876,6 +860,10 @@ async function loadDiff() {
     $('#diff-branch').textContent = diffCwd || '—';
     $('#diff-base').style.display = 'none';
     setDirtyBadge(0);
+    $('#diff-state').style.display = 'none';
+    $('#diff-files').style.display = 'none';
+    $('#diff-add').style.display = 'none';
+    $('#diff-del').style.display = 'none';
     showDiffMsg('');
   } finally {
     diffLoading = false;
@@ -889,6 +877,25 @@ function setDirtyBadge(n) {
   const b = $('#diff-dirty');
   if (n > 0) { b.style.display = ''; b.textContent = n; b.title = n + ' uncommitted change' + (n === 1 ? '' : 's'); }
   else b.style.display = 'none';
+}
+
+// status pills next to the branch path:
+//   - state: amber "N dirty" when the working tree has uncommitted changes, foam
+//     "clean" when it doesn't — always shown, so the tree's state is unambiguous.
+//   - files: the changed-file count, only in branch mode (in working mode the
+//     "N dirty" state pill already carries it).
+//   - add/del: total additions/deletions for the shown diff (hidden when zero).
+function setDiffStats(dirty, n, add, del, isBranch) {
+  const sEl = $('#diff-state');
+  sEl.style.display = '';
+  if (dirty > 0) { sEl.className = 'pill warn'; sEl.textContent = dirty + ' dirty'; sEl.title = dirty + ' uncommitted change' + (dirty === 1 ? '' : 's'); }
+  else { sEl.className = 'pill good'; sEl.textContent = 'clean'; sEl.title = 'working tree clean'; }
+  const fEl = $('#diff-files');
+  if (isBranch && n > 0) { fEl.style.display = ''; fEl.textContent = n + (n === 1 ? ' file' : ' files'); }
+  else fEl.style.display = 'none';
+  const aEl = $('#diff-add'), dEl = $('#diff-del');
+  if (add > 0) { aEl.style.display = ''; aEl.textContent = '+' + add; } else aEl.style.display = 'none';
+  if (del > 0) { dEl.style.display = ''; dEl.textContent = '−' + del; } else dEl.style.display = 'none';
 }
 
 function renderDiff(data) {
@@ -907,10 +914,12 @@ function renderDiff(data) {
   showDiffMsg(data.truncated ? 'diff truncated (large)' : '', data.truncated);
 
   const files = parseDiff(data.diff || '');
+  let add = 0, del = 0;
+  for (const f of files) { add += f.add; del += f.del; }
+  setDiffStats(data.dirty || 0, files.length, add, del, data.isBranchDiff);
   const list = $('#difflist');
   if (!files.length) {
-    const branchMode = $('#diff-branchmode').checked;
-    const msg = branchMode
+    const msg = data.isBranchDiff
       ? (data.baseBranch ? 'no changes vs ' + escapeHtml(data.baseBranch) : 'no base branch to compare against')
       : 'no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '');
     list.innerHTML = '<div class="empty">' + msg + '</div>';
@@ -989,10 +998,6 @@ function showDiffMsg(msg, bad) {
   el.style.borderColor = bad ? 'var(--warn)' : 'var(--border)';
 }
 
-$('#diff-branchmode').onchange = () => loadDiff();
-$('#diff-ws').onchange = () => loadDiff();
-$('#diff-untracked').onchange = () => loadDiff();
-$('#diff-wrap').onchange = () => $('#difflist').classList.toggle('wrap', $('#diff-wrap').checked);
 $('#diff-collapse').onclick = () => {
   diffAllCollapsed = !diffAllCollapsed;
   $('#diff-collapse').textContent = diffAllCollapsed ? 'expand all' : 'collapse all';

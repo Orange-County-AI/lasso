@@ -59,7 +59,6 @@ var (
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
-	procCwd     = flag.Bool("proc-cwd", true, "for agent panes, recover the real cwd from the agent process via /proc (herdr reports the stale shell cwd)")
 	devMode     = flag.Bool("dev", false, "dev mode: serve index.html + static from disk (live, not the embedded copy) and inject a livereload client that refreshes the browser when index.html changes — no rebuild needed for frontend edits. Run from the repo root.")
 	themeName   = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
 )
@@ -407,13 +406,66 @@ func herdrCall(method string, params any) (json.RawMessage, error) {
 }
 
 type pane struct {
-	PaneID      string `json:"pane_id"`
-	WorkspaceID string `json:"workspace_id"`
-	TabID       string `json:"tab_id"`
-	Cwd         string `json:"cwd"`
-	Focused     bool   `json:"focused"`
-	Agent       string `json:"agent"`
-	AgentStatus string `json:"agent_status"`
+	PaneID        string `json:"pane_id"`
+	WorkspaceID   string `json:"workspace_id"`
+	TabID         string `json:"tab_id"`
+	Cwd           string `json:"cwd"`            // the shell's launch dir — stale once an agent owns the pane
+	ForegroundCwd string `json:"foreground_cwd"` // herdr-resolved cwd of the pane's foreground process; "" when unresolvable
+	Focused       bool   `json:"focused"`
+	Agent         string `json:"agent"`
+	AgentStatus   string `json:"agent_status"`
+}
+
+// paneCwd is the best cwd for a pane: herdr's foreground_cwd (the live cwd of
+// whatever process owns the terminal — accurate even when an agent has cd'd
+// away from the shell's launch dir) when herdr can resolve it, else the shell
+// launch cwd. herdr added foreground_cwd in 0.6.5, superseding the viewer's old
+// /proc-scraping workaround.
+func paneCwd(p pane) string {
+	if p.ForegroundCwd != "" {
+		return p.ForegroundCwd
+	}
+	return p.Cwd
+}
+
+// pane.list is by far herdr's most expensive method: as of 0.6.5 it resolves
+// every pane's foreground_cwd via the TTY + /proc on each call (~0.5–1.5s for a
+// busy session), versus <10ms for workspace.list/tab.list. The viewer hits it
+// from both the active-pane refresh loop and the grid endpoint, so a short
+// single-flight cache keeps a focus event, the periodic poll, and a grid fetch
+// that land close together from each paying the full cost. Event-driven
+// refreshes invalidate the cache first (see invalidatePaneList) so focus
+// changes never serve a stale snapshot.
+var paneListCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	data json.RawMessage
+	err  error
+}
+
+const paneListTTL = 400 * time.Millisecond
+
+func herdrPaneList() (json.RawMessage, error) {
+	paneListCache.mu.Lock()
+	defer paneListCache.mu.Unlock()
+	if !paneListCache.at.IsZero() && time.Since(paneListCache.at) < paneListTTL {
+		return paneListCache.data, paneListCache.err
+	}
+	// The call is made under the lock on purpose: concurrent callers coalesce
+	// onto this one in-flight request rather than firing parallel slow calls.
+	data, err := herdrCall("pane.list", map[string]any{})
+	paneListCache.at = time.Now()
+	paneListCache.data, paneListCache.err = data, err
+	return data, err
+}
+
+// invalidatePaneList drops the cached pane.list so the next call refetches. The
+// hub calls this on every herdr event: an event means pane state changed, so a
+// cached snapshot would be stale.
+func invalidatePaneList() {
+	paneListCache.mu.Lock()
+	paneListCache.at = time.Time{}
+	paneListCache.mu.Unlock()
 }
 
 type workspace struct {
@@ -427,7 +479,7 @@ type workspace struct {
 type Active struct {
 	PaneID         string `json:"pane_id"`
 	Cwd            string `json:"cwd"`
-	CwdSource      string `json:"cwd_source"` // "shell" (herdr, reliable) | "process" (/proc, enriched) | "stale" (agent, couldn't resolve)
+	CwdSource      string `json:"cwd_source"` // "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell launch cwd, used when foreground is unresolvable)
 	WorkspaceID    string `json:"workspace_id"`
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
@@ -444,7 +496,7 @@ type Active struct {
 // the caller can detect when the pane grid needs to re-render — e.g. after a
 // workspace is reordered in herdr — independently of focus changes.
 func fetchActive() (Active, string, error) {
-	res, err := herdrCall("pane.list", map[string]any{})
+	res, err := herdrPaneList()
 	if err != nil {
 		return Active{}, "", err
 	}
@@ -476,23 +528,16 @@ func fetchActive() (Active, string, error) {
 		return Active{}, sig, fmt.Errorf("no focused pane")
 	}
 	a := Active{
-		PaneID: fp.PaneID, Cwd: fp.Cwd, CwdSource: "shell", WorkspaceID: fp.WorkspaceID,
+		PaneID: fp.PaneID, Cwd: paneCwd(*fp), CwdSource: "shell", WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: fp.Agent, AgentStatus: fp.AgentStatus,
+	}
+	if fp.ForegroundCwd != "" {
+		a.CwdSource = "foreground"
 	}
 	a.TabLabel = tabLabel(fp.TabID)
 	for _, w := range wl.Workspaces {
 		if w.WorkspaceID == a.WorkspaceID {
 			a.WorkspaceLabel = w.Label
-		}
-	}
-	// herdr's `cwd` is the shell's launch dir — stale once an agent owns the
-	// pane. For agent panes, recover the real cwd from the agent process.
-	if fp.Agent != "" {
-		a.CwdSource = "stale"
-		if *procCwd {
-			if real, ok := agentRealCwd(fp.Agent, a.TabLabel); ok {
-				a.Cwd, a.CwdSource = real, "process"
-			}
 		}
 	}
 	return a, sig, nil
@@ -537,61 +582,6 @@ func tabLabel(tabID string) string {
 	return r.Tab.Label
 }
 
-// agentRealCwd recovers an agent pane's true working directory: it matches the
-// herdr tab label against the command line of a running agent process (whose
-// first non-flag arg is the task title) and returns that process's
-// /proc/<pid>/cwd. Returns ok=false if there's no unambiguous match, so the
-// caller can fall back to herdr's (stale) value rather than show a wrong dir.
-func agentRealCwd(agent, label string) (string, bool) {
-	label = strings.TrimRight(strings.TrimSpace(label), "….") // drop truncation ellipsis/dots
-	label = strings.TrimSpace(label)
-	if agent == "" || len(label) < 4 { // too-short labels invite false matches
-		return "", false
-	}
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return "", false
-	}
-	cwds := map[string]struct{}{}
-	for _, e := range entries {
-		name := e.Name()
-		if name[0] < '0' || name[0] > '9' {
-			continue
-		}
-		raw, err := os.ReadFile("/proc/" + name + "/cmdline")
-		if err != nil || len(raw) == 0 {
-			continue
-		}
-		argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
-		if !strings.Contains(argv[0], agent) { // e.g. ".../bin/claude"
-			continue
-		}
-		var title string
-		for _, arg := range argv[1:] {
-			if !strings.HasPrefix(arg, "-") {
-				title = arg
-				break
-			}
-		}
-		if title == "" || !strings.HasPrefix(title, label) {
-			continue
-		}
-		cwd, err := os.Readlink("/proc/" + name + "/cwd")
-		if err != nil {
-			continue
-		}
-		if fi, err := os.Stat(cwd); err == nil && fi.IsDir() {
-			cwds[cwd] = struct{}{}
-		}
-	}
-	if len(cwds) == 1 { // unambiguous
-		for c := range cwds {
-			return c, true
-		}
-	}
-	return "", false
-}
-
 // ---------------------------------------------------------------------------
 // pane grid: list every pane + focus one
 // ---------------------------------------------------------------------------
@@ -613,7 +603,7 @@ type paneView struct {
 // fetchPanes lists every pane and joins in workspace/tab labels, returning them
 // grouped by workspace (then tab) order — the order herdr itself shows.
 func fetchPanes() ([]paneView, error) {
-	res, err := herdrCall("pane.list", map[string]any{})
+	res, err := herdrPaneList()
 	if err != nil {
 		return nil, err
 	}
@@ -667,7 +657,7 @@ func fetchPanes() ([]paneView, error) {
 			WorkspaceLabel: wss[p.WorkspaceID].label,
 			TabID:          p.TabID,
 			TabLabel:       tabs[p.TabID].label,
-			Cwd:            p.Cwd,
+			Cwd:            paneCwd(p),
 			Agent:          p.Agent,
 			AgentStatus:    p.AgentStatus,
 			Focused:        p.Focused,
@@ -1067,12 +1057,14 @@ func gitOut(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// serveDiff returns the git diff for the repo containing ?path=. Two modes,
-// selected by ?mode=:
-//   - working (default): show working-tree changes (unstaged + staged) only —
-//     empty when the tree is clean.
+// serveDiff returns the git diff for the repo containing ?path=. Modes selected
+// by ?mode=:
+//   - auto (default): working-tree changes when the tree is dirty, otherwise the
+//     branch-vs-base comparison — so the pane always shows something useful.
+//   - working: show working-tree changes (unstaged + staged) only — empty when
+//     the tree is clean.
 //   - branch: diff merge-base(base, HEAD)..HEAD, ignoring the working tree —
-//     useful for seeing the whole branch vs the primary branch.
+//     the whole branch vs the primary branch.
 //
 // Optional ?ignoreWhitespace, ?includeUntracked, and ?baseBranch (override the
 // branch the comparison runs against) toggles. The response always reports the
@@ -1113,12 +1105,16 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	isBranchDiff := false
 	baseBranch := ""
 
-	if mode == "branch" {
+	// auto (default): show the working tree when it's dirty, otherwise fall back to
+	// the branch-vs-base comparison. ?mode=branch / ?mode=working force one or the
+	// other.
+	showBranch := mode == "branch" || (mode != "working" && dirty == 0)
+
+	if showBranch {
 		combined, baseBranch, files, _ = branchVsBase(root, branch, baseOverride, wsArg)
 		isBranchDiff = true
 	} else {
-		// Working-tree changes only — when the tree is clean this is empty. The
-		// branch-vs-base comparison is opt-in via mode=branch, not a fallback.
+		// Working-tree changes only (unstaged + staged), optionally with untracked.
 		combined = mustGit(root, wsArg("diff", "--cached")...) + mustGit(root, wsArg("diff")...)
 		files = status
 		if includeUntracked {
@@ -1418,18 +1414,35 @@ func (h *hub) run(ctx context.Context) {
 		}
 	}
 
+	// Coalesce bursts of herdr events: rapid focus changes (cycling tabs, moving
+	// panes) each emit an event, and refresh() is dominated by the ~1s pane.list.
+	// A short debounce collapses a burst into a single refresh once it settles —
+	// capturing the final state — instead of running one slow refresh per event.
 	refresh()
+	var debounce <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-trigger:
+			invalidatePaneList() // an event means pane state changed; refetch, don't serve the cache
+			if debounce == nil {
+				debounce = time.After(eventDebounce)
+			}
+		case <-debounce:
+			debounce = nil
 			refresh()
 		case <-ticker.C:
 			refresh()
 		}
 	}
 }
+
+// eventDebounce is the quiet window the hub waits after the first herdr event
+// before refreshing, so a burst of events yields one refresh of the settled
+// state. Kept well under human perception so a single focus change still feels
+// immediate.
+const eventDebounce = 120 * time.Millisecond
 
 func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
