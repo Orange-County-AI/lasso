@@ -146,6 +146,7 @@
   .pill { padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border);
     font-size: 11px; color: var(--muted); white-space: nowrap; }
   .pill.ws { color: var(--accent); border-color: var(--accent-dim); }
+  .pill.path { white-space: normal; word-break: break-all; }
   .pill.good { color: var(--good); border-color: var(--good); }
   .pill.warn { color: var(--warn); border-color: var(--warn); }
 
@@ -348,10 +349,9 @@
     <section class="view active" id="view-diff">
       <header class="bar">
         <div class="row">
-          <span class="pill ws" id="diff-branch">—</span>
+          <span class="pill ws path" id="diff-branch">—</span>
           <span class="pill" id="diff-base" style="display:none"></span>
           <span class="pill" id="diff-msg" style="display:none"></span>
-          <button class="iconbtn" id="diff-refresh" title="refresh diff">⟳</button>
         </div>
         <div class="row" style="margin-top:6px; gap:12px;">
           <label class="opt" id="diff-branchmode-label" title="compare the whole branch against the primary branch instead of the working tree"><input type="checkbox" id="diff-branchmode"> vs primary branch</label>
@@ -852,7 +852,7 @@ async function loadDiff() {
     renderDiff(await r.json());
   } catch (e) {
     list.innerHTML = '<div class="empty">cannot diff this directory<br>' + escapeHtml(e.message) + '</div>';
-    $('#diff-branch').textContent = '—';
+    $('#diff-branch').textContent = diffCwd || '—';
     $('#diff-base').style.display = 'none';
     setDirtyBadge(0);
     showDiffMsg('');
@@ -869,7 +869,9 @@ function setDirtyBadge(n) {
 }
 
 function renderDiff(data) {
-  $('#diff-branch').textContent = data.branch || '—';
+  const b = $('#diff-branch');
+  b.textContent = diffCwd || '—';
+  b.title = data.branch ? 'branch: ' + data.branch : '';
   setDirtyBadge(data.dirty || 0);
   const baseEl = $('#diff-base');
   if (data.isBranchDiff && data.baseBranch) { baseEl.style.display = ''; baseEl.textContent = 'vs ' + data.baseBranch; }
@@ -959,7 +961,6 @@ function showDiffMsg(msg, bad) {
   el.style.borderColor = bad ? 'var(--warn)' : 'var(--border)';
 }
 
-$('#diff-refresh').onclick = () => loadDiff();
 $('#diff-branchmode').onchange = () => loadDiff();
 $('#diff-ws').onchange = () => loadDiff();
 $('#diff-untracked').onchange = () => loadDiff();
