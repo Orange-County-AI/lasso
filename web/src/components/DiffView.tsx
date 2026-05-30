@@ -147,7 +147,7 @@ export function DiffView({
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto h-7"
+            className="ml-auto h-6 rounded-full px-3 text-[11px] font-normal"
             onClick={toggleAll}
           >
             {allCollapsed ? "expand all" : "collapse all"}
