@@ -55,6 +55,7 @@ var (
 	ttydPort    = flag.Int("ttyd-port", 7682, "loopback port ttyd listens on")
 	herdrSock   = flag.String("herdr-sock", defaultSock(), "path to the herdr unix socket")
 	termCmd     = flag.String("term-cmd", "herdr", "command ttyd runs in the terminal")
+	shellCmd    = flag.String("shell-cmd", "", "command for the out-of-herdr Terminal tab (right column); empty = $SHELL, then bash, then sh")
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
@@ -120,9 +121,15 @@ func main() {
 	// external-ttyd path (-spawn-ttyd=false) still uses *ttydPort. We resolve the
 	// path here (the proxy needs it) but defer the spawn until after the web port
 	// binds, so a startup failure doesn't leak an orphaned ttyd.
-	var ttydSock string
+	// Two ttyds when we spawn our own: the herdr terminal (/terminal/) and a plain
+	// out-of-herdr shell (/shell/, the right-column Terminal tab). Each gets its
+	// own private unix socket keyed by PID. The external-ttyd path
+	// (-spawn-ttyd=false) only wires the herdr terminal to *ttydPort; the shell
+	// terminal is viewer-spawned only, so it's absent in that mode.
+	var ttydSock, shellSock string
 	if *spawnTtyd {
 		ttydSock = filepath.Join(os.TempDir(), fmt.Sprintf("herdr-viewer-ttyd-%d.sock", os.Getpid()))
+		shellSock = filepath.Join(os.TempDir(), fmt.Sprintf("herdr-viewer-shell-%d.sock", os.Getpid()))
 	}
 
 	hub := newHub()
@@ -131,15 +138,7 @@ func main() {
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
-		// Reach our own ttyd over its private unix socket. The host in the URL is
-		// a placeholder — the custom DialContext ignores it and dials the socket.
-		proxy = httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "ttyd.sock"})
-		proxy.Transport = &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", ttydSock)
-			},
-		}
+		proxy = unixSocketProxy(ttydSock)
 	} else {
 		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
 		proxy = httputil.NewSingleHostReverseProxy(target)
@@ -147,6 +146,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/terminal/", proxy)
+	if *spawnTtyd {
+		mux.Handle("/shell/", unixSocketProxy(shellSock))
+	}
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, hub.snapshot())
 	})
@@ -169,6 +171,7 @@ func main() {
 	mux.HandleFunc("/api/close", serveClose)
 	mux.HandleFunc("/api/paste-image", servePasteImage)
 	mux.HandleFunc("/api/diff", serveDiff)
+	mux.HandleFunc("/api/version", serveVersion)
 	if *devMode {
 		// Serve the vendored libs from disk too, so an edit there shows on refresh.
 		mux.Handle("/static/", http.StripPrefix("/static/", noCache(http.FileServer(http.Dir(devStaticDir)))))
@@ -200,8 +203,14 @@ func main() {
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
 	// log.Fatalf bypasses).
 	if *spawnTtyd {
-		if err := startTtyd(ctx, ttydSock); err != nil {
+		// herdr terminal: inherits the viewer's env (so it joins the same session).
+		if err := startTtyd(ctx, ttydSock, "/terminal", *termCmd, nil); err != nil {
 			log.Fatalf("ttyd: %v", err)
+		}
+		// Out-of-herdr shell: env stripped of the HERDR_* session markers so
+		// commands like `herdr update` (which refuse to run inside a session) work.
+		if err := startTtyd(ctx, shellSock, "/shell", shellCommand(), outsideHerdrEnv()); err != nil {
+			log.Fatalf("ttyd (shell): %v", err)
 		}
 	}
 
@@ -224,6 +233,7 @@ func main() {
 	log.Printf("UI:       http://%s", *listenAddr)
 	if *spawnTtyd {
 		log.Printf("terminal: ttyd@%s running %q (proxied at /terminal/)", ttydSock, *termCmd)
+		log.Printf("shell:    ttyd@%s running %q (proxied at /shell/)", shellSock, shellCommand())
 	} else {
 		log.Printf("terminal: ttyd@127.0.0.1:%d (external) running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	}
@@ -263,7 +273,40 @@ func listenWithFallback(addr string, dev bool, span int) (net.Listener, string, 
 // ttyd child process
 // ---------------------------------------------------------------------------
 
-func startTtyd(ctx context.Context, sock string) error {
+// unixSocketProxy reverse-proxies to one of our ttyds over its private unix
+// socket. The host in the URL is a placeholder — the custom DialContext ignores
+// it and dials the socket. WS upgrades work because the hijacked conn is dialed
+// through the same Transport.
+func unixSocketProxy(sock string) *httputil.ReverseProxy {
+	p := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "ttyd.sock"})
+	p.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sock)
+		},
+	}
+	return p
+}
+
+// shellCommand resolves the command for the out-of-herdr Terminal tab:
+// -shell-cmd if set, else $SHELL, else bash, else sh.
+func shellCommand() string {
+	if c := strings.TrimSpace(*shellCmd); c != "" {
+		return c
+	}
+	if sh := os.Getenv("SHELL"); sh != "" {
+		return sh
+	}
+	if _, err := exec.LookPath("bash"); err == nil {
+		return "bash"
+	}
+	return "sh"
+}
+
+// startTtyd spawns one ttyd serving command under basePath on its own private
+// unix socket. env, if non-nil, overrides the child environment (the shell
+// terminal passes outsideHerdrEnv); nil inherits the viewer's env.
+func startTtyd(ctx context.Context, sock, basePath, command string, env []string) error {
 	// Bind a private unix socket (one per instance) rather than a shared TCP
 	// port, so concurrent prod/dev instances can't collide or cross-connect.
 	// Clear any stale socket left by a crashed prior run with this PID so ttyd
@@ -276,20 +319,30 @@ func startTtyd(ctx context.Context, sock string) error {
 	// which forwards it to xterm.js in the browser.
 	args := []string{
 		"-i", sock, // private unix socket (ttyd accepts a socket path here)
-		"-b", "/terminal", // base path so assets/ws resolve under the proxy
+		"-b", basePath, // base path so assets/ws resolve under the proxy
 		"-W",                           // writable
 		"-t", "disableLeaveAlert=true", // no confirm dialog inside the iframe
 		"-t", "fontSize=13",
+		// Keep a solid block cursor even when xterm thinks it's unfocused.
+		// We live in an iframe whose focus is handed over programmatically
+		// (contentWindow.focus()), which doesn't always flip xterm's internal
+		// focus flag — so without this it falls back to the default "outline"
+		// inactive cursor, which reads as a hollow box / bare underline (most
+		// glaring in TUIs like helix that rely on a block cursor). xterm has
+		// dedicated handling that keeps the glyph under an inactive block
+		// readable, so this stays legible.
+		"-t", "cursorInactiveStyle=block",
 		"-t", "theme=" + theme.xtermJSON(),
 	}
-	args = append(args, strings.Fields(*termCmd)...)
+	args = append(args, strings.Fields(command)...)
 	cmd := exec.Command("ttyd", args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	cmd.Env = env                                         // nil → inherit
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own process group so we can kill cleanly
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	log.Printf("spawned ttyd (pid %d)", cmd.Process.Pid)
+	log.Printf("spawned ttyd (pid %d) %q @ %s", cmd.Process.Pid, command, basePath)
 	go func() {
 		<-ctx.Done()
 		// kill the whole process group (ttyd + the shell it spawned)
@@ -383,6 +436,7 @@ type Active struct {
 	AgentStatus    string `json:"agent_status"`
 	PanesRev       int    `json:"panes_rev"` // bumps when the pane-grid layout (workspace order/membership) changes
 	ThemeRev       int    `json:"theme_rev"` // bumps when herdr's resolved theme changes (config.toml edited)
+	HerdrUp        bool   `json:"herdr_up"`  // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
@@ -804,6 +858,117 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// herdr self-update (Settings tab)
+// ---------------------------------------------------------------------------
+
+// herdrBinary is the herdr executable to invoke for out-of-session commands
+// (version, update) — the first field of -term-cmd (what ttyd runs in the
+// terminal), defaulting to "herdr".
+func herdrBinary() string {
+	if f := strings.Fields(*termCmd); len(f) > 0 {
+		return f[0]
+	}
+	return "herdr"
+}
+
+// outsideHerdrEnv returns the current environment minus the markers herdr uses
+// to detect it's running *inside* a session (HERDR_ENV is set to "1" in every
+// pane; HERDR_PANE_ID / HERDR_SESSION identify the pane/session). The viewer's
+// out-of-herdr shell terminal runs with this env so commands that refuse to run
+// inside a session — notably `herdr update` — work there, even when the viewer
+// itself was launched from a herdr pane and inherited the markers.
+func outsideHerdrEnv() []string {
+	drop := map[string]bool{"HERDR_ENV": true, "HERDR_PANE_ID": true, "HERDR_SESSION": true}
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// herdrReleasesAPI is the GitHub "latest release" endpoint for herdr; the
+// Settings tab compares the installed version against its tag.
+const herdrReleasesAPI = "https://api.github.com/repos/ogulcancelik/herdr/releases/latest"
+
+// versionInfo is the /api/version payload: the installed herdr version, the
+// latest published release, and whether they differ. LatestError carries why the
+// GitHub lookup failed (offline, rate-limited) so the installed version still
+// shows even when the latest can't be fetched.
+type versionInfo struct {
+	Installed       string `json:"installed"`
+	Latest          string `json:"latest,omitempty"`
+	UpdateAvailable bool   `json:"update_available"`
+	LatestError     string `json:"latest_error,omitempty"`
+}
+
+// serveVersion reports the installed herdr version and the latest GitHub release
+// for the Settings tab. The installed lookup is local and reliable; the latest
+// lookup is best effort (network) and never fails the response.
+func serveVersion(w http.ResponseWriter, r *http.Request) {
+	vi := versionInfo{Installed: installedHerdrVersion()}
+	if latest, err := latestHerdrVersion(r.Context()); err != nil {
+		vi.LatestError = err.Error()
+	} else {
+		vi.Latest = latest
+		vi.UpdateAvailable = vi.Installed != "" && latest != "" && vi.Installed != latest
+	}
+	writeJSON(w, vi)
+}
+
+// installedHerdrVersion runs `herdr --version` and returns just the version
+// number (herdr prints "herdr 0.6.4"; we strip the name), "" if it can't be run.
+func installedHerdrVersion() string {
+	out, err := exec.Command(herdrBinary(), "--version").CombinedOutput()
+	v := strings.TrimSpace(string(out))
+	if err != nil && v == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(v, "herdr"))
+}
+
+// latestHerdrVersion fetches the latest release tag from GitHub, normalized to
+// match `herdr --version` (the tag is "v0.6.5"; we drop the leading "v").
+func latestHerdrVersion(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, herdrReleasesAPI, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "herdr-viewer")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github: %s", resp.Status)
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
+		return "", err
+	}
+	tag := strings.TrimSpace(rel.TagName)
+	if tag == "" {
+		return "", fmt.Errorf("github: empty tag_name")
+	}
+	return strings.TrimPrefix(tag, "v"), nil
+}
+
+// Updating herdr happens in the out-of-herdr shell terminal (the right-column
+// Terminal tab) by running `herdr update` interactively — that path has a real
+// TTY, so it can prompt about (and perform) live handoff of running sessions,
+// which a non-interactive server-side invocation cannot. The viewer only
+// surfaces the installed/latest versions (see serveVersion).
+
+// ---------------------------------------------------------------------------
 // image paste: save a clipboard image to disk so the agent in the focused
 // pane (e.g. Claude Code) can read it by path
 // ---------------------------------------------------------------------------
@@ -902,11 +1067,16 @@ func gitOut(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// serveDiff returns the git diff for the repo containing ?path=. It mirrors the
-// way Fulcrum builds its diff view: show working-tree changes (unstaged +
-// staged), and if the tree is clean fall back to the branch diff against the
-// merge-base with the default branch (so a finished feature branch still shows
-// its work). Optional ?ignoreWhitespace and ?includeUntracked toggles.
+// serveDiff returns the git diff for the repo containing ?path=. Two modes,
+// selected by ?mode=:
+//   - working (default): show working-tree changes (unstaged + staged) only —
+//     empty when the tree is clean.
+//   - branch: diff merge-base(base, HEAD)..HEAD, ignoring the working tree —
+//     useful for seeing the whole branch vs the primary branch.
+//
+// Optional ?ignoreWhitespace, ?includeUntracked, and ?baseBranch (override the
+// branch the comparison runs against) toggles. The response always reports the
+// working-tree dirty-file count so the UI can flag dirtiness in either mode.
 func serveDiff(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Clean(r.URL.Query().Get("path"))
 	if !filepath.IsAbs(path) {
@@ -915,6 +1085,8 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	ignoreWS := r.URL.Query().Get("ignoreWhitespace") == "true"
 	includeUntracked := r.URL.Query().Get("includeUntracked") == "true"
+	mode := r.URL.Query().Get("mode")               // "branch" forces the base-branch comparison
+	baseOverride := r.URL.Query().Get("baseBranch") // optional explicit base for the comparison
 
 	root, err := gitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -931,28 +1103,28 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 		return base
 	}
 
-	staged := mustGit(root, wsArg("diff", "--cached")...)
-	unstaged := mustGit(root, wsArg("diff")...)
-	files := parseStatus(mustGit(root, "status", "--short"))
+	// working-tree status is always read so the dirty count is accurate even when
+	// showing the branch diff.
+	status := parseStatus(mustGit(root, "status", "--short"))
+	dirty := len(status)
 
-	combined := staged + unstaged
-	if includeUntracked {
-		for _, f := range files {
-			if f.Status == "untracked" {
-				combined += untrackedDiff(root, f.Path)
-			}
-		}
-	}
-
+	var combined string
+	var files []diffFile
 	isBranchDiff := false
 	baseBranch := ""
-	if strings.TrimSpace(combined) == "" {
-		if baseBranch = defaultBranch(root, branch); baseBranch != "" {
-			if mb := strings.TrimSpace(mustGit(root, "merge-base", baseBranch, "HEAD")); mb != "" {
-				if bd := mustGit(root, append(wsArg("diff"), mb+"..HEAD")...); strings.TrimSpace(bd) != "" {
-					combined = bd
-					isBranchDiff = true
-					files = parseNameStatus(mustGit(root, "diff", "--name-status", mb+"..HEAD"))
+
+	if mode == "branch" {
+		combined, baseBranch, files, _ = branchVsBase(root, branch, baseOverride, wsArg)
+		isBranchDiff = true
+	} else {
+		// Working-tree changes only — when the tree is clean this is empty. The
+		// branch-vs-base comparison is opt-in via mode=branch, not a fallback.
+		combined = mustGit(root, wsArg("diff", "--cached")...) + mustGit(root, wsArg("diff")...)
+		files = status
+		if includeUntracked {
+			for _, f := range files {
+				if f.Status == "untracked" {
+					combined += untrackedDiff(root, f.Path)
 				}
 			}
 		}
@@ -967,7 +1139,30 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"repo": root, "branch": branch, "diff": combined, "files": files,
 		"isBranchDiff": isBranchDiff, "baseBranch": baseBranch, "truncated": truncated,
+		"dirty": dirty,
 	})
+}
+
+// branchVsBase returns the diff of merge-base(base, HEAD)..HEAD, the resolved
+// base branch, and the changed-file list. base defaults to the repo's primary
+// branch (override wins when non-empty). ok is false when no base branch exists
+// (e.g. HEAD already is the primary branch) — baseBranch is still returned so
+// the caller can report what it tried to compare against.
+func branchVsBase(root, current, override string, wsArg func(...string) []string) (diff, baseBranch string, files []diffFile, ok bool) {
+	baseBranch = override
+	if baseBranch == "" {
+		baseBranch = defaultBranch(root, current)
+	}
+	if baseBranch == "" {
+		return "", "", nil, false
+	}
+	mb := strings.TrimSpace(mustGit(root, "merge-base", baseBranch, "HEAD"))
+	if mb == "" {
+		return "", baseBranch, nil, false
+	}
+	diff = mustGit(root, append(wsArg("diff"), mb+"..HEAD")...)
+	files = parseNameStatus(mustGit(root, "diff", "--name-status", mb+"..HEAD"))
+	return diff, baseBranch, files, true
 }
 
 // mustGit runs a git command, returning "" on error (the diff endpoint treats
@@ -1146,7 +1341,9 @@ type hub struct {
 // newHub seeds the hub's theme with the one resolved at startup, so the first
 // poll only bumps themeRev if config.toml has actually changed since boot.
 func newHub() *hub {
-	return &hub{curTheme: theme, clients: map[chan Active]struct{}{}}
+	// Seed HerdrUp=true so a browser connecting before the first poll doesn't
+	// briefly flash the "herdr disconnected" state.
+	return &hub{cur: Active{HerdrUp: true}, curTheme: theme, clients: map[chan Active]struct{}{}}
 }
 
 func (h *hub) snapshot() Active             { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
@@ -1161,8 +1358,29 @@ func (h *hub) run(ctx context.Context) {
 	refresh := func() {
 		a, sig, err := fetchActive()
 		if err != nil {
+			// herdr's socket is unreachable (closed in the terminal). Keep the
+			// last-known state but mark it stale, and notify clients once on the
+			// up->down transition so the sidebar can show a disconnected cue.
+			h.mu.Lock()
+			var down Active
+			var clients []chan Active
+			if h.cur.HerdrUp {
+				h.cur.HerdrUp = false
+				down = h.cur
+				for c := range h.clients {
+					clients = append(clients, c)
+				}
+			}
+			h.mu.Unlock()
+			for _, c := range clients {
+				select {
+				case c <- down:
+				default:
+				}
+			}
 			return
 		}
+		a.HerdrUp = true
 		// Re-resolve herdr's theme from config.toml every tick (cheap file read +
 		// parse) so an edit to [theme].name is picked up live. Done outside the
 		// lock to avoid holding it during I/O.

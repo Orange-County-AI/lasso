@@ -2,19 +2,34 @@
 
 A single Go binary that serves a two-column web UI:
 
-- **Left** — `herdr` running inside a `ttyd` terminal, embedded in an `<iframe>`.
+- **Left** — three tabs:
+  - **herdr** (default) — `herdr` running inside a `ttyd` terminal, embedded in an
+    `<iframe>`. The iframe stays mounted when you switch tabs, so the terminal
+    never reconnects.
+  - **Grid** — a grid of every herdr pane, grouped by workspace (click to focus it
+    in the terminal, right-click to rename/close, ⌘/ctrl/shift-click to
+    multi-select and bulk-close).
+  - **Settings** — shows the installed herdr version and the latest published
+    release. When an update is available, the **latest** pill is clickable: it
+    opens the **Terminal** tab (see Right) with `herdr update` pre-typed (not
+    submitted) so you can run it there — a real TTY is required for herdr to
+    hand running sessions over to the new version live.
 - **Right** — four tabs:
+  - **Diff** (default) — the git diff of the focused pane's repo, in the spirit
+    of Fulcrum's diff view. Shows working-tree changes (empty when the tree is
+    clean), or flip **vs primary branch** to diff the whole branch against the
+    primary branch instead. The tab carries an amber badge with the count of
+    uncommitted changes whenever the tree is dirty.
   - **Files** — a file browser that follows herdr's **focused pane** `cwd` live;
     click a file to open it full-screen with rich markdown preview and syntax
     highlighting (see [File viewer](#file-viewer)).
-  - **Panes** — a grid of every herdr pane (click to focus it in the terminal,
-    right-click to rename/close, ⌘/ctrl/shift-click to multi-select and bulk-close).
-  - **Diff** — the git diff of the focused pane's repo (working tree, or the
-    branch-vs-base diff when the tree is clean), in the spirit of Fulcrum's diff view.
   - **Browser** — an embedded `<iframe>` web preview with a URL bar, for viewing
     a dev server running in a pane.
+  - **Terminal** — a plain shell (`$SHELL`, falling back to `bash`/`sh`) in its
+    own `ttyd`, running *outside* any herdr session — the place to run
+    interactive commands like `herdr update`. Absent with `-spawn-ttyd=false`.
 
-  The column is collapsible via the `»` button in the tab strip (the terminal
+  The right column is collapsible via the `»` button in the tab strip (the terminal
   then fills the width); a floating `«` button brings it back. The state persists
   in `localStorage`. The divider between the panes is also drag-resizable.
 
@@ -48,12 +63,15 @@ iframe (ttyd respawns the herdr client, which re-attaches to the persistent
 server). Go changes still need a restart (`Ctrl-C`, rerun the task). Also `mise run
 build` and `mise run test`.
 
-Each instance spawns its **own** ttyd on a private unix socket
-(`$TMPDIR/herdr-viewer-ttyd-<pid>.sock`), not a shared TCP port — so a prod
-instance and any number of dev instances run side by side without ever colliding
-on a port or proxying onto each other's terminal. The socket is removed on exit.
-(The `-ttyd-port` flag only applies with `-spawn-ttyd=false`, where you point the
-proxy at an externally-run ttyd.)
+Each instance spawns its **own** ttyds on private unix sockets, not shared TCP
+ports — so a prod instance and any number of dev instances run side by side
+without ever colliding on a port or proxying onto each other's terminal. There
+are two: the herdr terminal (`$TMPDIR/herdr-viewer-ttyd-<pid>.sock`, proxied at
+`/terminal/`) and the out-of-herdr shell behind the Terminal tab
+(`$TMPDIR/herdr-viewer-shell-<pid>.sock`, proxied at `/shell/`). Both sockets are
+removed on exit. (The `-ttyd-port` flag only applies with `-spawn-ttyd=false`,
+where you point the proxy at an externally-run ttyd for the herdr terminal; the
+shell terminal is viewer-spawned only and is absent in that mode.)
 
 In `-dev` mode the requested **web** port **falls forward to the next free one**
 if it's taken (`:8090` → `:8091` → …), so a second instance just lands on the next
@@ -67,6 +85,7 @@ slot — watch the `UI: http://…` log line for the URL it actually bound. Outs
 | `-listen`      | `127.0.0.1:8090`                 | web server address                           |
 | `-ttyd-port`   | `7682`                           | loopback port for an external ttyd (only used with `-spawn-ttyd=false`; a spawned ttyd uses a private unix socket) |
 | `-term-cmd`    | `herdr`                          | command ttyd runs                            |
+| `-shell-cmd`   | _(empty)_                        | command for the Terminal tab's shell (empty = `$SHELL`, then `bash`, then `sh`) |
 | `-herdr-sock`  | `~/.config/herdr/herdr.sock`     | herdr API socket                             |
 | `-spawn-ttyd`  | `true`                           | spawn/supervise ttyd as a child              |
 | `-poll`        | `2s`                             | fallback poll interval for cwd changes       |
@@ -211,23 +230,32 @@ ones.
 ## Diff view (the Diff tab)
 
 The **Diff** tab shows the git diff of the repository containing the focused
-pane's `cwd` — it follows the active pane the same way the Files view does
-(toggle **follow active pane** off to pin it). The server resolves the repo
+pane's `cwd` — it always follows the active pane. The server resolves the repo
 root (`git rev-parse --show-toplevel`) from that directory and builds the diff
 the way Fulcrum's diff view does:
 
-- **Working-tree changes** — staged (`git diff --cached`) + unstaged (`git diff`).
-- **Branch-vs-base fallback** — if the tree is clean, it diffs against the
-  merge-base with the default branch (`origin/HEAD`, else `main`/`master`), so a
-  finished feature branch still shows its work. A `vs <base>` pill marks this mode.
+- **Working-tree changes** (default) — staged (`git diff --cached`) + unstaged
+  (`git diff`) only. When the tree is clean there's nothing to show (no files,
+  no diff) — the branch comparison is opt-in, not a fallback.
+- **vs primary branch** — toggle it on to diff the whole branch
+  (`merge-base(base, HEAD)..HEAD`) against the primary branch (`origin/HEAD`,
+  else `main`/`master`) — useful for reviewing everything a branch adds over
+  `main`. A `vs <base>` pill marks this mode and **untracked** is disabled (there
+  are no working-tree files to add).
+
+Either way, the tab shows an amber badge with the **count of uncommitted
+changes** (`git status --short`) whenever the working tree is dirty, so you can
+tell there's local work even while looking at the branch diff.
 
 The diff is parsed client-side into per-file blocks: each file is a collapsible
-header with `+adds`/`−dels` counts, and the lines are colored (added/removed/
-context/hunk) in the active theme. Toolbar toggles: **ignore whitespace** (`-w`),
-**untracked** (synthesizes an all-added diff for untracked files, which `git diff`
-omits), **wrap**, plus **collapse all** and a **⟳** refresh. Large diffs are
-capped at 2 MiB (a `diff truncated` pill shows when that happens). The view
-refreshes on tab open, on a cwd change (when following), and on demand.
+header with `+adds`/`−dels` counts (**collapsed by default** — click a header or
+**expand all** to open them), and the lines are colored (added/removed/context/
+hunk) in the active theme. Toolbar toggles: **vs primary branch**, **untracked**
+(synthesizes an all-added diff for untracked files, which `git diff` omits),
+**ignore whitespace** (`-w`, on by default), **wrap** (on by default), plus
+**expand all** / **collapse all** and a **⟳** refresh. Large diffs are capped at
+2 MiB (a `diff truncated` pill shows when that happens). The view refreshes on
+tab open, on a cwd change, and on demand.
 
 ## Browser pane (the Browser tab)
 
@@ -290,4 +318,4 @@ Then from any tailnet device: `http://<host>:8090/` (MagicDNS) — e.g.
 - `POST /api/focus` — focus a pane `{workspace_id, tab_id}` (→ `workspace.focus` + `tab.focus`)
 - `POST /api/rename` — rename a tab `{tab_id, label}` (→ `tab.rename`)
 - `POST /api/close` — close panes `{pane_ids: [...]}` (→ `pane.close` each); returns `{closed, errors}`
-- `GET /api/diff?path=&ignoreWhitespace=&includeUntracked=` — git diff of the repo containing `path`; returns `{repo, branch, diff, files, isBranchDiff, baseBranch, truncated}`
+- `GET /api/diff?path=&mode=&baseBranch=&ignoreWhitespace=&includeUntracked=` — git diff of the repo containing `path` (`mode=branch` forces the branch-vs-base comparison; `baseBranch` overrides the base it compares against); returns `{repo, branch, diff, files, isBranchDiff, baseBranch, truncated, dirty}`

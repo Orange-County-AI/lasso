@@ -26,9 +26,10 @@
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   #app { display: flex; height: 100%; width: 100%; }
 
-  /* left: terminal */
+  /* left: terminal + grid + settings (tabbed) */
   #left { flex: 1 1 60%; min-width: 240px; display: flex; flex-direction: column; }
-  #left iframe { border: 0; width: 100%; height: 100%; display: block; background: var(--bg); }
+  #left iframe { border: 0; width: 100%; flex: 1 1 auto; min-height: 0; display: block; background: var(--bg); }
+  #lview-herdr { padding: 0; }   /* the terminal view holds only the iframe — fill it */
 
   /* drag handle */
   #splitter { flex: 0 0 6px; cursor: col-resize; background: var(--border);
@@ -38,7 +39,7 @@
      mousemove events (otherwise the terminal swallows them and you can only
      drag toward the sidebar, never back over the terminal) */
   #app.dragging { cursor: col-resize; user-select: none; }
-  #app.dragging #left iframe { pointer-events: none; }
+  #app.dragging iframe { pointer-events: none; }
 
   /* small icon button (collapse toggle in the header) */
   .iconbtn { margin-left: auto; background: var(--hover); color: var(--muted);
@@ -62,17 +63,28 @@
   /* collapsed: hide the sidebar + splitter, let the terminal fill the width */
   #app.collapsed #right, #app.collapsed #splitter { display: none; }
 
-  /* tab strip + swappable views inside the right column */
+  /* tab strips + swappable views — shared by the left column (terminal / grid /
+     settings) and the right column (files / diff / browser) */
   .tabs { display: flex; align-items: stretch; flex: 0 0 auto;
     border-bottom: 1px solid var(--border); background: var(--bg); }
-  .tabs .tab { background: transparent; color: var(--muted); border: 0;
+  .tabs .tab, .tabs .ltab { background: transparent; color: var(--muted); border: 0;
     border-bottom: 2px solid transparent; padding: 7px 11px; font: inherit; font-size: 12px;
     cursor: pointer; white-space: nowrap; }
-  .tabs .tab:hover { color: var(--fg); }
-  .tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tabs .tab:hover, .tabs .ltab:hover { color: var(--fg); }
+  .tabs .tab.active, .tabs .ltab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  /* dirty-file count badge on the Diff tab (amber when the working tree is dirty) */
+  .tbadge { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 10px; font-weight: 600;
+    background: var(--warn, #d08770); color: var(--bg); vertical-align: middle; }
   .tabs #collapse { align-self: center; margin-right: 8px; }
   .view { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; overflow: hidden; }
   .view.active { display: flex; }
+
+  /* the "latest · update available" pill becomes a click target that opens the
+     Terminal tab with `herdr update` pre-typed */
+  .pill.clickable { cursor: pointer; }
+  .pill.clickable:hover { background: var(--accent-dim); }
+  /* lead-in caption scoping the version pills to herdr (not this viewer) */
+  .rowlabel { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin-right: 2px; }
 
   /* pane grid */
   #panegrid { flex: 1 1 auto; overflow: auto; padding: 10px; display: grid;
@@ -134,30 +146,16 @@
   .pill { padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border);
     font-size: 11px; color: var(--muted); white-space: nowrap; }
   .pill.ws { color: var(--accent); border-color: var(--accent-dim); }
-  .pill.agent.working { color: var(--warn); border-color: var(--warn); }
-  .pill.agent.blocked { color: var(--bad); border-color: var(--bad); }
-  .pill.agent.idle, .pill.agent.done { color: var(--good); border-color: var(--good); }
-  .pill.src { display: none; }
-  .pill.src.process { display: inline; color: var(--good); border-color: var(--good); }
-  .pill.src.stale { display: inline; color: var(--warn); border-color: var(--warn); }
+  .pill.path { white-space: normal; word-break: break-all; }
+  .pill.good { color: var(--good); border-color: var(--good); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
 
-  .goto { margin-top: 6px; display: flex; gap: 6px; }
+  .goto { display: flex; align-items: center; gap: 10px; }
   .goto input { flex: 1 1 auto; min-width: 0; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px;
     font: inherit; font-size: 12px; }
   .goto input:focus { outline: 0; border-color: var(--accent); }
-  .goto button { background: var(--hover); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 11px; cursor: pointer;
-    white-space: nowrap; }
-  .goto button:hover { color: var(--accent); border-color: var(--accent); }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
-  .dot.live { background: var(--good); box-shadow: 0 0 6px var(--good); }
-
-  .cwd { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
-  .cwd .crumbs { color: var(--fg); word-break: break-all; }
-  .cwd .crumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
-  .cwd .crumbs a:hover { text-decoration: underline; }
-  label.follow { margin-left: auto; color: var(--muted); font-size: 11px; cursor: pointer;
+  label.follow { color: var(--muted); font-size: 11px; cursor: pointer;
     display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 
   #files { flex: 1 1 auto; overflow: auto; }
@@ -230,7 +228,8 @@
     border: 1px solid var(--border); border-radius: 4px; padding: .1em .35em; }
   .md-body pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
     padding: 12px 14px; overflow: auto; margin: .8em 0; }
-  .md-body pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5; }
+  .md-body pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; }
   .md-body ul, .md-body ol { padding-left: 1.6em; margin: .6em 0; }
   .md-body li { margin: .25em 0; }
   .md-body blockquote { margin: .8em 0; padding: .2em 1em; border-left: 3px solid var(--accent);
@@ -280,45 +279,25 @@
     border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
   .brbtn:hover { color: var(--accent); border-color: var(--accent); }
   #brframe { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: var(--bg); }
+  /* out-of-herdr shell terminal (right-column Terminal tab) */
+  #shellframe { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 </style>
 <!--THEME-->
 </head>
 <body>
 <div id="app">
-  <div id="left"><iframe id="term" src="/terminal/" title="herdr terminal"></iframe></div>
-  <div id="splitter"></div>
-  <button id="reopen" title="show file viewer">«</button>
-  <div id="right">
-    <nav class="tabs">
-      <button class="tab active" data-view="files">Files</button>
-      <button class="tab" data-view="panes">Panes</button>
-      <button class="tab" data-view="diff">Diff</button>
-      <button class="tab" data-view="browser">Browser</button>
-      <button class="iconbtn" id="collapse" title="collapse sidebar">»</button>
+  <div id="left">
+    <nav class="tabs ltabs">
+      <button class="ltab active" data-lview="herdr">Herdr</button>
+      <button class="ltab" data-lview="grid">Grid</button>
+      <button class="ltab" data-lview="settings">Settings</button>
     </nav>
 
-    <section class="view active" id="view-files">
-      <header class="bar">
-        <div class="row">
-          <span class="dot" id="live"></span>
-          <span class="pill ws" id="ws">workspace —</span>
-          <span class="pill" id="tab">tab —</span>
-          <span class="pill agent" id="agent" style="display:none"></span>
-          <span class="pill src" id="src"></span>
-        </div>
-        <div class="cwd">
-          <span class="crumbs" id="crumbs">—</span>
-          <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
-        </div>
-        <div class="goto">
-          <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
-          <button id="jump" title="jump to the active pane's directory">⟳ active</button>
-        </div>
-      </header>
-      <div id="files"><div class="empty">waiting for herdr…</div></div>
+    <section class="view active" id="lview-herdr">
+      <iframe id="term" src="/terminal/" title="Herdr terminal"></iframe>
     </section>
 
-    <section class="view" id="view-panes">
+    <section class="view" id="lview-grid">
       <header class="bar">
         <div class="row">
           <span class="pill ws" id="panes-count">panes —</span>
@@ -335,26 +314,54 @@
       <div class="hint" id="panes-hint">click to focus · ⌘/ctrl/shift-click to multi-select · right-click for rename / close</div>
     </section>
 
-    <section class="view" id="view-diff">
+    <section class="view" id="lview-settings">
       <header class="bar">
         <div class="row">
-          <span class="pill ws" id="diff-branch">—</span>
-          <span class="pill" id="diff-base" style="display:none"></span>
-          <span class="pill" id="diff-msg" style="display:none"></span>
-          <button class="iconbtn" id="diff-refresh" title="refresh diff">⟳</button>
-        </div>
-        <div class="cwd">
-          <span class="crumbs" id="diff-repo">—</span>
-          <label class="follow"><input type="checkbox" id="diff-follow" checked> follow active pane</label>
-        </div>
-        <div class="row" style="margin-top:6px; gap:12px;">
-          <label class="opt"><input type="checkbox" id="diff-ws"> ignore whitespace</label>
-          <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
-          <label class="opt"><input type="checkbox" id="diff-wrap"> wrap</label>
-          <button class="selbtn" id="diff-collapse" style="margin-left:auto">collapse all</button>
+          <span class="rowlabel">herdr</span>
+          <span class="pill" id="set-installed">installed —</span>
+          <span class="pill" id="set-latest">latest —</span>
+          <button class="iconbtn" id="set-refresh" title="check for updates">⟳</button>
         </div>
       </header>
-      <div id="difflist"><div class="empty">loading diff…</div></div>
+    </section>
+  </div>
+  <div id="splitter"></div>
+  <button id="reopen" title="show file viewer">«</button>
+  <div id="right">
+    <nav class="tabs">
+      <button class="tab active" data-view="diff">Diff<span class="tbadge" id="diff-dirty" style="display:none"></span></button>
+      <button class="tab" data-view="files">Files</button>
+      <button class="tab" data-view="browser">Browser</button>
+      <button class="tab" data-view="terminal">Terminal</button>
+      <button class="iconbtn" id="collapse" title="collapse sidebar">»</button>
+    </nav>
+
+    <section class="view" id="view-files">
+      <header class="bar">
+        <div class="goto">
+          <input id="path" type="text" spellcheck="false" autocomplete="off" placeholder="go to path…  (Enter)">
+          <label class="follow"><input type="checkbox" id="follow" checked> follow active pane</label>
+        </div>
+      </header>
+      <div id="files"><div class="empty">waiting for herdr…</div></div>
+    </section>
+
+    <section class="view active" id="view-diff">
+      <header class="bar">
+        <div class="row">
+          <span class="pill ws path" id="diff-branch">—</span>
+          <span class="pill" id="diff-base" style="display:none"></span>
+          <span class="pill" id="diff-msg" style="display:none"></span>
+        </div>
+        <div class="row" style="margin-top:6px; gap:12px;">
+          <label class="opt" id="diff-branchmode-label" title="compare the whole branch against the primary branch instead of the working tree"><input type="checkbox" id="diff-branchmode"> vs primary branch</label>
+          <label class="opt"><input type="checkbox" id="diff-untracked"> untracked</label>
+          <label class="opt"><input type="checkbox" id="diff-ws" checked> ignore whitespace</label>
+          <label class="opt"><input type="checkbox" id="diff-wrap" checked> wrap</label>
+          <button class="selbtn" id="diff-collapse" style="margin-left:auto">expand all</button>
+        </div>
+      </header>
+      <div id="difflist" class="wrap"><div class="empty">loading diff…</div></div>
     </section>
 
     <section class="view" id="view-browser">
@@ -365,6 +372,10 @@
         <button class="brbtn" id="br-open" title="open in new tab">↗</button>
       </div>
       <iframe id="brframe" title="browser preview" referrerpolicy="no-referrer"></iframe>
+    </section>
+
+    <section class="view" id="view-terminal">
+      <iframe id="shellframe" src="/shell/" title="Terminal (outside herdr)"></iframe>
     </section>
 
     <div id="viewer">
@@ -390,13 +401,18 @@ let curPath = null;        // dir currently shown in the file list
 let activeCwd = null;      // cwd of herdr's focused pane
 let activePaneID = null;   // pane_id of herdr's focused pane
 let selected = null;
-let curView = 'files';     // which right-column view is showing
+let curView = 'diff';      // which right-column view is showing
+let curLeftView = 'herdr'; // which left-column view is showing (herdr / grid / settings)
+let settingsInit = false;  // settings tab lazily initialized on first open
 let paneEls = {};          // pane_id -> grid card element (for focus highlighting)
 let paneData = {};         // pane_id -> pane object (for context-menu actions)
 let selectedPanes = new Set(); // pane_ids selected for bulk actions
 let diffCwd = null;        // repo dir last loaded in the Diff view
 let diffCollapsed = new Set(); // file paths collapsed in the Diff view
-let diffAllCollapsed = false;
+let diffSeen = new Set();      // file paths rendered at least once (so we only auto-collapse new ones)
+let diffSig = null;        // signature of the last rendered diff payload — skip no-op re-renders so polling keeps scroll/expand state
+let diffTimer = null;      // auto-refresh handle, running only while the Diff view is showing
+let diffAllCollapsed = true;   // files start collapsed by default
 let browserInit = false;   // browser pane lazily initialized on first open
 let lastPanesRev = -1;     // server's pane-grid layout revision (workspace order/membership)
 let lastThemeRev = -1;     // server's theme revision (bumps when herdr's config.toml theme changes)
@@ -416,7 +432,6 @@ async function loadDir(path) {
 }
 
 function renderDir(data) {
-  renderCrumbs(data.path);
   const pin = $('#path');                                   // reflect location (unless user is typing)
   if (pin && document.activeElement !== pin) pin.value = data.path;
   const f = $('#files');
@@ -445,19 +460,6 @@ function entryEl(e, full, isUp) {
     else openFile(full, div);
   };
   return div;
-}
-
-function renderCrumbs(path) {
-  const parts = path.split('/').filter(Boolean);
-  let acc = '';
-  const frags = ['<a data-p="/">/</a>'];
-  for (const p of parts) {
-    acc += '/' + p;
-    frags.push('<a data-p="' + acc + '">' + escapeHtml(p) + '</a>');
-  }
-  const c = $('#crumbs');
-  c.innerHTML = frags.join('<span style="color:var(--muted)">/</span>');
-  c.querySelectorAll('a').forEach(a => a.onclick = () => loadDir(a.dataset.p));
 }
 
 // ---- full-screen file viewer (markdown render + syntax highlighting) ----
@@ -611,16 +613,62 @@ $('#v-wrap').onclick = () => {
 $('#v-open').onclick = () => { if (viewerFile) window.open('/api/file?path=' + encodeURIComponent(viewerFile.path), '_blank'); };
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#viewer').classList.contains('open')) closeViewer(); });
 
-// ---- view tabs (Files / Panes) ----
+// ---- right-column view tabs (Files / Diff / Browser) ----
+// Queries are scoped to #right so they never touch the left column's tabs/views.
+// keep the diff fresh on its own — git changes underneath us (edits, commits,
+// branch switches) with no event to hang a reload on, so we poll while the Diff
+// view is showing. renderDiff() no-ops when nothing changed, so this is cheap
+// and never disturbs scroll/expand state.
+function startDiffPolling() {
+  stopDiffPolling();
+  diffTimer = setInterval(() => {
+    if (curView === 'diff' && !document.hidden && !$('#viewer').classList.contains('open')) loadDiff();
+  }, 2500);
+}
+function stopDiffPolling() { if (diffTimer) { clearInterval(diffTimer); diffTimer = null; } }
+// refresh immediately when the user returns to the tab, rather than waiting out the interval
+document.addEventListener('visibilitychange', () => { if (!document.hidden && curView === 'diff') loadDiff(); });
+
 function switchView(name) {
   curView = name;
-  document.querySelectorAll('.tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
-  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
-  if (name === 'panes') loadPanes();
-  else if (name === 'diff') loadDiff();
-  else if (name === 'browser') initBrowser();
+  document.querySelectorAll('#right > .tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  document.querySelectorAll('#right > .view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  if (name === 'diff') { loadDiff(); startDiffPolling(); }
+  else { stopDiffPolling(); }
+  if (name === 'browser') initBrowser();
+  else if (name === 'terminal') {
+    // the iframe was display:none (zero-size) while hidden — nudge xterm to refit
+    // and hand it the keyboard, same as the herdr terminal.
+    try { const w = $('#shellframe').contentWindow; w.dispatchEvent(new Event('resize')); w.focus(); } catch (e) {}
+  }
 }
-document.querySelectorAll('.tabs .tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+document.querySelectorAll('#right > .tabs .tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+
+// ---- left-column view tabs (Herdr terminal / Grid / Settings) ----
+// The terminal iframe stays mounted across switches (only hidden via CSS), so
+// the ttyd WebSocket never reconnects when you visit Grid/Settings and back.
+// The active tab is mirrored to the URL hash (#herdr / #grid / #settings) so
+// back/forward navigate between tabs and a link opens straight to one.
+const LEFT_VIEWS = ['herdr', 'grid', 'settings'];
+function switchLeft(name, fromHash) {
+  if (!LEFT_VIEWS.includes(name)) name = 'herdr';
+  curLeftView = name;
+  document.querySelectorAll('#left > .tabs .ltab').forEach(t => t.classList.toggle('active', t.dataset.lview === name));
+  document.querySelectorAll('#left > .view').forEach(v => v.classList.toggle('active', v.id === 'lview-' + name));
+  if (!fromHash && location.hash.slice(1) !== name) location.hash = name;   // reflect in the URL (adds a history entry)
+  if (name === 'grid') loadPanes();
+  else if (name === 'settings') initSettings();
+  else if (name === 'herdr') {
+    // the iframe was display:none (zero-size) while hidden — nudge xterm to refit
+    // and hand it the keyboard.
+    try { const w = document.getElementById('term').contentWindow; w.dispatchEvent(new Event('resize')); w.focus(); } catch (e) {}
+  }
+}
+document.querySelectorAll('#left > .tabs .ltab').forEach(t => t.onclick = () => switchLeft(t.dataset.lview));
+// back/forward (and manual hash edits) drive the active tab without re-pushing it
+window.addEventListener('hashchange', () => switchLeft(location.hash.slice(1), true));
+// open straight to the tab named in the URL (defaults to Herdr); don't push on load
+switchLeft(location.hash.slice(1) || 'herdr', true);
 
 // ---- pane grid ----
 async function loadPanes() {
@@ -678,7 +726,7 @@ function paneCard(p) {
   d.title = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join('\n');
   d.onclick = (e) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey) toggleSelect(p.pane_id);  // multi-select
-    else { clearSelection(); focusPane(p, d); }                          // plain click: focus
+    else { clearSelection(); focusPane(p, d); switchLeft('herdr'); }      // plain click: focus + show terminal
   };
   d.oncontextmenu = (e) => { e.preventDefault(); openCtxMenu(e, p); };
   return d;
@@ -804,30 +852,55 @@ function showPaneMsg(msg, bad) {
 $('#panes-refresh').onclick = () => loadPanes();
 
 // ---- diff viewer ----
+let diffLoading = false;   // in-flight guard so the poll never stacks fetches on a slow repo
 async function loadDiff() {
   const base = diffCwd || activeCwd;
   const list = $('#difflist');
   if (!base) { list.innerHTML = '<div class="empty">no active directory yet</div>'; return; }
+  if (diffLoading) return;
+  diffLoading = true;
   diffCwd = base;
-  $('#diff-repo').textContent = tilde(base);
+  const branchMode = $('#diff-branchmode').checked;
   const params = new URLSearchParams({ path: base });
+  if (branchMode) params.set('mode', 'branch');
   if ($('#diff-ws').checked) params.set('ignoreWhitespace', 'true');
-  if ($('#diff-untracked').checked) params.set('includeUntracked', 'true');
+  if (!branchMode && $('#diff-untracked').checked) params.set('includeUntracked', 'true');
+  $('#diff-untracked').disabled = branchMode;   // untracked files only exist in the working tree
   try {
     const r = await fetch('/api/diff?' + params);
     if (!r.ok) throw new Error(await r.text());
     renderDiff(await r.json());
   } catch (e) {
+    diffSig = null;   // force a fresh render once the directory becomes diffable again
     list.innerHTML = '<div class="empty">cannot diff this directory<br>' + escapeHtml(e.message) + '</div>';
-    $('#diff-branch').textContent = '—';
+    $('#diff-branch').textContent = diffCwd || '—';
     $('#diff-base').style.display = 'none';
+    setDirtyBadge(0);
     showDiffMsg('');
+  } finally {
+    diffLoading = false;
   }
 }
 
+// reflect the working-tree dirty-file count on the Diff tab (hidden when clean,
+// shown in either view mode so you can tell there are uncommitted changes even
+// while looking at the branch diff).
+function setDirtyBadge(n) {
+  const b = $('#diff-dirty');
+  if (n > 0) { b.style.display = ''; b.textContent = n; b.title = n + ' uncommitted change' + (n === 1 ? '' : 's'); }
+  else b.style.display = 'none';
+}
+
 function renderDiff(data) {
-  $('#diff-branch').textContent = data.branch || '—';
-  $('#diff-repo').textContent = tilde(data.repo || diffCwd || '');
+  // skip the rebuild when nothing changed, so the auto-refresh poll doesn't
+  // reset scroll position or re-collapse files the user just expanded.
+  const sig = JSON.stringify([data.branch, data.baseBranch, data.isBranchDiff, data.truncated, data.dirty, data.diff]);
+  if (sig === diffSig && $('#difflist').children.length) return;
+  diffSig = sig;
+  const b = $('#diff-branch');
+  b.textContent = diffCwd || '—';
+  b.title = data.branch ? 'branch: ' + data.branch : '';
+  setDirtyBadge(data.dirty || 0);
   const baseEl = $('#diff-base');
   if (data.isBranchDiff && data.baseBranch) { baseEl.style.display = ''; baseEl.textContent = 'vs ' + data.baseBranch; }
   else baseEl.style.display = 'none';
@@ -836,11 +909,20 @@ function renderDiff(data) {
   const files = parseDiff(data.diff || '');
   const list = $('#difflist');
   if (!files.length) {
-    list.innerHTML = '<div class="empty">no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '') + '</div>';
+    const branchMode = $('#diff-branchmode').checked;
+    const msg = branchMode
+      ? (data.baseBranch ? 'no changes vs ' + escapeHtml(data.baseBranch) : 'no base branch to compare against')
+      : 'no changes' + (data.branch ? ' on ' + escapeHtml(data.branch) : '');
+    list.innerHTML = '<div class="empty">' + msg + '</div>';
     return;
   }
   list.innerHTML = '';
-  for (const f of files) list.appendChild(diffFileEl(f));
+  for (const f of files) {
+    // files start collapsed by default; only remember an explicit expand/collapse
+    // the user makes (so their choice survives a refresh, but new files fold up).
+    if (!diffSeen.has(f.path)) { diffSeen.add(f.path); diffCollapsed.add(f.path); }
+    list.appendChild(diffFileEl(f));
+  }
 }
 
 // minimal unified-diff parser: split into per-file blocks of typed lines
@@ -907,7 +989,7 @@ function showDiffMsg(msg, bad) {
   el.style.borderColor = bad ? 'var(--warn)' : 'var(--border)';
 }
 
-$('#diff-refresh').onclick = () => loadDiff();
+$('#diff-branchmode').onchange = () => loadDiff();
 $('#diff-ws').onchange = () => loadDiff();
 $('#diff-untracked').onchange = () => loadDiff();
 $('#diff-wrap').onchange = () => $('#difflist').classList.toggle('wrap', $('#diff-wrap').checked);
@@ -947,30 +1029,67 @@ $('#br-url').addEventListener('keydown', e => { if (e.key === 'Enter') navBrowse
 $('#br-reload').onclick = () => { const f = $('#brframe'); f.src = f.src; };
 $('#br-open').onclick = () => { const u = $('#br-url').value.trim(); if (u) window.open(/^https?:\/\//i.test(u) ? u : 'http://' + u, '_blank'); };
 
+// ---- settings: herdr version (installed + latest) ----
+function initSettings() {
+  if (settingsInit) return;
+  settingsInit = true;
+  loadVersion();
+}
+async function loadVersion() {
+  const inst = $('#set-installed'), lat = $('#set-latest');
+  inst.textContent = 'installed …'; lat.textContent = 'latest …'; lat.className = 'pill';
+  lat.onclick = null; lat.title = '';   // reset any prior clickable state
+  try {
+    const r = await fetch('/api/version');
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    inst.textContent = 'installed ' + (d.installed || 'unknown');
+    if (d.latest) {
+      lat.textContent = 'latest ' + d.latest + (d.update_available ? ' · update available' : ' · up to date');
+      lat.className = 'pill ' + (d.update_available ? 'warn' : 'good');
+      if (d.update_available) {
+        // make the pill a shortcut: open the Terminal tab with `herdr update` typed
+        lat.classList.add('clickable');
+        lat.title = 'open the Terminal with `herdr update` ready (press Enter to run)';
+        lat.onclick = openUpdateInTerminal;
+      }
+    } else {
+      lat.textContent = 'latest unavailable'; lat.className = 'pill';
+      lat.title = d.latest_error || '';
+    }
+  } catch (e) {
+    inst.textContent = 'installed unavailable'; lat.textContent = 'latest unavailable'; lat.className = 'pill';
+  }
+}
+$('#set-refresh').onclick = () => loadVersion();
+
+// openUpdateInTerminal reveals the right-column Terminal tab and types
+// `herdr update` into the out-of-herdr shell WITHOUT submitting it, so the user
+// can review and press Enter. We paste rather than synthesize keystrokes — the
+// same path the image-paste handler uses — which inserts text at the cursor.
+function openUpdateInTerminal() {
+  if ($('#app').classList.contains('collapsed')) $('#reopen').click();   // ensure the right column is visible
+  switchView('terminal');                                                // shows + focuses the shell
+  typeIntoShell('herdr update', 0);
+}
+function typeIntoShell(text, tries) {
+  try {
+    const w = $('#shellframe').contentWindow;
+    if (w && w.term && typeof w.term.paste === 'function') {
+      w.focus(); w.term.focus();
+      w.term.paste(text);
+      return;
+    }
+  } catch (e) { /* same-origin; ignore */ }
+  if (tries < 20) setTimeout(() => typeIntoShell(text, tries + 1), 150);   // xterm may still be loading
+}
+
 // ---- active pane (SSE) ----
 function applyActive(a) {
-  $('#live').classList.add('live');
-  $('#ws').textContent = 'ws: ' + (a.workspace_label || a.workspace_id || '—');
-  $('#tab').textContent = 'tab: ' + (a.tab_label || a.tab_id || '—');
-  const ag = $('#agent');
-  if (a.agent || (a.agent_status && a.agent_status !== 'unknown')) {
-    ag.style.display = '';
-    ag.className = 'pill agent ' + (a.agent_status || '');
-    ag.textContent = (a.agent || 'agent') + (a.agent_status ? ' · ' + a.agent_status : '');
-  } else ag.style.display = 'none';
-
-  // provenance of the cwd: process = real (resolved from the agent process),
-  // stale = agent pane we couldn't resolve (herdr's shell launch dir), shell = trustworthy
-  const src = $('#src');
-  src.className = 'pill src ' + (a.cwd_source || '');
-  if (a.cwd_source === 'process') { src.textContent = 'cwd ✓ process'; src.title = "real cwd, resolved from the agent process"; }
-  else if (a.cwd_source === 'stale') { src.textContent = '⚠ shell cwd'; src.title = "agent pane — herdr only knows the shell's launch dir; couldn't pin the agent's real cwd. Use the path box."; }
-  else { src.textContent = ''; }
-
   if (a.cwd && a.cwd !== activeCwd) {
     activeCwd = a.cwd;
     if ($('#follow').checked) loadDir(a.cwd);
-    if ($('#diff-follow').checked) { diffCwd = a.cwd; if (curView === 'diff') loadDiff(); }
+    diffCwd = a.cwd; if (curView === 'diff') loadDiff();   // the Diff view always follows the active pane
   }
 
   // keep the pane grid's focus highlight in sync with herdr
@@ -988,7 +1107,7 @@ function applyActive(a) {
   if (typeof a.panes_rev === 'number' && a.panes_rev !== lastPanesRev) {
     const first = lastPanesRev === -1;
     lastPanesRev = a.panes_rev;
-    if (!first && curView === 'panes') loadPanes();
+    if (!first && curLeftView === 'grid') loadPanes();
   }
 
   // herdr's theme changed (config.toml [theme].name edited): repaint live.
@@ -1015,39 +1134,49 @@ async function refreshTheme() {
   applyTermTheme(t.xterm, 0);
 }
 
-// applyTermTheme sets xterm.js's theme on the terminal running inside the ttyd
-// iframe. ttyd 1.7.4 exposes the Terminal instance as window.term, and the
-// iframe is same-origin (proxied under /terminal/), so the parent can reach it.
-// The terminal may not be ready when a theme event arrives (iframe still
-// loading / ws not yet open), so retry a few times.
+// applyTermTheme sets xterm.js's theme on every terminal iframe (the herdr
+// terminal and the out-of-herdr shell). ttyd 1.7.4 exposes the Terminal instance
+// as window.term, and the iframes are same-origin (proxied under /terminal/ and
+// /shell/), so the parent can reach them. A terminal may not be ready when a
+// theme event arrives (iframe still loading / ws not yet open), so retry a few
+// times until each one takes the theme.
+const TERM_FRAMES = ['term', 'shellframe'];
 function applyTermTheme(theme, tries) {
-  try {
-    const w = document.getElementById('term').contentWindow;
-    if (w && w.term && w.term.options) { w.term.options.theme = theme; return; }
-  } catch (e) { /* same-origin: shouldn't throw, but never let it break the SSE */ }
-  if (tries < 20) setTimeout(() => applyTermTheme(theme, tries + 1), 250);
+  let pending = false;
+  for (const id of TERM_FRAMES) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    try {
+      const w = el.contentWindow;
+      if (w && w.term && w.term.options) { w.term.options.theme = theme; continue; }
+    } catch (e) { /* same-origin: shouldn't throw, but never let it break the SSE */ }
+    pending = true;   // this frame's xterm isn't ready yet
+  }
+  if (pending && tries < 20) setTimeout(() => applyTermTheme(theme, tries + 1), 250);
 }
 
 function connectSSE() {
   const es = new EventSource('/api/events');
   es.addEventListener('active', e => applyActive(JSON.parse(e.data)));
-  es.onerror = () => { $('#live').classList.remove('live'); };
 }
 
-// wireTerminalIframe attaches behavior to the same-origin ttyd iframe document:
-//   (1) suppress the native context menu so right-click only triggers herdr's
-//       own handling (the mousedown/mouseup xterm forwards to herdr is untouched);
+// wireTerminalIframe attaches behavior to a same-origin ttyd iframe document:
+//   (1) for the herdr terminal only, suppress the native context menu so
+//       right-click only triggers herdr's own handling (the mousedown/mouseup
+//       xterm forwards to herdr is untouched). The plain shell keeps its native
+//       menu so copy/paste works there;
 //   (2) intercept image paste — save the image server-side and insert its path
-//       at the cursor, since xterm can only paste text.
+//       at the cursor, since xterm can only paste text (handy for both: pasting
+//       a screenshot path to an agent, or to a command in the shell).
 // Each iframe (re)load yields a fresh document, so it's re-run from the load
 // handler below; __herdrWired guards against double-attaching on one document.
-function wireTerminalIframe() {
-  let doc;
-  try { doc = document.getElementById('term').contentWindow.document; } catch (e) { return; }
+function wireTerminalIframe(id, suppressContext) {
+  let win, doc;
+  try { win = document.getElementById(id).contentWindow; doc = win.document; } catch (e) { return; }
   if (!doc || doc.__herdrWired) return;
   doc.__herdrWired = true;
 
-  doc.addEventListener('contextmenu', e => e.preventDefault(), true);
+  if (suppressContext) doc.addEventListener('contextmenu', e => e.preventDefault(), true);
 
   doc.addEventListener('paste', async (e) => {
     const items = e.clipboardData && e.clipboardData.items;
@@ -1065,30 +1194,91 @@ function wireTerminalIframe() {
       });
       if (!res.ok) return;
       const { path } = await res.json();
-      const w = document.getElementById('term').contentWindow;
-      if (w && w.term && typeof w.term.paste === 'function') w.term.paste(path + ' ');
+      if (win && win.term && typeof win.term.paste === 'function') win.term.paste(path + ' ');
     } catch (err) { /* swallow: never break the terminal */ }
   }, true);                                       // capture phase: run before xterm
+
+  wireShiftEnter(id, 0);
 }
 
-// If the terminal iframe reloads (e.g. ttyd reconnects), the fresh xterm starts
+// xterm.js sends a bare CR (\r) for BOTH Enter and Shift+Enter, so a line
+// editor (Claude Code, the REPL kind) can't tell them apart — Shift+Enter
+// submits instead of opening a new line. We intercept Shift+Enter and instead
+// emit backslash+CR ("\\\r"): a trailing backslash is Claude Code's
+// line-continuation, so it inserts a newline and swallows the backslash, never
+// submitting. (A bare LF / Ctrl+J doesn't work — Claude submits on it.)
+//
+// Two non-obvious pieces, both essential:
+//   1. preventDefault() in the handler (see below) — without it the browser
+//      still runs Enter's default action on the helper textarea, which xterm
+//      re-reads as a SECOND Enter, submitting the line.
+//   2. We can't route the bytes through term.paste() — paste() normalizes line
+//      endings and wraps them in bracketed-paste markers. The public
+//      term.input() sends raw data but isn't in ttyd 1.7.4's xterm.js, so we
+//      fall back to its coreService.triggerDataEvent, which emits them unwrapped.
+//
+// term may not exist yet at wire time (xterm still loading), so retry like
+// applyTermTheme; __herdrShiftEnter guards against double-attaching on one term.
+const NEWLINE_SEQ = '\\\r';   // backslash + CR — Claude Code line-continuation → newline
+function sendNewline(term) {
+  if (typeof term.input === 'function') { term.input(NEWLINE_SEQ); return; }   // public API (newer xterm)
+  try {
+    const cs = term._core && term._core.coreService;                          // ttyd 1.7.4 fallback
+    if (cs && typeof cs.triggerDataEvent === 'function') cs.triggerDataEvent(NEWLINE_SEQ, true);
+  } catch (e) { /* private API moved: better to no-op than to throw */ }
+}
+function wireShiftEnter(id, tries) {
+  let term;
+  try { term = document.getElementById(id).contentWindow.term; } catch (e) { return; }
+  if (term && typeof term.attachCustomKeyEventHandler === 'function') {
+    if (!term.__herdrShiftEnter) {
+      term.__herdrShiftEnter = true;
+      term.attachCustomKeyEventHandler(e => {
+        const enterish = e.key === 'Enter' || e.code === 'Enter' ||
+                         e.code === 'NumpadEnter' || e.keyCode === 13;
+        if (e.type === 'keydown' && enterish && e.shiftKey &&
+            !e.ctrlKey && !e.altKey && !e.metaKey) {
+          // preventDefault is essential: returning false skips xterm's *key*
+          // handling but NOT the browser's default Enter action on the helper
+          // textarea — which xterm then re-reads as a SECOND Enter (a stray \r),
+          // submitting the line. (Synthetic key events don't fire default
+          // actions, which is why this only bit real, isTrusted keypresses.)
+          if (e.preventDefault) e.preventDefault();
+          sendNewline(term);   // newline (backslash+CR), not xterm's default \r (submit)
+          return false;        // swallow xterm's own \r
+        }
+        return true;
+      });
+    }
+    return;
+  }
+  if (tries < 20) setTimeout(() => wireShiftEnter(id, tries + 1), 150);
+}
+
+// If a terminal iframe reloads (e.g. ttyd reconnects), the fresh xterm starts
 // from ttyd's startup theme — reapply the latest one so it stays in sync, and
-// re-wire the fresh document.
-document.getElementById('term').addEventListener('load', () => {
-  if (lastXtermTheme) applyTermTheme(lastXtermTheme, 0);
-  wireTerminalIframe();
-});
-wireTerminalIframe();   // in case the iframe already loaded before this ran
+// re-wire the fresh document. The herdr terminal suppresses its context menu;
+// the shell keeps its own.
+function bootTermFrame(id, suppressContext) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('load', () => {
+    if (lastXtermTheme) applyTermTheme(lastXtermTheme, 0);
+    wireTerminalIframe(id, suppressContext);
+  });
+  wireTerminalIframe(id, suppressContext);   // in case the iframe already loaded before this ran
+}
+bootTermFrame('term', true);
+bootTermFrame('shellframe', false);
 
 $('#follow').onchange = () => { if ($('#follow').checked && activeCwd) loadDir(activeCwd); };
-$('#diff-follow').onchange = () => { if ($('#diff-follow').checked && activeCwd) { diffCwd = activeCwd; if (curView === 'diff') loadDiff(); } };
 
-// manual path entry + jump-to-active — always available, so a wrong/stale guess is never a dead end
+// manual path entry — editing the path means the user is steering, so stop following the active pane
+$('#path').addEventListener('input', () => { $('#follow').checked = false; });
 $('#path').addEventListener('keydown', e => {
   const v = e.target.value.trim();
   if (e.key === 'Enter' && v) loadDir(v);
 });
-$('#jump').onclick = () => { if (activeCwd) loadDir(activeCwd); };
 
 // ---- splitter ----
 (function () {
@@ -1136,6 +1326,7 @@ function fmtSize(n){ if(n==null)return''; const u=['B','K','M','G']; let i=0; wh
     if (a.cwd) { activeCwd = a.cwd; loadDir(a.cwd); }
   } catch (e) { /* SSE will populate */ }
   connectSSE();
+  if (curView === 'diff') startDiffPolling();   // Diff is the default view, so begin auto-refreshing right away
 })();
 </script>
 </body>
