@@ -410,6 +410,8 @@ let selectedPanes = new Set(); // pane_ids selected for bulk actions
 let diffCwd = null;        // repo dir last loaded in the Diff view
 let diffCollapsed = new Set(); // file paths collapsed in the Diff view
 let diffSeen = new Set();      // file paths rendered at least once (so we only auto-collapse new ones)
+let diffSig = null;        // signature of the last rendered diff payload — skip no-op re-renders so polling keeps scroll/expand state
+let diffTimer = null;      // auto-refresh handle, running only while the Diff view is showing
 let diffAllCollapsed = true;   // files start collapsed by default
 let browserInit = false;   // browser pane lazily initialized on first open
 let lastPanesRev = -1;     // server's pane-grid layout revision (workspace order/membership)
@@ -613,12 +615,27 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#viewer
 
 // ---- right-column view tabs (Files / Diff / Browser) ----
 // Queries are scoped to #right so they never touch the left column's tabs/views.
+// keep the diff fresh on its own — git changes underneath us (edits, commits,
+// branch switches) with no event to hang a reload on, so we poll while the Diff
+// view is showing. renderDiff() no-ops when nothing changed, so this is cheap
+// and never disturbs scroll/expand state.
+function startDiffPolling() {
+  stopDiffPolling();
+  diffTimer = setInterval(() => {
+    if (curView === 'diff' && !document.hidden && !$('#viewer').classList.contains('open')) loadDiff();
+  }, 2500);
+}
+function stopDiffPolling() { if (diffTimer) { clearInterval(diffTimer); diffTimer = null; } }
+// refresh immediately when the user returns to the tab, rather than waiting out the interval
+document.addEventListener('visibilitychange', () => { if (!document.hidden && curView === 'diff') loadDiff(); });
+
 function switchView(name) {
   curView = name;
   document.querySelectorAll('#right > .tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('#right > .view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
-  if (name === 'diff') loadDiff();
-  else if (name === 'browser') initBrowser();
+  if (name === 'diff') { loadDiff(); startDiffPolling(); }
+  else { stopDiffPolling(); }
+  if (name === 'browser') initBrowser();
   else if (name === 'terminal') {
     // the iframe was display:none (zero-size) while hidden — nudge xterm to refit
     // and hand it the keyboard, same as the herdr terminal.
@@ -835,10 +852,13 @@ function showPaneMsg(msg, bad) {
 $('#panes-refresh').onclick = () => loadPanes();
 
 // ---- diff viewer ----
+let diffLoading = false;   // in-flight guard so the poll never stacks fetches on a slow repo
 async function loadDiff() {
   const base = diffCwd || activeCwd;
   const list = $('#difflist');
   if (!base) { list.innerHTML = '<div class="empty">no active directory yet</div>'; return; }
+  if (diffLoading) return;
+  diffLoading = true;
   diffCwd = base;
   const branchMode = $('#diff-branchmode').checked;
   const params = new URLSearchParams({ path: base });
@@ -851,11 +871,14 @@ async function loadDiff() {
     if (!r.ok) throw new Error(await r.text());
     renderDiff(await r.json());
   } catch (e) {
+    diffSig = null;   // force a fresh render once the directory becomes diffable again
     list.innerHTML = '<div class="empty">cannot diff this directory<br>' + escapeHtml(e.message) + '</div>';
     $('#diff-branch').textContent = diffCwd || '—';
     $('#diff-base').style.display = 'none';
     setDirtyBadge(0);
     showDiffMsg('');
+  } finally {
+    diffLoading = false;
   }
 }
 
@@ -869,6 +892,11 @@ function setDirtyBadge(n) {
 }
 
 function renderDiff(data) {
+  // skip the rebuild when nothing changed, so the auto-refresh poll doesn't
+  // reset scroll position or re-collapse files the user just expanded.
+  const sig = JSON.stringify([data.branch, data.baseBranch, data.isBranchDiff, data.truncated, data.dirty, data.diff]);
+  if (sig === diffSig && $('#difflist').children.length) return;
+  diffSig = sig;
   const b = $('#diff-branch');
   b.textContent = diffCwd || '—';
   b.title = data.branch ? 'branch: ' + data.branch : '';
@@ -1298,6 +1326,7 @@ function fmtSize(n){ if(n==null)return''; const u=['B','K','M','G']; let i=0; wh
     if (a.cwd) { activeCwd = a.cwd; loadDir(a.cwd); }
   } catch (e) { /* SSE will populate */ }
   connectSSE();
+  if (curView === 'diff') startDiffPolling();   // Diff is the default view, so begin auto-refreshing right away
 })();
 </script>
 </body>
