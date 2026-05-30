@@ -1057,12 +1057,14 @@ func gitOut(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// serveDiff returns the git diff for the repo containing ?path=. Two modes,
-// selected by ?mode=:
-//   - working (default): show working-tree changes (unstaged + staged) only —
-//     empty when the tree is clean.
+// serveDiff returns the git diff for the repo containing ?path=. Modes selected
+// by ?mode=:
+//   - auto (default): working-tree changes when the tree is dirty, otherwise the
+//     branch-vs-base comparison — so the pane always shows something useful.
+//   - working: show working-tree changes (unstaged + staged) only — empty when
+//     the tree is clean.
 //   - branch: diff merge-base(base, HEAD)..HEAD, ignoring the working tree —
-//     useful for seeing the whole branch vs the primary branch.
+//     the whole branch vs the primary branch.
 //
 // Optional ?ignoreWhitespace, ?includeUntracked, and ?baseBranch (override the
 // branch the comparison runs against) toggles. The response always reports the
@@ -1103,12 +1105,16 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	isBranchDiff := false
 	baseBranch := ""
 
-	if mode == "branch" {
+	// auto (default): show the working tree when it's dirty, otherwise fall back to
+	// the branch-vs-base comparison. ?mode=branch / ?mode=working force one or the
+	// other.
+	showBranch := mode == "branch" || (mode != "working" && dirty == 0)
+
+	if showBranch {
 		combined, baseBranch, files, _ = branchVsBase(root, branch, baseOverride, wsArg)
 		isBranchDiff = true
 	} else {
-		// Working-tree changes only — when the tree is clean this is empty. The
-		// branch-vs-base comparison is opt-in via mode=branch, not a fallback.
+		// Working-tree changes only (unstaged + staged), optionally with untracked.
 		combined = mustGit(root, wsArg("diff", "--cached")...) + mustGit(root, wsArg("diff")...)
 		files = status
 		if includeUntracked {
