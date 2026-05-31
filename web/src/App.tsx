@@ -20,7 +20,7 @@ import { typeIntoShell } from "@/lib/terminal"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-// The file viewer pulls in react-markdown + highlight.js; load it only on first
+// The file viewer pulls in CodeMirror + react-markdown; load it only on first
 // file open so the initial page stays light (mirrors the original lazy libs).
 const FileViewer = React.lazy(() =>
   import("@/components/FileViewer").then((m) => ({ default: m.FileViewer }))

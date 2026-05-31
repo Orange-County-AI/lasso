@@ -1,4 +1,5 @@
-import hljs from "highlight.js"
+import { EditorView } from "@codemirror/view"
+import CodeMirror from "@uiw/react-codemirror"
 import { Eye, Pencil, Save, X } from "lucide-react"
 import * as React from "react"
 import ReactMarkdown from "react-markdown"
@@ -6,9 +7,12 @@ import rehypeHighlight from "rehype-highlight"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
-import { isImage, isMarkdown, isPdf, langForPath } from "@/lib/format"
+import { editorTheme, languageExtension } from "@/lib/codemirror"
+import { isImage, isMarkdown, isPdf } from "@/lib/format"
 
-const HILITE_CAP = 400 * 1024 // don't syntax-highlight files larger than this
+// Above this size we skip the language extension (and its parsing cost) but
+// still open the file in the editor.
+const HILITE_CAP = 400 * 1024
 
 // The full-column file editor overlay: images stay view-only (click-to-zoom
 // checkerboard), everything else opens in an editable textarea. Edits are only
@@ -189,69 +193,42 @@ export function FileViewer({
             </ReactMarkdown>
           </div>
         ) : (
-          <CodeEditor
-            value={draft}
-            lang={langForPath(path)}
-            onChange={setDraft}
-          />
+          <CodeEditor value={draft} path={path} onChange={setDraft} />
         )}
       </div>
     </div>
   )
 }
 
-// A textarea layered over a syntax-highlighted <pre>: the textarea is
-// transparent (only its caret/selection show) and the highlighted code beneath
-// it is what the user reads. Above HILITE_CAP we skip highlighting and fall
-// back to a plain visible textarea.
+// A CodeMirror 6 editor themed to the live herdr palette (see lib/codemirror).
+// basicSetup gives line numbers, the fold gutter, bracket matching and in-editor
+// search (⌘/Ctrl+F). For very large files we drop the language extension to skip
+// the parsing cost — editing still works, just without highlighting.
 function CodeEditor({
   value,
-  lang,
+  path,
   onChange,
 }: {
   value: string
-  lang: string
+  path: string
   onChange: (v: string) => void
 }) {
-  const highlight = value.length <= HILITE_CAP
-
-  const html = React.useMemo(() => {
-    if (!highlight) return null
-    try {
-      if (lang && hljs.getLanguage(lang))
-        return hljs.highlight(value, { language: lang }).value
-      return hljs.highlightAuto(value).value
-    } catch {
-      return null
-    }
-  }, [value, lang, highlight])
-
-  if (!highlight) {
-    return (
-      <textarea
-        className="veditor"
-        value={value}
-        spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    )
-  }
+  // Recompute only when the file or the large-file threshold changes — not on
+  // every keystroke — so CodeMirror isn't reconfigured as the user types.
+  const big = value.length > HILITE_CAP
+  const extensions = React.useMemo(() => {
+    const lang = big ? null : languageExtension(path)
+    return [editorTheme, EditorView.lineWrapping, ...(lang ? [lang] : [])]
+  }, [path, big])
 
   return (
-    <div className="veditor-wrap">
-      <pre className="vcode wrap" aria-hidden="true">
-        {html != null ? (
-          <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
-        ) : (
-          <code className="hljs">{value}</code>
-        )}
-      </pre>
-      <textarea
-        className="veditor-input"
-        value={value}
-        spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
+    <CodeMirror
+      value={value}
+      onChange={onChange}
+      theme="none"
+      extensions={extensions}
+      height="100%"
+      className="cm-host"
+    />
   )
 }
