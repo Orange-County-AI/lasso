@@ -146,6 +146,24 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   return () => el.removeEventListener("load", onLoad)
 }
 
+// reloadTermFrame reloads a terminal iframe onto its (now host-switched) ttyd
+// session. The ttyd was respawned server-side with the new host's command, so
+// the old WebSocket is dead; reloading the same-origin frame reconnects and
+// bootTermFrame's load handler re-wires xterm + re-applies the theme.
+export function reloadTermFrame(id: string) {
+  const el = document.getElementById(id) as HTMLIFrameElement | null
+  if (!el) return
+  try {
+    el.contentWindow?.location.reload()
+  } catch {
+    // Cross-origin shouldn't happen (same-origin proxy), but fall back to a
+    // src round-trip just in case.
+    const src = el.src
+    el.src = "about:blank"
+    el.src = src
+  }
+}
+
 // Nudge a hidden-then-shown terminal to refit and take the keyboard.
 export function refitTerminal(id: string) {
   try {

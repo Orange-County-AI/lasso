@@ -89,6 +89,10 @@ func defaultSock() string {
 func main() {
 	flag.Parse()
 
+	// Start out driving the local herdr daemon. The footer's host switcher swaps
+	// this for a remoteBackend (and back) at runtime via /api/host.
+	setBackend(&localBackend{sock: *herdrSock})
+
 	// Auth credentials come from the environment (UI_AUTH=user:pass), never
 	// argv — so they don't leak via `ps`. Safety guard: refuse to bind to a
 	// non-loopback address without auth, so this can't accidentally expose a
@@ -128,6 +132,8 @@ func main() {
 	}
 
 	hub := newHub()
+	srvHub = hub
+	srvCtx = ctx
 	go hub.run(ctx)
 
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
@@ -174,6 +180,8 @@ func main() {
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
+	mux.HandleFunc("/api/hosts", serveHosts)
+	mux.HandleFunc("/api/host", serveHostSwitch)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -206,13 +214,18 @@ func main() {
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
 	// log.Fatalf bypasses).
 	if *spawnTtyd {
-		// herdr terminal: inherits the viewer's env (so it joins the same session).
-		if err := startTtyd(ctx, ttydSock, "/terminal", *termCmd, nil); err != nil {
+		// Each terminal is owned by a manager so it can be respawned with a new
+		// command when the active host changes (left: herdr / `herdr --remote`,
+		// right: local shell / `ssh <host>`). The first spawn here runs the local
+		// host's commands; a host switch later restarts both via the managers.
+		terminals.herdr = newTtydManager(ctx, ttydSock, "/terminal")
+		terminals.shell = newTtydManager(ctx, shellSock, "/shell")
+		if err := terminals.herdr.restart(curBackend().TermCmd(), curBackend().TermEnv()); err != nil {
 			log.Fatalf("ttyd: %v", err)
 		}
 		// Out-of-herdr shell: env stripped of the HERDR_* session markers so
 		// commands like `herdr update` (which refuse to run inside a session) work.
-		if err := startTtyd(ctx, shellSock, "/shell", shellCommand(), outsideHerdrEnv()); err != nil {
+		if err := terminals.shell.restart(curBackend().ShellCmd(), outsideHerdrEnv()); err != nil {
 			log.Fatalf("ttyd (shell): %v", err)
 		}
 	}
@@ -375,38 +388,11 @@ func (e *herdrError) Error() string {
 	return "herdr error: " + e.Code
 }
 
-// herdrCall does one request/response round-trip on a fresh connection.
+// herdrCall does one request/response round-trip against the active host's herdr
+// socket. The dial/encode/decode logic lives in herdrCallSock (backend.go), which
+// both backends share; this routes to whichever host is active.
 func herdrCall(method string, params any) (json.RawMessage, error) {
-	conn, err := net.DialTimeout("unix", *herdrSock, 2*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	req := map[string]any{"id": "ui", "method": method, "params": params}
-	b, _ := json.Marshal(req)
-	if _, err := conn.Write(append(b, '\n')); err != nil {
-		return nil, err
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return nil, err
-	}
-	var resp struct {
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		he := &herdrError{}
-		if json.Unmarshal(resp.Error, he) != nil || he.Code == "" {
-			he.Message = string(resp.Error) // non-structured error: keep the raw payload
-		}
-		return nil, he
-	}
-	return resp.Result, nil
+	return curBackend().HerdrCall(method, params)
 }
 
 type pane struct {
@@ -493,6 +479,8 @@ type Active struct {
 	PanesRev       int    `json:"panes_rev"` // bumps when the pane-grid layout (workspace order/membership) changes
 	ThemeRev       int    `json:"theme_rev"` // bumps when herdr's resolved theme changes (config.toml edited)
 	HerdrUp        bool   `json:"herdr_up"`  // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
+	Host           string `json:"host"`      // active host: "local" or an ssh-config alias
+	TermRev        int    `json:"term_rev"`  // bumps on host switch so the browser reloads the terminal iframes
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
@@ -1192,14 +1180,14 @@ func servePasteImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty body", http.StatusBadRequest)
 		return
 	}
-	dir := pasteImageDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir := curBackend().PasteImageDir()
+	if err := curBackend().MkdirAll(dir, 0o755); err != nil {
 		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	name := "clipboard-" + time.Now().Format("2006-01-02-150405") + ext
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	if err := curBackend().WriteFile(path, body, 0o644); err != nil {
 		http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1228,9 +1216,16 @@ const (
 	maxUntracked = 256 << 10 // 256 KiB per synthesized untracked-file diff
 )
 
-// gitOut runs `git -C dir args...` and returns stdout, surfacing git's stderr
-// in the error so the browser can show why a repo couldn't be diffed.
+// gitOut runs `git -C dir args...` on the active host and returns stdout. The
+// local implementation is gitOutLocal; remoteBackend runs git over SSH.
 func gitOut(dir string, args ...string) (string, error) {
+	return curBackend().GitOut(dir, args...)
+}
+
+// gitOutLocal runs `git -C dir args...` on this machine and returns stdout,
+// surfacing git's stderr in the error so the browser can show why a repo
+// couldn't be diffed. This is localBackend.GitOut.
+func gitOutLocal(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -1465,11 +1460,11 @@ func numOrZero(s string) int {
 // untrackedDiff so we never read a huge or binary file just to count lines.
 func countAddedLines(root, rel string) int {
 	full := filepath.Join(root, rel)
-	info, err := os.Stat(full)
+	info, err := curBackend().Stat(full)
 	if err != nil || info.IsDir() || info.Size() > maxUntracked {
 		return 0
 	}
-	data, err := os.ReadFile(full)
+	data, err := curBackend().ReadFile(full)
 	if err != nil || isBinary(data) {
 		return 0
 	}
@@ -1565,11 +1560,11 @@ func defaultBranch(root, current string) string {
 // (git diff omits untracked files), so the Diff view can preview new files too.
 func untrackedDiff(root, rel string) string {
 	full := filepath.Join(root, rel)
-	info, err := os.Stat(full)
+	info, err := curBackend().Stat(full)
 	if err != nil || info.IsDir() || info.Size() > maxUntracked {
 		return ""
 	}
-	data, err := os.ReadFile(full)
+	data, err := curBackend().ReadFile(full)
 	if err != nil {
 		return ""
 	}
@@ -1610,11 +1605,23 @@ func isBinary(b []byte) bool {
 // grid's order and membership stay live.
 func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 	for ctx.Err() == nil {
-		conn, err := net.Dial("unix", *herdrSock)
+		conn, err := net.Dial("unix", curBackend().HerdrSock())
 		if err != nil {
 			time.Sleep(time.Second)
 			continue
 		}
+		// Close the conn when ctx is cancelled (host switch / shutdown) so the
+		// blocking Scan below unblocks and this goroutine exits promptly instead
+		// of lingering on the now-stale socket. A second deferred Close on the
+		// happy path is harmless (Close is idempotent).
+		stop := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				conn.Close()
+			case <-stop:
+			}
+		}()
 		sub := `{"id":"ui-sub","method":"events.subscribe","params":{"subscriptions":[` +
 			`{"type":"workspace.created"},{"type":"workspace.updated"},{"type":"workspace.renamed"},` +
 			`{"type":"workspace.closed"},{"type":"workspace.focused"},` +
@@ -1622,6 +1629,7 @@ func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 			`{"type":"pane.created"},{"type":"pane.closed"},{"type":"pane.exited"},{"type":"pane.focused"}` +
 			`]}}` + "\n"
 		if _, err := conn.Write([]byte(sub)); err != nil {
+			close(stop)
 			conn.Close()
 			continue
 		}
@@ -1633,7 +1641,11 @@ func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 			default:
 			}
 		}
+		close(stop)
 		conn.Close()
+		if ctx.Err() != nil {
+			return
+		}
 		time.Sleep(time.Second)
 	}
 }
@@ -1648,8 +1660,15 @@ type hub struct {
 	rev      int    // pane-grid layout revision (bumped when lastSig changes)
 	lastSig  string // last seen layout signature
 	themeRev int    // theme revision (bumped when the resolved theme changes)
+	termRev  int    // host-switch revision (bumped so the browser reloads terminals)
 	curTheme resolvedTheme
 	clients  map[chan Active]struct{}
+
+	// Event subscription, restarted against the new socket on a host switch.
+	rootCtx   context.Context
+	trigger   chan struct{}
+	subMu     sync.Mutex
+	subCancel context.CancelFunc
 }
 
 // newHub seeds the hub's theme with the one resolved at startup, so the first
@@ -1660,12 +1679,46 @@ func newHub() *hub {
 	return &hub{cur: Active{HerdrUp: true}, curTheme: theme, clients: map[chan Active]struct{}{}}
 }
 
+// startSub (re)starts the herdr event subscription under a fresh child of the
+// hub's root context, cancelling any prior one. Called once at boot and again on
+// every host switch so the stream attaches to the new host's (forwarded) socket.
+func (h *hub) startSub() {
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	if h.subCancel != nil {
+		h.subCancel()
+	}
+	sctx, cancel := context.WithCancel(h.rootCtx)
+	h.subCancel = cancel
+	go subscribeEvents(sctx, h.trigger)
+}
+
+// kick forces a near-immediate refresh (non-blocking), used after a host switch
+// so the new host's state is pushed without waiting for the poll tick.
+func (h *hub) kick() {
+	select {
+	case h.trigger <- struct{}{}:
+	default:
+	}
+}
+
+// bumpTermRev increments the terminal-reload counter so the next SSE frame tells
+// the browser to reload the terminal iframes (their ttyd sessions were respawned
+// against the new host).
+func (h *hub) bumpTermRev() {
+	h.mu.Lock()
+	h.termRev++
+	h.mu.Unlock()
+}
+
 func (h *hub) snapshot() Active             { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
 func (h *hub) themeSnapshot() resolvedTheme { h.mu.RLock(); defer h.mu.RUnlock(); return h.curTheme }
 
 func (h *hub) run(ctx context.Context) {
-	trigger := make(chan struct{}, 1)
-	go subscribeEvents(ctx, trigger)
+	h.rootCtx = ctx
+	h.trigger = make(chan struct{}, 1)
+	trigger := h.trigger
+	h.startSub()
 	ticker := time.NewTicker(*pollEvery)
 	defer ticker.Stop()
 
@@ -1715,6 +1768,8 @@ func (h *hub) run(ctx context.Context) {
 		}
 		a.PanesRev = h.rev
 		a.ThemeRev = h.themeRev
+		a.TermRev = h.termRev
+		a.Host = curBackend().Name()
 		changed := a != h.cur
 		h.cur = a
 		clients := make([]chan Active, 0, len(h.clients))
@@ -1818,7 +1873,7 @@ func expandTilde(p string) string {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return p
 	}
-	home, err := os.UserHomeDir()
+	home, err := curBackend().HomeDir()
 	if err != nil {
 		return p
 	}
@@ -1834,20 +1889,10 @@ func serveFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	ents, err := os.ReadDir(path)
+	out, err := curBackend().ReadDir(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
-	}
-	out := make([]fileEntry, 0, len(ents))
-	for _, e := range ents {
-		fe := fileEntry{Name: e.Name(), Dir: e.IsDir()}
-		if !e.IsDir() {
-			if info, err := e.Info(); err == nil {
-				fe.Size = info.Size()
-			}
-		}
-		out = append(out, fe)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Dir != out[j].Dir {
@@ -1878,7 +1923,7 @@ func serveFileDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	if err := os.RemoveAll(path); err != nil {
+	if err := curBackend().RemoveAll(path); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1911,11 +1956,11 @@ func serveFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dst := filepath.Join(filepath.Dir(path), name)
-	if _, err := os.Lstat(dst); err == nil {
+	if _, err := curBackend().Lstat(dst); err == nil {
 		http.Error(w, "a file with that name already exists", http.StatusConflict)
 		return
 	}
-	if err := os.Rename(path, dst); err != nil {
+	if err := curBackend().Rename(path, dst); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1943,7 +1988,7 @@ func serveFileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	info, err := os.Stat(path)
+	info, err := curBackend().Stat(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -1952,7 +1997,7 @@ func serveFileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a file", http.StatusBadRequest)
 		return
 	}
-	if err := os.WriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
+	if err := curBackend().WriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1967,12 +2012,12 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	info, err := os.Stat(path)
+	info, err := curBackend().Stat(path)
 	if err != nil || info.IsDir() {
 		http.Error(w, "not a file", http.StatusNotFound)
 		return
 	}
-	f, err := os.Open(path)
+	f, err := curBackend().Open(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -5,6 +5,7 @@ import { AgentsTab } from "@/components/AgentsTab"
 import { BrowserTab } from "@/components/BrowserTab"
 import { DiffTab } from "@/components/DiffTab"
 import { FilesTab } from "@/components/FilesTab"
+import { Footer } from "@/components/Footer"
 import { SettingsTab } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import {
@@ -110,155 +111,158 @@ function Shell() {
   }
 
   return (
-    <ResizablePanelGroup
-      orientation="horizontal"
-      defaultLayout={savedLayout}
-      onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
-      className="h-full w-full"
-    >
-      <ResizablePanel
-        id="left"
-        defaultSize={60}
-        minSize={15}
-        className="flex h-full min-h-0 flex-col"
+    <div className="flex h-full w-full flex-col">
+      <ResizablePanelGroup
+        orientation="horizontal"
+        defaultLayout={savedLayout}
+        onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
+        className="min-h-0 w-full flex-1"
       >
-        <Tabs
-          value={leftView}
-          onValueChange={(v) => switchLeft(v as LeftView)}
-          className="flex h-full flex-col gap-0"
+        <ResizablePanel
+          id="left"
+          defaultSize={60}
+          minSize={15}
+          className="flex h-full min-h-0 flex-col"
         >
-          <TabsList className={cn(stripClass, collapsed && "pr-2")}>
-            <TabsTrigger value="herdr" className={tabClass}>
-              Herdr
-            </TabsTrigger>
-            <TabsTrigger value="settings" className={tabClass}>
-              Settings
-            </TabsTrigger>
-            {collapsed && (
+          <Tabs
+            value={leftView}
+            onValueChange={(v) => switchLeft(v as LeftView)}
+            className="flex h-full flex-col gap-0"
+          >
+            <TabsList className={cn(stripClass, collapsed && "pr-2")}>
+              <TabsTrigger value="herdr" className={tabClass}>
+                Herdr
+              </TabsTrigger>
+              <TabsTrigger value="settings" className={tabClass}>
+                Settings
+              </TabsTrigger>
+              {collapsed && (
+                <button
+                  className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
+                  title="show file viewer"
+                  onClick={() => rightPanel.current?.expand()}
+                >
+                  <ChevronLeft className="size-4" />
+                </button>
+              )}
+            </TabsList>
+            <div className="relative min-h-0 flex-1">
+              <Pane show={leftView === "herdr"}>
+                <TerminalFrame
+                  id="term"
+                  src="/terminal/"
+                  title="Herdr terminal"
+                  suppressContext
+                  hidden={leftView !== "herdr"}
+                />
+              </Pane>
+              <Pane show={leftView === "settings"}>
+                <SettingsTab
+                  active={leftView === "settings"}
+                  onOpenUpdate={openUpdateInTerminal}
+                />
+              </Pane>
+            </div>
+          </Tabs>
+        </ResizablePanel>
+
+        <ResizableHandle withHandle className={cn(collapsed && "hidden")} />
+
+        <ResizablePanel
+          id="right"
+          panelRef={rightPanel}
+          defaultSize={40}
+          minSize={15}
+          collapsible
+          collapsedSize={0}
+          onResize={(size) => {
+            const c = size.asPercentage < 0.05
+            setCollapsed((prev) => (prev === c ? prev : c))
+            lsSet("sidebarCollapsed", c ? "1" : "0")
+          }}
+          className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
+        >
+          <Tabs
+            value={rightView}
+            onValueChange={(v) => setRightView(v as RightView)}
+            className="flex h-full flex-col gap-0"
+          >
+            <TabsList className={cn(stripClass, "pr-2")}>
+              <TabsTrigger value="diff" className={tabClass}>
+                Diff
+                {diffDirty > 0 && (
+                  <span
+                    className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[10px] text-background"
+                    title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
+                  >
+                    {diffDirty}
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="files" className={tabClass}>
+                Files
+              </TabsTrigger>
+              <TabsTrigger value="agents" className={tabClass}>
+                Agents
+              </TabsTrigger>
+              <TabsTrigger value="browser" className={tabClass}>
+                Browser
+              </TabsTrigger>
+              <TabsTrigger value="terminal" className={tabClass}>
+                Terminal
+              </TabsTrigger>
               <button
                 className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
-                title="show file viewer"
-                onClick={() => rightPanel.current?.expand()}
+                title="collapse sidebar"
+                onClick={() => rightPanel.current?.collapse()}
               >
-                <ChevronLeft className="size-4" />
+                <ChevronRight className="size-4" />
               </button>
-            )}
-          </TabsList>
-          <div className="relative min-h-0 flex-1">
-            <Pane show={leftView === "herdr"}>
-              <TerminalFrame
-                id="term"
-                src="/terminal/"
-                title="Herdr terminal"
-                suppressContext
-                hidden={leftView !== "herdr"}
-              />
-            </Pane>
-            <Pane show={leftView === "settings"}>
-              <SettingsTab
-                active={leftView === "settings"}
-                onOpenUpdate={openUpdateInTerminal}
-              />
-            </Pane>
-          </div>
-        </Tabs>
-      </ResizablePanel>
+            </TabsList>
 
-      <ResizableHandle withHandle className={cn(collapsed && "hidden")} />
-
-      <ResizablePanel
-        id="right"
-        panelRef={rightPanel}
-        defaultSize={40}
-        minSize={15}
-        collapsible
-        collapsedSize={0}
-        onResize={(size) => {
-          const c = size.asPercentage < 0.05
-          setCollapsed((prev) => (prev === c ? prev : c))
-          lsSet("sidebarCollapsed", c ? "1" : "0")
-        }}
-        className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
-      >
-        <Tabs
-          value={rightView}
-          onValueChange={(v) => setRightView(v as RightView)}
-          className="flex h-full flex-col gap-0"
-        >
-          <TabsList className={cn(stripClass, "pr-2")}>
-            <TabsTrigger value="diff" className={tabClass}>
-              Diff
-              {diffDirty > 0 && (
-                <span
-                  className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[10px] text-background"
-                  title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
-                >
-                  {diffDirty}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="files" className={tabClass}>
-              Files
-            </TabsTrigger>
-            <TabsTrigger value="agents" className={tabClass}>
-              Agents
-            </TabsTrigger>
-            <TabsTrigger value="browser" className={tabClass}>
-              Browser
-            </TabsTrigger>
-            <TabsTrigger value="terminal" className={tabClass}>
-              Terminal
-            </TabsTrigger>
-            <button
-              className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
-              title="collapse sidebar"
-              onClick={() => rightPanel.current?.collapse()}
-            >
-              <ChevronRight className="size-4" />
-            </button>
-          </TabsList>
-
-          <div className="relative min-h-0 flex-1">
-            <Pane show={rightView === "diff"}>
-              <DiffTab
-                active={rightView === "diff"}
-                viewerOpen={viewerPath != null}
-                onDirty={setDiffDirty}
-              />
-            </Pane>
-            <Pane show={rightView === "files"}>
-              <FilesTab viewerPath={viewerPath} onOpenFile={setViewerPath} />
-            </Pane>
-            <Pane show={rightView === "agents"}>
-              <AgentsTab
-                active={rightView === "agents"}
-                onFocusAgent={() => switchLeft("herdr")}
-              />
-            </Pane>
-            <Pane show={rightView === "browser"}>
-              <BrowserTab />
-            </Pane>
-            <Pane show={rightView === "terminal"}>
-              <TerminalFrame
-                id="shellframe"
-                src="/shell/"
-                title="Terminal (outside herdr)"
-                suppressContext={false}
-                hidden={rightView !== "terminal"}
-              />
-            </Pane>
-
-            {viewerPath && (
-              <React.Suspense fallback={null}>
-                <FileViewer
-                  path={viewerPath}
-                  onClose={() => setViewerPath(null)}
+            <div className="relative min-h-0 flex-1">
+              <Pane show={rightView === "diff"}>
+                <DiffTab
+                  active={rightView === "diff"}
+                  viewerOpen={viewerPath != null}
+                  onDirty={setDiffDirty}
                 />
-              </React.Suspense>
-            )}
-          </div>
-        </Tabs>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+              </Pane>
+              <Pane show={rightView === "files"}>
+                <FilesTab viewerPath={viewerPath} onOpenFile={setViewerPath} />
+              </Pane>
+              <Pane show={rightView === "agents"}>
+                <AgentsTab
+                  active={rightView === "agents"}
+                  onFocusAgent={() => switchLeft("herdr")}
+                />
+              </Pane>
+              <Pane show={rightView === "browser"}>
+                <BrowserTab />
+              </Pane>
+              <Pane show={rightView === "terminal"}>
+                <TerminalFrame
+                  id="shellframe"
+                  src="/shell/"
+                  title="Terminal (outside herdr)"
+                  suppressContext={false}
+                  hidden={rightView !== "terminal"}
+                />
+              </Pane>
+
+              {viewerPath && (
+                <React.Suspense fallback={null}>
+                  <FileViewer
+                    path={viewerPath}
+                    onClose={() => setViewerPath(null)}
+                  />
+                </React.Suspense>
+              )}
+            </div>
+          </Tabs>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+      <Footer />
+    </div>
   )
 }

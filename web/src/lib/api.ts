@@ -7,6 +7,29 @@ export interface ActiveState {
   pane_id?: string
   panes_rev?: number
   theme_rev?: number
+  // Active host ("local" or an ssh-config alias) and a counter that bumps on
+  // every host switch so the browser can reload the terminal iframes.
+  host?: string
+  term_rev?: number
+}
+
+// One ssh-config host as a herdr target. Selectable in the footer switcher only
+// when reachable && running && compatible; otherwise greyed out with `err`.
+export interface HostInfo {
+  alias: string
+  reachable: boolean
+  running: boolean
+  version: string
+  protocol: number
+  socket: string
+  compatible: boolean
+  err?: string
+}
+
+export interface HostsPayload {
+  active: string
+  local: { version: string; protocol: number }
+  hosts: HostInfo[]
 }
 
 export interface Pane {
@@ -107,6 +130,20 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
   theme: () => getJSON<ThemePayload>("/api/theme"),
+
+  // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
+  // the server-side cache (the footer's manual refresh).
+  hosts: (refresh = false) =>
+    getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
+
+  // Switch the active host ("local" or an alias). The backend re-points herdr
+  // RPC, file/diff ops, and respawns the terminals at the new host.
+  switchHost: (host: string) =>
+    postJSON<{ active: string; version: string; protocol: number }>(
+      "/api/host",
+      { host }
+    ),
+
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
   agents: () => getJSON<{ agents?: Agent[] }>("/api/agents"),
   version: () => getJSON<VersionInfo>("/api/version"),
