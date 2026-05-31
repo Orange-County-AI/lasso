@@ -6,6 +6,7 @@ import { BrowserTab } from "@/components/BrowserTab"
 import { DiffTab } from "@/components/DiffTab"
 import { FilesTab } from "@/components/FilesTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
+import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import {
@@ -27,7 +28,13 @@ const FileViewer = React.lazy(() =>
 )
 
 type LeftView = "herdr" | "settings"
-type RightView = "diff" | "files" | "agents" | "browser" | "terminal"
+type RightView =
+  | "diff"
+  | "files"
+  | "agents"
+  | "browser"
+  | "terminal"
+  | "scratch"
 
 const LEFT_VIEWS: LeftView[] = ["herdr", "settings"]
 
@@ -228,6 +235,9 @@ function Shell() {
                 <TabsTrigger value="terminal" className={tabClass}>
                   Terminal
                 </TabsTrigger>
+                <TabsTrigger value="scratch" className={tabClass}>
+                  Scratch
+                </TabsTrigger>
               </div>
               <button
                 className="ml-2 flex-none self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
@@ -266,6 +276,9 @@ function Shell() {
                   suppressContext={false}
                   hidden={rightView !== "terminal"}
                 />
+              </Pane>
+              <Pane show={rightView === "scratch"}>
+                <ScratchTab />
               </Pane>
 
               {viewerPath && (
