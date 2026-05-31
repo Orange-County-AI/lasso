@@ -133,6 +133,50 @@ func serveAgentConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/repo-config — save a repo's copy-files + setup (Settings tab)
+// ---------------------------------------------------------------------------
+
+func serveRepoConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path      string  `json:"path"`
+		CopyFiles *string `json:"copy_files"`
+		Setup     *string `json:"setup"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	path := expandTilde(strings.TrimSpace(req.Path))
+	if path == "" {
+		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	c, err := loadLassoConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rc := c.repoConf(path)
+	if req.CopyFiles != nil {
+		rc.CopyFiles = *req.CopyFiles
+	}
+	if req.Setup != nil {
+		rc.Setup = *req.Setup
+	}
+	if err := saveLassoConfig(c); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rc)
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/repos — list git repos under repos_root (one level deep)
 // ---------------------------------------------------------------------------
 
@@ -264,8 +308,6 @@ type createAgentReq struct {
 	Description  string   `json:"description"`
 	Notes        string   `json:"notes"`
 	PlanMode     bool     `json:"plan_mode"`
-	CopyFiles    string   `json:"copy_files"`
-	Setup        string   `json:"setup"`
 	Attachments  []string `json:"attachments"` // filenames staged under UploadDir
 	UploadDir    string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
 }
@@ -287,6 +329,16 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Agent == "" {
 		req.Agent = "claude"
+	}
+	// The files-to-copy and setup commands are properties of the repo (and the
+	// scratch default), configured in Settings — not per-agent. Read them from
+	// the config rather than the request.
+	configMu.Lock()
+	cfg, cfgErr := loadLassoConfig()
+	configMu.Unlock()
+	if cfgErr != nil {
+		http.Error(w, cfgErr.Error(), http.StatusInternalServerError)
+		return
 	}
 	cur := curBackend()
 	slug := slugify(req.Title)
@@ -348,9 +400,11 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
 		rootPane = pane
 
-		// Copy configured files from the repo into the worktree (best effort).
-		copyRepoFiles(cur, repo, workDir, req.CopyFiles)
-		setup = req.Setup
+		// Copy the repo's configured files into the worktree and run its setup
+		// script before the agent (both per-repo settings from config).
+		rc := cfg.repoConf(repo)
+		copyRepoFiles(cur, repo, workDir, rc.CopyFiles)
+		setup = rc.Setup
 
 	case "scratch":
 		workDir := uniqueChildDir(lassoScratchDir(), slug)
@@ -370,7 +424,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		ws, pane := parseCreateResult(res)
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
 		rootPane = pane
-		setup = req.Setup
+		setup = cfg.ScratchSetup
 
 	default:
 		http.Error(w, `type must be "git" or "scratch"`, http.StatusBadRequest)
@@ -399,10 +453,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		if req.Type == "git" {
 			c.LastRepo = rec.Repo
-			rc := c.repoConf(rec.Repo)
-			rc.LastBaseBranch = rec.BaseBranch
-			rc.CopyFiles = req.CopyFiles
-			rc.Setup = req.Setup
+			c.repoConf(rec.Repo).LastBaseBranch = rec.BaseBranch
 		}
 		c.Agents = append(c.Agents, rec)
 		if err := saveLassoConfig(c); err != nil {

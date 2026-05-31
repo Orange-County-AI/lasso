@@ -1,4 +1,4 @@
-import { ChevronDown, Plus, Settings2, X } from "lucide-react"
+import { ChevronDown, Plus, X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -46,23 +46,28 @@ function generateBranchName(title: string): string {
   return slug ? `${slug}-${randomSuffix()}` : ""
 }
 
-// Shared styles for the native textarea/select so they match the shadcn inputs.
+// Native textarea/select styled to match the shadcn <Input> (same border,
+// radius, and background) so every field in the form reads as one set.
 const fieldClass =
-  "w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-const labelClass = "text-xs font-medium text-muted-foreground"
+  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+const labelClass = "font-medium text-muted-foreground text-xs"
 
 function Field({
   label,
+  htmlFor,
   children,
 }: {
   label: string
+  htmlFor?: string
   children: React.ReactNode
 }) {
   return (
-    <label className="flex flex-col gap-1">
-      <span className={labelClass}>{label}</span>
+    <div className="flex flex-col gap-1">
+      <label className={labelClass} htmlFor={htmlFor}>
+        {label}
+      </label>
       {children}
-    </label>
+    </div>
   )
 }
 
@@ -78,7 +83,6 @@ export function CreateAgentDialog({
   const [open, setOpen] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [showAdvanced, setShowAdvanced] = React.useState(false)
-  const [showSettings, setShowSettings] = React.useState(false)
 
   // Settings / defaults (from ~/.lasso/config.yaml).
   const [config, setConfig] = React.useState<AgentConfig | null>(null)
@@ -98,18 +102,10 @@ export function CreateAgentDialog({
   const [planMode, setPlanMode] = React.useState(false)
   const [planTouched, setPlanTouched] = React.useState(false)
   const [notes, setNotes] = React.useState("")
-  const [copyFiles, setCopyFiles] = React.useState("")
-  const [setup, setSetup] = React.useState("")
   const [files, setFiles] = React.useState<File[]>([])
 
-  // Editable settings (mirrors config; saved on demand).
-  const [reposRoot, setReposRoot] = React.useState("")
-  const [scratchSetup, setScratchSetup] = React.useState("")
-
-  const selectedRepo = repos.find((r) => r.path === repo)
-
   // Load config + repos when the dialog opens. We deliberately seed only on the
-  // open transition, so `type`/`config` are read once and not in the dep list.
+  // open transition, so `config` is read once and not in the dep list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: seed once on open
   React.useEffect(() => {
     if (!open) return
@@ -119,9 +115,6 @@ export function CreateAgentDialog({
         setConfig(c)
         setPrefix(c.branch_prefix || "")
         setAgent(c.default_agent || "claude")
-        setReposRoot(c.repos_root || "")
-        setScratchSetup(c.scratch_setup || "")
-        if (type === "scratch") setSetup(c.scratch_setup || "")
       })
       .catch(() => {
         /* creator still works with defaults */
@@ -141,16 +134,13 @@ export function CreateAgentDialog({
       .catch(() => setRepos([]))
   }, [open])
 
-  // When the repo changes, load its branches + remembered per-repo state.
-  // `repos` is read for the selected entry but intentionally not a dep — it's
-  // stable for the dialog's lifetime and re-running on every repos change would
-  // clobber the user's edits.
+  // When the repo changes, load its branches + remembered base branch. `repos`
+  // is read for the selected entry but intentionally not a dep — it's stable for
+  // the dialog's lifetime.
   // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
   React.useEffect(() => {
     if (!open || type !== "git" || !repo) return
     const re = repos.find((r) => r.path === repo)
-    setCopyFiles(re?.copy_files || "")
-    setSetup(re?.setup || "")
     api
       .repoBranches(repo)
       .then((b) => {
@@ -180,12 +170,6 @@ export function CreateAgentDialog({
     if (!planTouched) setPlanMode(v.trim().length > 0)
   }
 
-  const onTypeChange = (t: AgentType) => {
-    setType(t)
-    if (t === "scratch") setSetup(scratchSetup)
-    else setSetup(selectedRepo?.setup || "")
-  }
-
   const reset = () => {
     setTitle("")
     setDescription("")
@@ -196,7 +180,6 @@ export function CreateAgentDialog({
     setPlanMode(false)
     setPlanTouched(false)
     setShowAdvanced(false)
-    setShowSettings(false)
   }
 
   const canSubmit =
@@ -220,7 +203,6 @@ export function CreateAgentDialog({
         plan_mode: planMode,
         description: description.trim() || undefined,
         notes: notes.trim() || undefined,
-        setup: setup.trim() || undefined,
         attachments,
         upload_dir: uploadDir,
       }
@@ -229,7 +211,6 @@ export function CreateAgentDialog({
         payload.base_branch = baseBranch || undefined
         payload.branch_prefix = prefix.trim() || undefined
         payload.branch_name = branchName.trim() || autoBranch || undefined
-        payload.copy_files = copyFiles.trim() || undefined
       }
       const rec = await api.createAgent(payload)
       toast.success(`Created agent “${rec.title}”`)
@@ -245,28 +226,6 @@ export function CreateAgentDialog({
       })
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  const saveSettings = async () => {
-    try {
-      const c = await api.saveAgentConfig({
-        repos_root: reposRoot,
-        branch_prefix: prefix,
-        default_agent: agent,
-        scratch_setup: scratchSetup,
-      })
-      setConfig(c)
-      toast.success("Saved defaults")
-      // Refresh repos in case the root changed.
-      api
-        .repos()
-        .then((res) => setRepos(res.repos))
-        .catch(() => {})
-    } catch (err) {
-      toast.error("Failed to save defaults", {
-        description: err instanceof Error ? err.message : String(err),
-      })
     }
   }
 
@@ -312,7 +271,7 @@ export function CreateAgentDialog({
               <button
                 key={t}
                 type="button"
-                onClick={() => onTypeChange(t)}
+                onClick={() => setType(t)}
                 className={cn(
                   "flex-1 rounded-md border px-3 py-1.5 text-sm capitalize",
                   type === t
@@ -325,8 +284,9 @@ export function CreateAgentDialog({
             ))}
           </div>
 
-          <Field label="Title">
+          <Field label="Title" htmlFor="agent-title">
             <Input
+              id="agent-title"
               value={title}
               onChange={(e) => onTitleChange(e.target.value)}
               placeholder="What should this agent work on?"
@@ -334,60 +294,9 @@ export function CreateAgentDialog({
             />
           </Field>
 
-          {type === "git" && (
-            <>
-              <Field label="Repository">
-                <select
-                  className={fieldClass}
-                  value={repo}
-                  onChange={(e) => setRepo(e.target.value)}
-                >
-                  {repos.length === 0 && (
-                    <option value="">No repos found</option>
-                  )}
-                  {repos.map((r) => (
-                    <option key={r.path} value={r.path}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Base branch">
-                <select
-                  className={fieldClass}
-                  value={baseBranch}
-                  onChange={(e) => setBaseBranch(e.target.value)}
-                >
-                  {branches.length === 0 && (
-                    <option value={baseBranch}>{baseBranch || "main"}</option>
-                  )}
-                  {branches.map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </>
-          )}
-
-          <Field label="AI agent">
-            <select
-              className={fieldClass}
-              value={agent}
-              onChange={(e) => setAgent(e.target.value)}
-            >
-              {AGENTS.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Description">
+          <Field label="Description" htmlFor="agent-description">
             <textarea
+              id="agent-description"
               className={cn(fieldClass, "resize-none")}
               rows={3}
               value={description}
@@ -406,6 +315,61 @@ export function CreateAgentDialog({
             />
             <span className="text-sm">Start in plan mode</span>
           </label>
+
+          {type === "git" && (
+            <>
+              <Field label="Repository" htmlFor="agent-repo">
+                <select
+                  id="agent-repo"
+                  className={fieldClass}
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                >
+                  {repos.length === 0 && (
+                    <option value="">No repos found</option>
+                  )}
+                  {repos.map((r) => (
+                    <option key={r.path} value={r.path}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Base branch" htmlFor="agent-base">
+                <select
+                  id="agent-base"
+                  className={fieldClass}
+                  value={baseBranch}
+                  onChange={(e) => setBaseBranch(e.target.value)}
+                >
+                  {branches.length === 0 && (
+                    <option value={baseBranch}>{baseBranch || "main"}</option>
+                  )}
+                  {branches.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </>
+          )}
+
+          <Field label="AI agent" htmlFor="agent-agent">
+            <select
+              id="agent-agent"
+              className={fieldClass}
+              value={agent}
+              onChange={(e) => setAgent(e.target.value)}
+            >
+              {AGENTS.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+          </Field>
 
           {/* Advanced */}
           <button
@@ -426,15 +390,17 @@ export function CreateAgentDialog({
             <div className="flex flex-col gap-3 border-border border-l pl-3">
               {type === "git" && (
                 <>
-                  <Field label="Branch prefix">
+                  <Field label="Branch prefix" htmlFor="agent-prefix">
                     <Input
+                      id="agent-prefix"
                       value={prefix}
                       onChange={(e) => setPrefix(e.target.value)}
                       placeholder="feat/"
                     />
                   </Field>
-                  <Field label="Branch name">
+                  <Field label="Branch name" htmlFor="agent-branch">
                     <Input
+                      id="agent-branch"
                       value={branchName}
                       onChange={(e) => setBranchName(e.target.value)}
                       placeholder={autoBranch || "auto-generated"}
@@ -445,36 +411,20 @@ export function CreateAgentDialog({
                       branch: {effectiveBranch}
                     </p>
                   )}
-                  <Field label="Copy files into worktree (globs)">
-                    <textarea
-                      className={cn(fieldClass, "resize-none")}
-                      rows={2}
-                      value={copyFiles}
-                      onChange={(e) => setCopyFiles(e.target.value)}
-                      placeholder=".env, .env.local"
-                    />
-                  </Field>
                 </>
               )}
-              <Field label="Setup commands (run before the agent)">
+              <Field label="Notes (saved to NOTES.md)" htmlFor="agent-notes">
                 <textarea
-                  className={cn(fieldClass, "resize-none font-mono")}
-                  rows={3}
-                  value={setup}
-                  onChange={(e) => setSetup(e.target.value)}
-                  placeholder={type === "git" ? "bun install" : "uv venv"}
-                />
-              </Field>
-              <Field label="Notes (saved to NOTES.md)">
-                <textarea
+                  id="agent-notes"
                   className={cn(fieldClass, "resize-none")}
                   rows={2}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                 />
               </Field>
-              <Field label="Attachments">
+              <Field label="Attachments" htmlFor="agent-files">
                 <input
+                  id="agent-files"
                   type="file"
                   multiple
                   className="text-muted-foreground text-sm"
@@ -507,44 +457,6 @@ export function CreateAgentDialog({
                   ))}
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Settings / defaults */}
-          <button
-            type="button"
-            className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground"
-            onClick={() => setShowSettings((s) => !s)}
-          >
-            <Settings2 className="size-4" />
-            Defaults
-          </button>
-
-          {showSettings && (
-            <div className="flex flex-col gap-3 border-border border-l pl-3">
-              <Field label="Repos root">
-                <Input
-                  value={reposRoot}
-                  onChange={(e) => setReposRoot(e.target.value)}
-                  placeholder="~/projects"
-                />
-              </Field>
-              <Field label="Default scratch setup">
-                <textarea
-                  className={cn(fieldClass, "resize-none font-mono")}
-                  rows={2}
-                  value={scratchSetup}
-                  onChange={(e) => setScratchSetup(e.target.value)}
-                />
-              </Field>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={saveSettings}
-              >
-                Save defaults
-              </Button>
             </div>
           )}
         </div>

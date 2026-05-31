@@ -179,8 +179,6 @@ export interface CreateAgentPayload {
   description?: string
   notes?: string
   plan_mode: boolean
-  copy_files?: string
-  setup?: string
   attachments?: string[]
   upload_dir?: string
 }
@@ -338,6 +336,14 @@ export const api = {
       >
     >
   ) => postJSON<AgentConfig>("/api/agent-config", cfg),
+
+  // Save a repo's per-repo creator settings (copy-files globs + setup script).
+  // These live with the repo, not the agent, so they're edited in Settings.
+  saveRepoConfig: (cfg: {
+    path: string
+    copy_files?: string
+    setup?: string
+  }) => postJSON<RepoConfig>("/api/repo-config", cfg),
 
   // Git repos discovered under repos_root, each with its remembered state.
   repos: () => getJSON<{ root: string; repos: RepoEntry[] }>("/api/repos"),

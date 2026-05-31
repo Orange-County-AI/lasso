@@ -185,6 +185,7 @@ func main() {
 	mux.HandleFunc("/api/hosts", serveHosts)
 	mux.HandleFunc("/api/host", serveHostSwitch)
 	mux.HandleFunc("/api/agent-config", serveAgentConfig)
+	mux.HandleFunc("/api/repo-config", serveRepoConfig)
 	mux.HandleFunc("/api/repos", serveRepos)
 	mux.HandleFunc("/api/repo-branches", serveRepoBranches)
 	mux.HandleFunc("/api/create-agent", serveCreateAgent)
