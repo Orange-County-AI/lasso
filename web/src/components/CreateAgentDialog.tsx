@@ -103,7 +103,6 @@ export function CreateAgentDialog({
   const [description, setDescription] = React.useState("")
   const [planMode, setPlanMode] = React.useState(false)
   const [planTouched, setPlanTouched] = React.useState(false)
-  const [notes, setNotes] = React.useState("")
   const [files, setFiles] = React.useState<File[]>([])
 
   // Load config + repos when the dialog opens. We deliberately seed only on the
@@ -175,7 +174,6 @@ export function CreateAgentDialog({
   const reset = () => {
     setTitle("")
     setDescription("")
-    setNotes("")
     setBranchName("")
     setAutoBranch("")
     setFiles([])
@@ -204,7 +202,6 @@ export function CreateAgentDialog({
         agent,
         plan_mode: planMode,
         description: description.trim() || undefined,
-        notes: notes.trim() || undefined,
         attachments,
         upload_dir: uploadDir,
       }
@@ -275,10 +272,10 @@ export function CreateAgentDialog({
                 type="button"
                 onClick={() => setType(t)}
                 className={cn(
-                  "flex-1 rounded-md border px-3 py-1.5 text-sm capitalize",
+                  "flex-1 rounded-md border bg-background px-3 py-1.5 text-sm capitalize transition-colors",
                   type === t
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-muted-foreground hover:text-foreground"
+                    ? "border-primary bg-primary/15 text-primary"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 )}
               >
                 {t}
@@ -418,15 +415,6 @@ export function CreateAgentDialog({
                   )}
                 </>
               )}
-              <Field label="Notes (saved to NOTES.md)" htmlFor="agent-notes">
-                <textarea
-                  id="agent-notes"
-                  className={cn(fieldClass, "resize-none")}
-                  rows={2}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                />
-              </Field>
               <Field label="Attachments" htmlFor="agent-files">
                 <input
                   id="agent-files"
