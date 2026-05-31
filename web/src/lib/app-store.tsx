@@ -70,9 +70,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Repaint the UI + terminals whenever herdr's theme revision moves (including
   // the priming value, so a reload always converges to the current theme).
+  // themeRev is a trigger-only dep: refreshTheme() re-fetches /api/theme on each
+  // bump (SSE) rather than reading the rev itself.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: themeRev is the intentional re-theme trigger
   React.useEffect(() => {
     refreshTheme()
-  }, [])
+  }, [state.themeRev])
 
   return <AppContext.Provider value={state}>{children}</AppContext.Provider>
 }

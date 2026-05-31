@@ -177,11 +177,12 @@ export function refitTerminal(id: string) {
   }
 }
 
-// typeIntoShell pastes text into the out-of-herdr shell without submitting, so
-// the user can review and press Enter. Retries while xterm is still loading.
-export function typeIntoShell(text: string, tries = 0) {
+// pasteIntoTerminal pastes text into a same-origin terminal iframe without
+// submitting, so the user can review and press Enter. Retries while xterm is
+// still loading. typeIntoShell / typeIntoHerdr are the per-frame shorthands.
+export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   try {
-    const w = frameWindow("shellframe")
+    const w = frameWindow(id)
     if (w?.term && typeof w.term.paste === "function") {
       w.focus()
       w.term.focus?.()
@@ -191,7 +192,17 @@ export function typeIntoShell(text: string, tries = 0) {
   } catch {
     /* same-origin; ignore */
   }
-  if (tries < 20) setTimeout(() => typeIntoShell(text, tries + 1), 150)
+  if (tries < 20) setTimeout(() => pasteIntoTerminal(id, text, tries + 1), 150)
+}
+
+// typeIntoShell pastes into the out-of-herdr shell (/shell/).
+export function typeIntoShell(text: string) {
+  pasteIntoTerminal("shellframe", text)
+}
+
+// typeIntoHerdr pastes into the herdr terminal (/terminal/), where agents run.
+export function typeIntoHerdr(text: string) {
+  pasteIntoTerminal("term", text)
 }
 
 // Hand keyboard focus to the herdr terminal after focusing a pane.
