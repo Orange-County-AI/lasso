@@ -127,7 +127,7 @@ export function SettingsTab({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+      <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
         <AgentCreatorSettings active={active} />
       </div>
     </div>
@@ -232,8 +232,8 @@ function AgentCreatorSettings({ active }: { active: boolean }) {
   })()
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4 @2xl:flex-row">
+      <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
         <h3 className="font-medium text-foreground text-sm">
           New Agent defaults
         </h3>
@@ -290,7 +290,7 @@ function AgentCreatorSettings({ active }: { active: boolean }) {
         </Button>
       </section>
 
-      <section className="flex flex-col gap-3 border-border border-t pt-5">
+      <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
         <div className="flex flex-col gap-0.5">
           <h3 className="font-medium text-foreground text-sm">
             Per-repository setup
