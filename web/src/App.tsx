@@ -1,31 +1,27 @@
-import * as React from "react"
-import type {
-  Layout,
-  PanelImperativeHandle,
-} from "react-resizable-panels"
 import { ChevronLeft, ChevronRight } from "lucide-react"
-
-import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
-import { typeIntoShell } from "@/lib/terminal"
-import { cn } from "@/lib/utils"
+import * as React from "react"
+import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
+import { BrowserView } from "@/components/BrowserView"
+import { DiffView } from "@/components/DiffView"
+import { FilesView } from "@/components/FilesView"
+import { PaneGrid } from "@/components/PaneGrid"
+import { SettingsView } from "@/components/SettingsView"
+import { TerminalFrame } from "@/components/TerminalFrame"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
-import { TerminalFrame } from "@/components/TerminalFrame"
-import { PaneGrid } from "@/components/PaneGrid"
-import { SettingsView } from "@/components/SettingsView"
-import { DiffView } from "@/components/DiffView"
-import { FilesView } from "@/components/FilesView"
-import { BrowserView } from "@/components/BrowserView"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
+import { typeIntoShell } from "@/lib/terminal"
+import { cn } from "@/lib/utils"
 
 // The file viewer pulls in react-markdown + highlight.js; load it only on first
 // file open so the initial page stays light (mirrors the original lazy libs).
 const FileViewer = React.lazy(() =>
-  import("@/components/FileViewer").then((m) => ({ default: m.FileViewer })),
+  import("@/components/FileViewer").then((m) => ({ default: m.FileViewer }))
 )
 
 type LeftView = "herdr" | "grid" | "settings"
@@ -40,7 +36,13 @@ const stripClass =
 const tabClass =
   "rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-1.5 text-xs text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
 
-function Pane({ show, children }: { show: boolean; children: React.ReactNode }) {
+function Pane({
+  show,
+  children,
+}: {
+  show: boolean
+  children: React.ReactNode
+}) {
   return (
     <div className={cn("absolute inset-0 flex flex-col", !show && "hidden")}>
       {children}
@@ -88,7 +90,7 @@ function Shell() {
       const h = location.hash.slice(1)
       switchLeft(
         (LEFT_VIEWS as string[]).includes(h) ? (h as LeftView) : "herdr",
-        true,
+        true
       )
     }
     window.addEventListener("hashchange", onHash)
@@ -176,7 +178,7 @@ function Shell() {
           setCollapsed((prev) => (prev === c ? prev : c))
           lsSet("sidebarCollapsed", c ? "1" : "0")
         }}
-        className="relative flex h-full min-h-0 flex-col border-l border-border bg-card"
+        className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
       >
         <Tabs
           value={rightView}
@@ -188,7 +190,7 @@ function Shell() {
               Diff
               {diffDirty > 0 && (
                 <span
-                  className="ml-1.5 rounded-full bg-warn px-1.5 text-[10px] font-semibold text-background"
+                  className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[10px] text-background"
                   title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
                 >
                   {diffDirty}

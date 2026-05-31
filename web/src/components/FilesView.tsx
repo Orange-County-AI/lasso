@@ -1,13 +1,17 @@
 import * as React from "react"
 import { toast } from "sonner"
-
-import { api, type FileEntry } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
-import { fmtSize } from "@/lib/format"
-import { cn } from "@/lib/utils"
-import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -21,16 +25,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { Input } from "@/components/ui/input"
+import { api, type FileEntry } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
+import { fmtSize } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 // An entry the user has targeted with a context-menu action. `parent` is the
 // directory holding it — refreshed after the action so the tree updates.
@@ -38,7 +37,7 @@ type Target = { name: string; full: string; dir: boolean; parent: string }
 
 const INDENT = 14 // px added to the row's left padding per nesting level
 
-const join = (dir: string, name: string) => dir.replace(/\/$/, "") + "/" + name
+const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`
 
 // The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
 // active pane (by default). Clicking a directory expands/collapses it in place;
@@ -65,7 +64,7 @@ export function FilesView({
     Record<string, FileEntry[]>
   >({})
   const [errorByPath, setErrorByPath] = React.useState<Record<string, string>>(
-    {},
+    {}
   )
   const [renameTarget, setRenameTarget] = React.useState<Target | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
@@ -91,7 +90,7 @@ export function FilesView({
         if (cancelled) return
         setRootPath(data.path)
         setRootParent(
-          data.parent && data.parent !== data.path ? data.parent : null,
+          data.parent && data.parent !== data.path ? data.parent : null
         )
         setChildrenByPath({ [data.path]: data.entries })
         if (document.activeElement !== inputRef.current) setPathValue(data.path)
@@ -130,7 +129,8 @@ export function FilesView({
         next.delete(full)
       } else {
         next.add(full)
-        if (!(full in childrenByPath) && !(full in errorByPath)) void loadDir(full)
+        if (!(full in childrenByPath) && !(full in errorByPath))
+          void loadDir(full)
       }
       return next
     })
@@ -154,7 +154,7 @@ export function FilesView({
     setExpanded((prev) => {
       const next = new Set<string>()
       for (const p of prev)
-        if (p !== prefix && !p.startsWith(prefix + "/")) next.add(p)
+        if (p !== prefix && !p.startsWith(`${prefix}/`)) next.add(p)
       return next
     })
 
@@ -224,7 +224,7 @@ export function FilesView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-2 border-b border-border bg-background px-3 py-2">
+      <header className="flex items-center gap-2 border-border border-b bg-background px-3 py-2">
         <Input
           ref={inputRef}
           value={pathValue}
@@ -238,7 +238,7 @@ export function FilesView({
           }}
           onKeyDown={onPathKeyDown}
         />
-        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
+        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
           <Checkbox
             checked={follow}
             onCheckedChange={(v) => setFollow(v === true)}
@@ -310,7 +310,7 @@ export function FilesView({
               {deleteTarget?.name}”?
             </AlertDialogTitle>
             <AlertDialogDescription className="min-w-0">
-              <span className="block font-mono text-xs break-all">
+              <span className="block break-all font-mono text-xs">
                 {deleteTarget?.full}
               </span>
               <span className="mt-3 block">

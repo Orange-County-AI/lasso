@@ -1,9 +1,8 @@
-import * as React from "react"
 import { RotateCw } from "lucide-react"
-
-import { api, type VersionInfo } from "@/lib/api"
-import { Button } from "@/components/ui/button"
+import * as React from "react"
 import { Pill } from "@/components/Pill"
+import { Button } from "@/components/ui/button"
+import { api, type VersionInfo } from "@/lib/api"
 
 // The Settings tab: herdr's installed + latest version. When an update is
 // available the latest pill becomes a shortcut that opens the Terminal tab with
@@ -47,7 +46,9 @@ export function SettingsView({
   } else if (errored || !info) {
     latest = <Pill>latest unavailable</Pill>
   } else if (info.latest) {
-    const suffix = info.update_available ? " · update available" : " · up to date"
+    const suffix = info.update_available
+      ? " · update available"
+      : " · up to date"
     latest = (
       <Pill
         tone={info.update_available ? "warn" : "good"}
@@ -69,9 +70,9 @@ export function SettingsView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-b border-border bg-background px-3 py-2">
+      <header className="border-border border-b bg-background px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="mr-0.5 text-xs tracking-wide text-muted-foreground">
+          <span className="mr-0.5 text-muted-foreground text-xs tracking-wide">
             herdr
           </span>
           <Pill>

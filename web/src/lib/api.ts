@@ -95,9 +95,9 @@ export const api = {
   version: () => getJSON<VersionInfo>("/api/version"),
 
   files: (path: string) =>
-    getJSON<DirListing>("/api/files?path=" + encodeURIComponent(path)),
+    getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
 
-  fileURL: (path: string) => "/api/file?path=" + encodeURIComponent(path),
+  fileURL: (path: string) => `/api/file?path=${encodeURIComponent(path)}`,
 
   fileText: async (path: string) => {
     const r = await fetch(api.fileURL(path))
@@ -121,7 +121,7 @@ export const api = {
       mode: "auto",
       ignoreWhitespace: "true",
     })
-    return getJSON<DiffPayload>("/api/diff?" + params)
+    return getJSON<DiffPayload>(`/api/diff?${params}`)
   },
 
   // The unified diff for a single file, pinned to the same comparison the list
@@ -130,7 +130,7 @@ export const api = {
     path: string,
     file: string,
     mode: "branch" | "working",
-    baseBranch?: string,
+    baseBranch?: string
   ) => {
     const params = new URLSearchParams({
       path,
@@ -139,7 +139,7 @@ export const api = {
       ignoreWhitespace: "true",
     })
     if (baseBranch) params.set("baseBranch", baseBranch)
-    return getJSON<FileDiff>("/api/diff-file?" + params)
+    return getJSON<FileDiff>(`/api/diff-file?${params}`)
   },
 
   focus: (workspace_id?: string, tab_id?: string) =>
@@ -151,7 +151,7 @@ export const api = {
   close: (pane_ids: string[]) =>
     postJSON<{ closed?: string[]; errors?: Record<string, string> }>(
       "/api/close",
-      { pane_ids },
+      { pane_ids }
     ),
 
   pasteImage: async (file: Blob): Promise<{ path: string }> => {

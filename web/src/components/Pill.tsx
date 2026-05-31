@@ -1,7 +1,6 @@
-import * as React from "react"
-
-import { cn } from "@/lib/utils"
+import type * as React from "react"
 import { Badge } from "@/components/ui/badge"
+import { cn } from "@/lib/utils"
 
 type Tone = "muted" | "accent" | "good" | "bad" | "warn"
 
@@ -33,13 +32,13 @@ export function Pill({
       asChild
       variant="outline"
       className={cn(
-        "rounded-full px-2 py-px text-[11px] font-normal",
+        "rounded-full px-2 py-px font-normal text-[11px]",
         multiline
-          ? "h-auto items-start overflow-visible py-0.5 leading-snug break-all whitespace-normal"
+          ? "h-auto items-start overflow-visible whitespace-normal break-all py-0.5 leading-snug"
           : "whitespace-nowrap",
         toneClass[tone],
         clickable && "cursor-pointer hover:bg-primary/15",
-        className,
+        className
       )}
     >
       <span {...props} />

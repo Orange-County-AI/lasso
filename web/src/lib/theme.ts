@@ -15,7 +15,7 @@ function applyCSSVars(css: string) {
   const re = /--([\w-]+)\s*:\s*([^;]+);/g
   let m: RegExpExecArray | null
   while ((m = re.exec(css)) !== null) {
-    root.style.setProperty("--h-" + m[1], m[2].trim())
+    root.style.setProperty(`--h-${m[1]}`, m[2].trim())
   }
 }
 
@@ -25,7 +25,7 @@ function applyCSSVars(css: string) {
 // be ready when a theme arrives (iframe still loading), so retry a few times.
 export function applyTermTheme(
   theme: Record<string, unknown> | null,
-  tries = 0,
+  tries = 0
 ) {
   if (!theme) return
   let pending = false
@@ -36,7 +36,7 @@ export function applyTermTheme(
       const w = el.contentWindow as unknown as {
         term?: { options?: Record<string, unknown> }
       }
-      if (w && w.term && w.term.options) {
+      if (w?.term?.options) {
         w.term.options.theme = theme
         continue
       }

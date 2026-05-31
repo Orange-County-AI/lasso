@@ -1,14 +1,13 @@
-import * as React from "react"
 import { ExternalLink, RotateCw } from "lucide-react"
-
-import { lsGet, lsSet } from "@/lib/app-store"
+import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { lsGet, lsSet } from "@/lib/app-store"
 
 function normalize(raw: string): string {
   const u = raw.trim()
   if (!u) return ""
-  return /^https?:\/\//i.test(u) ? u : "http://" + u
+  return /^https?:\/\//i.test(u) ? u : `http://${u}`
 }
 
 // The Browser tab: a URL bar + preview iframe, defaulting to the host this UI
@@ -17,7 +16,7 @@ export function BrowserView() {
   const [url, setUrl] = React.useState(() => {
     const saved = lsGet("browserUrl")
     if (saved) return saved
-    return location.protocol + "//" + location.hostname + ":3000"
+    return `${location.protocol}//${location.hostname}:3000`
   })
   const [src, setSrc] = React.useState(() => normalize(url))
   const [reloadKey, setReloadKey] = React.useState(0)
@@ -33,7 +32,7 @@ export function BrowserView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-border bg-background px-2 py-1.5">
+      <div className="flex flex-shrink-0 items-center gap-1.5 border-border border-b bg-background px-2 py-1.5">
         <Button
           variant="outline"
           size="icon"

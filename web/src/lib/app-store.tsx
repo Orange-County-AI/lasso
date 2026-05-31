@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { api, type ActiveState } from "@/lib/api"
+import { type ActiveState, api } from "@/lib/api"
 import { refreshTheme } from "@/lib/theme"
 
 // App-wide state derived from herdr, kept live over the /api/events SSE stream.
@@ -44,7 +44,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
     es = new EventSource("/api/events")
     es.addEventListener("active", (e) =>
-      apply(JSON.parse((e as MessageEvent).data)),
+      apply(JSON.parse((e as MessageEvent).data))
     )
     return () => es?.close()
   }, [apply])
@@ -53,7 +53,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // the priming value, so a reload always converges to the current theme).
   React.useEffect(() => {
     refreshTheme()
-  }, [state.themeRev])
+  }, [])
 
   return <AppContext.Provider value={state}>{children}</AppContext.Provider>
 }

@@ -111,7 +111,7 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
       const items = e.clipboardData?.items
       if (!items) return
       const imgItem = Array.from(items).find(
-        (it) => it.kind === "file" && it.type.startsWith("image/"),
+        (it) => it.kind === "file" && it.type.startsWith("image/")
       )
       if (!imgItem) return // text paste: let xterm handle it
       const file = imgItem.getAsFile()
@@ -121,12 +121,12 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
       try {
         const { path } = await api.pasteImage(file)
         const term = win?.term
-        if (term && typeof term.paste === "function") term.paste(path + " ")
+        if (term && typeof term.paste === "function") term.paste(`${path} `)
       } catch {
         /* never break the terminal */
       }
     },
-    true,
+    true
   )
 
   wireShiftEnter(id, 0)
@@ -164,7 +164,7 @@ export function refitTerminal(id: string) {
 export function typeIntoShell(text: string, tries = 0) {
   try {
     const w = frameWindow("shellframe")
-    if (w && w.term && typeof w.term.paste === "function") {
+    if (w?.term && typeof w.term.paste === "function") {
       w.focus()
       w.term.focus?.()
       w.term.paste(text)

@@ -18,7 +18,10 @@ export function TerminalFrame({
   suppressContext: boolean
   hidden: boolean
 }) {
-  React.useEffect(() => bootTermFrame(id, suppressContext), [id, suppressContext])
+  React.useEffect(
+    () => bootTermFrame(id, suppressContext),
+    [id, suppressContext]
+  )
 
   React.useEffect(() => {
     if (!hidden) refitTerminal(id)

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty'); case \"$f\" in *.go) gofmt -w \"$f\";; */web/*.ts|*/web/*.tsx|*/web/*.js|*/web/*.jsx|*/web/*.css|*/web/*.json|*/web/*.jsonc) ( cd web && bunx biome format --write \"$f\" );; esac; } 2>/dev/null || true",
+            "statusMessage": "Formatting edited file"
+          }
+        ]
+      }
+    ]
+  }
+}

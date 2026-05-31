@@ -1,11 +1,10 @@
 import * as React from "react"
-
+import { Pill } from "@/components/Pill"
+import { Button } from "@/components/ui/button"
 import { api, type DiffFileMeta, type DiffPayload } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
-import { parseDiff, type DiffLine } from "@/lib/diff"
+import { type DiffLine, parseDiff } from "@/lib/diff"
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Pill } from "@/components/Pill"
 
 // The Diff tab. It always follows herdr's active pane and auto-picks the diff
 // mode (working tree when dirty, branch-vs-primary when clean). The complete
@@ -65,7 +64,7 @@ export function DiffView({
       const fresh = files
         .map((f) => f.path)
         .filter((p) => !seenRef.current.has(p))
-      fresh.forEach((p) => seenRef.current.add(p))
+      for (const p of fresh) seenRef.current.add(p)
       if (fresh.length) setCollapsed((prev) => new Set([...prev, ...fresh]))
       setError(null)
       setData(d)
@@ -124,7 +123,7 @@ export function DiffView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-b border-border bg-background px-3 py-2">
+      <header className="border-border border-b bg-background px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <Pill tone="accent" multiline>
             {activeCwd || "—"}
@@ -147,7 +146,7 @@ export function DiffView({
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto h-6 rounded-full px-3 text-[11px] font-normal"
+            className="ml-auto h-6 rounded-full px-3 font-normal text-[11px]"
             onClick={toggleAll}
           >
             {allCollapsed ? "expand all" : "collapse all"}
@@ -172,7 +171,7 @@ export function DiffView({
               ? data.baseBranch
                 ? `no changes vs ${data.baseBranch}`
                 : "no base branch to compare against"
-              : "no changes" + (data.branch ? ` on ${data.branch}` : "")}
+              : `no changes${data.branch ? ` on ${data.branch}` : ""}`}
           </div>
         ) : (
           files.map((f) => (
@@ -236,7 +235,7 @@ function DiffFileBlock({
       cancelled = true
     }
     // file.add/file.del in deps so a polled content change refetches an open file.
-  }, [collapsed, repoPath, file.path, file.add, file.del, mode, baseBranch])
+  }, [collapsed, repoPath, file.path, mode, baseBranch])
 
   return (
     <div className="dfile">

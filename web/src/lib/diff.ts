@@ -53,7 +53,6 @@ export function parseDiff(text: string): DiffFile[] {
     }
     if (line.startsWith("Binary ")) {
       cur.lines.push({ t: "meta", s: line })
-      continue
     }
     // index/new file/mode/rename/"\ No newline" lines — not shown
   }

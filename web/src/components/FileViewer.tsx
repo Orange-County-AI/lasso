@@ -1,15 +1,14 @@
-import * as React from "react"
 import hljs from "highlight.js"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import rehypeHighlight from "rehype-highlight"
 import { ArrowLeft, ExternalLink, X } from "lucide-react"
-
-import { api } from "@/lib/api"
-import { isImage, isMarkdown, langForPath } from "@/lib/format"
-import { lsGet, lsSet } from "@/lib/app-store"
-import { cn } from "@/lib/utils"
+import * as React from "react"
+import ReactMarkdown from "react-markdown"
+import rehypeHighlight from "rehype-highlight"
+import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
+import { api } from "@/lib/api"
+import { lsGet, lsSet } from "@/lib/app-store"
+import { isImage, isMarkdown, langForPath } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 const HILITE_CAP = 400 * 1024 // don't syntax-highlight files larger than this
 
@@ -69,19 +68,19 @@ export function FileViewer({
 
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-background">
-      <header className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1.5">
+      <header className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-card px-3 py-1.5">
         <Button variant="outline" size="sm" className="h-7" onClick={onClose}>
           <ArrowLeft data-icon="inline-start" />
           files
         </Button>
         <span
-          className="overflow-hidden text-xs text-ellipsis whitespace-nowrap text-foreground"
+          className="overflow-hidden text-ellipsis whitespace-nowrap text-foreground text-xs"
           title={path}
         >
           {path}
         </span>
         {tooLarge && (
-          <span className="rounded-full border border-warn px-1.5 py-px text-[10px] whitespace-nowrap text-warn">
+          <span className="whitespace-nowrap rounded-full border border-warn px-1.5 py-px text-[10px] text-warn">
             large file — no highlight
           </span>
         )}

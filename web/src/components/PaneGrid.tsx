@@ -1,10 +1,16 @@
 import * as React from "react"
 import { toast } from "sonner"
-
-import { api, type Pane } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
-import { tilde } from "@/lib/format"
-import { cn } from "@/lib/utils"
+import { Pill } from "@/components/Pill"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
@@ -19,18 +25,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
-import { Pill } from "@/components/Pill"
+import { api, type Pane } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
+import { tilde } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 // The Grid tab: a flat grid of every herdr pane (tagged by workspace). Click to
 // focus, ⌘/ctrl/shift-click to multi-select, right-click to rename or close.
@@ -41,7 +40,7 @@ export function PaneGrid({
   active: boolean
   onFocusPane: () => void
 }) {
-  const { activePaneID, panesRev } = useApp()
+  const { activePaneID } = useApp()
   const [panes, setPanes] = React.useState<Pane[] | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
@@ -70,7 +69,7 @@ export function PaneGrid({
   // Load when the tab opens, and reload when herdr's layout revision moves.
   React.useEffect(() => {
     if (active) load()
-  }, [active, panesRev, load])
+  }, [active, load])
 
   const byId = React.useMemo(() => {
     const m: Record<string, Pane> = {}
@@ -92,7 +91,7 @@ export function PaneGrid({
     try {
       await api.focus(p.workspace_id, p.tab_id)
     } catch (e) {
-      toast.error("focus failed: " + (e as Error).message)
+      toast.error(`focus failed: ${(e as Error).message}`)
     }
   }
 
@@ -117,7 +116,7 @@ export function PaneGrid({
       await api.rename(p.tab_id, label)
       load()
     } catch (e) {
-      toast.error("rename failed: " + (e as Error).message)
+      toast.error(`rename failed: ${(e as Error).message}`)
     }
   }
 
@@ -132,10 +131,10 @@ export function PaneGrid({
       const nErr = res.errors ? Object.keys(res.errors).length : 0
       if (nErr)
         toast.error(
-          `closed ${res.closed ? res.closed.length : 0}, ${nErr} failed`,
+          `closed ${res.closed ? res.closed.length : 0}, ${nErr} failed`
         )
     } catch (e) {
-      toast.error("close failed: " + (e as Error).message)
+      toast.error(`close failed: ${(e as Error).message}`)
     }
   }
 
@@ -144,7 +143,7 @@ export function PaneGrid({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {selected.size > 0 && (
-        <header className="border-b border-border bg-background px-3 py-2">
+        <header className="border-border border-b bg-background px-3 py-2">
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone="accent">{selected.size} selected</Pill>
             <Button
@@ -183,9 +182,7 @@ export function PaneGrid({
             <PaneCard
               key={p.pane_id}
               pane={p}
-              focused={
-                activePaneID ? p.pane_id === activePaneID : !!p.focused
-              }
+              focused={activePaneID ? p.pane_id === activePaneID : !!p.focused}
               selected={selected.has(p.pane_id)}
               multiSelected={selected.size > 1 && selected.has(p.pane_id)}
               selectedCount={selected.size}
@@ -296,8 +293,7 @@ function PaneCard({
   const title = p.tab_label || p.pane_id
   const cwd = tilde(p.cwd)
   const ws = p.workspace_label || p.workspace_id || ""
-  const showAgent =
-    p.agent || (p.agent_status && p.agent_status !== "unknown")
+  const showAgent = p.agent || (p.agent_status && p.agent_status !== "unknown")
   const tip = [p.tab_label, p.cwd, p.pane_id].filter(Boolean).join("\n")
 
   return (
@@ -314,7 +310,7 @@ function PaneCard({
           {showAgent && (
             <div className={cn("pagent", p.agent_status)}>
               ● {p.agent || "agent"}
-              {p.agent_status ? " · " + p.agent_status : ""}
+              {p.agent_status ? ` · ${p.agent_status}` : ""}
             </div>
           )}
         </div>
