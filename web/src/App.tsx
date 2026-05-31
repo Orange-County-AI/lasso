@@ -36,7 +36,7 @@ const LEFT_VIEWS: LeftView[] = ["herdr", "settings"]
 const stripClass =
   "h-auto w-full justify-start gap-0 overflow-x-auto rounded-none border-b border-border bg-background p-0"
 const tabClass =
-  "flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-1.5 text-xs text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+  "flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-1.5 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
 
 function Pane({
   show,
@@ -203,7 +203,7 @@ function Shell() {
                 Diff
                 {diffDirty > 0 && (
                   <span
-                    className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[10px] text-background"
+                    className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[13px] text-background"
                     title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
                   >
                     {diffDirty}

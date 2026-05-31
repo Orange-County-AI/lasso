@@ -121,7 +121,7 @@ export function FileViewer({
     <div className="absolute inset-0 z-10 flex flex-col bg-background">
       <header className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-card px-3 py-1">
         <span
-          className="overflow-hidden text-ellipsis whitespace-nowrap text-foreground text-xs"
+          className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground"
           title={path}
         >
           {path}
@@ -129,7 +129,7 @@ export function FileViewer({
         </span>
         {saveError && (
           <span
-            className="whitespace-nowrap rounded-full border border-warn px-1.5 py-px text-[10px] text-warn"
+            className="whitespace-nowrap rounded-full border border-warn px-1.5 py-px text-[13px] text-warn"
             title={saveError}
           >
             save failed

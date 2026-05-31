@@ -302,7 +302,7 @@ export function FilesTab({
           spellCheck={false}
           autoComplete="off"
           placeholder="go to path…  (Enter)"
-          className="h-7 flex-1 text-xs"
+          className="h-7 flex-1 text-[13px]"
           onChange={(e) => {
             setPathValue(e.target.value)
             setFollow(false) // editing the path means the user is steering
@@ -312,7 +312,7 @@ export function FilesTab({
             e.currentTarget.scrollLeft = e.currentTarget.scrollWidth
           }}
         />
-        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
+        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-muted-foreground">
           <Checkbox
             checked={follow}
             onCheckedChange={(v) => setFollow(v === true)}

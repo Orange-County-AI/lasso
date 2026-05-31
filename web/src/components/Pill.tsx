@@ -32,7 +32,7 @@ export function Pill({
       asChild
       variant="outline"
       className={cn(
-        "rounded-full px-2 py-px font-normal text-[11px]",
+        "rounded-full px-2 py-px font-normal text-[13px]",
         multiline
           ? "h-auto items-start overflow-visible whitespace-normal break-all py-0.5 leading-snug"
           : "whitespace-nowrap",
