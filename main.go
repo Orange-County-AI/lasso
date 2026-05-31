@@ -162,6 +162,7 @@ func main() {
 	mux.HandleFunc("/api/file", serveFile)
 	mux.HandleFunc("/api/file-delete", serveFileDelete)
 	mux.HandleFunc("/api/file-rename", serveFileRename)
+	mux.HandleFunc("/api/file-write", serveFileWrite)
 	mux.HandleFunc("/api/panes", servePanes)
 	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/api/rename", serveRename)
@@ -1739,6 +1740,43 @@ func serveFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "path": dst})
+}
+
+// serveFileWrite overwrites an existing file with new content, preserving its
+// permission bits. The file must already exist (the editor only saves files it
+// opened) — this is not a create-arbitrary-path endpoint.
+func serveFileWrite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	path := filepath.Clean(expandTilde(req.Path))
+	if !filepath.IsAbs(path) {
+		http.Error(w, "path must be absolute", http.StatusBadRequest)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "not a file", http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 const maxPreview = 2 << 20 // 2 MiB

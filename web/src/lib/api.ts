@@ -105,6 +105,10 @@ export const api = {
     return r.text()
   },
 
+  // Overwrite an existing file with new content (preserving its mode).
+  writeFile: (path: string, content: string) =>
+    postJSON<{ ok: boolean }>("/api/file-write", { path, content }),
+
   // Delete a file or directory (directories recursively).
   deleteFile: (path: string) =>
     postJSON<{ ok: boolean }>("/api/file-delete", { path }),
