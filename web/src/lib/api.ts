@@ -95,11 +95,16 @@ export interface FileDiff {
   truncated: boolean
 }
 
+// Protocol-compatibility check for the Settings tab: the herdr socket protocol
+// this lasso build targets vs. the protocol the installed herdr daemon reports
+// over its socket. `err` is set (and herdr_protocol is 0) when the daemon can't
+// be reached, so the tab shows "herdr unreachable" instead of a false mismatch.
 export interface VersionInfo {
-  installed?: string
-  latest?: string
-  update_available?: boolean
-  latest_error?: string
+  lasso_protocol: number
+  herdr_protocol: number
+  herdr_version?: string
+  compatible: boolean
+  err?: string
 }
 
 export interface ThemePayload {
@@ -213,6 +218,26 @@ export const api = {
   switchHost: (host: string) =>
     postJSON<{ active: string; version: string; protocol: number }>(
       "/api/host",
+      { host }
+    ),
+
+  // Run `herdr update` on a remote host that's behind this lasso's protocol,
+  // auto-answering its interactive prompts (stop the old server = yes, which
+  // exits that host's pane processes; decline the star prompt = no). Slow — it
+  // downloads a release binary on the far side — and returns the captured output.
+  updateHost: (host: string) =>
+    postJSON<{ ok: boolean; output: string; error?: string }>(
+      "/api/host-update",
+      { host }
+    ),
+
+  // Install herdr on a remote host (if missing) and bring it up supervised by
+  // pitchfork (installing pitchfork via mise if needed). For hosts where herdr
+  // is missing or its server isn't running. Slow — downloads binaries — and
+  // returns a provisioning log.
+  provisionHost: (host: string) =>
+    postJSON<{ ok: boolean; output: string; error?: string }>(
+      "/api/host-provision",
       { host }
     ),
 

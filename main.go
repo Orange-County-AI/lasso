@@ -190,6 +190,8 @@ func main() {
 	mux.HandleFunc("/api/repo-branches", serveRepoBranches)
 	mux.HandleFunc("/api/create-agent", serveCreateAgent)
 	mux.HandleFunc("/api/agent-upload", serveAgentUpload)
+	mux.HandleFunc("/api/host-update", serveHostUpdate)
+	mux.HandleFunc("/api/host-provision", serveHostProvision)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -1064,83 +1066,41 @@ func outsideHerdrEnv() []string {
 	return out
 }
 
-// herdrReleasesAPI is the GitHub "latest release" endpoint for herdr; the
-// Settings tab compares the installed version against its tag.
-const herdrReleasesAPI = "https://api.github.com/repos/ogulcancelik/herdr/releases/latest"
+// lassoHerdrProtocol is the herdr wire-protocol version this lasso build targets.
+// It mirrors PROTOCOL_VERSION in herdr's src/protocol/wire.rs — bump it in lockstep
+// whenever lasso is rebuilt against a new herdr protocol. The Settings tab compares
+// it against the protocol the installed herdr daemon actually speaks (from a socket
+// ping) so a drifted install — where terminals/RPC silently break — is visible.
+const lassoHerdrProtocol = 12
 
-// versionInfo is the /api/version payload: the installed herdr version, the
-// latest published release, and whether they differ. LatestError carries why the
-// GitHub lookup failed (offline, rate-limited) so the installed version still
-// shows even when the latest can't be fetched.
+// versionInfo is the /api/version payload: the herdr socket protocol this lasso
+// build targets, the protocol the installed herdr daemon reports over its socket,
+// that daemon's version string (display only), and whether the two protocols match.
+// Err carries why the herdr protocol couldn't be read (daemon down, socket gone) so
+// the tab can say so rather than falsely claim a mismatch.
 type versionInfo struct {
-	Installed       string `json:"installed"`
-	Latest          string `json:"latest,omitempty"`
-	UpdateAvailable bool   `json:"update_available"`
-	LatestError     string `json:"latest_error,omitempty"`
+	LassoProtocol int    `json:"lasso_protocol"`
+	HerdrProtocol int    `json:"herdr_protocol"`
+	HerdrVersion  string `json:"herdr_version,omitempty"`
+	Compatible    bool   `json:"compatible"`
+	Err           string `json:"err,omitempty"`
 }
 
-// serveVersion reports the installed herdr version and the latest GitHub release
-// for the Settings tab. The installed lookup is local and reliable; the latest
-// lookup is best effort (network) and never fails the response.
+// serveVersion reports whether the installed herdr speaks the same socket protocol
+// this lasso build targets. It pings the local herdr socket fresh on every request
+// — so the tab's refresh button re-checks a daemon that has since restarted —
+// rather than reusing the once-cached localProtocol().
 func serveVersion(w http.ResponseWriter, r *http.Request) {
-	vi := versionInfo{Installed: installedHerdrVersion()}
-	if latest, err := latestHerdrVersion(r.Context()); err != nil {
-		vi.LatestError = err.Error()
+	vi := versionInfo{LassoProtocol: lassoHerdrProtocol}
+	if v, p, err := herdrPing(*herdrSock); err != nil {
+		vi.Err = err.Error()
 	} else {
-		vi.Latest = latest
-		vi.UpdateAvailable = vi.Installed != "" && latest != "" && vi.Installed != latest
+		vi.HerdrVersion = v
+		vi.HerdrProtocol = p
+		vi.Compatible = p == lassoHerdrProtocol
 	}
 	writeJSON(w, vi)
 }
-
-// installedHerdrVersion runs `herdr --version` and returns just the version
-// number (herdr prints "herdr 0.6.4"; we strip the name), "" if it can't be run.
-func installedHerdrVersion() string {
-	out, err := exec.Command(herdrBinary(), "--version").CombinedOutput()
-	v := strings.TrimSpace(string(out))
-	if err != nil && v == "" {
-		return ""
-	}
-	return strings.TrimSpace(strings.TrimPrefix(v, "herdr"))
-}
-
-// latestHerdrVersion fetches the latest release tag from GitHub, normalized to
-// match `herdr --version` (the tag is "v0.6.5"; we drop the leading "v").
-func latestHerdrVersion(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, herdrReleasesAPI, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "lasso")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github: %s", resp.Status)
-	}
-	var rel struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
-		return "", err
-	}
-	tag := strings.TrimSpace(rel.TagName)
-	if tag == "" {
-		return "", fmt.Errorf("github: empty tag_name")
-	}
-	return strings.TrimPrefix(tag, "v"), nil
-}
-
-// Updating herdr happens in the out-of-herdr shell terminal (the right-column
-// Terminal tab) by running `herdr update` interactively — that path has a real
-// TTY, so it can prompt about (and perform) live handoff of running sessions,
-// which a non-interactive server-side invocation cannot. The viewer only
-// surfaces the installed/latest versions (see serveVersion).
 
 // ---------------------------------------------------------------------------
 // image paste: save a clipboard image to disk so the agent in the focused

@@ -17,7 +17,6 @@ import {
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
-import { typeIntoShell } from "@/lib/terminal"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
@@ -109,12 +108,6 @@ function Shell() {
     // run once on mount
   }, [])
 
-  const openUpdateInTerminal = () => {
-    rightPanel.current?.expand() // ensure the right column is visible
-    setRightView("terminal")
-    typeIntoShell("herdr update")
-  }
-
   return (
     <div className="relative h-full w-full">
       <ResizablePanelGroup
@@ -163,10 +156,7 @@ function Shell() {
                 />
               </Pane>
               <Pane show={leftView === "settings"}>
-                <SettingsTab
-                  active={leftView === "settings"}
-                  onOpenUpdate={openUpdateInTerminal}
-                />
+                <SettingsTab active={leftView === "settings"} />
               </Pane>
             </div>
           </Tabs>

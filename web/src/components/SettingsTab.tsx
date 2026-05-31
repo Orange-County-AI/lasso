@@ -33,18 +33,14 @@ function Field({
   )
 }
 
-// The Settings tab: herdr's installed/latest version (top) plus the "New Agent"
-// creator configuration. The creator defaults (where to scan for repos, the
-// default agent, the scratch setup script) and each repo's
-// files-to-copy + setup commands live here because they describe the repo and
+// The Settings tab: lasso↔herdr socket-protocol compatibility (top) plus the
+// "New Agent" creator configuration. Lasso targets a fixed protocol (baked in
+// at build time); the daemon reports its own over the socket, and when they
+// drift terminals and RPC silently break, so we surface it here. The creator
+// defaults (where to scan for repos, the default agent, the scratch setup
+// script) and each repo's files-to-copy + setup commands describe the repo and
 // environment — not a one-off agent — so they persist in ~/.lasso/config.yaml.
-export function SettingsTab({
-  active,
-  onOpenUpdate,
-}: {
-  active: boolean
-  onOpenUpdate: () => void
-}) {
+export function SettingsTab({ active }: { active: boolean }) {
   const [info, setInfo] = React.useState<VersionInfo | null>(null)
   const [state, setState] = React.useState<"idle" | "loading" | "error">("idle")
   const loadedOnce = React.useRef(false)
@@ -71,32 +67,26 @@ export function SettingsTab({
   const loading = state === "loading"
   const errored = state === "error"
 
-  let latest: React.ReactNode
+  // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
+  let herdr: React.ReactNode
   if (loading) {
-    latest = <Pill>latest …</Pill>
+    herdr = <Pill>herdr …</Pill>
   } else if (errored || !info) {
-    latest = <Pill>latest unavailable</Pill>
-  } else if (info.latest) {
-    const suffix = info.update_available
-      ? " · update available"
-      : " · up to date"
-    latest = (
-      <Pill
-        tone={info.update_available ? "warn" : "good"}
-        clickable={info.update_available}
-        onClick={info.update_available ? onOpenUpdate : undefined}
-        title={
-          info.update_available
-            ? "open the Terminal with `herdr update` ready (press Enter to run)"
-            : undefined
-        }
-      >
-        latest {info.latest}
-        {suffix}
+    herdr = <Pill tone="warn">herdr unavailable</Pill>
+  } else if (info.err) {
+    herdr = (
+      <Pill tone="warn" title={info.err}>
+        herdr unreachable
       </Pill>
     )
   } else {
-    latest = <Pill title={info.latest_error || ""}>latest unavailable</Pill>
+    const ver = info.herdr_version ? ` (${info.herdr_version})` : ""
+    herdr = (
+      <Pill tone={info.compatible ? "good" : "bad"}>
+        herdr protocol {info.herdr_protocol}
+        {ver} · {info.compatible ? "compatible" : "incompatible"}
+      </Pill>
+    )
   }
 
   return (
@@ -104,22 +94,23 @@ export function SettingsTab({
       <header className="border-border border-b bg-background px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
-            herdr
+            lasso
           </span>
           <Pill>
-            installed{" "}
-            {loading
-              ? "…"
-              : errored || !info
-                ? "unavailable"
-                : info.installed || "unknown"}
+            targets protocol{" "}
+            {loading ? "…" : errored || !info ? "unknown" : info.lasso_protocol}
           </Pill>
-          {latest}
+          {herdr}
+          {!loading && !errored && info && !info.err && !info.compatible && (
+            <span className="text-[13px] text-warn">
+              rebuild lasso (or update herdr) so both speak the same protocol
+            </span>
+          )}
           <Button
             variant="outline"
             size="icon"
             className="ml-auto size-7"
-            title="check for updates"
+            title="re-check protocol compatibility"
             onClick={load}
           >
             <RotateCw />
