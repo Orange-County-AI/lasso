@@ -213,6 +213,18 @@ function DiffFileBlock({
 }) {
   const [body, setBody] = React.useState<Body | null>(null)
 
+  // Added/removed files get a colored accent + label so they stand out from
+  // ordinary edits. "untracked" is a brand-new file git hasn't staged yet.
+  const kind =
+    file.status === "added" || file.status === "untracked"
+      ? "added"
+      : file.status === "deleted"
+        ? "deleted"
+        : file.status === "renamed"
+          ? "renamed"
+          : null
+  const label = file.status === "untracked" ? "new" : kind
+
   // Fetch this file's diff only while it's expanded; refetch when its content
   // changes (add/del move) or the comparison changes. Collapsed files cost
   // nothing — that's the whole point of the lazy split.
@@ -238,10 +250,13 @@ function DiffFileBlock({
   }, [collapsed, repoPath, file.path, mode, baseBranch])
 
   return (
-    <div className="dfile">
+    <div className={cn("dfile", kind && `dfile-${kind}`)}>
       <div className="dfhead" onClick={onToggle}>
         <span className="caret">{collapsed ? "▸" : "▾"}</span>
         <span className="dfname">{file.path || "(unknown)"}</span>
+        {label && (
+          <span className={cn("dfbadge", `dfbadge-${kind}`)}>{label}</span>
+        )}
         <span className="dfstat">
           <span className="add">+{file.add}</span>{" "}
           <span className="del">−{file.del}</span>

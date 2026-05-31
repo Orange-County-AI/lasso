@@ -576,6 +576,34 @@ textarea.veditor {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dfile-added {
+  border-left: 2px solid var(--h-good);
+}
+.dfile-deleted {
+  border-left: 2px solid var(--h-bad);
+}
+.dfile-renamed {
+  border-left: 2px solid var(--h-muted);
+}
+.dfhead .dfbadge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 5px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.dfhead .dfbadge-added {
+  color: var(--h-good);
+}
+.dfhead .dfbadge-deleted {
+  color: var(--h-bad);
+}
+.dfhead .dfbadge-renamed {
+  color: var(--h-muted);
+}
 .dfhead .dfstat {
   margin-left: auto;
   font-size: 11px;
