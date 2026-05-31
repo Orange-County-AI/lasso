@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -169,6 +170,7 @@ func main() {
 	mux.HandleFunc("/api/file-delete", serveFileDelete)
 	mux.HandleFunc("/api/file-rename", serveFileRename)
 	mux.HandleFunc("/api/file-write", serveFileWrite)
+	mux.HandleFunc("/api/file-upload", serveFileUpload)
 	mux.HandleFunc("/api/panes", servePanes)
 	mux.HandleFunc("/api/agents", serveAgents)
 	mux.HandleFunc("/api/agent-focus", serveAgentFocus)
@@ -2004,6 +2006,77 @@ func serveFileWrite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// maxUpload caps the total multipart body so a runaway/hostile upload can't
+// fill the disk via the browser.
+const maxUpload = 1 << 30 // 1 GiB
+
+// serveFileUpload writes each file from a multipart/form-data POST into the
+// directory named by the `dir` field. Only the basename of each uploaded file
+// is honored (never a client-supplied path), so an upload can't escape `dir`.
+// Like the other file endpoints it trusts any absolute path on the tailnet.
+func serveFileUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "parse upload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	dir := filepath.Clean(expandTilde(r.FormValue("dir")))
+	if !filepath.IsAbs(dir) {
+		http.Error(w, "dir must be absolute", http.StatusBadRequest)
+		return
+	}
+	if info, err := curBackend().Stat(dir); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	} else if !info.IsDir() {
+		http.Error(w, "not a directory", http.StatusBadRequest)
+		return
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		http.Error(w, "no files", http.StatusBadRequest)
+		return
+	}
+	written := make([]string, 0, len(files))
+	for _, fh := range files {
+		name := filepath.Base(filepath.FromSlash(fh.Filename))
+		if name == "" || name == "." || name == ".." {
+			http.Error(w, "invalid filename", http.StatusBadRequest)
+			return
+		}
+		if err := saveUpload(fh, filepath.Join(dir, name)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		written = append(written, name)
+	}
+	writeJSON(w, map[string]any{"ok": true, "files": written})
+}
+
+// saveUpload streams one multipart file to dst on the active host, truncating
+// any existing file. Routes through the backend so an upload while a remote host
+// is active lands on that host (over SFTP), not the machine running lasso.
+func saveUpload(fh *multipart.FileHeader, dst string) error {
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	out, err := curBackend().Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 const maxPreview = 2 << 20 // 2 MiB
 
 func serveFile(w http.ResponseWriter, r *http.Request) {
@@ -2023,12 +2096,33 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	if info.Size() > maxPreview {
+	// `download=1` forces a browser save (Content-Disposition: attachment) and
+	// bypasses the preview cap — the viewer's text fetch omits it, so previews
+	// still stay bounded.
+	if r.URL.Query().Get("download") != "" {
+		w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(path)))
+		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+		return
+	}
+	// The preview cap bounds text fetched into the editor; binary media
+	// (images, PDFs) render in-browser regardless of size, so serve them whole.
+	if info.Size() > maxPreview && !isPreviewMedia(path) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, "[%s is %d bytes — too large to preview (limit %d)]", filepath.Base(path), info.Size(), maxPreview)
 		return
 	}
 	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+}
+
+// isPreviewMedia reports whether path is a binary media type the viewer renders
+// directly (images, PDFs) rather than fetching as text — these bypass the text
+// preview size cap.
+func isPreviewMedia(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif":
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

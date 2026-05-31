@@ -69,6 +69,8 @@ export function FilesTab({
   const [renameTarget, setRenameTarget] = React.useState<Target | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
   const [deleteTarget, setDeleteTarget] = React.useState<Target | null>(null)
+  // The directory currently highlighted as a drag-and-drop upload target.
+  const [dropTarget, setDropTarget] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
 
   // Follow the active pane's cwd while "follow" is on.
@@ -200,6 +202,31 @@ export function FilesTab({
     }
   }
 
+  // Upload dropped files into `dir`, then refresh and expand it so the new
+  // files appear in place.
+  const uploadTo = async (dir: string, files: File[]) => {
+    if (files.length === 0) return
+    try {
+      const res = await api.uploadFiles(dir, files)
+      const n = res.files.length
+      toast.success(`Uploaded ${n} file${n === 1 ? "" : "s"}`)
+      setExpanded((prev) => (prev.has(dir) ? prev : new Set(prev).add(dir)))
+      void loadDir(dir)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  // Trigger a browser download of a file via a synthetic anchor.
+  const downloadFile = (full: string, name: string) => {
+    const a = document.createElement("a")
+    a.href = api.downloadURL(full)
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
   // Recursively render a directory's entries. `dir` is absolute; `depth` drives
   // indentation. Children render only for expanded directories.
   const renderDir = (dir: string, depth: number): React.ReactNode => {
@@ -211,6 +238,9 @@ export function FilesTab({
     return entries.map((e) => {
       const full = join(dir, e.name)
       const open = e.dir && expanded.has(full)
+      // Dropping on a directory uploads into it; dropping on a file uploads
+      // into its parent. The matching row highlights as the active target.
+      const target = e.dir ? full : dir
       return (
         <React.Fragment key={e.name}>
           <FileRow
@@ -220,6 +250,7 @@ export function FilesTab({
             depth={depth}
             expanded={open}
             selected={full === viewerPath}
+            dropActive={dropTarget === target}
             onClick={() => (e.dir ? toggleDir(full) : onOpenFile(full))}
             onRename={() => {
               setRenameTarget({ name: e.name, full, dir: e.dir, parent: dir })
@@ -228,6 +259,15 @@ export function FilesTab({
             onDelete={() =>
               setDeleteTarget({ name: e.name, full, dir: e.dir, parent: dir })
             }
+            onDownload={e.dir ? undefined : () => downloadFile(full, e.name)}
+            onDragOverFiles={() => setDropTarget(target)}
+            onDragLeaveFiles={() =>
+              setDropTarget((cur) => (cur === target ? null : cur))
+            }
+            onDropFiles={(files) => {
+              setDropTarget(null)
+              void uploadTo(target, files)
+            }}
           />
           {open && renderDir(full, depth + 1)}
         </React.Fragment>
@@ -260,7 +300,32 @@ export function FilesTab({
         </label>
       </header>
 
-      <div className="filelist">
+      <div
+        className={cn(
+          "filelist",
+          rootPath && dropTarget === rootPath && "drop"
+        )}
+        onDragOver={(e) => {
+          // Only react to file drags; a drop landing on empty space (not a row)
+          // targets the root directory.
+          if (!rootPath || !e.dataTransfer.types.includes("Files")) return
+          e.preventDefault()
+          if (dropTarget == null) setDropTarget(rootPath)
+        }}
+        onDragLeave={(e) => {
+          // Ignore leaves into descendant elements (still inside the list).
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+          setDropTarget((cur) => (cur === rootPath ? null : cur))
+        }}
+        onDrop={(e) => {
+          if (!rootPath) return
+          const files = Array.from(e.dataTransfer.files)
+          setDropTarget(null)
+          if (files.length === 0) return
+          e.preventDefault()
+          void uploadTo(rootPath, files)
+        }}
+      >
         {!curPath ? (
           <div className="empty">waiting for herdr…</div>
         ) : !rootPath ? (
@@ -368,9 +433,14 @@ function FileRow({
   expanded,
   isUp,
   selected,
+  dropActive,
   onClick,
   onRename,
   onDelete,
+  onDownload,
+  onDragOverFiles,
+  onDragLeaveFiles,
+  onDropFiles,
 }: {
   name: string
   dir: boolean
@@ -379,15 +449,47 @@ function FileRow({
   expanded?: boolean
   isUp?: boolean
   selected?: boolean
+  dropActive?: boolean
   onClick: () => void
   onRename?: () => void
   onDelete?: () => void
+  onDownload?: () => void
+  onDragOverFiles?: () => void
+  onDragLeaveFiles?: () => void
+  onDropFiles?: (files: File[]) => void
 }) {
   const row = (
     <div
-      className={cn("entry", dir ? "d" : "f", selected && "sel")}
+      className={cn(
+        "entry",
+        dir ? "d" : "f",
+        selected && "sel",
+        dropActive && "drop"
+      )}
       style={{ paddingLeft: 12 + depth * INDENT }}
       onClick={onClick}
+      onDragOver={
+        onDropFiles
+          ? (e) => {
+              if (!e.dataTransfer.types.includes("Files")) return
+              e.preventDefault()
+              e.stopPropagation()
+              onDragOverFiles?.()
+            }
+          : undefined
+      }
+      onDragLeave={onDropFiles ? () => onDragLeaveFiles?.() : undefined}
+      onDrop={
+        onDropFiles
+          ? (e) => {
+              const files = Array.from(e.dataTransfer.files)
+              if (files.length === 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              onDropFiles(files)
+            }
+          : undefined
+      }
     >
       <span className="ico">
         {dir ? (isUp ? "↑" : expanded ? "▾" : "▸") : "·"}
@@ -398,12 +500,15 @@ function FileRow({
   )
 
   // The parent ("..") row gets no menu — there's nothing to act on.
-  if (!onRename && !onDelete) return row
+  if (!onRename && !onDelete && !onDownload) return row
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
+        {onDownload && (
+          <ContextMenuItem onSelect={onDownload}>Download</ContextMenuItem>
+        )}
         {onRename && (
           <ContextMenuItem onSelect={onRename}>Rename…</ContextMenuItem>
         )}

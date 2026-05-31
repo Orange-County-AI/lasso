@@ -153,6 +153,25 @@ export const api = {
 
   fileURL: (path: string) => `/api/file?path=${encodeURIComponent(path)}`,
 
+  // A URL that forces a browser download (Content-Disposition: attachment) and
+  // skips the preview size cap.
+  downloadURL: (path: string) =>
+    `/api/file?path=${encodeURIComponent(path)}&download=1`,
+
+  // Upload one or more files into an existing directory. Filenames are kept
+  // (basename only) — the server drops them into `dir`.
+  uploadFiles: async (
+    dir: string,
+    files: File[]
+  ): Promise<{ ok: boolean; files: string[] }> => {
+    const form = new FormData()
+    form.append("dir", dir)
+    for (const f of files) form.append("files", f, f.name)
+    const r = await fetch("/api/file-upload", { method: "POST", body: form })
+    if (!r.ok) throw new Error(await r.text())
+    return r.json()
+  },
+
   fileText: async (path: string) => {
     const r = await fetch(api.fileURL(path))
     if (!r.ok) throw new Error(await r.text())

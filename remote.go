@@ -335,6 +335,14 @@ func (b *remoteBackend) WriteFile(p string, data []byte, perm fs.FileMode) error
 	return cl.Chmod(p, perm)
 }
 
+func (b *remoteBackend) Create(p string) (io.WriteCloser, error) {
+	cl, err := b.sftpClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.Create(p) // *sftp.File is an io.WriteCloser
+}
+
 func (b *remoteBackend) MkdirAll(p string, _ fs.FileMode) error {
 	cl, err := b.sftpClient()
 	if err != nil {

@@ -6,7 +6,7 @@ import rehypeHighlight from "rehype-highlight"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
-import { isImage, isMarkdown, langForPath } from "@/lib/format"
+import { isImage, isMarkdown, isPdf, langForPath } from "@/lib/format"
 
 const HILITE_CAP = 400 * 1024 // don't syntax-highlight files larger than this
 
@@ -23,7 +23,11 @@ export function FileViewer({
   onClose: () => void
 }) {
   const image = isImage(path)
+  const pdf = isPdf(path)
   const markdown = isMarkdown(path)
+  // Binary previews (images, PDFs) render straight from the file URL — no text
+  // is fetched and there's nothing to edit or save.
+  const binary = image || pdf
 
   // `text` is the last-saved content; `draft` is what's in the editor. They
   // diverge exactly when there are unsaved edits.
@@ -37,10 +41,10 @@ export function FileViewer({
 
   const dirty = draft != null && text != null && draft !== text
 
-  // Fetch the file text (images load straight from the <img> src).
+  // Fetch the file text (binary previews load straight from the file URL).
   React.useEffect(() => {
     setPreview(isMarkdown(path))
-    if (image) {
+    if (binary) {
       setText(null)
       setDraft(null)
       setError(null)
@@ -62,7 +66,7 @@ export function FileViewer({
     return () => {
       cancelled = true
     }
-  }, [path, image])
+  }, [path, binary])
 
   const save = React.useCallback(async () => {
     if (draft == null || saving) return
@@ -90,14 +94,14 @@ export function FileViewer({
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault()
-        if (!image) void save()
+        if (!binary) void save()
         return
       }
       if (e.key === "Escape") requestClose()
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [image, save, requestClose])
+  }, [binary, save, requestClose])
 
   // Warn before a full page unload (browser close / reload) when dirty.
   React.useEffect(() => {
@@ -128,7 +132,7 @@ export function FileViewer({
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {markdown && !image && error == null && text != null && (
+          {markdown && !binary && error == null && text != null && (
             <Button
               variant="outline"
               size="sm"
@@ -139,7 +143,7 @@ export function FileViewer({
               {preview ? <Pencil /> : <Eye />}
             </Button>
           )}
-          {!image && (
+          {!binary && (
             <Button
               variant="outline"
               size="sm"
@@ -169,6 +173,8 @@ export function FileViewer({
           <div className="vimg">
             <img src={api.fileURL(path)} alt={path} />
           </div>
+        ) : pdf ? (
+          <iframe className="vpdf" src={api.fileURL(path)} title={path} />
         ) : error ? (
           <div className="vloading">error: {error}</div>
         ) : draft == null ? (

@@ -247,6 +247,15 @@
 .entry.sel {
   background: var(--h-accent-dim);
 }
+/* highlighted while files are dragged over a directory (the upload target) */
+.entry.drop {
+  background: var(--h-accent-dim);
+  box-shadow: inset 0 0 0 1px var(--h-accent);
+}
+/* the whole list highlights when a drag targets the root directory */
+.filelist.drop {
+  box-shadow: inset 0 0 0 2px var(--h-accent);
+}
 .entry .nm {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -286,6 +295,12 @@
   background:
     repeating-conic-gradient(#80808022 0% 25%, transparent 0% 50%) 50% / 22px
     22px;
+}
+.vpdf {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
 }
 pre.vcode {
   margin: 0;

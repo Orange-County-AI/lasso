@@ -37,6 +37,7 @@ type Backend interface {
 	Open(path string) (io.ReadSeekCloser, error) // http.ServeContent needs Seek
 	ReadFile(path string) ([]byte, error)
 	WriteFile(path string, data []byte, perm fs.FileMode) error
+	Create(path string) (io.WriteCloser, error) // truncating create, for streamed uploads
 	MkdirAll(path string, perm fs.FileMode) error
 	RemoveAll(path string) error
 	Rename(oldpath, newpath string) error
@@ -177,6 +178,7 @@ func (b *localBackend) ReadFile(path string) ([]byte, error)        { return os.
 func (b *localBackend) WriteFile(path string, data []byte, perm fs.FileMode) error {
 	return os.WriteFile(path, data, perm)
 }
+func (b *localBackend) Create(path string) (io.WriteCloser, error)   { return os.Create(path) }
 func (b *localBackend) MkdirAll(path string, perm fs.FileMode) error { return os.MkdirAll(path, perm) }
 func (b *localBackend) RemoveAll(path string) error                  { return os.RemoveAll(path) }
 func (b *localBackend) Rename(oldpath, newpath string) error         { return os.Rename(oldpath, newpath) }
