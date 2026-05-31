@@ -4,8 +4,7 @@ import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { AgentsTab } from "@/components/AgentsTab"
 import { BrowserTab } from "@/components/BrowserTab"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
-import { DiffTab } from "@/components/DiffTab"
-import { FilesTab } from "@/components/FilesTab"
+import { FilesPanel } from "@/components/FilesPanel"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab } from "@/components/SettingsTab"
@@ -22,20 +21,8 @@ import { typeIntoShell } from "@/lib/terminal"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-// The file viewer pulls in CodeMirror + react-markdown; load it only on first
-// file open so the initial page stays light (mirrors the original lazy libs).
-const FileViewer = React.lazy(() =>
-  import("@/components/FileViewer").then((m) => ({ default: m.FileViewer }))
-)
-
 type LeftView = "herdr" | "settings"
-type RightView =
-  | "diff"
-  | "files"
-  | "agents"
-  | "browser"
-  | "terminal"
-  | "scratch"
+type RightView = "files" | "scratch" | "browser" | "terminal" | "agents"
 
 const LEFT_VIEWS: LeftView[] = ["herdr", "settings"]
 
@@ -76,9 +63,8 @@ function Shell() {
     const v = getQueryParam("view") ?? location.hash.slice(1)
     return (LEFT_VIEWS as string[]).includes(v) ? (v as LeftView) : "herdr"
   })
-  const [rightView, setRightView] = React.useState<RightView>("diff")
+  const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
-  const [viewerPath, setViewerPath] = React.useState<string | null>(null)
   const [diffDirty, setDiffDirty] = React.useState(0)
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
 
@@ -214,8 +200,8 @@ function Shell() {
                   vertical space (which would inflate the row height and push
                   the button out of vertical alignment with the tabs). */}
               <div className="no-scrollbar flex min-w-0 flex-1 overflow-x-auto">
-                <TabsTrigger value="diff" className={tabClass}>
-                  Diff
+                <TabsTrigger value="files" className={tabClass}>
+                  Files
                   {diffDirty > 0 && (
                     <span
                       className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[13px] text-background"
@@ -225,11 +211,8 @@ function Shell() {
                     </span>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="files" className={tabClass}>
-                  Files
-                </TabsTrigger>
-                <TabsTrigger value="agents" className={tabClass}>
-                  Agents
+                <TabsTrigger value="scratch" className={tabClass}>
+                  Scratch
                 </TabsTrigger>
                 <TabsTrigger value="browser" className={tabClass}>
                   Browser
@@ -237,8 +220,8 @@ function Shell() {
                 <TabsTrigger value="terminal" className={tabClass}>
                   Terminal
                 </TabsTrigger>
-                <TabsTrigger value="scratch" className={tabClass}>
-                  Scratch
+                <TabsTrigger value="agents" className={tabClass}>
+                  Agents
                 </TabsTrigger>
               </div>
               <button
@@ -252,21 +235,14 @@ function Shell() {
             </TabsList>
 
             <div className="relative min-h-0 flex-1">
-              <Pane show={rightView === "diff"}>
-                <DiffTab
-                  active={rightView === "diff"}
-                  viewerOpen={viewerPath != null}
+              <Pane show={rightView === "files"}>
+                <FilesPanel
+                  active={rightView === "files"}
                   onDirty={setDiffDirty}
                 />
               </Pane>
-              <Pane show={rightView === "files"}>
-                <FilesTab viewerPath={viewerPath} onOpenFile={setViewerPath} />
-              </Pane>
-              <Pane show={rightView === "agents"}>
-                <AgentsTab
-                  active={rightView === "agents"}
-                  onFocusAgent={() => switchLeft("herdr")}
-                />
+              <Pane show={rightView === "scratch"}>
+                <ScratchTab />
               </Pane>
               <Pane show={rightView === "browser"}>
                 <BrowserTab />
@@ -280,18 +256,12 @@ function Shell() {
                   hidden={rightView !== "terminal"}
                 />
               </Pane>
-              <Pane show={rightView === "scratch"}>
-                <ScratchTab />
+              <Pane show={rightView === "agents"}>
+                <AgentsTab
+                  active={rightView === "agents"}
+                  onFocusAgent={() => switchLeft("herdr")}
+                />
               </Pane>
-
-              {viewerPath && (
-                <React.Suspense fallback={null}>
-                  <FileViewer
-                    path={viewerPath}
-                    onClose={() => setViewerPath(null)}
-                  />
-                </React.Suspense>
-              )}
             </div>
           </Tabs>
         </ResizablePanel>

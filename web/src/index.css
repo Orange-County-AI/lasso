@@ -285,6 +285,47 @@
   opacity: 0.8;
 }
 
+/* git change hints in the file tree: a colored letter (A/U/M/R/D) on files,
+   a dot on collapsed directories that hide changes, plus a tinted name. */
+.entry .chg {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.entry.d .chg {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--h-warn);
+}
+.entry .sz + .chg {
+  margin-left: 6px;
+}
+.entry.chg-added .chg,
+.entry.chg-untracked .chg {
+  color: var(--h-good);
+}
+.entry.chg-modified .chg {
+  color: var(--h-warn);
+}
+.entry.chg-renamed .chg {
+  color: var(--h-accent);
+}
+.entry.chg-deleted .chg {
+  color: var(--h-bad);
+}
+.entry.chg-added .nm,
+.entry.chg-untracked .nm {
+  color: var(--h-good);
+}
+.entry.chg-modified .nm {
+  color: var(--h-warn);
+}
+.entry.chg-renamed .nm {
+  color: var(--h-accent);
+}
+
 /* file viewer */
 .vbody {
   flex: 1 1 auto;

@@ -35,9 +35,34 @@ import { cn } from "@/lib/utils"
 // directory holding it — refreshed after the action so the tree updates.
 type Target = { name: string; full: string; dir: boolean; parent: string }
 
+// A file's git change category, used to hint the tree row.
+export type FileChange =
+  | "added"
+  | "untracked"
+  | "modified"
+  | "renamed"
+  | "deleted"
+
+// Single-letter marker shown on a changed row.
+const CHANGE_LETTER: Record<FileChange, string> = {
+  added: "A",
+  untracked: "U",
+  modified: "M",
+  renamed: "R",
+  deleted: "D",
+}
+
 const INDENT = 14 // px added to the row's left padding per nesting level
 
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`
+
+// Does any changed file live under `dir`? Used to dot a collapsed directory so
+// changes nested inside it are discoverable.
+const hasChangesUnder = (changes: Map<string, FileChange>, dir: string) => {
+  const prefix = `${dir}/`
+  for (const p of changes.keys()) if (p.startsWith(prefix)) return true
+  return false
+}
 
 // The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
 // active pane (by default). Clicking a directory expands/collapses it in place;
@@ -46,9 +71,13 @@ const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`
 export function FilesTab({
   viewerPath,
   onOpenFile,
+  changes,
 }: {
   viewerPath: string | null
   onOpenFile: (path: string) => void
+  // Absolute-path → git change status, used to hint changed rows. A directory
+  // is hinted when any changed file lives beneath it.
+  changes: Map<string, FileChange>
 }) {
   const { activeCwd } = useApp()
   const [curPath, setCurPath] = React.useState<string | null>(null)
@@ -259,6 +288,11 @@ export function FilesTab({
       // Dropping on a directory uploads into it; dropping on a file uploads
       // into its parent. The matching row highlights as the active target.
       const target = e.dir ? full : dir
+      // A file shows its own status; a directory shows a dot when it (when
+      // collapsed) hides changed files beneath it.
+      const change = e.dir ? undefined : changes.get(full)
+      const dirChanged =
+        e.dir && !open && hasChangesUnder(changes, full)
       return (
         <React.Fragment key={e.name}>
           <FileRow
@@ -268,6 +302,8 @@ export function FilesTab({
             depth={depth}
             expanded={open}
             selected={full === viewerPath}
+            change={change}
+            dirChanged={dirChanged}
             dropActive={dropTarget === target}
             onClick={() => (e.dir ? toggleDir(full) : onOpenFile(full))}
             onRename={() => {
@@ -454,6 +490,8 @@ function FileRow({
   expanded,
   isUp,
   selected,
+  change,
+  dirChanged,
   dropActive,
   onClick,
   onRename,
@@ -470,6 +508,8 @@ function FileRow({
   expanded?: boolean
   isUp?: boolean
   selected?: boolean
+  change?: FileChange
+  dirChanged?: boolean
   dropActive?: boolean
   onClick: () => void
   onRename?: () => void
@@ -484,6 +524,7 @@ function FileRow({
       className={cn(
         "entry",
         dir ? "d" : "f",
+        change && `chg-${change}`,
         selected && "sel",
         dropActive && "drop"
       )}
@@ -517,6 +558,12 @@ function FileRow({
       </span>
       <span className="nm">{name}</span>
       {!dir && <span className="sz">{fmtSize(size)}</span>}
+      {change && <span className="chg">{CHANGE_LETTER[change]}</span>}
+      {dirChanged && (
+        <span className="chg chg-dir" title="contains changes">
+          ●
+        </span>
+      )}
     </div>
   )
 

@@ -2,101 +2,52 @@ import * as React from "react"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
 import { api, type DiffFileMeta, type DiffPayload } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
 import { type DiffLine, parseDiff } from "@/lib/diff"
 import { cn } from "@/lib/utils"
 
-// The Diff tab. It always follows herdr's active pane and auto-picks the diff
-// mode (working tree when dirty, branch-vs-primary when clean). The complete
-// changed-file list + per-file counts come from the metadata endpoint (never
-// byte-capped); each file's line-by-line diff is fetched lazily on expand. The
-// list polls every 2.5s while visible so it tracks edits/commits/branch
-// switches with no event.
+// The Diff view (a subtab of Files). The changed-file metadata is fetched and
+// polled by the parent FilesPanel — which shares it with the file tree's
+// change hints — and handed down here as `data`. This component owns only the
+// presentation: collapse state plus the lazy per-file line diff fetched on
+// expand. The complete file list + per-file counts come from the metadata
+// endpoint (never byte-capped).
 export function DiffTab({
-  active,
-  viewerOpen,
-  onDirty,
+  repoPath,
+  data,
+  error,
 }: {
-  active: boolean
-  viewerOpen: boolean
-  onDirty: (n: number) => void
+  repoPath: string | null
+  data: DiffPayload | null
+  error: string | null
 }) {
-  const { activeCwd } = useApp()
-  const [data, setData] = React.useState<DiffPayload | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
+  const activeCwd = repoPath
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set())
   const [allCollapsed, setAllCollapsed] = React.useState(true)
-
   const seenRef = React.useRef<Set<string>>(new Set())
-  const sigRef = React.useRef<string | null>(null)
-  const baseRef = React.useRef<string | null>(null)
-  const loadingRef = React.useRef(false)
-  const renderedRef = React.useRef(false)
-
-  // onDirty is the parent's setState (stable identity), so the callback can use
-  // it directly without a "latest ref" written during render.
-  const load = React.useCallback(async () => {
-    const base = activeCwd
-    if (!base) {
-      setData(null)
-      setError(null)
-      return
-    }
-    if (loadingRef.current) return
-    loadingRef.current = true
-    if (base !== baseRef.current) {
-      baseRef.current = base
-      sigRef.current = null // force a fresh render when the repo changes
-    }
-    try {
-      const d = await api.diff(base)
-      const files = d.files || []
-      const sig = JSON.stringify([
-        d.branch,
-        d.baseBranch,
-        d.isBranchDiff,
-        d.dirty,
-        files.map((f) => [f.path, f.status, f.add, f.del]),
-      ])
-      onDirty(d.dirty || 0)
-      if (sig === sigRef.current && renderedRef.current) return // no-op: keep state
-      sigRef.current = sig
-      const fresh = files
-        .map((f) => f.path)
-        .filter((p) => !seenRef.current.has(p))
-      for (const p of fresh) seenRef.current.add(p)
-      if (fresh.length) setCollapsed((prev) => new Set([...prev, ...fresh]))
-      setError(null)
-      setData(d)
-      renderedRef.current = true
-    } catch (e) {
-      sigRef.current = null
-      onDirty(0)
-      setError((e as Error).message)
-      setData(null)
-    } finally {
-      loadingRef.current = false
-    }
-  }, [activeCwd, onDirty])
-
-  // Load + poll while the tab is visible and the file viewer isn't covering it.
-  React.useEffect(() => {
-    if (!active) return
-    load()
-    const t = setInterval(() => {
-      if (active && !document.hidden && !viewerOpen) load()
-    }, 2500)
-    const onVis = () => {
-      if (!document.hidden && active) load()
-    }
-    document.addEventListener("visibilitychange", onVis)
-    return () => {
-      clearInterval(t)
-      document.removeEventListener("visibilitychange", onVis)
-    }
-  }, [active, viewerOpen, load])
 
   const files = data?.files ?? []
+  const fileSig = files.map((f) => f.path).join("\n")
+
+  // Reset collapse tracking when the repo changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: repoPath is the trigger
+  React.useEffect(() => {
+    seenRef.current = new Set()
+    setCollapsed(new Set())
+    setAllCollapsed(true)
+  }, [repoPath])
+
+  // Newly-appearing files start collapsed (the lazy split means a collapsed
+  // file costs nothing). fileSig is the trigger; the paths are read from the
+  // live `files` inside.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fileSig captures files
+  React.useEffect(() => {
+    const fresh = files
+      .map((f) => f.path)
+      .filter((p) => !seenRef.current.has(p))
+    if (!fresh.length) return
+    for (const p of fresh) seenRef.current.add(p)
+    setCollapsed((prev) => new Set([...prev, ...fresh]))
+  }, [fileSig])
 
   const toggleAll = () => {
     const next = !allCollapsed
