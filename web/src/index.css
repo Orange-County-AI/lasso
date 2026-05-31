@@ -119,6 +119,17 @@
   }
 }
 
+/* Horizontally-scrollable strips (e.g. the sidebar tab row) without a visible
+ * scrollbar — the bar still scrolls via wheel/trackpad, but the scrollbar
+ * doesn't steal vertical space (which otherwise inflates the row and throws the
+ * adjacent collapse button out of vertical alignment). */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* WebKit/Blink */
+}
+
 /* ===========================================================================
  * Bespoke lasso views, ported from the original index.html. shadcn primitives
  * (Tabs, Button, Badge, Dialog, ContextMenu, Resizable, …) provide the chrome;

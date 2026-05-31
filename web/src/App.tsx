@@ -34,7 +34,7 @@ const LEFT_VIEWS: LeftView[] = ["herdr", "settings"]
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
 const stripClass =
-  "h-auto w-full justify-start gap-0 overflow-x-auto rounded-none border-b border-border bg-background p-0"
+  "h-auto w-full justify-start gap-0 rounded-none border-b border-border bg-background p-0"
 const tabClass =
   "flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-1.5 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
 
@@ -149,7 +149,7 @@ function Shell() {
               </TabsTrigger>
               {collapsed && (
                 <button
-                  className="sticky right-0 z-10 ml-auto flex-none self-center rounded border border-border bg-background px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
+                  className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
                   title="show file viewer"
                   onClick={() => rightPanel.current?.expand()}
                 >
@@ -199,31 +199,38 @@ function Shell() {
             className="flex h-full flex-col gap-0"
           >
             <TabsList className={cn(stripClass, "pr-2")}>
-              <TabsTrigger value="diff" className={tabClass}>
-                Diff
-                {diffDirty > 0 && (
-                  <span
-                    className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[13px] text-background"
-                    title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
-                  >
-                    {diffDirty}
-                  </span>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="files" className={tabClass}>
-                Files
-              </TabsTrigger>
-              <TabsTrigger value="agents" className={tabClass}>
-                Agents
-              </TabsTrigger>
-              <TabsTrigger value="browser" className={tabClass}>
-                Browser
-              </TabsTrigger>
-              <TabsTrigger value="terminal" className={tabClass}>
-                Terminal
-              </TabsTrigger>
+              {/* Tabs scroll horizontally within their own region so the
+                  collapse button below stays fixed on the row and always
+                  visible. no-scrollbar hides the scrollbar so it doesn't steal
+                  vertical space (which would inflate the row height and push
+                  the button out of vertical alignment with the tabs). */}
+              <div className="no-scrollbar flex min-w-0 flex-1 overflow-x-auto">
+                <TabsTrigger value="diff" className={tabClass}>
+                  Diff
+                  {diffDirty > 0 && (
+                    <span
+                      className="ml-1.5 rounded-full bg-warn px-1.5 font-semibold text-[13px] text-background"
+                      title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
+                    >
+                      {diffDirty}
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="files" className={tabClass}>
+                  Files
+                </TabsTrigger>
+                <TabsTrigger value="agents" className={tabClass}>
+                  Agents
+                </TabsTrigger>
+                <TabsTrigger value="browser" className={tabClass}>
+                  Browser
+                </TabsTrigger>
+                <TabsTrigger value="terminal" className={tabClass}>
+                  Terminal
+                </TabsTrigger>
+              </div>
               <button
-                className="sticky right-0 z-10 ml-auto flex-none self-center rounded border border-border bg-background px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
+                className="ml-2 flex-none self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
                 title="collapse sidebar"
                 onClick={() => rightPanel.current?.collapse()}
               >
