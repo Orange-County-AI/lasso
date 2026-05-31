@@ -1,5 +1,6 @@
 import * as React from "react"
 import { toast } from "sonner"
+import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -111,6 +112,14 @@ export function AgentsTab({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center justify-between border-border border-b px-2 py-1.5">
+        <span className="text-muted-foreground text-xs">
+          {agents
+            ? `${agents.length} agent${agents.length === 1 ? "" : "s"}`
+            : ""}
+        </span>
+        <CreateAgentDialog onCreated={load} />
+      </div>
       <div className="panegrid">
         {error ? (
           <div className="empty">

@@ -3,6 +3,7 @@ import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { AgentsTab } from "@/components/AgentsTab"
 import { BrowserTab } from "@/components/BrowserTab"
+import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { DiffTab } from "@/components/DiffTab"
 import { FilesTab } from "@/components/FilesTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
@@ -149,7 +150,8 @@ function Shell() {
               </TabsTrigger>
               {collapsed && (
                 <button
-                  className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
+                  type="button"
+                  className="my-1 mr-1 ml-auto flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
                   title="show file viewer"
                   onClick={() => rightPanel.current?.expand()}
                 >
@@ -223,7 +225,8 @@ function Shell() {
                 Terminal
               </TabsTrigger>
               <button
-                className="ml-auto self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
+                type="button"
+                className="my-1 mr-1 ml-auto flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
                 title="collapse sidebar"
                 onClick={() => rightPanel.current?.collapse()}
               >
@@ -273,7 +276,10 @@ function Shell() {
           </Tabs>
         </ResizablePanel>
       </ResizablePanelGroup>
-      <HostSwitcher />
+      <div className="fixed bottom-3 left-3 z-40 flex items-center gap-2">
+        <HostSwitcher />
+        <CreateAgentDialog variant="floating" />
+      </div>
     </div>
   )
 }

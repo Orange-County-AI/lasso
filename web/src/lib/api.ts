@@ -111,6 +111,80 @@ export interface ThemePayload {
   xterm: Record<string, unknown>
 }
 
+// ---------------------------------------------------------------------------
+// Agent creation ("New Agent")
+// ---------------------------------------------------------------------------
+
+// Per-repo remembered creator state (lives in ~/.lasso/config.yaml).
+export interface RepoConfig {
+  last_base_branch?: string
+  copy_files?: string
+  setup?: string
+}
+
+// One agent lasso has spawned.
+export interface AgentRecord {
+  id: string
+  title: string
+  type: "git" | "scratch"
+  repo?: string
+  base_branch?: string
+  branch?: string
+  agent: string
+  description?: string
+  notes?: string
+  attachments?: string[]
+  plan_mode: boolean
+  work_dir: string
+  workspace_id?: string
+  root_pane?: string
+  created_at: string
+}
+
+// The creator's settings + agent log (GET/POST /api/agent-config).
+export interface AgentConfig {
+  repos_root: string
+  branch_prefix: string
+  default_agent: string
+  last_repo?: string
+  scratch_setup?: string
+  repos?: Record<string, RepoConfig>
+  agents?: AgentRecord[]
+}
+
+// One git repo discovered under repos_root, with its remembered per-repo state.
+export interface RepoEntry {
+  path: string
+  name: string
+  copy_files: string
+  setup: string
+  last_base_branch: string
+}
+
+export interface RepoBranches {
+  branches: string[]
+  remoteBranches: string[]
+  default: string
+}
+
+// The body POSTed to /api/create-agent.
+export interface CreateAgentPayload {
+  type: "git" | "scratch"
+  title: string
+  repo?: string
+  base_branch?: string
+  branch_prefix?: string
+  branch_name?: string
+  agent: string
+  description?: string
+  notes?: string
+  plan_mode: boolean
+  copy_files?: string
+  setup?: string
+  attachments?: string[]
+  upload_dir?: string
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(await r.text())
@@ -248,4 +322,45 @@ export const api = {
     if (!r.ok) throw new Error(await r.text())
     return r.json()
   },
+
+  // --- Agent creation ---
+
+  // The creator's settings + agent log.
+  agentConfig: () => getJSON<AgentConfig>("/api/agent-config"),
+
+  // Update the global creator defaults (repos_root, branch_prefix,
+  // default_agent, scratch_setup); omitted fields are left unchanged.
+  saveAgentConfig: (
+    cfg: Partial<
+      Pick<
+        AgentConfig,
+        "repos_root" | "branch_prefix" | "default_agent" | "scratch_setup"
+      >
+    >
+  ) => postJSON<AgentConfig>("/api/agent-config", cfg),
+
+  // Git repos discovered under repos_root, each with its remembered state.
+  repos: () => getJSON<{ root: string; repos: RepoEntry[] }>("/api/repos"),
+
+  // Local + remote branches of a repo, plus its detected default branch.
+  repoBranches: (path: string) =>
+    getJSON<RepoBranches>(
+      `/api/repo-branches?path=${encodeURIComponent(path)}`
+    ),
+
+  // Stage attachment files before creating the agent; returns the staging dir id
+  // + stored filenames to pass to createAgent.
+  uploadAgentFiles: async (
+    files: File[]
+  ): Promise<{ upload_dir: string; files: string[] }> => {
+    const form = new FormData()
+    for (const f of files) form.append("files", f, f.name)
+    const r = await fetch("/api/agent-upload", { method: "POST", body: form })
+    if (!r.ok) throw new Error(await r.text())
+    return r.json()
+  },
+
+  // Create + launch an agent (git worktree or scratch workspace).
+  createAgent: (payload: CreateAgentPayload) =>
+    postJSON<AgentRecord>("/api/create-agent", payload),
 }

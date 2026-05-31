@@ -103,23 +103,25 @@ export function HostSwitcher() {
   const remotes = data?.hosts ?? []
 
   return (
-    <div className="absolute bottom-3 left-3 z-40">
+    // Positioning is owned by the footer flex row in App.tsx so the New Agent
+    // pill can sit to this control's right.
+    <div className="relative">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger
           disabled={switching}
           title={`Host: ${activeLabel} (click to switch)`}
           className={cn(
-            "flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-2 py-1 text-muted-foreground text-xs shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
+            "flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
             // Tint when remote so it reads as an active "you are elsewhere" badge.
             isRemote && "border-primary/40 text-foreground"
           )}
         >
           {switching ? (
-            <Loader2 className="size-3.5 animate-spin" />
+            <Loader2 className="size-3 animate-spin" />
           ) : isRemote ? (
-            <Server className="size-3.5 text-primary" />
+            <Server className="size-3 text-primary" />
           ) : (
-            <Laptop className="size-3.5" />
+            <Laptop className="size-3" />
           )}
           <span className="max-w-32 truncate font-medium">{activeLabel}</span>
         </DropdownMenuTrigger>

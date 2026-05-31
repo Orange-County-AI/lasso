@@ -184,6 +184,11 @@ func main() {
 	mux.HandleFunc("/api/version", serveVersion)
 	mux.HandleFunc("/api/hosts", serveHosts)
 	mux.HandleFunc("/api/host", serveHostSwitch)
+	mux.HandleFunc("/api/agent-config", serveAgentConfig)
+	mux.HandleFunc("/api/repos", serveRepos)
+	mux.HandleFunc("/api/repo-branches", serveRepoBranches)
+	mux.HandleFunc("/api/create-agent", serveCreateAgent)
+	mux.HandleFunc("/api/agent-upload", serveAgentUpload)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
