@@ -52,7 +52,7 @@ export function BrowserTab() {
           spellCheck={false}
           autoComplete="off"
           placeholder="http://host:3000"
-          className="h-7 flex-1 text-xs"
+          className="h-7 flex-1 text-[13px]"
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") nav(e.currentTarget.value)

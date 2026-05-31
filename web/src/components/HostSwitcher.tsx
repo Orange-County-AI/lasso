@@ -111,7 +111,7 @@ export function HostSwitcher() {
           disabled={switching}
           title={`Host: ${activeLabel} (click to switch)`}
           className={cn(
-            "flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
+            "flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-2 py-1 text-[13px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
             // Tint when remote so it reads as an active "you are elsewhere" badge.
             isRemote && "border-primary/40 text-foreground"
           )}

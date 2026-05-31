@@ -73,6 +73,24 @@ export function FilesTab({
   const [dropTarget, setDropTarget] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
 
+  // Keep the path input scrolled to its end — the tail of the path is the
+  // useful part — whenever the value changes or the input gets (re)laid out
+  // (e.g. the Files tab becomes visible, having had zero width while hidden),
+  // unless the user is actively editing it. pathValue is the trigger even
+  // though the effect reads the DOM rather than the value directly.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathValue is the intended trigger
+  React.useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    const showTail = () => {
+      if (document.activeElement !== el) el.scrollLeft = el.scrollWidth
+    }
+    showTail()
+    const ro = new ResizeObserver(showTail)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [pathValue])
+
   // Follow the active pane's cwd while "follow" is on.
   React.useEffect(() => {
     if (follow && activeCwd && activeCwd !== curPath) setCurPath(activeCwd)
@@ -284,14 +302,17 @@ export function FilesTab({
           spellCheck={false}
           autoComplete="off"
           placeholder="go to path…  (Enter)"
-          className="h-7 flex-1 text-xs"
+          className="h-7 flex-1 text-[13px]"
           onChange={(e) => {
             setPathValue(e.target.value)
             setFollow(false) // editing the path means the user is steering
           }}
           onKeyDown={onPathKeyDown}
+          onBlur={(e) => {
+            e.currentTarget.scrollLeft = e.currentTarget.scrollWidth
+          }}
         />
-        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
+        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-muted-foreground">
           <Checkbox
             checked={follow}
             onCheckedChange={(v) => setFollow(v === true)}
