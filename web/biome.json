@@ -35,7 +35,8 @@
         "useKeyWithClickEvents": "warn",
         "noStaticElementInteractions": "warn",
         "useButtonType": "warn",
-        "noLabelWithoutControl": "warn"
+        "noLabelWithoutControl": "warn",
+        "useSemanticElements": "warn"
       },
       "style": {
         "noNonNullAssertion": "off",

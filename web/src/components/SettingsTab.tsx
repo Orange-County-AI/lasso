@@ -232,7 +232,7 @@ function AgentCreatorSettings({ active }: { active: boolean }) {
   })()
 
   return (
-    <div className="flex flex-col gap-4 @2xl:flex-row">
+    <div className="flex @2xl:flex-row flex-col gap-4">
       <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
         <h3 className="font-medium text-foreground text-sm">
           New Agent defaults

@@ -4,6 +4,14 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -44,6 +52,56 @@ function generateBranchName(title: string): string {
   const words = title.trim().split(/\s+/).slice(0, 4).join(" ")
   const slug = slugify(words)
   return slug ? `${slug}-${randomSuffix()}` : ""
+}
+
+type ComboOption = { value: string; label: string }
+
+// Filter-as-you-type select over {value,label} options, wrapping the Base UI
+// Combobox. Tracks selection by the value string so the form state stays
+// plain strings (repo path, branch name).
+function FilterCombobox({
+  id,
+  items,
+  value,
+  onValueChange,
+  placeholder,
+  emptyText = "No matches.",
+}: {
+  id?: string
+  items: ComboOption[]
+  value: string
+  onValueChange: (value: string) => void
+  placeholder?: string
+  emptyText?: string
+}) {
+  const selected = items.find((i) => i.value === value) ?? null
+  return (
+    <Combobox
+      items={items}
+      value={selected}
+      onValueChange={(item: ComboOption | null) =>
+        onValueChange(item?.value ?? "")
+      }
+      itemToStringLabel={(item: ComboOption) => item.label}
+      itemToStringValue={(item: ComboOption) => item.value}
+    >
+      <ComboboxInput
+        id={id}
+        placeholder={placeholder}
+        className="bg-background dark:bg-background"
+      />
+      <ComboboxContent>
+        <ComboboxEmpty>{emptyText}</ComboboxEmpty>
+        <ComboboxList>
+          {(item: ComboOption) => (
+            <ComboboxItem key={item.value} value={item}>
+              {item.label}
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  )
 }
 
 // Native textarea/select styled to match the shadcn <Input> (same border,
@@ -319,39 +377,25 @@ export function CreateAgentDialog({
           {type === "git" && (
             <>
               <Field label="Repository" htmlFor="agent-repo">
-                <select
+                <FilterCombobox
                   id="agent-repo"
-                  className={fieldClass}
+                  items={repos.map((r) => ({ value: r.path, label: r.name }))}
                   value={repo}
-                  onChange={(e) => setRepo(e.target.value)}
-                >
-                  {repos.length === 0 && (
-                    <option value="">No repos found</option>
-                  )}
-                  {repos.map((r) => (
-                    <option key={r.path} value={r.path}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={setRepo}
+                  placeholder="Select a repository…"
+                  emptyText="No repos found."
+                />
               </Field>
 
               <Field label="Base branch" htmlFor="agent-base">
-                <select
+                <FilterCombobox
                   id="agent-base"
-                  className={fieldClass}
+                  items={branches.map((b) => ({ value: b, label: b }))}
                   value={baseBranch}
-                  onChange={(e) => setBaseBranch(e.target.value)}
-                >
-                  {branches.length === 0 && (
-                    <option value={baseBranch}>{baseBranch || "main"}</option>
-                  )}
-                  {branches.map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={setBaseBranch}
+                  placeholder="Select a base branch…"
+                  emptyText="No branches found."
+                />
               </Field>
             </>
           )}
