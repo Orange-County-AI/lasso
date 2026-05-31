@@ -519,7 +519,14 @@ func fetchActive() (Active, string, error) {
 		}
 	}
 	if fp == nil {
-		return Active{}, sig, fmt.Errorf("no focused pane")
+		// herdr is reachable but has no focused pane — e.g. a freshly started
+		// server with no session/workspaces yet (common right after a host
+		// switch to a host whose herdr was just (re)started). That's "up but
+		// empty", NOT down: returning an error here would make the hub mark
+		// HerdrUp=false and never flip the active-host display. Return a valid
+		// empty Active (with the layout signature) so the success path runs,
+		// marks herdr up, and reflects the active host with an empty pane/cwd.
+		return Active{}, sig, nil
 	}
 	a := Active{
 		PaneID: fp.PaneID, Cwd: paneCwd(*fp), CwdSource: "shell", WorkspaceID: fp.WorkspaceID,

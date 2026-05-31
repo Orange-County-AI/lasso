@@ -5,7 +5,7 @@ import { AgentsTab } from "@/components/AgentsTab"
 import { BrowserTab } from "@/components/BrowserTab"
 import { DiffTab } from "@/components/DiffTab"
 import { FilesTab } from "@/components/FilesTab"
-import { Footer } from "@/components/Footer"
+import { HostSwitcher } from "@/components/HostSwitcher"
 import { SettingsTab } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import {
@@ -17,6 +17,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
 import { typeIntoShell } from "@/lib/terminal"
+import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
 // The file viewer pulls in react-markdown + highlight.js; load it only on first
@@ -62,8 +63,10 @@ export function App() {
 
 function Shell() {
   const [leftView, setLeftView] = React.useState<LeftView>(() => {
-    const h = location.hash.slice(1)
-    return (LEFT_VIEWS as string[]).includes(h) ? (h as LeftView) : "herdr"
+    // Prefer ?view=; fall back to a legacy #hash (migrated to a query param on
+    // first write below) so old links still land on the right tab.
+    const v = getQueryParam("view") ?? location.hash.slice(1)
+    return (LEFT_VIEWS as string[]).includes(v) ? (v as LeftView) : "herdr"
   })
   const [rightView, setRightView] = React.useState<RightView>("diff")
   const [collapsed, setCollapsed] = React.useState(false)
@@ -80,22 +83,30 @@ function Shell() {
     }
   }, [])
 
-  const switchLeft = React.useCallback((name: LeftView, fromHash = false) => {
+  const switchLeft = React.useCallback((name: LeftView, fromUrl = false) => {
     setLeftView(name)
-    if (!fromHash && location.hash.slice(1) !== name) location.hash = name
+    if (!fromUrl) setQueryParam("view", name)
   }, [])
 
-  // Back/forward and manual hash edits drive the active left tab.
+  // Reflect the initial tab in the query string once on mount — this also
+  // clears any legacy #hash (setQueryParam drops the fragment). The initial
+  // value is captured in a ref so the effect needs no reactive deps.
+  const initialView = React.useRef(leftView)
   React.useEffect(() => {
-    const onHash = () => {
-      const h = location.hash.slice(1)
+    setQueryParam("view", initialView.current)
+  }, [])
+
+  // Back/forward drives the active left tab from the URL.
+  React.useEffect(() => {
+    const onPop = () => {
+      const v = getQueryParam("view") ?? ""
       switchLeft(
-        (LEFT_VIEWS as string[]).includes(h) ? (h as LeftView) : "herdr",
+        (LEFT_VIEWS as string[]).includes(v) ? (v as LeftView) : "herdr",
         true
       )
     }
-    window.addEventListener("hashchange", onHash)
-    return () => window.removeEventListener("hashchange", onHash)
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
   }, [switchLeft])
 
   // Restore the persisted collapse state once the panel is mounted.
@@ -111,12 +122,12 @@ function Shell() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col">
+    <div className="relative h-full w-full">
       <ResizablePanelGroup
         orientation="horizontal"
         defaultLayout={savedLayout}
         onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
-        className="min-h-0 w-full flex-1"
+        className="h-full w-full"
       >
         <ResizablePanel
           id="left"
@@ -262,7 +273,7 @@ function Shell() {
           </Tabs>
         </ResizablePanel>
       </ResizablePanelGroup>
-      <Footer />
+      <HostSwitcher />
     </div>
   )
 }

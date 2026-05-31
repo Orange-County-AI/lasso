@@ -35,8 +35,22 @@ type hostsPayload struct {
 	Local  struct {
 		Version  string `json:"version"`
 		Protocol int    `json:"protocol"`
+		Hostname string `json:"hostname"` // machine hostname, shown in place of "local"
 	} `json:"local"`
 	Hosts []HostInfo `json:"hosts"`
+}
+
+// localHostname is the short machine hostname (first label) used as the display
+// label for the local host, falling back to "local" if it can't be resolved.
+func localHostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "local"
+	}
+	if i := strings.IndexByte(h, '.'); i > 0 {
+		h = h[:i] // strip any domain suffix for a compact label
+	}
+	return h
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +290,7 @@ func serveHosts(w http.ResponseWriter, r *http.Request) {
 	p.Active = curBackend().Name()
 	p.Local.Version = ver
 	p.Local.Protocol = proto
+	p.Local.Hostname = localHostname()
 	p.Hosts = hosts
 	writeJSON(w, p)
 }

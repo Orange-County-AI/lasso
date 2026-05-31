@@ -28,7 +28,7 @@ export interface HostInfo {
 
 export interface HostsPayload {
   active: string
-  local: { version: string; protocol: number }
+  local: { version: string; protocol: number; hostname: string }
   hosts: HostInfo[]
 }
 

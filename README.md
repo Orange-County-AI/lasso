@@ -62,11 +62,30 @@ Both panes adopt the theme from `~/.config/herdr/config.toml` (`[theme].name`)
 and repaint live when you change it — no restart. Leave `-theme auto` to follow
 herdr, or force one with `-theme <name>` (`./lasso -h` lists the names).
 
-## Exposing it (tailnet only)
+## Exposing it
 
 The left pane is a **writable shell**, so never bind to `0.0.0.0` — on a VPS
-that's the public internet. Bind to your tailscale interface instead; only your
-tailnet can reach it, and WireGuard already encrypts and authenticates it:
+that's the public internet. Two safe ways to reach it off-box:
+
+### Over a Cloudflare tunnel (recommended)
+
+Keep lasso on loopback and let a tunnel reach it, so no port is ever exposed:
+
+```bash
+./lasso -listen 127.0.0.1:8090
+```
+
+Point a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+tunnel's ingress at `http://127.0.0.1:8090` and gate the hostname with
+**Cloudflare Access** (or equivalent) — that authentication is what guards the
+writable shell. A loopback bind needs no `-insecure-no-auth`. Because the tunnel
+serves **HTTPS**, the browser runs in a secure context, so Files-tab downloads
+work (see the caveat below).
+
+### Over your tailnet
+
+Bind to your tailscale interface; only your tailnet can reach it, and WireGuard
+already encrypts and authenticates it:
 
 ```bash
 ./lasso -listen "$(tailscale ip -4):8090" -insecure-no-auth
@@ -77,8 +96,14 @@ drop `-insecure-no-auth`. The server **refuses** a non-loopback bind unless one 
 those is set, so it can't accidentally expose a bare shell. Then reach it from any
 tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 
+> **Downloads need a secure context.** The Files tab downloads via a synthetic
+> `<a download>`, which browsers only honor on **localhost** or over **HTTPS**.
+> Over plain-HTTP tailnet access (`http://citadel:8090`) a download silently
+> won't fire — use the Cloudflare tunnel (HTTPS) if you need to pull files off
+> the box. (Viewing files still works; only the download action is gated.)
+
 Note `/api/file` reads any absolute path as the running user — fine on a private
-tailnet, but confine it before widening access.
+tailnet or behind Access, but confine it before widening access.
 
 ## Dogfooding
 

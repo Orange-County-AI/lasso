@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { api, type HostInfo, type HostsPayload } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
+import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
 // usable reports whether a host can be selected: reachable, herdr running, and
@@ -20,10 +21,13 @@ function usable(h: HostInfo): boolean {
   return h.reachable && h.running && h.compatible
 }
 
-// Footer is the bottom row: a host switcher that lets the app drive a herdr
-// daemon on any compatible ssh-config host as if it were local. Incompatible or
-// unreachable hosts are shown greyed-out with the reason.
-export function Footer() {
+// HostSwitcher is a floating control pinned to the bottom-left corner (so it
+// costs no layout space): it lets the app drive a herdr daemon on any
+// compatible ssh-config host as if it were local. It names the active host —
+// the local machine's hostname (laptop icon) or the remote alias (server icon,
+// primary-tinted as a "you are elsewhere" cue). Incompatible/unreachable hosts
+// are listed greyed-out with why.
+export function HostSwitcher() {
   const { host: liveHost } = useApp()
   const [data, setData] = React.useState<HostsPayload | null>(null)
   const [loading, setLoading] = React.useState(false)
@@ -33,6 +37,11 @@ export function Footer() {
   // Prefer the live SSE host (reflects switches from anywhere); fall back to the
   // last /api/hosts snapshot, then "local".
   const active = liveHost ?? data?.active ?? "local"
+  const isRemote = active !== "local"
+  // The local host is shown by its machine hostname rather than the literal
+  // "local" sentinel; the label for whatever host is active.
+  const localLabel = data?.local?.hostname || "local"
+  const activeLabel = isRemote ? active : localLabel
 
   const load = React.useCallback(async (refresh = false) => {
     setLoading(true)
@@ -58,7 +67,7 @@ export function Footer() {
     async (alias: string) => {
       if (alias === active || switching) return
       setSwitching(true)
-      const label = alias === "local" ? "local host" : alias
+      const label = alias === "local" ? localLabel : alias
       try {
         await api.switchHost(alias)
         toast.success(`Switched to ${label}`)
@@ -68,27 +77,51 @@ export function Footer() {
         setSwitching(false)
       }
     },
-    [active, switching]
+    [active, switching, localLabel]
   )
+
+  // ?host=<alias> in the URL reflects the active host (omitted for local).
+  // Captured once at mount so the deep-link below survives the reflect effect.
+  const initialUrlHost = React.useRef(getQueryParam("host"))
+  const deepLinkApplied = React.useRef(false)
+
+  // Reflect the SSE-confirmed active host in the URL.
+  React.useEffect(() => {
+    if (liveHost == null) return
+    setQueryParam("host", liveHost === "local" ? null : liveHost)
+  }, [liveHost])
+
+  // Deep link: if the URL named a host, switch to it once the host list has
+  // loaded (so the server can validate the alias). Runs at most once.
+  React.useEffect(() => {
+    if (deepLinkApplied.current || !data) return
+    deepLinkApplied.current = true
+    const want = initialUrlHost.current
+    if (want && want !== active) void switchTo(want)
+  }, [data, active, switchTo])
 
   const remotes = data?.hosts ?? []
 
   return (
-    <footer className="flex h-7 flex-none items-center gap-2 border-border border-t bg-card px-2 text-muted-foreground text-xs">
+    <div className="absolute bottom-3 left-3 z-40">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger
           disabled={switching}
-          className="flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-60"
-          title="Switch host"
+          title={`Host: ${activeLabel} (click to switch)`}
+          className={cn(
+            "flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-2 py-1 text-muted-foreground text-xs shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
+            // Tint when remote so it reads as an active "you are elsewhere" badge.
+            isRemote && "border-primary/40 text-foreground"
+          )}
         >
           {switching ? (
             <Loader2 className="size-3.5 animate-spin" />
-          ) : active === "local" ? (
-            <Laptop className="size-3.5" />
+          ) : isRemote ? (
+            <Server className="size-3.5 text-primary" />
           ) : (
-            <Server className="size-3.5" />
+            <Laptop className="size-3.5" />
           )}
-          <span className="font-medium text-foreground">{active}</span>
+          <span className="max-w-32 truncate font-medium">{activeLabel}</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="min-w-56">
           <DropdownMenuLabel className="flex items-center justify-between">
@@ -108,7 +141,7 @@ export function Footer() {
 
           <DropdownMenuItem onSelect={() => void switchTo("local")}>
             <Laptop className="size-3.5" />
-            <span className="flex-1">local</span>
+            <span className="flex-1 truncate">{localLabel}</span>
             {data?.local?.version && (
               <span className="text-[10px] text-muted-foreground">
                 {data.local.version}
@@ -151,6 +184,6 @@ export function Footer() {
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-    </footer>
+    </div>
   )
 }
