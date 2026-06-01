@@ -55,6 +55,8 @@ var (
 	ttydPort    = flag.Int("ttyd-port", 7682, "loopback port ttyd listens on")
 	herdrSock   = flag.String("herdr-sock", defaultSock(), "path to the herdr unix socket")
 	termCmd     = flag.String("term-cmd", "herdr", "command ttyd runs in the terminal")
+	termNice    = flag.Int("term-nice", 0, "if non-zero, launch the herdr terminal at this nice level (reset-on-fork + nice, needs RLIMIT_NICE); 0 disables")
+	termNoSwap  = flag.Bool("term-no-swap", false, "launch the herdr terminal in a transient systemd scope with MemorySwapMax=0 so its pages are never swapped out (mirrors the ccp alias)")
 	shellCmd    = flag.String("shell-cmd", "", "command for the out-of-herdr Terminal tab (right column); empty = $SHELL, then bash, then sh")
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
@@ -238,7 +240,7 @@ func main() {
 		// host's commands; a host switch later restarts both via the managers.
 		terminals.herdr = newTtydManager(ctx, ttydSock, "/terminal")
 		terminals.shell = newTtydManager(ctx, shellSock, "/shell")
-		if err := terminals.herdr.restart(curBackend().TermCmd(), curBackend().TermEnv()); err != nil {
+		if err := terminals.herdr.restart(termPrefix()+curBackend().TermCmd(), curBackend().TermEnv()); err != nil {
 			log.Fatalf("ttyd: %v", err)
 		}
 		// Out-of-herdr shell: env stripped of the HERDR_* session markers so
@@ -1053,6 +1055,54 @@ func herdrBinary() string {
 		return f[0]
 	}
 	return "herdr"
+}
+
+// rlimitNice is RLIMIT_NICE on Linux; Go's syscall package doesn't export it.
+const rlimitNice = 13
+
+// canLowerNiceTo reports whether this process may set its nice value to n.
+// RLIMIT_NICE caps the most-favorable nice level at (20 - rlim_cur), so we need
+// rlim_cur >= 20-n. Compared in the uint64 domain so RLIM_INFINITY reads as
+// "allowed" rather than overflowing to a negative int.
+func canLowerNiceTo(n int) bool {
+	var rl syscall.Rlimit
+	if err := syscall.Getrlimit(rlimitNice, &rl); err != nil {
+		return false
+	}
+	return uint64(20-n) <= rl.Cur
+}
+
+// termPrefix builds a command prefix that launches the herdr terminal so the
+// interactive client stays responsive under load. Two independent, opt-in parts:
+//
+//   - -term-no-swap: run the client in a transient systemd scope with
+//     MemorySwapMax=0 so its pages are never paged out (mirrors the `ccp` alias
+//     for agents). Outermost, so the scheduling tweaks below apply inside it.
+//   - -term-nice N: reset-on-fork (so a server the client might autospawn does
+//     not pass the boost down to agent panes) plus nice -N, the latter added
+//     only when RLIMIT_NICE permits it (else skipped, so we never emit a
+//     "cannot set niceness" warning).
+//
+// Each part degrades to a no-op if its helper binary is missing. ttyd splits the
+// term command on whitespace, so the prefix is space-joined with a trailing space.
+func termPrefix() string {
+	var p strings.Builder
+	if *termNoSwap {
+		if _, err := exec.LookPath("systemd-run"); err == nil {
+			p.WriteString("systemd-run --user --scope --quiet -p MemorySwapMax=0 ")
+		}
+	}
+	if *termNice != 0 {
+		if _, err := exec.LookPath("chrt"); err == nil {
+			p.WriteString("chrt --other --reset-on-fork 0 ")
+			if canLowerNiceTo(*termNice) {
+				if _, err := exec.LookPath("nice"); err == nil {
+					fmt.Fprintf(&p, "nice -n %d ", *termNice)
+				}
+			}
+		}
+	}
+	return p.String()
 }
 
 // outsideHerdrEnv returns the current environment minus the markers herdr uses

@@ -31,6 +31,10 @@ func newMemBackend() *memBackend {
 	}
 }
 
+// Name identifies the (single) fake host. The embedded nil Backend would panic
+// here, and host-scoped DB lookups key off curBackend().Name().
+func (b *memBackend) Name() string { return "local" }
+
 func (b *memBackend) mkdirAllAncestors(p string) {
 	for d := p; d != "/" && d != "." && d != ""; d = filepath.Dir(d) {
 		b.dirs[d] = true

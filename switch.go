@@ -81,7 +81,7 @@ var terminals struct {
 // markers stripped, as before.
 func applyBackendToTerminals(b Backend) {
 	if terminals.herdr != nil {
-		if err := terminals.herdr.restart(b.TermCmd(), b.TermEnv()); err != nil {
+		if err := terminals.herdr.restart(termPrefix()+b.TermCmd(), b.TermEnv()); err != nil {
 			log.Printf("ttyd (terminal) restart: %v", err)
 		}
 	}
