@@ -45,6 +45,14 @@ function behind(h: HostInfo, localProtocol: number): boolean {
   )
 }
 
+// formatBehind renders how far the running lasso is behind main for the update
+// tooltip — "3 commits"/"1 commit", or a vague "some commits" when the count
+// didn't come through.
+function formatBehind(n: number | undefined): string {
+  if (!n || n < 1) return "some commits"
+  return `${n} commit${n === 1 ? "" : "s"}`
+}
+
 // provisionable reports whether a reachable host has no herdr server running
 // (missing entirely, or installed but stopped) — the case a fresh
 // install-and-supervise (via pitchfork) can fix.
@@ -331,26 +339,41 @@ export function HostSwitcher() {
                 {versionQuery.data?.lasso_version ?? "…"}
               </span>
             </span>
-            {versionQuery.data?.updatable && (
-              <button
-                type="button"
-                className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
-                title="Pull the latest lasso, rebuild, and restart it (briefly disconnects)"
-                disabled={updatingLasso}
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void updateLasso()
-                }}
-              >
-                {updatingLasso ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <ArrowUpCircle className="size-3" />
-                )}
-                {updatingLasso ? "updating…" : "update lasso"}
-              </button>
-            )}
+            {versionQuery.data?.updatable &&
+              // Show the button when behind main, or when we can't tell (keep the
+              // escape hatch); show a quiet "up to date" check when on main's tip.
+              (versionQuery.data.update_state === "current" ? (
+                <span
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground"
+                  title="lasso is built from the latest commit on main"
+                >
+                  <Check className="size-3" />
+                  up to date
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
+                  title={
+                    versionQuery.data.update_state === "available"
+                      ? `main is ${formatBehind(versionQuery.data.commits_behind)} ahead — pull, rebuild, and restart lasso (briefly disconnects)`
+                      : "Pull the latest lasso, rebuild, and restart it (briefly disconnects)"
+                  }
+                  disabled={updatingLasso}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void updateLasso()
+                  }}
+                >
+                  {updatingLasso ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <ArrowUpCircle className="size-3" />
+                  )}
+                  {updatingLasso ? "updating…" : "update lasso"}
+                </button>
+              ))}
           </div>
         </DropdownMenuContent>
       </DropdownMenu>

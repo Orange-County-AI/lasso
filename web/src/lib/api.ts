@@ -132,6 +132,12 @@ export interface VersionInfo {
   // Whether this install can self-update (a pitchfork-supervised git checkout).
   // False for dev/worktree runs, where the "Update lasso" action is hidden.
   updatable: boolean
+  // Only meaningful when `updatable`: whether the running build is behind main.
+  // "available" — a newer commit is waiting to be built (see commits_behind);
+  // "current" — already on main's tip; "unknown" — can't tell, so the UI still
+  // offers the button. Absent on non-updatable installs.
+  update_state?: "available" | "current" | "unknown"
+  commits_behind?: number
   err?: string
 }
 

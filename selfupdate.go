@@ -6,7 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -45,36 +46,6 @@ func lassoDaemon() string {
 	return "lasso"
 }
 
-// lassoVersion reports this build's version from the Go-embedded VCS stamp
-// (`go build` records vcs.revision/vcs.modified automatically). Falls back to
-// "dev" when the stamp is absent (e.g. `go run`).
-func lassoVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "dev"
-	}
-	var rev string
-	var dirty bool
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
-		}
-	}
-	if rev == "" {
-		return "dev"
-	}
-	if len(rev) > 12 {
-		rev = rev[:12]
-	}
-	if dirty {
-		rev += "-dirty"
-	}
-	return rev
-}
-
 // selfUpdateAvailable reports whether this looks like the supervised prod
 // install: a git checkout supervised by a pitchfork daemon. Dev/worktree runs
 // (no pitchfork, or running from `go run`) return false so the UI can hide the
@@ -99,6 +70,59 @@ func selfUpdateAvailable() bool {
 	}
 	// `pitchfork status <daemon>` exits non-zero if the daemon isn't registered.
 	return exec.Command(pf, "status", lassoDaemon()).Run() == nil
+}
+
+// selfUpdateStatus reports whether a newer lasso is waiting to be built, so the
+// UI can show "update lasso" only when it would do something. The supervisor
+// (lasso-serve) does `git checkout main; go build` on restart, so the running
+// binary is stale exactly when its build commit is behind the tip of `main` in
+// the source checkout. All git here is local (no fetch) — cheap enough to run
+// per /api/version request, which the UI only fires while its menu is open.
+//
+// Returns one of:
+//   - "available" (+ commits behind): build commit is an ancestor of main's tip.
+//   - "current": build commit IS main's tip, or is ahead of / diverged from it
+//     (nothing on main to move forward to).
+//   - "unknown": can't tell — no VCS stamp (dev/worktree build), a dirty build
+//     (running uncommitted code, not a clean main commit), or a git error. The UI
+//     falls back to showing the button so the escape hatch never disappears.
+func selfUpdateStatus() (state string, behind int) {
+	rev, dirty, ok := buildCommit()
+	return updateStateFrom(rev, dirty, ok, lassoSrcDir())
+}
+
+// updateStateFrom is the testable core of selfUpdateStatus: it takes the running
+// build's commit (injected, so tests needn't fake a build stamp) and compares it
+// to refs/heads/main in src. It reads the main branch ref directly, so the answer
+// is correct even when the checkout is parked on another branch — main is what
+// the supervisor builds regardless.
+func updateStateFrom(rev string, dirty, hasStamp bool, src string) (state string, behind int) {
+	if !hasStamp || dirty || src == "" {
+		return "unknown", 0
+	}
+	mainTip, err := gitOutput(src, "rev-parse", "refs/heads/main")
+	if err != nil {
+		return "unknown", 0
+	}
+	if rev == mainTip {
+		return "current", 0
+	}
+	// Only offer an update when main is genuinely ahead — i.e. rev is an ancestor
+	// of main's tip. If it isn't (build is ahead of / diverged from main, or rev
+	// is unknown to this repo), there's nothing to pull forward to.
+	if exec.Command("git", "-C", src, "merge-base", "--is-ancestor", rev, "refs/heads/main").Run() != nil {
+		return "current", 0
+	}
+	if n, err := gitOutput(src, "rev-list", "--count", rev+"..refs/heads/main"); err == nil {
+		behind, _ = strconv.Atoi(n)
+	}
+	return "available", behind
+}
+
+// gitOutput runs `git -C dir args...` and returns its trimmed stdout.
+func gitOutput(dir string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // serveSelfUpdate kicks off a detached "git pull + pitchfork restart" so lasso

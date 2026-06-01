@@ -1021,6 +1021,13 @@ type versionInfo struct {
 	HerdrVersion  string `json:"herdr_version,omitempty"`
 	Compatible    bool   `json:"compatible"`
 	Updatable     bool   `json:"updatable"`
+	// UpdateState (only meaningful when Updatable) says whether the running build
+	// is behind main: "available" (a newer commit is waiting to be built),
+	// "current" (already on main's tip), or "unknown" (can't tell — the UI then
+	// shows the update button anyway so the action never vanishes). CommitsBehind
+	// counts how far behind main, when known.
+	UpdateState   string `json:"update_state,omitempty"`
+	CommitsBehind int    `json:"commits_behind,omitempty"`
 	Err           string `json:"err,omitempty"`
 }
 
@@ -1033,6 +1040,9 @@ func serveVersion(w http.ResponseWriter, r *http.Request) {
 		LassoProtocol: lassoHerdrProtocol,
 		LassoVersion:  lassoVersion(),
 		Updatable:     selfUpdateAvailable(),
+	}
+	if vi.Updatable {
+		vi.UpdateState, vi.CommitsBehind = selfUpdateStatus()
 	}
 	if v, p, err := herdrPinger(); err != nil {
 		vi.Err = err.Error()
