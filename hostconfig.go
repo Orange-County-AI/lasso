@@ -89,34 +89,67 @@ func reposList(be Backend, host string) (string, []repoEntry, error) {
 	return root, repos, nil
 }
 
-// reposListWith scans reposRoot on be (one level deep) for git repos and merges
-// the already-fetched per-repo state. Splitting the db read out lets the remote
-// path supply repoState from sqlite while still scanning the remote fs over be.
-func reposListWith(be Backend, reposRoot string, repoState map[string]*RepoConfig) (string, []repoEntry) {
-	root := expandTildeOn(be, reposRoot)
-	ents, err := be.ReadDir(root)
-	if err != nil {
-		// An unreadable/missing root isn't fatal — return an empty list so the
-		// picker still opens (the user can fix the root in settings).
-		return root, []repoEntry{}
+// splitReposRoots splits a repos_root setting into individual directories. The
+// value is one directory per line (newline-separated); blank lines and
+// surrounding whitespace are dropped. A legacy single-path value is just one
+// line, so it still yields exactly that path.
+func splitReposRoots(reposRoot string) []string {
+	var out []string
+	for _, line := range strings.Split(reposRoot, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
 	}
-	repos := make([]repoEntry, 0, len(ents))
-	for _, e := range ents {
-		if !e.Dir {
+	return out
+}
+
+// reposListWith scans reposRoot on be (one level deep) for git repos and merges
+// the already-fetched per-repo state. reposRoot may name several directories
+// (one per line); each is scanned and the results merged, deduped by absolute
+// path. Splitting the db read out lets the remote path supply repoState from
+// sqlite while still scanning the remote fs over be. The returned string is the
+// newline-joined expanded roots (informational; the picker uses repos).
+func reposListWith(be Backend, reposRoot string, repoState map[string]*RepoConfig) (string, []repoEntry) {
+	roots := splitReposRoots(reposRoot)
+	expanded := make([]string, 0, len(roots))
+	repos := make([]repoEntry, 0)
+	seen := map[string]bool{}
+	for _, r := range roots {
+		root := expandTildeOn(be, r)
+		expanded = append(expanded, root)
+		ents, err := be.ReadDir(root)
+		if err != nil {
+			// An unreadable/missing root isn't fatal — skip it so the picker still
+			// opens (the user can fix the roots in settings).
 			continue
 		}
-		repoPath := filepath.Join(root, e.Name)
-		if _, err := be.Stat(filepath.Join(repoPath, ".git")); err != nil {
-			continue // not a git repo
+		for _, e := range ents {
+			if !e.Dir {
+				continue
+			}
+			repoPath := filepath.Join(root, e.Name)
+			if seen[repoPath] {
+				continue // same repo reachable from two roots — list it once
+			}
+			if _, err := be.Stat(filepath.Join(repoPath, ".git")); err != nil {
+				continue // not a git repo
+			}
+			seen[repoPath] = true
+			re := repoEntry{Path: repoPath, Name: e.Name}
+			if rc := repoState[repoPath]; rc != nil {
+				re.CopyFiles, re.Setup, re.LastBaseBranch = rc.CopyFiles, rc.Setup, rc.LastBaseBranch
+			}
+			repos = append(repos, re)
 		}
-		re := repoEntry{Path: repoPath, Name: e.Name}
-		if rc := repoState[repoPath]; rc != nil {
-			re.CopyFiles, re.Setup, re.LastBaseBranch = rc.CopyFiles, rc.Setup, rc.LastBaseBranch
-		}
-		repos = append(repos, re)
 	}
-	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
-	return root, repos
+	// Sort by name; break ties on path since two roots can hold same-named repos.
+	sort.Slice(repos, func(i, j int) bool {
+		if repos[i].Name != repos[j].Name {
+			return repos[i].Name < repos[j].Name
+		}
+		return repos[i].Path < repos[j].Path
+	})
+	return strings.Join(expanded, "\n"), repos
 }
 
 // applyRepoConfig writes a repo's copy-files/setup for host, returning its state.

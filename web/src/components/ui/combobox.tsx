@@ -34,6 +34,11 @@ export function Combobox({
   const [query, setQuery] = React.useState("")
   const [active, setActive] = React.useState(0)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // Tracks what last moved the highlight. We only auto-scroll for keyboard
+  // navigation: scrolling the highlight into view on pointer-driven changes
+  // fights the user's wheel scroll (each hover re-snaps the list), making it
+  // feel like the list can't be scrolled with the cursor inside it.
+  const navSource = React.useRef<"keyboard" | "pointer">("keyboard")
 
   const selected = items.find((i) => i.value === value) ?? null
   const filtered = React.useMemo(() => {
@@ -48,9 +53,11 @@ export function Combobox({
     setActive(0)
   }, [query])
 
-  // Keep the highlighted item scrolled into view.
+  // Keep the highlighted item scrolled into view — but only when the highlight
+  // moved via the keyboard. Doing it on pointer-driven changes would re-snap the
+  // list on every hover and block wheel-scrolling with the cursor inside.
   React.useEffect(() => {
-    if (!open) return
+    if (!open || navSource.current !== "keyboard") return
     listRef.current
       ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" })
@@ -65,9 +72,11 @@ export function Combobox({
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.min(a + 1, filtered.length - 1))
     } else if (e.key === "ArrowUp") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.max(a - 1, 0))
     } else if (e.key === "Enter") {
       e.preventDefault()
@@ -130,7 +139,10 @@ export function Combobox({
                   type="button"
                   data-index={i}
                   onClick={() => choose(opt)}
-                  onMouseMove={() => setActive(i)}
+                  onMouseMove={() => {
+                    navSource.current = "pointer"
+                    setActive(i)
+                  }}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none",
                     i === active && "bg-accent text-accent-foreground"

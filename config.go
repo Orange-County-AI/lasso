@@ -20,8 +20,8 @@ import (
 // LassoConfig is the shape of the /api/agent-config response, assembled for a
 // given host from the database.
 type LassoConfig struct {
-	// ReposRoot is the directory the repo picker scans (one level deep) for git
-	// repos. Defaults to ~/projects.
+	// ReposRoot is the directory (or directories, one per line) the repo picker
+	// scans one level deep for git repos. Defaults to ~/projects.
 	ReposRoot string `json:"repos_root"`
 	// BranchPrefix seeds the branch-prefix field in the creator (e.g. "feat/").
 	BranchPrefix string `json:"branch_prefix"`

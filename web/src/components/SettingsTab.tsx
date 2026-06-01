@@ -9,7 +9,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -318,15 +317,17 @@ function AgentCreatorSettings({
         </h3>
 
         <Field
-          label="Git repos directory"
-          hint="The repo picker scans this directory (one level deep) for git repos."
+          label="Git repos directories"
+          hint="One directory per line. The repo picker scans each (one level deep) for git repos."
           htmlFor="settings-repos-root"
         >
-          <Input
+          <textarea
             id="settings-repos-root"
+            className={cn(fieldClass, "resize-none")}
+            rows={3}
             value={reposRoot}
             onChange={(e) => setReposRoot(e.target.value)}
-            placeholder="~/projects"
+            placeholder={"~/projects\n~/work"}
           />
         </Field>
 
