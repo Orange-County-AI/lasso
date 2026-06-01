@@ -110,6 +110,51 @@ function Shell() {
     return () => window.removeEventListener("popstate", onPop)
   }, [switchLeft])
 
+  // The sidebar's last open width (% of the group), so expanding restores it
+  // rather than snapping to minSize. react-resizable-panels' expand() only
+  // remembers the size from this session, so a sidebar that loads collapsed (or
+  // whose persisted layout is ~0) would expand thin — we resize() explicitly
+  // instead. Seeded to a sensible default and refreshed as the user drags.
+  const lastOpenPct = React.useRef(40)
+  const expandSidebar = React.useCallback(() => {
+    rightPanel.current?.resize(`${lastOpenPct.current}%`)
+  }, [])
+  const collapseSidebar = React.useCallback(() => {
+    const p = rightPanel.current
+    if (!p) return
+    const s = p.getSize().asPercentage
+    if (s > 5) lastOpenPct.current = s // capture the true open width before hiding
+    p.collapse()
+  }, [])
+  const toggleSidebar = React.useCallback(() => {
+    if (rightPanel.current?.isCollapsed()) expandSidebar()
+    else collapseSidebar()
+  }, [expandSidebar, collapseSidebar])
+
+  // ⌘G → Grid, ⌘H → Herdr, ⌘P → toggle the sidebar. Bound to the Cmd key only
+  // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
+  // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
+  // this document, so these work even while a terminal holds focus. (See
+  // SHORTCUTS, the reference list shown in Settings.)
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      const k = e.key.toLowerCase()
+      if (k === "g") {
+        e.preventDefault()
+        switchLeft("grid")
+      } else if (k === "h") {
+        e.preventDefault()
+        switchLeft("herdr")
+      } else if (k === "p") {
+        e.preventDefault()
+        toggleSidebar()
+      }
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [switchLeft, toggleSidebar])
+
   // Restore the persisted (SQLite-backed) collapse state once the prefs load.
   // Applied a single time — after that the panel's own resize events are the
   // source of truth (and persist back via onResize below).
@@ -117,8 +162,8 @@ function Shell() {
   React.useEffect(() => {
     if (collapseApplied.current || ui.sidebar_collapsed == null) return
     collapseApplied.current = true
-    if (ui.sidebar_collapsed) rightPanel.current?.collapse()
-  }, [ui.sidebar_collapsed])
+    if (ui.sidebar_collapsed) collapseSidebar()
+  }, [ui.sidebar_collapsed, collapseSidebar])
 
   return (
     <div className="relative h-full w-full">
@@ -146,17 +191,19 @@ function Shell() {
               <TabsTrigger value="grid" className={tabClass}>
                 Grid
               </TabsTrigger>
-              {/* Settings sits at the far right of the row; Herdr + Grid stay
-                  together on the left. */}
+              {/* Settings is right-aligned (ml-auto) so it sits at the far end
+                  of the row. When the sidebar is collapsed, the un-collapse
+                  button follows it (no ml-auto of its own) so it tucks to
+                  Settings' right rather than splitting the row. */}
               <TabsTrigger value="settings" className={cn(tabClass, "ml-auto")}>
                 Settings
               </TabsTrigger>
               {collapsed && (
                 <button
                   type="button"
-                  className="my-1 mr-1 ml-auto flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                  className="my-1 mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
                   title="show file viewer"
-                  onClick={() => rightPanel.current?.expand()}
+                  onClick={expandSidebar}
                 >
                   <ChevronLeft className="size-4" />
                 </button>
@@ -197,6 +244,9 @@ function Shell() {
           onResize={(size) => {
             const c = size.asPercentage < 0.05
             setCollapsed((prev) => (prev === c ? prev : c))
+            // Remember the open width so a later expand restores it (the panel
+            // snaps to 0 below minSize, so any non-zero size is a real width).
+            if (size.asPercentage > 5) lastOpenPct.current = size.asPercentage
             patchUIState({ sidebar_collapsed: c })
           }}
           className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
@@ -238,7 +288,7 @@ function Shell() {
                 type="button"
                 className="ml-2 flex-none self-center rounded border border-border px-1.5 text-muted-foreground hover:border-primary hover:text-primary"
                 title="collapse sidebar"
-                onClick={() => rightPanel.current?.collapse()}
+                onClick={collapseSidebar}
               >
                 <ChevronRight className="size-4" />
               </button>

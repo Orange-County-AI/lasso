@@ -287,11 +287,12 @@
 .termcell-head:hover {
   background: var(--h-hover);
 }
-/* keep the finger pointer over the whole header, including its text spans
-   (which would otherwise show a text/default cursor) */
+/* Keep a single, steady cursor across the whole header rather than flipping
+   between pointer / text / default over its spans — the hover highlight already
+   signals it's clickable. */
 .termcell-head,
 .termcell-head * {
-  cursor: pointer;
+  cursor: default;
 }
 .termcell-host {
   flex: 0 0 auto;

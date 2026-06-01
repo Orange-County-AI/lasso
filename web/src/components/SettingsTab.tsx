@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
 import { qk } from "@/lib/query"
+import { SHORTCUTS } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 // Native textarea/select styled to match the shadcn <Input>.
@@ -109,9 +110,32 @@ export function SettingsTab({ active }: { active: boolean }) {
       </header>
 
       <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
-        <AgentCreatorSettings active={active} />
+        <div className="flex flex-col gap-4">
+          <ShortcutsSection />
+          <AgentCreatorSettings active={active} />
+        </div>
       </div>
     </div>
+  )
+}
+
+// ShortcutsSection lists the app's keyboard shortcuts (the SHORTCUTS the App
+// key handler implements). Reference only — nothing to configure.
+function ShortcutsSection() {
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
+      <h3 className="font-medium text-foreground text-sm">Keyboard shortcuts</h3>
+      <ul className="flex flex-col gap-1.5">
+        {SHORTCUTS.map((s) => (
+          <li key={s.keys} className="flex items-center gap-3 text-sm">
+            <kbd className="min-w-10 rounded border border-border bg-muted px-1.5 py-0.5 text-center font-mono text-muted-foreground text-xs">
+              {s.keys}
+            </kbd>
+            <span className="text-foreground">{s.label}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
