@@ -17,6 +17,41 @@ run = "go build -o lasso ."
 description = "Run the Go test suite"
 run = "go test ."
 
+[tasks.bump]
+description = "Bump lassoSemver (major, minor, or patch)"
+usage = '''
+arg "[type]" help="Version type: major, minor, or patch" default="patch"
+flag "-c --commit" help="Auto-commit after bumping"
+'''
+run = """
+#!/usr/bin/env bash
+set -e
+
+# version.go holds the single source of truth: const lassoSemver = "X.Y.Z".
+current=$(perl -ne 'print $1 if /lassoSemver = "([0-9]+\\.[0-9]+\\.[0-9]+)"/' version.go)
+[ -n "$current" ] || { echo "couldn't read lassoSemver from version.go" >&2; exit 1; }
+IFS='.' read -r major minor patch <<< "$current"
+
+case "${usage_type}" in
+  major) major=$((major + 1)); minor=0; patch=0 ;;
+  minor) minor=$((minor + 1)); patch=0 ;;
+  patch) patch=$((patch + 1)) ;;
+  *) echo "Invalid type: ${usage_type}. Use major, minor, or patch" >&2; exit 1 ;;
+esac
+
+new_version="$major.$minor.$patch"
+
+perl -i -pe "s/lassoSemver = \\"[0-9]+\\.[0-9]+\\.[0-9]+\\"/lassoSemver = \\"$new_version\\"/" version.go
+echo "Bumped lassoSemver: $current → $new_version"
+
+# Auto-commit if --commit flag is set
+if [ "$usage_commit" = "true" ]; then
+  git add version.go
+  git commit -m "chore: bump version to $new_version"
+  echo "Committed version bump"
+fi
+"""
+
 [tasks.dev]
 description = "Frontend hot reload (Vite) on the tailscale IP, proxying /api + terminals to the Go backend"
 depends = ["build"]
