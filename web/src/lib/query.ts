@@ -24,6 +24,7 @@ export const qk = {
   repoBranches: (path: string) => ["repo-branches", path] as const,
   grid: ["grid"] as const,
   uiState: ["ui-state"] as const,
+  sidebarPct: ["sidebar-pct"] as const,
   version: ["version"] as const,
 }
 

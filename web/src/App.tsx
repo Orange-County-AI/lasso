@@ -17,6 +17,7 @@ import {
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
+import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -114,16 +115,16 @@ function Shell() {
   // rather than snapping to minSize. react-resizable-panels' expand() only
   // remembers the size from this session, so a sidebar that loads collapsed (or
   // whose persisted layout is ~0) would expand thin — we resize() explicitly
-  // instead. Seeded to a sensible default and refreshed as the user drags.
-  const lastOpenPct = React.useRef(40)
+  // instead. The width is persisted to localStorage (see lib/sidebar) so it also
+  // survives a page reload / lasso restart, not just refreshed as the user drags.
   const expandSidebar = React.useCallback(() => {
-    rightPanel.current?.resize(`${lastOpenPct.current}%`)
+    rightPanel.current?.resize(`${sidebarPctNow()}%`)
   }, [])
   const collapseSidebar = React.useCallback(() => {
     const p = rightPanel.current
     if (!p) return
     const s = p.getSize().asPercentage
-    if (s > 5) lastOpenPct.current = s // capture the true open width before hiding
+    if (s > 5) setSidebarPct(s) // capture the true open width before hiding
     p.collapse()
   }, [])
   const toggleSidebar = React.useCallback(() => {
@@ -246,7 +247,7 @@ function Shell() {
             setCollapsed((prev) => (prev === c ? prev : c))
             // Remember the open width so a later expand restores it (the panel
             // snaps to 0 below minSize, so any non-zero size is a real width).
-            if (size.asPercentage > 5) lastOpenPct.current = size.asPercentage
+            if (size.asPercentage > 5) setSidebarPct(size.asPercentage)
             patchUIState({ sidebar_collapsed: c })
           }}
           className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
