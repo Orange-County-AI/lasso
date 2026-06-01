@@ -20,6 +20,7 @@ import {
   type CreateAgentPayload,
   type RepoEntry,
 } from "@/lib/api"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
@@ -86,6 +87,10 @@ export function CreateAgentDialog({
   const [open, setOpen] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [showAdvanced, setShowAdvanced] = React.useState(false)
+  // Set when the dialog closes because an agent was just created, so the close
+  // handler hands keyboard focus to the herdr terminal instead of letting Radix
+  // restore it to the trigger (which would force the user to click the pane).
+  const createdRef = React.useRef(false)
 
   // Cmd/Ctrl+O opens the creator. Bound only to the floating variant so the
   // shortcut has a single owner even when the Agents-tab button is also mounted.
@@ -231,6 +236,7 @@ export function CreateAgentDialog({
       if (rec.workspace_id) {
         api.focus(rec.workspace_id).catch(() => {})
       }
+      createdRef.current = true
       setOpen(false)
       reset()
       onCreated?.()
@@ -270,7 +276,19 @@ export function CreateAgentDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md">
+      <DialogContent
+        className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
+        onCloseAutoFocus={(e) => {
+          // On a create-driven close, send focus to the herdr terminal so the
+          // user can type into the new agent immediately. Otherwise (cancel /
+          // Esc) let Radix restore focus to the trigger as usual.
+          if (createdRef.current) {
+            createdRef.current = false
+            e.preventDefault()
+            focusHerdrTerminal()
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>New Agent</DialogTitle>
           <DialogDescription>

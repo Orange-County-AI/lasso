@@ -118,7 +118,12 @@ export function AgentsTab({
             ? `${agents.length} agent${agents.length === 1 ? "" : "s"}`
             : ""}
         </span>
-        <CreateAgentDialog onCreated={load} />
+        <CreateAgentDialog
+          onCreated={() => {
+            load()
+            onFocusAgent() // surface the herdr terminal for the new agent
+          }}
+        />
       </div>
       <div className="panegrid">
         {error ? (

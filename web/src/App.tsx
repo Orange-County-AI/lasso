@@ -259,7 +259,12 @@ function Shell() {
       {leftView === "herdr" && (
         <div className="fixed bottom-3 left-3 z-40 flex items-center gap-2">
           <HostSwitcher />
-          <CreateAgentDialog variant="floating" />
+          {/* Surface the herdr terminal on create so it's visible when the
+              dialog's close handler hands it keyboard focus. */}
+          <CreateAgentDialog
+            variant="floating"
+            onCreated={() => switchLeft("herdr")}
+          />
         </div>
       )}
     </div>

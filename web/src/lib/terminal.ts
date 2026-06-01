@@ -233,11 +233,20 @@ export function typeIntoHerdr(text: string) {
   pasteIntoTerminal("term", text)
 }
 
-// Hand keyboard focus to the herdr terminal after focusing a pane.
-export function focusHerdrTerminal() {
+// Hand keyboard focus to the herdr terminal (/terminal/) so the user can type
+// into the focused pane without clicking it first. Focuses both the iframe
+// window and xterm's input, and retries while xterm is still (re)connecting —
+// mirrors pasteIntoTerminal. Used after creating/focusing an agent.
+export function focusHerdrTerminal(tries = 0) {
   try {
-    frameWindow("term")?.focus()
+    const w = frameWindow("term")
+    if (w?.term && typeof w.term.focus === "function") {
+      w.focus()
+      w.term.focus()
+      return
+    }
   } catch {
-    /* ignore */
+    /* same-origin; ignore */
   }
+  if (tries < 20) setTimeout(() => focusHerdrTerminal(tries + 1), 100)
 }
