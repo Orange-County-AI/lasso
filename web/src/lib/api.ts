@@ -44,6 +44,34 @@ export interface Pane {
   agent_status?: string
 }
 
+// One pane in the Grid tab: a herdr pane on a specific host, enriched with
+// workspace/tab labels and whether herdr detects an agent in it. `host` is
+// "local" or an ssh-config alias and is the key for both attaching its terminal
+// and focusing it (switching the active host first when it isn't already active).
+// `terminal_id` is herdr's handle for a direct `terminal attach`.
+export interface GridPane {
+  host: string
+  host_label: string
+  pane_id: string
+  terminal_id: string
+  workspace_id?: string
+  workspace_label?: string
+  tab_id?: string
+  tab_label?: string
+  cwd?: string
+  agent?: string
+  agent_status?: string
+  has_agent?: boolean
+  focused?: boolean
+}
+
+export interface GridPayload {
+  panes: GridPane[]
+  // host → why its panes couldn't be listed (unreachable, protocol drift, …).
+  // The rest of the grid still renders; the UI shows these as per-host chips.
+  errors?: Record<string, string>
+}
+
 // A herdr-detected agent (claude, codex, …) running in a pane. `agent` is the
 // detected kind; `tab_label` is the pane's (tab's) renamable label. `target` is
 // the opaque handle to pass to agentFocus.
@@ -284,6 +312,17 @@ export const api = {
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
   agents: () => getJSON<{ agents?: Agent[] }>("/api/agents"),
+
+  // Every herdr pane across every reachable, protocol-compatible host (local +
+  // remotes), for the Grid tab. Aggregated server-side; per-host failures come
+  // back in `errors` rather than failing the whole request.
+  gridPanes: () => getJSON<GridPayload>("/api/grid"),
+
+  // Ensure a ttyd is attached to one pane's terminal and return its proxy base
+  // path (the iframe src). Idempotent — re-calling bumps the server-side idle
+  // timer, so the Grid re-POSTs this as a keepalive while a cell is mounted.
+  gridTerm: (host: string, terminal_id: string) =>
+    postJSON<{ base: string }>("/api/grid/term", { host, terminal_id }),
   version: () => getJSON<VersionInfo>("/api/version"),
 
   files: (path: string) =>

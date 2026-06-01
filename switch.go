@@ -151,7 +151,8 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, wantProto := localProtocol()
-		rb, err := newRemoteBackend(srvCtx, target, hi.Socket, wantProto)
+		gridPoolEvict(target) // drop any grid-pool connection; the active backend serves it now
+		rb, err := newRemoteBackend(srvCtx, target, hi.Socket, wantProto, "")
 		if err != nil {
 			http.Error(w, "connect "+target+": "+err.Error(), http.StatusBadGateway)
 			return

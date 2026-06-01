@@ -5,6 +5,7 @@ import { AgentsTab } from "@/components/AgentsTab"
 import { BrowserTab } from "@/components/BrowserTab"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
+import { GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab } from "@/components/SettingsTab"
@@ -20,10 +21,10 @@ import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type LeftView = "herdr" | "settings"
+type LeftView = "herdr" | "grid" | "settings"
 type RightView = "files" | "scratch" | "browser" | "terminal" | "agents"
 
-const LEFT_VIEWS: LeftView[] = ["herdr", "settings"]
+const LEFT_VIEWS: LeftView[] = ["herdr", "grid", "settings"]
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -131,6 +132,9 @@ function Shell() {
               <TabsTrigger value="herdr" className={tabClass}>
                 Herdr
               </TabsTrigger>
+              <TabsTrigger value="grid" className={tabClass}>
+                Grid
+              </TabsTrigger>
               <TabsTrigger value="settings" className={tabClass}>
                 Settings
               </TabsTrigger>
@@ -153,6 +157,12 @@ function Shell() {
                   title="Herdr terminal"
                   suppressContext
                   hidden={leftView !== "herdr"}
+                />
+              </Pane>
+              <Pane show={leftView === "grid"}>
+                <GridTab
+                  active={leftView === "grid"}
+                  onFocusInHerdr={() => switchLeft("herdr")}
                 />
               </Pane>
               <Pane show={leftView === "settings"}>

@@ -23,6 +23,7 @@ export const qk = {
   repos: ["repos"] as const,
   repoBranches: (path: string) => ["repo-branches", path] as const,
   agents: ["agents"] as const,
+  grid: ["grid"] as const,
   version: ["version"] as const,
 }
 

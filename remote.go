@@ -74,11 +74,18 @@ func (b *remoteBackend) ctlOpts() []string {
 // backend tears itself down when parent is cancelled (process exit) or when
 // Close is called (host switch). On any failure it cleans up and returns the
 // error so the caller can roll back to the previous backend.
-func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int) (*remoteBackend, error) {
+// nameTag disambiguates the on-disk control/forward socket filenames so a
+// backend opened for one purpose can't clobber another to the same host: the
+// active-host backend (serveHostSwitch) passes "", while the grid pool passes
+// "grid", letting both hold a live connection to the same alias at once.
+func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int, nameTag string) (*remoteBackend, error) {
 	if remoteSock == "" {
 		return nil, fmt.Errorf("no remote herdr socket for %s", alias)
 	}
 	tag := sanitizeAlias(alias)
+	if nameTag != "" {
+		tag += "-" + nameTag
+	}
 	b := &remoteBackend{
 		alias:      alias,
 		remoteSock: remoteSock,

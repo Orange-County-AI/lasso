@@ -27,6 +27,10 @@ export default defineConfig({
       "/api": { target: backend, changeOrigin: true },
       "/terminal": { target: backend, changeOrigin: true, ws: true },
       "/shell": { target: backend, changeOrigin: true, ws: true },
+      // The Grid tab's per-pane terminals: each cell embeds a ttyd under
+      // /grid-term/<token>/ (HTTP page + WebSocket). Without this, Vite's SPA
+      // fallback would serve index.html and the cell would render a nested lasso.
+      "/grid-term": { target: backend, changeOrigin: true, ws: true },
     },
   },
 })

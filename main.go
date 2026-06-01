@@ -181,6 +181,9 @@ func main() {
 	mux.HandleFunc("/api/file-write", serveFileWrite)
 	mux.HandleFunc("/api/file-upload", serveFileUpload)
 	mux.HandleFunc("/api/panes", servePanes)
+	mux.HandleFunc("/api/grid", serveGrid)
+	mux.HandleFunc("/api/grid/term", serveGridTerm)
+	mux.HandleFunc("/grid-term/", serveGridTermProxy)
 	mux.HandleFunc("/api/agents", serveAgents)
 	mux.HandleFunc("/api/agent-focus", serveAgentFocus)
 	mux.HandleFunc("/api/focus", serveFocus)
@@ -340,9 +343,18 @@ func shellCommand() string {
 }
 
 // startTtyd spawns one ttyd serving command under basePath on its own private
-// unix socket. env, if non-nil, overrides the child environment (the shell
-// terminal passes outsideHerdrEnv); nil inherits the viewer's env.
+// unix socket. command is split on whitespace into the child argv. env, if
+// non-nil, overrides the child environment (the shell terminal passes
+// outsideHerdrEnv); nil inherits the viewer's env.
 func startTtyd(ctx context.Context, sock, basePath, command string, env []string) error {
+	return startTtydArgv(ctx, sock, basePath, strings.Fields(command), env)
+}
+
+// startTtydArgv is startTtyd with the child command given as an explicit argv,
+// for commands that can't survive whitespace-splitting — notably the grid's
+// remote attach (`ssh -tt <host> "$SHELL -lc 'herdr terminal attach …'"`), whose
+// final argument must reach ssh as one token.
+func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string, env []string) error {
 	// Bind a private unix socket (one per instance) rather than a shared TCP
 	// port, so concurrent prod/dev instances can't collide or cross-connect.
 	// Clear any stale socket left by a crashed prior run with this PID so ttyd
@@ -370,7 +382,7 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 		"-t", "cursorInactiveStyle=block",
 		"-t", "theme=" + theme.xtermJSON(),
 	}
-	args = append(args, strings.Fields(command)...)
+	args = append(args, cmdArgv...)
 	cmd := exec.Command("ttyd", args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	cmd.Env = env                                         // nil → inherit
@@ -378,7 +390,7 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	log.Printf("spawned ttyd (pid %d) %q @ %s", cmd.Process.Pid, command, basePath)
+	log.Printf("spawned ttyd (pid %d) %q @ %s", cmd.Process.Pid, strings.Join(cmdArgv, " "), basePath)
 	go func() {
 		<-ctx.Done()
 		// kill the whole process group (ttyd + the shell it spawned)
@@ -417,6 +429,7 @@ func herdrCall(method string, params any) (json.RawMessage, error) {
 
 type pane struct {
 	PaneID        string `json:"pane_id"`
+	TerminalID    string `json:"terminal_id"` // herdr terminal handle, for direct `terminal attach`
 	WorkspaceID   string `json:"workspace_id"`
 	TabID         string `json:"tab_id"`
 	Cwd           string `json:"cwd"`            // the shell's launch dir — stale once an agent owns the pane

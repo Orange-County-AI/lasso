@@ -239,6 +239,98 @@
   padding: 16px 12px;
 }
 
+/* grid tab: a wall of live per-pane terminals across hosts. Each cell is a
+   clickable header (focus the pane in Herdr) over an embedded ttyd iframe. */
+.termgrid {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+.termcell {
+  display: flex;
+  flex-direction: column;
+  height: 260px;
+  border: 1px solid var(--h-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--h-bg);
+}
+.termcell.focused {
+  border-color: var(--h-accent);
+}
+.termcell-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--h-border);
+  background: var(--h-bg);
+  color: var(--h-fg);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.termcell-head:hover {
+  background: var(--h-hover);
+}
+.termcell-host {
+  flex: 0 0 auto;
+  color: var(--h-accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.termcell-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.termcell-agent {
+  flex: 0 0 auto;
+  color: var(--h-muted);
+  white-space: nowrap;
+}
+.termcell-agent.working {
+  color: var(--h-warn);
+}
+.termcell-agent.blocked {
+  color: var(--h-bad);
+}
+.termcell-agent.idle,
+.termcell-agent.done {
+  color: var(--h-good);
+}
+.termcell-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.termcell-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--h-bg);
+}
+.termcell-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--h-muted);
+  font-size: 11px;
+}
+
 /* file list */
 .filelist {
   flex: 1 1 auto;
