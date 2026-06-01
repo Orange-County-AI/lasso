@@ -6,7 +6,7 @@ import "runtime/debug"
 // hand in a commit. It's independent of lassoHerdrProtocol (which tracks the
 // herdr socket wire format, not lasso's release). Bump it when shipping a
 // notable change; the build commit is appended automatically (see lassoVersion).
-const lassoSemver = "0.1.0"
+const lassoSemver = "0.1.1"
 
 // lassoVersion is the human-facing build identity: the hand-set semver plus the
 // exact commit it was built from, e.g. "0.1.0 (dc1e696)". The semver says
