@@ -293,10 +293,9 @@ export function CreateAgentDialog({
       setOpen(false)
       reset()
       // The creator just updated this host's remembered selections + agent log,
-      // so refetch them (and the live Agents tab).
+      // so refetch them.
       queryClient.invalidateQueries({ queryKey: qk.agentConfig })
       queryClient.invalidateQueries({ queryKey: qk.repos })
-      queryClient.invalidateQueries({ queryKey: qk.agents })
       onCreated?.()
     },
     onError: (err) => {

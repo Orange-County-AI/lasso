@@ -72,22 +72,6 @@ export interface GridPayload {
   errors?: Record<string, string>
 }
 
-// A herdr-detected agent (claude, codex, …) running in a pane. `agent` is the
-// detected kind; `tab_label` is the pane's (tab's) renamable label. `target` is
-// the opaque handle to pass to agentFocus.
-export interface Agent {
-  target: string
-  pane_id: string
-  workspace_id?: string
-  workspace_label?: string
-  tab_id?: string
-  tab_label?: string
-  cwd?: string
-  agent?: string
-  agent_status?: string
-  focused?: boolean
-}
-
 // Persisted, global browser UI preferences (SQLite-backed): Grid tab filters +
 // sidebar collapse. The client reads the whole object and writes the whole
 // object back (merge happens client-side), so navigating away and back — or
@@ -321,7 +305,6 @@ export const api = {
     ),
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
-  agents: () => getJSON<{ agents?: Agent[] }>("/api/agents"),
 
   // Every herdr pane across every reachable, protocol-compatible host (local +
   // remotes), for the Grid tab. Aggregated server-side; per-host failures come
@@ -453,10 +436,6 @@ export const api = {
       "/api/close",
       { pane_ids }
     ),
-
-  // Focus a herdr-detected agent (focuses its workspace + tab).
-  agentFocus: (target: string) =>
-    postJSON<unknown>("/api/agent-focus", { target }),
 
   pasteImage: async (file: Blob): Promise<{ path: string }> => {
     const r = await fetch("/api/paste-image", {

@@ -18,7 +18,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
 import { patchUIState, useUIState } from "@/lib/ui-state"
-import { getQueryParam, setQueryParam } from "@/lib/url"
+import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
 type LeftView = "herdr" | "grid" | "settings"
@@ -78,10 +78,16 @@ function Shell() {
     }
   }, [])
 
-  const switchLeft = React.useCallback((name: LeftView, fromUrl = false) => {
-    setLeftView(name)
-    if (!fromUrl) setQueryParam("view", name)
-  }, [])
+  // push=true adds a browser history entry (so Back returns to the previous
+  // view) instead of replacing the current one — used when focusing a Grid pane
+  // surfaces the Herdr tab, so Back goes back to the Grid.
+  const switchLeft = React.useCallback(
+    (name: LeftView, fromUrl = false, push = false) => {
+      setLeftView(name)
+      if (!fromUrl) (push ? pushQueryParam : setQueryParam)("view", name)
+    },
+    []
+  )
 
   // Reflect the initial tab in the query string once on mount — this also
   // clears any legacy #hash (setQueryParam drops the fragment). The initial
@@ -169,7 +175,7 @@ function Shell() {
               <Pane show={leftView === "grid"}>
                 <GridTab
                   active={leftView === "grid"}
-                  onFocusInHerdr={() => switchLeft("herdr")}
+                  onFocusInHerdr={() => switchLeft("herdr", false, true)}
                 />
               </Pane>
               <Pane show={leftView === "settings"}>

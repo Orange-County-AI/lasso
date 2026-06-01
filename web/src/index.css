@@ -287,6 +287,12 @@
 .termcell-head:hover {
   background: var(--h-hover);
 }
+/* keep the finger pointer over the whole header, including its text spans
+   (which would otherwise show a text/default cursor) */
+.termcell-head,
+.termcell-head * {
+  cursor: pointer;
+}
 .termcell-host {
   flex: 0 0 auto;
   color: var(--h-accent);

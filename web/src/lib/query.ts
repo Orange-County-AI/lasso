@@ -22,7 +22,6 @@ export const qk = {
   agentConfig: ["agent-config"] as const,
   repos: ["repos"] as const,
   repoBranches: (path: string) => ["repo-branches", path] as const,
-  agents: ["agents"] as const,
   grid: ["grid"] as const,
   uiState: ["ui-state"] as const,
   version: ["version"] as const,
@@ -34,6 +33,5 @@ export function invalidateHostScoped() {
   queryClient.invalidateQueries({ queryKey: qk.agentConfig })
   queryClient.invalidateQueries({ queryKey: qk.repos })
   queryClient.invalidateQueries({ queryKey: ["repo-branches"] })
-  queryClient.invalidateQueries({ queryKey: qk.agents })
   queryClient.invalidateQueries({ queryKey: qk.version })
 }
