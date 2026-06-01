@@ -75,6 +75,20 @@ func randSuffix() string {
 	return string(b)
 }
 
+// worktreeDirSlug derives the directory seed from the final branch name so the
+// branch's unique suffix is carried onto disk too. Branch prefixes are omitted
+// to keep paths short (feature/foo-a1b2 -> foo-a1b2).
+func worktreeDirSlug(branch, fallback string) string {
+	leaf := branch
+	if i := strings.LastIndex(leaf, "/"); i >= 0 {
+		leaf = leaf[i+1:]
+	}
+	if slug := slugify(leaf); slug != "" {
+		return slug
+	}
+	return fallback
+}
+
 // splitGlobs splits a comma/newline-separated copy-files spec into trimmed,
 // non-empty glob patterns.
 func splitGlobs(spec string) []string {
@@ -391,7 +405,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		branch = uniqueBranch(cur, repo, branch)
 
-		workDir := uniqueChildDir(lassoWorktreesDir(), slug)
+		workDir := uniqueChildDir(lassoWorktreesDir(), worktreeDirSlug(branch, slug))
 		base := strings.TrimSpace(req.BaseBranch)
 		if base == "" {
 			base = "HEAD"
