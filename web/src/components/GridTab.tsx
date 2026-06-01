@@ -30,8 +30,9 @@ import { Input } from "@/components/ui/input"
 import { type GridPane, api } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
+import { focusPaneInHerdr } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
-import { bootTermFrame, focusHerdrTerminal } from "@/lib/terminal"
+import { bootTermFrame } from "@/lib/terminal"
 import { GRID_FRAME_CLASS } from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
@@ -165,20 +166,11 @@ export function GridTab({
     void focusPane(p)
   }
 
-  // Focus a pane in the Herdr tab. If it's on another host, switch there first
-  // (which reloads the Herdr terminal onto that host), then focus its tab.
-  // Release this pane's grid terminal *before* surfacing Herdr so the only client
-  // left on the pane is the full-width Herdr terminal — otherwise herdr keeps the
-  // pane clamped to the cell's narrow width and a full-screen TUI renders thin.
+  // Focus a pane in the Herdr tab (see focusPaneInHerdr for the sequence; shared
+  // with the Cmd+U pane switcher).
   const focusPane = async (p: GridPane) => {
     try {
-      if (p.host !== activeHost) await api.switchHost(p.host)
-      if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
-      await api.gridTermRelease(p.host, p.terminal_id)
-      onFocusInHerdr()
-      // Surfacing the Herdr tab only focuses the iframe window; hand the
-      // keyboard to xterm too so the user can type without clicking first.
-      focusHerdrTerminal()
+      await focusPaneInHerdr(p, activeHost, onFocusInHerdr)
     } catch (e) {
       toast.error(`focus failed: ${(e as Error).message}`)
     }

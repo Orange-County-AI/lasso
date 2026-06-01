@@ -6,6 +6,7 @@ import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
+import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
@@ -16,7 +17,9 @@ import {
 } from "@/components/ui/resizable"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
+import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
@@ -67,6 +70,7 @@ function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
   const [diffDirty, setDiffDirty] = React.useState(0)
+  const [paletteOpen, setPaletteOpen] = React.useState(false)
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
   const ui = useUIState()
 
@@ -89,6 +93,16 @@ function Shell() {
     },
     []
   )
+
+  // Warm the cross-host pane list in the background on load so the first ⌘K
+  // pane-switcher search is instant instead of waiting on a fresh fetch. Shares
+  // qk.grid with the Grid tab and the switcher, so all three reuse one cache.
+  React.useEffect(() => {
+    void queryClient.prefetchQuery({
+      queryKey: qk.grid,
+      queryFn: () => api.gridPanes(),
+    })
+  }, [])
 
   // Reflect the initial tab in the query string once on mount — this also
   // clears any legacy #hash (setQueryParam drops the fragment). The initial
@@ -132,7 +146,8 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // ⌘G → Grid, ⌘H → Herdr, ⌘P → toggle the sidebar. Bound to the Cmd key only
+  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘P → toggle the sidebar. Bound
+  // to the Cmd key only
   // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
   // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
   // this document, so these work even while a terminal holds focus. (See
@@ -150,6 +165,9 @@ function Shell() {
       } else if (k === "p") {
         e.preventDefault()
         toggleSidebar()
+      } else if (k === "k") {
+        e.preventDefault()
+        setPaletteOpen(true)
       }
     }
     document.addEventListener("keydown", onKey)
@@ -200,14 +218,27 @@ function Shell() {
                 Settings
               </TabsTrigger>
               {collapsed && (
-                <button
-                  type="button"
-                  className="my-1 mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                  title="show file viewer"
-                  onClick={expandSidebar}
-                >
-                  <ChevronLeft className="size-4" />
-                </button>
+                <>
+                  {/* Git status at a glance while the file viewer is hidden:
+                      the uncommitted-change count, mirroring the Files tab's
+                      badge. Sits just left of the un-collapse button. */}
+                  {diffDirty > 0 && (
+                    <span
+                      className="mr-1.5 self-center rounded-full bg-warn px-1.5 font-semibold text-[13px] text-background"
+                      title={`${diffDirty} uncommitted change${diffDirty === 1 ? "" : "s"}`}
+                    >
+                      {diffDirty}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="my-1 mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                    title="show file viewer"
+                    onClick={expandSidebar}
+                  >
+                    <ChevronLeft className="size-4" />
+                  </button>
+                </>
               )}
             </TabsList>
             <div className="relative min-h-0 flex-1">
@@ -321,6 +352,13 @@ function Shell() {
           </Tabs>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {/* Cmd+U pane switcher — searches every pane on every host, opens the
+          chosen one in the Herdr tab (push=true so Back returns here). */}
+      <PaneSwitcher
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onFocusInHerdr={() => switchLeft("herdr", false, true)}
+      />
       {leftView === "herdr" && (
         <div className="fixed bottom-3 left-3 z-40 flex items-center gap-2">
           <HostSwitcher />
