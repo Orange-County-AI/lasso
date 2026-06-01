@@ -410,7 +410,14 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		branch = uniqueBranch(cur, repo, branch)
 
-		workDir := uniqueChildDir(lassoWorktreesDir(), worktreeDirSlug(branch, slug))
+		// Nest the worktree under the repo's name so worktrees from different
+		// repos don't share one flat namespace (and don't collide on slug).
+		repoSlug := slugify(filepath.Base(repo))
+		if repoSlug == "" {
+			repoSlug = "repo"
+		}
+		parent := filepath.Join(lassoWorktreesDir(), repoSlug)
+		workDir := uniqueChildDir(parent, worktreeDirSlug(branch, slug))
 		base := strings.TrimSpace(req.BaseBranch)
 		if base == "" {
 			base = "HEAD"

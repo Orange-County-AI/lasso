@@ -45,7 +45,7 @@ func TestCreateGitAgentUsesUniqueBranchLeafForWorktreeDir(t *testing.T) {
 	})
 
 	b := &createAgentBackend{memBackend: newMemBackend()}
-	existing := filepath.Join(lasso, "worktrees", "fix-login-a1b2")
+	existing := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2")
 	b.dirs[existing] = true
 
 	prev := curBackend()
@@ -70,7 +70,7 @@ func TestCreateGitAgentUsesUniqueBranchLeafForWorktreeDir(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("serveCreateAgent status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	want := filepath.Join(lasso, "worktrees", "fix-login-a1b2-2")
+	want := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2-2")
 	if b.worktreePath != want {
 		t.Fatalf("worktree path = %q, want %q", b.worktreePath, want)
 	}
