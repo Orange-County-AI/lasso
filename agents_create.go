@@ -109,50 +109,39 @@ func splitGlobs(spec string) []string {
 // ---------------------------------------------------------------------------
 
 func serveAgentConfig(w http.ResponseWriter, r *http.Request) {
-	host := curBackend().Name()
+	// ?host= picks which host's settings to read/write — its OWN lasso.db, via
+	// the provider (in-process for local, `lasso cli` over SSH for a remote).
+	// Defaults to the active host. Settings (defaults) come from that host's db;
+	// last-used selections + the agent log are this lasso's local memory.
+	host, ok := hostParam(r)
+	if !ok {
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		c, err := loadLassoConfig(host)
+		c, err := hostAgentConfig(host)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		writeJSON(w, c)
 	case http.MethodPost:
-		// Only global settings are editable here; an empty default_agent is a
-		// valid choice ("no preset default, use the last-used agent"), so each
-		// field is a pointer to tell "unset" from "set to empty".
-		var req struct {
-			ReposRoot    *string `json:"repos_root"`
-			BranchPrefix *string `json:"branch_prefix"`
-			DefaultAgent *string `json:"default_agent"`
-			ScratchSetup *string `json:"scratch_setup"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// An empty default_agent is a valid choice ("no preset default, use the
+		// last-used agent"), so each field is a pointer to tell "unset" from
+		// "set to empty".
+		var p defaultsPatch
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		updates := []struct {
-			key string
-			val *string
-		}{
-			{"repos_root", req.ReposRoot},
-			{"branch_prefix", req.BranchPrefix},
-			{"default_agent", req.DefaultAgent},
-			{"scratch_setup", req.ScratchSetup},
+		if err := hostSetDefaults(host, p); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
-		for _, u := range updates {
-			if u.val == nil {
-				continue
-			}
-			if err := setSetting(u.key, *u.val); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		c, err := loadLassoConfig(host)
+		c, err := hostAgentConfig(host)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		writeJSON(w, c)
@@ -170,36 +159,26 @@ func serveRepoConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	var req struct {
-		Path      string  `json:"path"`
-		CopyFiles *string `json:"copy_files"`
-		Setup     *string `json:"setup"`
+	host, ok := hostParam(r)
+	if !ok {
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
 	}
+	var req repoConfigPatch
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := expandTilde(strings.TrimSpace(req.Path))
+	path := strings.TrimSpace(req.Path)
 	if path == "" {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	host := curBackend().Name()
-	if req.CopyFiles != nil {
-		if err := setRepoCopyFiles(host, path, *req.CopyFiles); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	if req.Setup != nil {
-		if err := setRepoSetup(host, path, *req.Setup); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	rc, err := getRepoState(host, path)
+	// Repo paths from the picker are absolute; the provider writes to the chosen
+	// host's own db (and the remote CLI ~-expands against the remote home).
+	rc, err := hostSetRepoConfig(host, path, req.CopyFiles, req.Setup)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, rc)
@@ -218,42 +197,16 @@ type repoEntry struct {
 }
 
 func serveRepos(w http.ResponseWriter, r *http.Request) {
-	cur := curBackend()
-	host := cur.Name()
-	s, err := getSettings()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	host, ok := hostParam(r)
+	if !ok {
+		http.Error(w, "host not available", http.StatusBadRequest)
 		return
 	}
-	repoState, err := listRepoState(host)
+	root, repos, err := hostReposList(host)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	root := expandTilde(s.ReposRoot)
-	ents, err := cur.ReadDir(root)
-	if err != nil {
-		// An unreadable/missing repos root is not fatal — return an empty list so
-		// the picker still opens (the user can browse/fix the root in settings).
-		writeJSON(w, map[string]any{"root": root, "repos": []repoEntry{}})
-		return
-	}
-	repos := make([]repoEntry, 0, len(ents))
-	for _, e := range ents {
-		if !e.Dir {
-			continue
-		}
-		repoPath := filepath.Join(root, e.Name)
-		if _, err := cur.Stat(filepath.Join(repoPath, ".git")); err != nil {
-			continue // not a git repo
-		}
-		re := repoEntry{Path: repoPath, Name: e.Name}
-		if rc := repoState[repoPath]; rc != nil {
-			re.CopyFiles, re.Setup, re.LastBaseBranch = rc.CopyFiles, rc.Setup, rc.LastBaseBranch
-		}
-		repos = append(repos, re)
-	}
-	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
 	writeJSON(w, map[string]any{"root": root, "repos": repos})
 }
 
@@ -262,37 +215,24 @@ func serveRepos(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func serveRepoBranches(w http.ResponseWriter, r *http.Request) {
-	path := expandTilde(r.URL.Query().Get("path"))
+	host, ok := hostParam(r)
+	if !ok {
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
+	}
+	path := r.URL.Query().Get("path")
 	if path == "" {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	cur := curBackend()
-	local := gitBranchList(cur, path, "refs/heads")
-	remote := gitBranchList(cur, path, "refs/remotes")
-	// Drop the symbolic "origin/HEAD -> …" entry from the remote list.
-	filtered := remote[:0]
-	for _, b := range remote {
-		if strings.HasSuffix(b, "/HEAD") || strings.Contains(b, "->") {
-			continue
-		}
-		filtered = append(filtered, b)
+	// Branches need only git on the host's filesystem (no db), so run them on the
+	// host's backend directly — no lasso CLI required on the remote.
+	be, err := gridHostBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
-	remote = filtered
-
-	def := gitDefaultBranch(cur, path)
-	if def == "" {
-		for _, cand := range []string{"main", "master"} {
-			for _, b := range local {
-				if b == cand {
-					def = cand
-				}
-			}
-		}
-	}
-	if def == "" && len(local) > 0 {
-		def = local[0]
-	}
+	local, remote, def := branchList(be, path)
 	writeJSON(w, map[string]any{"branches": local, "remoteBranches": remote, "default": def})
 }
 
@@ -367,12 +307,10 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 	host := cur.Name()
 	// The files-to-copy and setup commands are properties of the repo (and the
 	// scratch default), configured in Settings — not per-agent. Read them from
-	// the store rather than the request.
-	settings, err := getSettings()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// the active host's OWN settings (its lasso.db, via the provider) so a remote
+	// host's worktree is set up from its own configuration. Best-effort: a setup
+	// we can't read just means none runs, never a failed create.
+	defaults, _ := hostDefaults(host)
 	slug := slugify(req.Title)
 
 	rec := AgentRecord{
@@ -443,7 +381,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 		// Copy the repo's configured files into the worktree and run its setup
 		// script before the agent (both per-repo settings, keyed by host+repo).
-		rc, _ := getRepoState(host, repo)
+		rc, _ := hostRepoConfig(host, repo)
 		copyRepoFiles(cur, repo, workDir, rc.CopyFiles)
 		setup = rc.Setup
 
@@ -469,7 +407,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		ws, pane := parseCreateResult(res)
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
 		rootPane = pane
-		setup = settings.ScratchSetup
+		setup = defaults.ScratchSetup
 
 	default:
 		http.Error(w, `type must be "git" or "scratch"`, http.StatusBadRequest)

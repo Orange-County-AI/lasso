@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -508,8 +510,15 @@ func serveHostProvision(w http.ResponseWriter, r *http.Request) {
 		req.Host, "bash -s")
 	cmd.Stdin = strings.NewReader(provisionScript)
 	out, err := cmd.CombinedOutput()
+	output := strings.TrimSpace(string(out))
 
-	resp := map[string]any{"ok": err == nil, "output": strings.TrimSpace(string(out))}
+	// Also install the lasso CLI so this host's settings can be read/written over
+	// SSH (the per-host Settings flow runs `lasso cli` on it). Best-effort and
+	// arch-guarded — herdr provisioning above is the primary goal, so a skip here
+	// doesn't fail the setup.
+	output += "\n==> installing lasso cli\n" + installLassoBinary(ctx, req.Host)
+
+	resp := map[string]any{"ok": err == nil, "output": output}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			resp["error"] = "timed out"
@@ -520,4 +529,62 @@ func serveHostProvision(w http.ResponseWriter, r *http.Request) {
 		invalidateHostCache()
 	}
 	writeJSON(w, resp)
+}
+
+// installLassoBinary copies this controller's own lasso binary to host's
+// ~/.local/bin/lasso (alongside herdr), so `lasso cli` is available for the
+// per-host settings flow. It only copies when the remote's OS/arch matches this
+// build — a binary for a different target would be useless — and is best-effort:
+// it returns a human-readable log line and never aborts provisioning.
+func installLassoBinary(ctx context.Context, host string) string {
+	self, err := os.Executable()
+	if err != nil {
+		return "skipped: can't locate local lasso binary (" + err.Error() + ")"
+	}
+	// The remote OS/arch must match the local build (we ship this exact binary).
+	un, err := exec.CommandContext(ctx, "ssh",
+		"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+		"-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+		host, `${SHELL:-sh} -lc 'uname -sm'`).Output()
+	if err != nil {
+		return "skipped: couldn't probe remote arch (" + err.Error() + ")"
+	}
+	if !unameMatchesLocal(string(un)) {
+		return fmt.Sprintf("skipped: remote is %s, this lasso is built for %s/%s — "+
+			"install a matching lasso on %s manually", strings.TrimSpace(string(un)),
+			runtime.GOOS, runtime.GOARCH, host)
+	}
+	f, err := os.Open(self)
+	if err != nil {
+		return "skipped: " + err.Error()
+	}
+	defer f.Close()
+	// Stream the binary to a temp name then atomically move it into place, so a
+	// running remote lasso is never reading a half-written file.
+	cmd := exec.CommandContext(ctx, "ssh",
+		"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+		"-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+		host, `${SHELL:-sh} -lc 'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/lasso.new" `+
+			`&& chmod +x "$HOME/.local/bin/lasso.new" && mv -f "$HOME/.local/bin/lasso.new" "$HOME/.local/bin/lasso"'`)
+	cmd.Stdin = f
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "install failed: " + msg
+	}
+	return "installed to ~/.local/bin/lasso"
+}
+
+// unameMatchesLocal reports whether `uname -sm` output (e.g. "Linux x86_64")
+// names the same OS+arch as this running build, so shipping our binary is safe.
+func unameMatchesLocal(uname string) bool {
+	f := strings.Fields(strings.TrimSpace(uname))
+	if len(f) < 2 {
+		return false
+	}
+	osMap := map[string]string{"Linux": "linux", "Darwin": "darwin"}
+	archMap := map[string]string{"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+	return osMap[f[0]] == runtime.GOOS && archMap[f[1]] == runtime.GOARCH
 }

@@ -258,6 +258,13 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await r.json()) as T
 }
 
+// withHost appends ?host=/&host= to a config endpoint so it targets a specific
+// host's own settings (its lasso.db). Omitted = the backend's active host.
+function withHost(url: string, host?: string): string {
+  if (!host) return url
+  return `${url}${url.includes("?") ? "&" : "?"}host=${encodeURIComponent(host)}`
+}
+
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
   theme: () => getJSON<ThemePayload>("/api/theme"),
@@ -449,8 +456,11 @@ export const api = {
 
   // --- Agent creation ---
 
-  // The creator's settings + agent log.
-  agentConfig: () => getJSON<AgentConfig>("/api/agent-config"),
+  // The creator's settings + agent log for a host (its own lasso.db; defaults to
+  // the active host). Settings come from that host; last-used/agent log are this
+  // lasso's local memory of what it did there.
+  agentConfig: (host?: string) =>
+    getJSON<AgentConfig>(withHost("/api/agent-config", host)),
 
   // Update the global creator defaults (repos_root, branch_prefix,
   // default_agent, scratch_setup); omitted fields are left unchanged.
@@ -460,24 +470,29 @@ export const api = {
         AgentConfig,
         "repos_root" | "branch_prefix" | "default_agent" | "scratch_setup"
       >
-    >
-  ) => postJSON<AgentConfig>("/api/agent-config", cfg),
+    >,
+    host?: string
+  ) => postJSON<AgentConfig>(withHost("/api/agent-config", host), cfg),
 
   // Save a repo's per-repo creator settings (copy-files globs + setup script).
   // These live with the repo, not the agent, so they're edited in Settings.
-  saveRepoConfig: (cfg: {
-    path: string
-    copy_files?: string
-    setup?: string
-  }) => postJSON<RepoConfig>("/api/repo-config", cfg),
+  saveRepoConfig: (
+    cfg: {
+      path: string
+      copy_files?: string
+      setup?: string
+    },
+    host?: string
+  ) => postJSON<RepoConfig>(withHost("/api/repo-config", host), cfg),
 
   // Git repos discovered under repos_root, each with its remembered state.
-  repos: () => getJSON<{ root: string; repos: RepoEntry[] }>("/api/repos"),
+  repos: (host?: string) =>
+    getJSON<{ root: string; repos: RepoEntry[] }>(withHost("/api/repos", host)),
 
   // Local + remote branches of a repo, plus its detected default branch.
-  repoBranches: (path: string) =>
+  repoBranches: (path: string, host?: string) =>
     getJSON<RepoBranches>(
-      `/api/repo-branches?path=${encodeURIComponent(path)}`
+      withHost(`/api/repo-branches?path=${encodeURIComponent(path)}`, host)
     ),
 
   // Stage attachment files before creating the agent; returns the staging dir id

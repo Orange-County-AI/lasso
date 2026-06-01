@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -201,6 +202,37 @@ func (b *remoteBackend) runOut(remoteCmd string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// runCLI runs `lasso cli <args>` on the remote through a login shell (so
+// ~/.local/bin is on PATH, matching probeHost), piping stdin and returning
+// stdout; stderr is surfaced on error. This is how the per-host settings
+// provider reads/writes a remote host's OWN ~/.lasso/lasso.db — through that
+// host's own lasso binary, so SQLite locking is honored and no values cross a
+// shell (the payload is JSON on stdin). Each arg is shell-quoted, the joined
+// command is quoted again as the single argument to `-lc`.
+func (b *remoteBackend) runCLI(args []string, stdin []byte) ([]byte, error) {
+	inner := append([]string{"lasso", "cli"}, args...)
+	quoted := make([]string, len(inner))
+	for i, a := range inner {
+		quoted[i] = shellQuote(a)
+	}
+	remoteCmd := `${SHELL:-sh} -lc ` + shellQuote(strings.Join(quoted, " "))
+	sshArgs := append(b.ctlOpts(), b.alias, remoteCmd)
+	cmd := exec.Command("ssh", sshArgs...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
+			return nil, fmt.Errorf("lasso cli on %s: %s", b.alias, msg)
+		}
+		return nil, fmt.Errorf("lasso cli on %s: %w", b.alias, err)
+	}
+	return out, nil
 }
 
 func (b *remoteBackend) GitOut(dir string, args ...string) (string, error) {

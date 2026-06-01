@@ -25,10 +25,10 @@ import { patchUIState, useUIState } from "@/lib/ui-state"
 import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type LeftView = "herdr" | "grid" | "settings"
-type RightView = "files" | "scratch" | "browser" | "terminal"
+type LeftView = "herdr" | "grid"
+type RightView = "files" | "scratch" | "browser" | "terminal" | "settings"
 
-const LEFT_VIEWS: LeftView[] = ["herdr", "grid", "settings"]
+const LEFT_VIEWS: LeftView[] = ["herdr", "grid"]
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -210,15 +210,9 @@ function Shell() {
               <TabsTrigger value="grid" className={tabClass}>
                 Grid
               </TabsTrigger>
-              {/* Settings is right-aligned (ml-auto) so it sits at the far end
-                  of the row. When the sidebar is collapsed, the un-collapse
-                  button follows it (no ml-auto of its own) so it tucks to
-                  Settings' right rather than splitting the row. */}
-              <TabsTrigger value="settings" className={cn(tabClass, "ml-auto")}>
-                Settings
-              </TabsTrigger>
               {collapsed && (
-                <>
+                // Right-aligned (ml-auto) so it sits at the far end of the row.
+                <div className="ml-auto flex items-center">
                   {/* Git status at a glance while the file viewer is hidden:
                       the uncommitted-change count, mirroring the Files tab's
                       badge. Sits just left of the un-collapse button. */}
@@ -238,7 +232,7 @@ function Shell() {
                   >
                     <ChevronLeft className="size-4" />
                   </button>
-                </>
+                </div>
               )}
             </TabsList>
             <div className="relative min-h-0 flex-1">
@@ -256,9 +250,6 @@ function Shell() {
                   active={leftView === "grid"}
                   onFocusInHerdr={() => switchLeft("herdr", false, true)}
                 />
-              </Pane>
-              <Pane show={leftView === "settings"}>
-                <SettingsTab active={leftView === "settings"} />
               </Pane>
             </div>
           </Tabs>
@@ -315,6 +306,9 @@ function Shell() {
                 <TabsTrigger value="terminal" className={tabClass}>
                   Terminal
                 </TabsTrigger>
+                <TabsTrigger value="settings" className={tabClass}>
+                  Settings
+                </TabsTrigger>
               </div>
               <button
                 type="button"
@@ -347,6 +341,9 @@ function Shell() {
                   suppressContext={false}
                   hidden={rightView !== "terminal"}
                 />
+              </Pane>
+              <Pane show={rightView === "settings"}>
+                <SettingsTab active={rightView === "settings"} />
               </Pane>
             </div>
           </Tabs>

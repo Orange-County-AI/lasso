@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { api, type CreateAgentPayload } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
@@ -108,18 +109,22 @@ export function CreateAgentDialog({
     return () => document.removeEventListener("keydown", onKey)
   }, [variant])
 
+  // The creator always targets the active host; its config/repos live in that
+  // host's own lasso.db, so the queries are keyed and fetched by active host.
+  const { host: activeHost } = useApp()
+  const cfgHost = activeHost ?? "local"
+
   // Server state via TanStack Query, fetched while the dialog is open. All three
-  // are host-scoped on the backend and invalidated on a host switch (see
-  // lib/query), so reopening on a new host pulls that host's remembered state.
+  // are host-scoped (see lib/query), so switching hosts pulls that host's state.
   const configQuery = useQuery({
-    queryKey: qk.agentConfig,
-    queryFn: () => api.agentConfig(),
-    enabled: open,
+    queryKey: qk.agentConfig(cfgHost),
+    queryFn: () => api.agentConfig(cfgHost),
+    enabled: open && activeHost != null,
   })
   const reposQuery = useQuery({
-    queryKey: qk.repos,
-    queryFn: () => api.repos(),
-    enabled: open,
+    queryKey: qk.repos(cfgHost),
+    queryFn: () => api.repos(cfgHost),
+    enabled: open && activeHost != null,
   })
   const config = configQuery.data ?? null
   const repos = reposQuery.data?.repos ?? []
@@ -141,8 +146,8 @@ export function CreateAgentDialog({
   const descriptionRef = React.useRef<HTMLTextAreaElement>(null)
 
   const branchesQuery = useQuery({
-    queryKey: qk.repoBranches(repo),
-    queryFn: () => api.repoBranches(repo),
+    queryKey: qk.repoBranches(cfgHost, repo),
+    queryFn: () => api.repoBranches(repo, cfgHost),
     enabled: open && type === "git" && !!repo,
   })
   const branches = React.useMemo(() => {
@@ -293,9 +298,9 @@ export function CreateAgentDialog({
       setOpen(false)
       reset()
       // The creator just updated this host's remembered selections + agent log,
-      // so refetch them.
-      queryClient.invalidateQueries({ queryKey: qk.agentConfig })
-      queryClient.invalidateQueries({ queryKey: qk.repos })
+      // so refetch them (prefix-match clears every host's cached config).
+      queryClient.invalidateQueries({ queryKey: ["agent-config"] })
+      queryClient.invalidateQueries({ queryKey: ["repos"] })
       onCreated?.()
     },
     onError: (err) => {

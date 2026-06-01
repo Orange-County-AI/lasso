@@ -90,6 +90,14 @@ func defaultSock() string {
 }
 
 func main() {
+	// `lasso cli …` is a thin, JSON-in/out interface over this host's own state
+	// DB + filesystem (no server) — invoked by a controlling lasso over SSH to
+	// manage a remote host's settings. Intercept it before flag parsing and
+	// server startup, since it isn't a flag and must not bind a port.
+	if len(os.Args) > 1 && os.Args[1] == "cli" {
+		os.Exit(runCLI(os.Args[2:]))
+	}
+
 	flag.Parse()
 
 	// Start out driving the local herdr daemon. The footer's host switcher swaps

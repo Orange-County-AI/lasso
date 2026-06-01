@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -59,6 +60,31 @@ export function SettingsTab({ active }: { active: boolean }) {
   const info = versionQuery.data ?? null
   const loading = versionQuery.isLoading
   const errored = versionQuery.isError
+
+  // Which host's settings to edit — each host stores them in its own lasso.db.
+  // The picker lists the local machine plus every reachable, compatible remote
+  // (those can answer `lasso cli` over SSH). Defaults to the active host.
+  const { host: activeHost } = useApp()
+  const hostsQuery = useQuery({
+    queryKey: ["hosts"],
+    queryFn: () => api.hosts(),
+    enabled: active,
+  })
+  const hostOptions = React.useMemo(() => {
+    const d = hostsQuery.data
+    const opts = [{ value: "local", label: d?.local?.hostname || "local" }]
+    for (const h of d?.hosts ?? []) {
+      if (h.reachable && h.running && h.compatible)
+        opts.push({ value: h.alias, label: h.alias })
+    }
+    return opts
+  }, [hostsQuery.data])
+  const [selectedHost, setSelectedHost] = React.useState<string | null>(null)
+  // Default to the active host once it's known; keep the user's choice after.
+  React.useEffect(() => {
+    if (selectedHost == null && activeHost) setSelectedHost(activeHost)
+  }, [activeHost, selectedHost])
+  const host = selectedHost ?? activeHost ?? "local"
 
   // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
   let herdr: React.ReactNode
@@ -126,7 +152,33 @@ export function SettingsTab({ active }: { active: boolean }) {
       </header>
 
       <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
-        <AgentCreatorSettings active={active} />
+        <div className="mb-4 flex flex-col gap-1">
+          <label className={labelClass} htmlFor="settings-host">
+            Configuring host
+          </label>
+          <select
+            id="settings-host"
+            className={cn(fieldClass, "max-w-xs")}
+            value={host}
+            onChange={(e) => setSelectedHost(e.target.value)}
+          >
+            {/* Ensure the current value is always selectable even before the
+                host probe returns (e.g. an active remote not yet in the list). */}
+            {!hostOptions.some((o) => o.value === host) && (
+              <option value={host}>{host}</option>
+            )}
+            {hostOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+                {o.value === activeHost ? " (active)" : ""}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-muted-foreground">
+            These settings live in {host}'s own ~/.lasso/lasso.db.
+          </p>
+        </div>
+        <AgentCreatorSettings active={active} host={host} />
       </div>
 
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
@@ -164,36 +216,45 @@ function ShortcutsDialog({
   )
 }
 
-// AgentCreatorSettings edits the creator's global defaults and each repo's
-// copy-files + setup, persisted via /api/agent-config and /api/repo-config.
-function AgentCreatorSettings({ active }: { active: boolean }) {
+// AgentCreatorSettings edits a host's creator defaults and each repo's
+// copy-files + setup, persisted via /api/agent-config and /api/repo-config for
+// the given host (its own lasso.db).
+function AgentCreatorSettings({
+  active,
+  host,
+}: {
+  active: boolean
+  host: string
+}) {
   const queryClient = useQueryClient()
 
   const configQuery = useQuery({
-    queryKey: qk.agentConfig,
-    queryFn: () => api.agentConfig(),
+    queryKey: qk.agentConfig(host),
+    queryFn: () => api.agentConfig(host),
     enabled: active,
   })
   const reposQuery = useQuery({
-    queryKey: qk.repos,
-    queryFn: () => api.repos(),
+    queryKey: qk.repos(host),
+    queryFn: () => api.repos(host),
     enabled: active,
   })
   const repos = reposQuery.data?.repos ?? []
 
-  // Global defaults (editable copies, seeded once from the config query).
+  // Defaults (editable copies, re-seeded whenever the selected host's config
+  // arrives — tracked per host so switching hosts reloads, but a refetch of the
+  // same host doesn't clobber in-progress edits).
   const [reposRoot, setReposRoot] = React.useState("")
   const [defaultAgent, setDefaultAgent] = React.useState("")
   const [scratchSetup, setScratchSetup] = React.useState("")
-  const seededRef = React.useRef(false)
+  const seededHostRef = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (seededRef.current || !configQuery.data) return
-    seededRef.current = true
+    if (seededHostRef.current === host || !configQuery.data) return
+    seededHostRef.current = host
     setReposRoot(configQuery.data.repos_root || "")
     // Empty string is meaningful: "Auto (use last used)". Don't coerce to claude.
     setDefaultAgent(configQuery.data.default_agent ?? "")
     setScratchSetup(configQuery.data.scratch_setup || "")
-  }, [configQuery.data])
+  }, [configQuery.data, host])
 
   // Per-repo settings.
   const [repoPath, setRepoPath] = React.useState("")
@@ -220,24 +281,27 @@ function AgentCreatorSettings({ active }: { active: boolean }) {
 
   const saveDefaultsMutation = useMutation({
     mutationFn: () =>
-      api.saveAgentConfig({
-        repos_root: reposRoot,
-        default_agent: defaultAgent,
-        scratch_setup: scratchSetup,
-      }),
+      api.saveAgentConfig(
+        {
+          repos_root: reposRoot,
+          default_agent: defaultAgent,
+          scratch_setup: scratchSetup,
+        },
+        host
+      ),
     onSuccess: () => {
       // Repos root may have changed — refetch both config and the repo scan.
-      queryClient.invalidateQueries({ queryKey: qk.agentConfig })
-      queryClient.invalidateQueries({ queryKey: qk.repos })
+      queryClient.invalidateQueries({ queryKey: qk.agentConfig(host) })
+      queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
   })
 
   const saveRepoMutation = useMutation({
     mutationFn: () =>
-      api.saveRepoConfig({ path: repoPath, copy_files: copyFiles, setup }),
+      api.saveRepoConfig({ path: repoPath, copy_files: copyFiles, setup }, host),
     onSuccess: () => {
       setSavedRepo(repoPath)
-      queryClient.invalidateQueries({ queryKey: qk.repos })
+      queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
   })
 

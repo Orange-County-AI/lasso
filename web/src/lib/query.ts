@@ -15,24 +15,26 @@ export const queryClient = new QueryClient({
   },
 })
 
-// Centralized query keys for the agent-creation data flow. host-scoped data
-// (agentConfig, repos, branches, agents) is invalidated wholesale on a host
-// switch, so the keys don't embed the host — invalidation clears them all.
+// Centralized query keys for the agent-creation data flow. Config keys embed the
+// host, since each host's settings live in its own lasso.db and the Settings tab
+// can address any host — invalidateHostScoped clears every host by key prefix.
 export const qk = {
-  agentConfig: ["agent-config"] as const,
-  repos: ["repos"] as const,
-  repoBranches: (path: string) => ["repo-branches", path] as const,
+  agentConfig: (host: string) => ["agent-config", host] as const,
+  repos: (host: string) => ["repos", host] as const,
+  repoBranches: (host: string, path: string) =>
+    ["repo-branches", host, path] as const,
   grid: ["grid"] as const,
   uiState: ["ui-state"] as const,
   sidebarPct: ["sidebar-pct"] as const,
   version: ["version"] as const,
 }
 
-// invalidateHostScoped refetches everything tied to the active host, called when
-// the host switches so the creator reloads the new host's remembered selections.
+// invalidateHostScoped refetches everything tied to a host, called when the
+// active host switches so the creator reloads the new host's remembered
+// selections. Matches every host's config by key prefix.
 export function invalidateHostScoped() {
-  queryClient.invalidateQueries({ queryKey: qk.agentConfig })
-  queryClient.invalidateQueries({ queryKey: qk.repos })
+  queryClient.invalidateQueries({ queryKey: ["agent-config"] })
+  queryClient.invalidateQueries({ queryKey: ["repos"] })
   queryClient.invalidateQueries({ queryKey: ["repo-branches"] })
   queryClient.invalidateQueries({ queryKey: qk.version })
 }
