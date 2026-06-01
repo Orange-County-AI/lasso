@@ -1,8 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { RotateCw } from "lucide-react"
+import { Keyboard, RotateCw } from "lucide-react"
 import * as React from "react"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
 import { qk } from "@/lib/query"
@@ -44,6 +50,7 @@ function Field({
 // script) are global; each repo's files-to-copy + setup commands are scoped to
 // the active host. All of it persists in ~/.lasso/lasso.db.
 export function SettingsTab({ active }: { active: boolean }) {
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const versionQuery = useQuery({
     queryKey: qk.version,
     queryFn: () => api.version(),
@@ -101,6 +108,15 @@ export function SettingsTab({ active }: { active: boolean }) {
             variant="outline"
             size="icon"
             className="ml-auto size-7"
+            title="Keyboard shortcuts"
+            onClick={() => setShortcutsOpen(true)}
+          >
+            <Keyboard />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-7"
             title="re-check protocol compatibility"
             onClick={() => versionQuery.refetch()}
           >
@@ -110,32 +126,41 @@ export function SettingsTab({ active }: { active: boolean }) {
       </header>
 
       <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
-        <div className="flex flex-col gap-4">
-          <ShortcutsSection />
-          <AgentCreatorSettings active={active} />
-        </div>
+        <AgentCreatorSettings active={active} />
       </div>
+
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   )
 }
 
-// ShortcutsSection lists the app's keyboard shortcuts (the SHORTCUTS the App
-// key handler implements). Reference only — nothing to configure.
-function ShortcutsSection() {
+// ShortcutsDialog shows the app's keyboard shortcuts (the SHORTCUTS the App key
+// handler implements) in a modal. Reference only — nothing to configure.
+function ShortcutsDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
-      <h3 className="font-medium text-foreground text-sm">Keyboard shortcuts</h3>
-      <ul className="flex flex-col gap-1.5">
-        {SHORTCUTS.map((s) => (
-          <li key={s.keys} className="flex items-center gap-3 text-sm">
-            <kbd className="min-w-10 rounded border border-border bg-muted px-1.5 py-0.5 text-center font-mono text-muted-foreground text-xs">
-              {s.keys}
-            </kbd>
-            <span className="text-foreground">{s.label}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
+        </DialogHeader>
+        <ul className="flex flex-col gap-1.5">
+          {SHORTCUTS.map((s) => (
+            <li key={s.keys} className="flex items-center gap-3 text-sm">
+              <kbd className="min-w-10 rounded border border-border bg-muted px-1.5 py-0.5 text-center font-mono text-muted-foreground text-xs">
+                {s.keys}
+              </kbd>
+              <span className="text-foreground">{s.label}</span>
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
   )
 }
 
