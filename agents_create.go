@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,6 +61,18 @@ func uniqueChildDir(parent, slug string) string {
 		}
 		candidate = filepath.Join(parent, fmt.Sprintf("%s-%d", slug, i))
 	}
+}
+
+// randSuffix returns a short random alphanumeric tag, mirroring the frontend's
+// branch-name suffix (generateBranchName). Used to keep scratch dir names unique
+// the way a worktree's random-suffixed branch keeps worktrees distinct.
+func randSuffix() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 4)
+	for i := range b {
+		b[i] = chars[rand.IntN(len(chars))]
+	}
+	return string(b)
 }
 
 // splitGlobs splits a comma/newline-separated copy-files spec into trimmed,
@@ -409,7 +422,11 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		setup = rc.Setup
 
 	case "scratch":
-		workDir := uniqueChildDir(lassoScratchDir(), slug)
+		// A scratch agent has no branch to carry a random suffix, so append one to
+		// the dir itself — two same-titled scratch agents then get distinct dirs
+		// (e.g. hey-boss-a3f9), the way worktrees stay distinct via their branch.
+		// uniqueChildDir still guards the (astronomically unlikely) suffix clash.
+		workDir := uniqueChildDir(lassoScratchDir(), slug+"-"+randSuffix())
 		if err := cur.MkdirAll(workDir, 0o755); err != nil {
 			http.Error(w, "mkdir "+workDir+": "+err.Error(), http.StatusInternalServerError)
 			return
@@ -446,14 +463,12 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 			paneRun(rootPane, s)
 		}
 		paneRun(rootPane, agentCommand(req.Agent, rec.PlanMode, agentPrompt(rec)))
-		// claude still shows a per-project "trust this folder" dialog even under
-		// --dangerously-skip-permissions (as of 2.x), which leaves the agent
-		// blocked. Auto-accept it in the background so the agent boots straight
-		// into the task; the prompt rides along as a CLI arg, so claude proceeds
-		// with it once trust is granted. codex has no such dialog.
-		if req.Agent != "codex" {
-			go confirmClaudeTrust(rootPane)
-		}
+		// Both claude and codex show a per-directory trust dialog at boot that
+		// their --dangerously-* flags do NOT bypass, leaving the agent blocked.
+		// Auto-accept it in the background so the agent boots straight into the
+		// task; the prompt rides along as a CLI arg, so the agent proceeds with it
+		// once trust is granted.
+		go confirmAgentTrust(rootPane)
 	}
 
 	// Persist: remember the repo/base-branch + copy/setup edits, append the record.
@@ -663,8 +678,14 @@ func agentPrompt(rec AgentRecord) string {
 func agentCommand(agent string, planMode bool, prompt string) string {
 	switch agent {
 	case "codex":
-		// Codex has no documented plan-mode flag; launch in its default mode.
-		cmd := "codex"
+		// --dangerously-bypass-approvals-and-sandbox is codex's analog of claude's
+		// --dangerously-skip-permissions (lasso worktrees are already isolated), so
+		// the agent runs autonomously instead of prompting per command. It does NOT
+		// skip codex's boot-time "Do you trust this directory?" gate, though — that
+		// dialog is auto-accepted via the trust goroutine in serveCreateAgent (a
+		// config-file/-c pre-trust is fragile across the pane's shell). No
+		// documented plan-mode flag, so plan agents launch in the default mode.
+		cmd := "codex --dangerously-bypass-approvals-and-sandbox"
 		if prompt != "" {
 			cmd += " " + shellQuote(prompt)
 		}
@@ -694,19 +715,19 @@ func paneRun(paneID, command string) {
 	})
 }
 
-// confirmClaudeTrust watches a freshly-launched claude pane for its per-project
-// "trust this folder" dialog and accepts it (the default-selected "Yes") by
-// pressing Enter. Recent claude versions show this dialog even under
-// --dangerously-skip-permissions, which would otherwise leave the agent blocked.
-// Polls rather than sleeping a fixed time so it survives a slow setup script
-// running before the agent; if the folder is already trusted the dialog never
-// appears and this simply times out without sending anything.
-func confirmClaudeTrust(paneID string) {
+// confirmAgentTrust watches a freshly-launched agent pane for its per-directory
+// trust dialog (claude's "trust this folder" / codex's "trust the contents of
+// this directory") and accepts it — both default to "Yes" and confirm on Enter.
+// Neither agent's --dangerously-* flag bypasses this gate, so without it the
+// agent sits blocked. Polls rather than sleeping a fixed time so it survives a
+// slow setup script running before the agent; if the dir is already trusted the
+// dialog never appears and this simply times out without sending anything.
+func confirmAgentTrust(paneID string) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		if paneShowsTrustPrompt(paneID) {
-			// Enter confirms the highlighted "Yes, I trust this folder".
+			// Enter confirms the highlighted default ("Yes").
 			_, _ = herdrCall("pane.send_text", map[string]any{
 				"pane_id": paneID,
 				"text":    "\r",
@@ -717,7 +738,7 @@ func confirmClaudeTrust(paneID string) {
 }
 
 // paneShowsTrustPrompt reports whether the pane's visible screen currently shows
-// claude's trust-this-folder dialog.
+// claude's or codex's directory-trust dialog.
 func paneShowsTrustPrompt(paneID string) bool {
 	res, err := herdrCall("pane.read", map[string]any{
 		"pane_id": paneID,
@@ -734,7 +755,9 @@ func paneShowsTrustPrompt(paneID string) bool {
 	if json.Unmarshal(res, &r) != nil {
 		return false
 	}
-	return strings.Contains(r.Read.Text, "trust this folder")
+	t := r.Read.Text
+	return strings.Contains(t, "trust this folder") || // claude
+		strings.Contains(t, "trust the contents of this directory") // codex
 }
 
 // ---------------------------------------------------------------------------
