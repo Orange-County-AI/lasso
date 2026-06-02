@@ -399,7 +399,10 @@ function Shell() {
           </Tabs>
         </ResizablePanel>
 
-        <ResizableHandle withHandle className={cn(collapsed && "hidden")} />
+        <ResizableHandle
+          withHandle
+          className={cn(collapsed && "hidden", "max-md:hidden")}
+        />
 
         <ResizablePanel
           id="right"
@@ -416,7 +419,16 @@ function Shell() {
             if (size.asPercentage > 5) setSidebarPct(size.asPercentage)
             patchUIState({ sidebar_collapsed: c })
           }}
-          className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
+          className={cn(
+            "relative flex h-full min-h-0 flex-col border-border border-l bg-card",
+            // On phones there isn't room to split the screen, so an open sidebar
+            // takes it over entirely: lift it out of the flex flow and overlay the
+            // left panel full-screen. Drops back to an in-flow resizable panel at
+            // md+. Gated on !collapsed so a collapsed sidebar stays hidden (0-width)
+            // rather than overlaying everything.
+            !collapsed &&
+              "max-md:absolute max-md:inset-0 max-md:z-30 max-md:w-full max-md:border-l-0"
+          )}
         >
           <Tabs
             value={rightView}
