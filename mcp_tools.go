@@ -308,7 +308,6 @@ type createAgentIn struct {
 	BranchName   string `json:"branch_name,omitempty" jsonschema:"Name for the new branch. Defaults to a slug of the title."`
 	BranchPrefix string `json:"branch_prefix,omitempty" jsonschema:"Optional prefix for the new branch, e.g. \"worktree\" -> worktree/<name>."`
 	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default) or \"codex\"."`
-	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Launch the agent in plan mode (claude only)."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
 }
@@ -328,7 +327,7 @@ func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn
 		Agent:        in.Agent,
 		Description:  in.Prompt, // the prompt rides into agentCommand via agentPrompt
 		Notes:        in.Notes,
-		PlanMode:     in.PlanMode,
+		// PlanMode intentionally omitted: agents started via MCP never run in plan mode.
 	})
 	if err != nil {
 		return nil, agentInfo{}, err
