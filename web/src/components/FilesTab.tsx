@@ -26,6 +26,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { api, type FileEntry } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { fmtSize } from "@/lib/format"
@@ -383,13 +389,18 @@ export function FilesTab({
             e.currentTarget.scrollLeft = e.currentTarget.scrollWidth
           }}
         />
-        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-muted-foreground">
-          <Checkbox
-            checked={follow}
-            onCheckedChange={(v) => setFollow(v === true)}
-          />
-          follow active pane
-        </label>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Checkbox
+                aria-label="Follow active pane"
+                checked={follow}
+                onCheckedChange={(v) => setFollow(v === true)}
+              />
+            </TooltipTrigger>
+            <TooltipContent>follow active pane</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </header>
 
       <div
