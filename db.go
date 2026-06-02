@@ -166,13 +166,14 @@ func setSetting(key, value string) error {
 type uiState struct {
 	GridAgentsOnly   bool     `json:"grid_agents_only"`
 	GridHiddenHosts  []string `json:"grid_hidden_hosts"`
+	GridSelected     []string `json:"grid_selected"`
 	SidebarCollapsed bool     `json:"sidebar_collapsed"`
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
 // expanded — when nothing is stored yet).
 func getUIState() (uiState, error) {
-	us := uiState{GridHiddenHosts: []string{}}
+	us := uiState{GridHiddenHosts: []string{}, GridSelected: []string{}}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -184,6 +185,9 @@ func getUIState() (uiState, error) {
 	_ = json.Unmarshal([]byte(v), &us)
 	if us.GridHiddenHosts == nil {
 		us.GridHiddenHosts = []string{}
+	}
+	if us.GridSelected == nil {
+		us.GridSelected = []string{}
 	}
 	return us, nil
 }
