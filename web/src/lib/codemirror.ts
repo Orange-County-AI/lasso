@@ -174,20 +174,20 @@ const baseTheme = EditorView.theme(
         borderLeftColor: "var(--h-accent)",
         borderLeftWidth: "2px",
       },
-    // CodeMirror's built-in dark baseline theme paints the selection with a
-    // very high-specificity rule (&.cm-focused > .cm-scroller >
-    // .cm-selectionLayer .cm-selectionBackground), so we must match that depth or
-    // it wins and the selection stays a near-invisible dark teal. Use a strong
-    // accent tint (derived live from --h-accent) that reads clearly behind text.
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionLayer .cm-selectionBackground, .cm-content ::selection":
+    // Text selection. We deliberately use the *native* browser selection (the
+    // editors disable CodeMirror's drawSelection — see FileViewer/ScratchTab) and
+    // paint it as a full inversion: the accent as the band, the editor background
+    // as the text. The drawn layer sat *behind* the glyphs and could only tint a
+    // band, so on light themes a faint accent wash over a light surface was nearly
+    // invisible (and earlier attempts using color-mix() inside ::selection risk
+    // failing to parse, leaving the band fully transparent). Recoloring the text
+    // too makes the highlight unmistakable and legible in every herdr theme, since
+    // accent vs background is the palette's strongest pairing by construction.
+    // Plain var()s only — ::selection is finicky about anything fancier.
+    "&.cm-focused .cm-line::selection, &.cm-focused .cm-line ::selection, .cm-line::selection, .cm-line ::selection, .cm-content ::selection":
       {
-        // !important so it can't lose to CodeMirror's baseline dark-theme rule
-        // (which otherwise paints a near-invisible dark teal). An opaque tint of
-        // the live accent over the panel reads clearly as a highlight band while
-        // keeping the (light) selected text legible — a translucent wash blended
-        // too weakly into the dark base, which is why it was hard to see.
-        backgroundColor:
-          "color-mix(in srgb, var(--h-accent) 38%, var(--h-panel)) !important",
+        backgroundColor: "var(--h-accent)",
+        color: "var(--h-bg)",
       },
     ".cm-activeLine": { backgroundColor: "var(--h-hover)" },
     // Edited lines (vs HEAD) get a gold bar on the left — see changedLinesHighlight.

@@ -166,6 +166,10 @@ export function ScratchTab() {
           value={content}
           onChange={handleChange}
           theme="none"
+          // Use the browser's native selection (styled in lib/codemirror) instead
+          // of CodeMirror's drawn one — the drawn band can't recolor selected text
+          // and read as nearly invisible on light themes.
+          basicSetup={{ drawSelection: false }}
           extensions={extensions}
           height="100%"
           className="cm-host"
