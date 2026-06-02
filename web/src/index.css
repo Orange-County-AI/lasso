@@ -49,13 +49,17 @@
    * source from above, and an inset "well" that sinks inputs/recessed controls.
    * Exposed as shadow-elev-* / shadow-well utilities; Tailwind v4 composes them
    * with ring-* into one box-shadow, so focus rings survive. */
-  --shadow-elev-sm: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  --shadow-elev-md: 0 4px 10px -3px rgba(0, 0, 0, 0.4),
-    0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.13);
-  --shadow-elev-pop: 0 12px 28px -10px rgba(0, 0, 0, 0.55),
-    0 3px 8px -3px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --shadow-elev-modal: 0 28px 64px -18px rgba(0, 0, 0, 0.7),
-    0 10px 24px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --shadow-elev-sm:
+    0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-elev-md:
+    0 4px 10px -3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.13);
+  --shadow-elev-pop:
+    0 12px 28px -10px rgba(0, 0, 0, 0.55), 0 3px 8px -3px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-elev-modal:
+    0 28px 64px -18px rgba(0, 0, 0, 0.7), 0 10px 24px -10px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
   --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
@@ -259,13 +263,13 @@
 .termgrid {
   flex: 1 1 auto;
   overflow: auto;
-  padding: 8px;
+  padding: 14px;
   /* Flex wrap (not CSS grid) so the cells in each row grow to fill the row's
      full width — a CSS grid leaves empty tracks, stranding a lone last-row cell
      at its min width. align-content: start packs rows to the top. */
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 14px;
   align-content: start;
 }
 /* A zero-height, full-width flex item that forces a row break, so the top row
@@ -275,7 +279,7 @@
   flex-basis: 100%;
   width: 100%;
   height: 0;
-  margin: -4px 0;
+  margin: -7px 0;
 }
 .termcell {
   /* grow to share the row's width, wrapping when a cell can't keep ~360px */
@@ -283,7 +287,9 @@
   display: flex;
   flex-direction: column;
   height: 260px;
-  border: 1px solid var(--h-border);
+  /* Blend the (subtle) border toward muted so each cell reads as a distinct
+     tile rather than dissolving into the background. */
+  border: 1px solid color-mix(in srgb, var(--h-border) 45%, var(--h-muted));
   border-radius: 6px;
   overflow: hidden;
   background: var(--h-bg);
@@ -361,6 +367,13 @@
   border: 0;
   display: block;
   background: var(--h-bg);
+  /* Fade the terminal in once it's live (the loading overlay sits on top until
+     then), so the reveal is smooth rather than a hard cut over ttyd's churn. */
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+.termcell-body iframe.is-loading {
+  opacity: 0;
 }
 .termcell-placeholder {
   position: absolute;
@@ -368,8 +381,23 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Opaque so it fully hides the connecting iframe underneath. */
+  background: var(--h-bg);
   color: var(--h-muted);
   font-size: 11px;
+}
+.termcell-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--h-border);
+  border-top-color: var(--h-accent);
+  animation: termcell-spin 0.7s linear infinite;
+}
+@keyframes termcell-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* file list */

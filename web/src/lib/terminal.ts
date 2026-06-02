@@ -6,10 +6,23 @@ import { applyTermFont, applyTermTheme, lastTerminalTheme } from "@/lib/theme"
 // xterm.js can only paste text, sends a bare CR for both Enter and Shift+Enter,
 // and starts from ttyd's theme on every reconnect, so we patch around each.
 
+interface XTermBufferLine {
+  translateToString: (trimRight?: boolean) => string
+}
+interface XTermBuffer {
+  active?: {
+    cursorX?: number
+    cursorY?: number
+    baseY?: number
+    getLine?: (y: number) => XTermBufferLine | undefined
+  }
+}
 interface XTerm {
   paste?: (text: string) => void
   input?: (data: string) => void
   focus?: () => void
+  rows?: number
+  buffer?: XTermBuffer
   options?: Record<string, unknown>
   attachCustomKeyEventHandler?: (h: (e: KeyboardEvent) => boolean) => void
   // xterm.js public IParser. ttyd 1.7.4 never registers an OSC 52 handler, so
@@ -270,6 +283,69 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
+}
+
+// termHasRendered reports whether the same-origin xterm has painted real pane
+// content yet. A fresh ttyd starts blank and flashes its own connect/reconnect
+// chrome before herdr repaints the pane; we treat the terminal as "live" only
+// once the cursor has advanced or a visible row carries text, so a loading
+// overlay can mask that churn until then.
+function termHasRendered(term: XTerm): boolean {
+  const buf = term.buffer?.active
+  if (!buf) return false
+  if ((buf.cursorX ?? 0) > 0 || (buf.cursorY ?? 0) > 0) return true
+  const getLine = buf.getLine
+  if (typeof getLine !== "function") return false
+  const base = buf.baseY ?? 0
+  const rows = term.rows ?? 24
+  for (let r = 0; r < rows; r++) {
+    const line = getLine.call(buf, base + r)
+    if (line && line.translateToString(true).trim() !== "") return true
+  }
+  return false
+}
+
+// whenTerminalReady calls onReady once the terminal iframe's xterm exists and has
+// rendered real content — requiring two consecutive observations a frame apart so
+// we reveal after the first paint settles rather than mid-redraw — or after a hard
+// timeout as a backstop (a genuinely blank pane, or an xterm whose buffer we can't
+// read, must not strand the loader forever). Returns a canceller; mirrors the
+// retry cadence of the other terminal helpers.
+export function whenTerminalReady(id: string, onReady: () => void): () => void {
+  let done = false
+  let tick: ReturnType<typeof setTimeout> | undefined
+  const finish = () => {
+    if (done) return
+    done = true
+    if (tick) clearTimeout(tick)
+    clearTimeout(deadline)
+    onReady()
+  }
+  const deadline = setTimeout(finish, 6000)
+  let sawContent = false
+  const poll = () => {
+    if (done) return
+    let ready = false
+    try {
+      const term = frameWindow(id)?.term
+      if (term && termHasRendered(term)) {
+        if (sawContent) ready = true
+        else sawContent = true
+      } else {
+        sawContent = false
+      }
+    } catch {
+      /* same-origin; ignore */
+    }
+    if (ready) finish()
+    else tick = setTimeout(poll, 120)
+  }
+  poll()
+  return () => {
+    done = true
+    if (tick) clearTimeout(tick)
+    clearTimeout(deadline)
+  }
 }
 
 // Nudge a hidden-then-shown terminal to refit and take the keyboard.

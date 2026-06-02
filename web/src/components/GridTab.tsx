@@ -32,7 +32,7 @@ import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
-import { bootTermFrame } from "@/lib/terminal"
+import { bootTermFrame, whenTerminalReady } from "@/lib/terminal"
 import { GRID_FRAME_CLASS } from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
@@ -48,7 +48,7 @@ const KEEPALIVE_MS = 18_000
 
 // Grid layout constants — must match .termgrid in index.css (gap) and .termcell
 // (flex-basis) so the measured column count matches what flexbox actually packs.
-const GRID_GAP = 8
+const GRID_GAP = 14
 const GRID_MIN_CELL = 360
 
 // cellKey uniquely identifies a pane across hosts (pane ids are only unique
@@ -488,6 +488,10 @@ function GridCell({
   const bodyRef = React.useRef<HTMLDivElement>(null)
   const [src, setSrc] = React.useState<string | null>(null)
   const [failed, setFailed] = React.useState(false)
+  // The ttyd iframe flashes its own connect/reconnect chrome before herdr
+  // repaints the pane, so we keep a loading overlay on top until xterm has
+  // actually rendered content (see whenTerminalReady below).
+  const [ready, setReady] = React.useState(false)
 
   // Lazy-mount: attach the terminal once the cell is on screen — but only while
   // the Grid tab is active. (Keeping it attached when hidden would clamp the
@@ -529,6 +533,7 @@ function GridCell({
     if (active) return
     setSrc(null)
     setFailed(false)
+    setReady(false)
     void api.gridTermRelease(p.host, p.terminal_id)
   }, [active, p.host, p.terminal_id])
 
@@ -544,7 +549,11 @@ function GridCell({
   // server-side attach alive while the cell is mounted.
   React.useEffect(() => {
     if (!src) return
+    setReady(false)
     const cleanup = bootTermFrame(id, true)
+    // Hold the loading overlay until xterm has painted real pane content, so the
+    // ttyd connect/reconnect flash never shows through.
+    const cancelReady = whenTerminalReady(id, () => setReady(true))
     // Touch-only keepalive: bumps the server idle timer but never (re)creates the
     // attach, so an in-flight keepalive landing after this cell releases can't
     // resurrect a thin attach that would clamp the pane in the wide Herdr terminal.
@@ -553,6 +562,7 @@ function GridCell({
     }, KEEPALIVE_MS)
     return () => {
       cleanup()
+      cancelReady()
       clearInterval(ka)
     }
   }, [src, id, p.host, p.terminal_id])
@@ -607,16 +617,28 @@ function GridCell({
         </ContextMenuContent>
       </ContextMenu>
       <div ref={bodyRef} className="termcell-body">
-        {src ? (
+        {/* Keep the iframe mounted (so ttyd connects + paints) but hidden under a
+            loading overlay until xterm has rendered, masking ttyd's own connect
+            churn. */}
+        {src && (
           <iframe
             id={id}
-            className={GRID_FRAME_CLASS}
+            className={cn(GRID_FRAME_CLASS, !ready && "is-loading")}
             src={src}
             title={`${p.host_label} ${title}`}
           />
-        ) : (
+        )}
+        {(failed || !ready) && (
           <div className="termcell-placeholder">
-            {failed ? "terminal unavailable" : "…"}
+            {failed ? (
+              "terminal unavailable"
+            ) : (
+              <span
+                className="termcell-spinner"
+                role="status"
+                aria-label="loading"
+              />
+            )}
           </div>
         )}
       </div>
