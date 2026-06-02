@@ -12,10 +12,19 @@ interface XTerm {
   focus?: () => void
   options?: Record<string, unknown>
   attachCustomKeyEventHandler?: (h: (e: KeyboardEvent) => boolean) => void
+  // xterm.js public IParser. ttyd 1.7.4 never registers an OSC 52 handler, so
+  // we add our own (wireOsc52) to honour herdr's clipboard copies.
+  parser?: {
+    registerOscHandler?: (
+      ident: number,
+      handler: (data: string) => boolean
+    ) => unknown
+  }
   _core?: {
     coreService?: { triggerDataEvent?: (data: string, sync?: boolean) => void }
   }
   __herdrShiftEnter?: boolean
+  __herdrOsc52?: boolean
 }
 interface TermWindow extends Window {
   term?: XTerm
@@ -84,6 +93,92 @@ function wireShiftEnter(id: string, tries: number) {
     return
   }
   if (tries < 20) setTimeout(() => wireShiftEnter(id, tries + 1), 150)
+}
+
+// herdr copies (copy-mode, double-click token, mouse selection in a pane) by
+// emitting OSC 52 — `ESC ] 52 ; c ; <base64> BEL` — and immediately shows
+// "copied to clipboard". But ttyd 1.7.4's bundled xterm.js registers no OSC 52
+// handler, so the sequence is silently dropped and the browser clipboard is
+// never written: herdr says it copied, but nothing actually did. We register
+// the missing handler on the same-origin xterm to close that gap.
+//
+// `data` is the OSC payload after "52;" — "<Pc>;<base64>", where Pc is the
+// target selection ("c" for clipboard, may be empty or multi-char). A read
+// query ("?") or an empty/invalid payload yields null and is ignored.
+function osc52Text(data: string): string | null {
+  const semi = data.indexOf(";")
+  const b64 = semi === -1 ? data : data.slice(semi + 1)
+  if (b64 === "" || b64 === "?") return null
+  try {
+    const bin = atob(b64)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return new TextDecoder().decode(bytes)
+  } catch {
+    return null // not valid base64 — don't guess
+  }
+}
+
+// execCommandCopy is the fallback clipboard write for non-secure-context origins
+// (plain http on the tailnet), where navigator.clipboard is undefined. It copies
+// via a throwaway textarea inside the iframe — the frame that holds focus — then
+// hands focus back to xterm.
+function execCommandCopy(win: TermWindow, text: string) {
+  try {
+    const doc = win.document
+    const ta = doc.createElement("textarea")
+    ta.value = text
+    ta.setAttribute("readonly", "")
+    // Off-screen so it neither flashes nor scrolls the terminal.
+    ta.style.position = "fixed"
+    ta.style.top = "0"
+    ta.style.left = "0"
+    ta.style.opacity = "0"
+    doc.body.appendChild(ta)
+    ta.select()
+    doc.execCommand("copy")
+    doc.body.removeChild(ta)
+    win.term?.focus?.() // execCommand stole focus to the textarea
+  } catch {
+    /* best effort — never throw back into xterm's parser */
+  }
+}
+
+function writeClipboard(win: TermWindow, text: string) {
+  try {
+    const cb = win.navigator?.clipboard
+    if (cb && typeof cb.writeText === "function") {
+      // writeText can reject (lost user activation, permission denied); fall
+      // back to execCommand so the copy still lands.
+      cb.writeText(text).catch(() => execCommandCopy(win, text))
+      return
+    }
+  } catch {
+    /* clipboard access can throw in locked-down contexts */
+  }
+  execCommandCopy(win, text)
+}
+
+function wireOsc52(id: string, tries: number) {
+  let win: TermWindow | null
+  try {
+    win = frameWindow(id)
+  } catch {
+    return
+  }
+  const term = win?.term
+  if (term?.parser && typeof term.parser.registerOscHandler === "function") {
+    if (!term.__herdrOsc52) {
+      term.__herdrOsc52 = true
+      const w = win as TermWindow
+      term.parser.registerOscHandler(52, (data) => {
+        const text = osc52Text(data)
+        if (text != null) writeClipboard(w, text)
+        return true // handled — suppress xterm's "unknown OSC" fallback
+      })
+    }
+    return
+  }
+  if (tries < 20) setTimeout(() => wireOsc52(id, tries + 1), 150)
 }
 
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
@@ -158,6 +253,7 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
   )
 
   wireShiftEnter(id, 0)
+  wireOsc52(id, 0)
 }
 
 // bootTermFrame wires the iframe now and re-wires (and re-applies the latest
@@ -173,7 +269,6 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   wireTerminalIframe(id, suppressContext) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
-
 
 // Nudge a hidden-then-shown terminal to refit and take the keyboard.
 export function refitTerminal(id: string) {
