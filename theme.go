@@ -484,6 +484,18 @@ func (rt resolvedTheme) cssVars() string {
 	return b.String()
 }
 
+// cssVarsRoot returns the resolved palette as a ":root{…}" rule using the same
+// --h-* custom-property names the stylesheet (web/src/index.css) and the
+// runtime applier (lib/theme.ts:applyCSSVars) use. It's injected into the
+// served index.html so the first paint matches herdr's theme instead of
+// flashing the stylesheet's fallback palette before /api/theme lands.
+func (rt resolvedTheme) cssVarsRoot() string {
+	// cssVars() emits bare "--bg: …;" declarations; the live theme is keyed by
+	// "--h-bg" (applyCSSVars prefixes them). Prefix the leading "--" of each
+	// property to "--h-" — the palette values contain no other "--" sequences.
+	return ":root{\n" + strings.ReplaceAll(rt.cssVars(), "--", "--h-") + "}"
+}
+
 // rgba appends an 8-bit alpha to a #rrggbb hex (-> #rrggbbaa); passes other
 // formats through unchanged.
 func rgba(hex string, alpha int) string {

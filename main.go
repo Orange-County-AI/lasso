@@ -2143,6 +2143,16 @@ func serveSPAIndex(w http.ResponseWriter, dist fs.FS) {
 		http.Error(w, "frontend build missing (run `bun run build` in web/)", http.StatusInternalServerError)
 		return
 	}
+	// Inject the server-resolved herdr theme into <head> so the first paint
+	// matches config.toml instead of flashing index.css's fallback palette
+	// before the SPA boots and fetches /api/theme. index.html is served
+	// no-store (below), so each reload re-injects the current resolved theme.
+	// A missing </head> (shouldn't happen with the Vite build) leaves the HTML
+	// untouched — graceful fallback.
+	if srvHub != nil {
+		style := `<style id="lasso-theme-boot">` + srvHub.themeSnapshot().cssVarsRoot() + `</style>`
+		b = []byte(strings.Replace(string(b), "</head>", style+"</head>", 1))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(b)
