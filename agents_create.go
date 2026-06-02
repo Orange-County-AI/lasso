@@ -772,22 +772,94 @@ func paneRun(b Backend, paneID, command string) {
 }
 
 // paneSubmit types text into an interactive agent's pane (claude/codex TUI) and
-// submits it as a turn. The carriage return is sent as its OWN send_text, not
-// appended to the text: those TUIs run in raw mode with bracketed paste, so a
-// "\r"/"\n" tacked onto the message is pasted as a literal newline and the turn
-// never submits — messages just stack in the input box. A separate "\r" lands as
-// a real Enter keypress (the same mechanism confirmAgentTrust uses to accept the
-// trust dialog). Verified against a live agent: combined text+"\r" does not
-// submit; a separate "\r" — even back-to-back — does.
+// submits it as a turn. Two things make this fragile, both handled here:
+//
+//  1. Bracketed paste vs Enter. The TUIs run in raw mode with bracketed paste, so
+//     a "\r"/"\n" appended to the message is pasted as a literal newline and the
+//     turn never submits — the message just stacks in the input box. The Enter
+//     must be its own send_text so it lands as a real keypress (the same
+//     mechanism confirmAgentTrust uses to accept the trust dialog).
+//
+//  2. A race between the paste committing and the Enter. herdr delivers the paste
+//     and the Enter as separate PTY writes; when the TUI is busy (mid-turn,
+//     streaming tool output) it applies the bracketed paste a beat late, so an
+//     Enter sent immediately after hits a still-empty composer and is a no-op —
+//     the message then sits there unsubmitted, even after the agent goes idle.
+//     This is why sending to an idle agent appeared to work while sending to a
+//     busy one silently failed.
+//
+// So: send the paste, wait until the composer actually shows it (the paste
+// committed), then send Enter — re-sending until the composer is observed empty,
+// i.e. the turn really went through. A repeat Enter is harmless: it's a no-op on
+// an empty composer and on one whose draft was already submitted.
 func paneSubmit(b Backend, paneID, text string) {
 	_, _ = b.HerdrCall("pane.send_text", map[string]any{
 		"pane_id": paneID,
 		"text":    text,
 	})
-	_, _ = b.HerdrCall("pane.send_text", map[string]any{
+	// Wait for the paste to land in the composer before pressing Enter, so we
+	// don't submit an empty box. If we never see it (read failures, an unfamiliar
+	// composer), fall through and try Enter anyway rather than dropping the turn.
+	commit := time.Now().Add(3 * time.Second)
+	for time.Now().Before(commit) {
+		time.Sleep(150 * time.Millisecond)
+		if !paneInputEmpty(b, paneID) {
+			break
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _ = b.HerdrCall("pane.send_text", map[string]any{
+			"pane_id": paneID,
+			"text":    "\r",
+		})
+		time.Sleep(300 * time.Millisecond)
+		if paneInputEmpty(b, paneID) || time.Now().After(deadline) {
+			return
+		}
+	}
+}
+
+// paneInputEmpty reports whether the agent TUI's composer currently holds no
+// pending draft — paneSubmit uses it to confirm a turn submitted rather than
+// leaving the message parked in the input box. The composer sits between the last
+// pair of horizontal-rule lines the TUI draws above its status footer; an empty
+// box is just the prompt marker ("❯"/"›"/">") with nothing after it. When the
+// composer can't be located it returns false (don't claim empty), so paneSubmit
+// errs toward an extra harmless Enter rather than a dropped message.
+func paneInputEmpty(b Backend, paneID string) bool {
+	res, err := b.HerdrCall("pane.read", map[string]any{
 		"pane_id": paneID,
-		"text":    "\r",
+		"source":  "visible",
 	})
+	if err != nil {
+		return false
+	}
+	var r struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	if json.Unmarshal(res, &r) != nil {
+		return false
+	}
+	lines := strings.Split(r.Read.Text, "\n")
+	isRule := func(s string) bool {
+		t := strings.TrimSpace(s)
+		return len([]rune(t)) >= 10 && strings.Trim(t, "─") == ""
+	}
+	last, prev := -1, -1
+	for i, ln := range lines {
+		if isRule(ln) {
+			prev, last = last, i
+		}
+	}
+	if prev < 0 || last <= prev {
+		return false // composer geometry not found
+	}
+	box := strings.TrimSpace(strings.Join(lines[prev+1:last], ""))
+	box = strings.TrimSpace(strings.TrimLeft(box, "❯›> "))
+	return box == ""
 }
 
 // confirmAgentTrust watches a freshly-launched agent pane for its per-directory
