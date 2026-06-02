@@ -79,6 +79,9 @@ export interface GridPayload {
 export interface UIState {
   grid_agents_only: boolean
   grid_hidden_hosts: string[]
+  // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
+  // survives navigating away and back (or reloading).
+  grid_selected: string[]
   sidebar_collapsed: boolean
 }
 

@@ -100,8 +100,12 @@ export function GridTab({
     return () => ro.disconnect()
   }, [])
 
-  // Ephemeral multi-selection (not persisted): keys of selected cells.
-  const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  // Multi-selection, persisted server-side (host|pane_id keys) so it survives
+  // navigating away and back or reloading.
+  const selected = React.useMemo(
+    () => new Set(ui.grid_selected),
+    [ui.grid_selected]
+  )
   const [renameTarget, setRenameTarget] = React.useState<GridPane | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
   const [closeTargets, setCloseTargets] = React.useState<GridPane[] | null>(
@@ -155,14 +159,13 @@ export function GridTab({
     patchUIState({ grid_hidden_hosts: Array.from(next) })
   }
 
-  const clearSelection = () => setSelected(new Set())
-  const toggleSelect = (key: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
+  const clearSelection = () => patchUIState({ grid_selected: [] })
+  const toggleSelect = (key: string) => {
+    const next = new Set(selected)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    patchUIState({ grid_selected: Array.from(next) })
+  }
 
   // Header click: plain click focuses the pane in Herdr; ⌘/Ctrl/Shift-click
   // toggles selection instead.

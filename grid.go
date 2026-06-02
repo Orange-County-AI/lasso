@@ -195,6 +195,9 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if us.GridHiddenHosts == nil {
 			us.GridHiddenHosts = []string{}
 		}
+		if us.GridSelected == nil {
+			us.GridSelected = []string{}
+		}
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

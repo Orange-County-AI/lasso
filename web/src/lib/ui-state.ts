@@ -12,6 +12,7 @@ import { qk, queryClient } from "@/lib/query"
 const DEFAULTS: UIState = {
   grid_agents_only: false,
   grid_hidden_hosts: [],
+  grid_selected: [],
   sidebar_collapsed: false,
 }
 
