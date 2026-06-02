@@ -1,0 +1,36 @@
+name: ci
+
+# Build + test on every push to main and every PR. Mirrors the local pre-merge
+# checks (mise run build / test, frontend typecheck + lint) so a red main is
+# caught before a release is tagged.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Frontend (typecheck, lint, build the embedded bundle)
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run lint
+          bun run build
+
+      - name: Go (format, vet, build, test)
+        run: |
+          test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+          go vet .
+          go build -o lasso .
+          go test .

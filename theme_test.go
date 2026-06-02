@@ -37,6 +37,26 @@ func TestRosePineNoRegression(t *testing.T) {
 	}
 }
 
+// cssVarsRoot is injected into the served index.html for a flash-free first
+// paint, so it must wrap the palette in a :root{} rule keyed by the same --h-*
+// names index.css and applyCSSVars use (not the bare --bg names cssVars emits).
+func TestCSSVarsRoot(t *testing.T) {
+	root := loadHerdrTheme("tokyo-night").cssVarsRoot()
+	if !strings.HasPrefix(root, ":root{") {
+		t.Errorf("cssVarsRoot must start with %q, got:\n%s", ":root{", root)
+	}
+	for _, want := range []string{"--h-bg: #1a1b26;", "--h-accent-dim:"} {
+		if !strings.Contains(root, want) {
+			t.Errorf("cssVarsRoot missing %q in:\n%s", want, root)
+		}
+	}
+	// Every property must be --h-* prefixed; a bare "--bg:" means the prefixing
+	// broke (index.css's :root fallback wouldn't be overridden).
+	if strings.Contains(root, "--bg:") {
+		t.Errorf("cssVarsRoot has an unprefixed var (expected only --h-*):\n%s", root)
+	}
+}
+
 func TestEveryThemeResolves(t *testing.T) {
 	for name := range themes {
 		rt := loadHerdrTheme(name)

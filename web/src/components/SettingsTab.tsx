@@ -123,6 +123,14 @@ export function SettingsTab({ active }: { active: boolean }) {
               lasso {info.lasso_version}
             </Pill>
           )}
+          {info?.latest_version && info.update_state === "available" && (
+            <Pill
+              tone="warn"
+              title="a newer lasso release is available — run `lasso update`"
+            >
+              update available → {info.latest_version}
+            </Pill>
+          )}
           {herdr}
           {!loading && !errored && info && !info.err && !info.compatible && (
             <span className="text-[13px] text-warn">
@@ -297,7 +305,10 @@ function AgentCreatorSettings({
 
   const saveRepoMutation = useMutation({
     mutationFn: () =>
-      api.saveRepoConfig({ path: repoPath, copy_files: copyFiles, setup }, host),
+      api.saveRepoConfig(
+        { path: repoPath, copy_files: copyFiles, setup },
+        host
+      ),
     onSuccess: () => {
       setSavedRepo(repoPath)
       queryClient.invalidateQueries({ queryKey: qk.repos(host) })

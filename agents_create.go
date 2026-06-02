@@ -758,11 +758,32 @@ func waitPaneReady(b Backend, paneID string) {
 }
 
 // paneRun sends a command line into a pane's shell (text + Enter) — the
-// pane.send_text behind `herdr pane run`.
+// pane.send_text behind `herdr pane run`. Targets a cooked-mode shell, where a
+// trailing "\n" ends the line. For submitting to an interactive agent TUI use
+// paneSubmit instead — see why there.
 func paneRun(b Backend, paneID, command string) {
 	_, _ = b.HerdrCall("pane.send_text", map[string]any{
 		"pane_id": paneID,
 		"text":    command + "\n",
+	})
+}
+
+// paneSubmit types text into an interactive agent's pane (claude/codex TUI) and
+// submits it as a turn. The carriage return is sent as its OWN send_text, not
+// appended to the text: those TUIs run in raw mode with bracketed paste, so a
+// "\r"/"\n" tacked onto the message is pasted as a literal newline and the turn
+// never submits — messages just stack in the input box. A separate "\r" lands as
+// a real Enter keypress (the same mechanism confirmAgentTrust uses to accept the
+// trust dialog). Verified against a live agent: combined text+"\r" does not
+// submit; a separate "\r" — even back-to-back — does.
+func paneSubmit(b Backend, paneID, text string) {
+	_, _ = b.HerdrCall("pane.send_text", map[string]any{
+		"pane_id": paneID,
+		"text":    text,
+	})
+	_, _ = b.HerdrCall("pane.send_text", map[string]any{
+		"pane_id": paneID,
+		"text":    "\r",
 	})
 }
 

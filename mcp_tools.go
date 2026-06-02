@@ -442,7 +442,7 @@ func sendAgentTool(_ context.Context, _ *mcp.CallToolRequest, in sendAgentIn) (*
 	if rec.RootPane == "" {
 		return nil, sendAgentOut{}, fmt.Errorf("agent %q has no pane to send to", in.AgentID)
 	}
-	paneRun(b, rec.RootPane, in.Text)
+	paneSubmit(b, rec.RootPane, in.Text)
 	return nil, sendAgentOut{Sent: true}, nil
 }
 

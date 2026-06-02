@@ -138,6 +138,10 @@ export interface VersionInfo {
   // offers the button. Absent on non-updatable installs.
   update_state?: "available" | "current" | "unknown"
   commits_behind?: number
+  // The newest published GitHub release tag — set only for a release-binary
+  // install (not the supervised checkout). When newer than lasso_version, the
+  // Settings tab shows an "update available" hint pointing at `lasso update`.
+  latest_version?: string
   err?: string
 }
 
@@ -325,10 +329,18 @@ export const api = {
   gridPanes: () => getJSON<GridPayload>("/api/grid"),
 
   // Ensure a ttyd is attached to one pane's terminal and return its proxy base
-  // path (the iframe src). Idempotent — re-calling bumps the server-side idle
-  // timer, so the Grid re-POSTs this as a keepalive while a cell is mounted.
+  // path (the iframe src). Used to first-attach a visible cell; creates the ttyd
+  // if needed. Keepalives use gridTermTouch instead (see below).
   gridTerm: (host: string, terminal_id: string) =>
     postJSON<{ base: string }>("/api/grid/term", { host, terminal_id }),
+
+  // Bump a live grid terminal's idle timer WITHOUT creating one — the keepalive a
+  // mounted cell fires every KEEPALIVE_MS. Unlike gridTerm it can't resurrect an
+  // attach the cell just released, which is what kept a thin grid attach clamping
+  // the focused pane's width in the wide Herdr terminal. `alive` is false if the
+  // entry was reaped (the caller can re-attach via gridTerm while still visible).
+  gridTermTouch: (host: string, terminal_id: string) =>
+    postJSON<{ alive: boolean }>("/api/grid/term-touch", { host, terminal_id }),
 
   // Detach a pane's grid terminal (kills its ttyd). Called when a cell leaves
   // the grid so the pane isn't held to the cell's narrow width while it's viewed
@@ -339,6 +351,16 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ host, terminal_id }),
+      keepalive: true,
+    }).catch(() => {}),
+
+  // Tear down every grid terminal at once — the authoritative backstop fired when
+  // the Grid view is left, so no thin attach survives in the background to clamp a
+  // pane viewed full-size in Herdr (even if a per-cell release was dropped or raced
+  // a keepalive). `keepalive` lets it complete from a React unmount/teardown.
+  gridTermReleaseAll: () =>
+    fetch("/api/grid/term-release-all", {
+      method: "POST",
       keepalive: true,
     }).catch(() => {}),
 

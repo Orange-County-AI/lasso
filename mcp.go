@@ -30,7 +30,17 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 		Version: lassoSemver,
 	}, nil)
 	registerMCPTools(srv)
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
+		// lasso binds to loopback and is reached over the Cloudflare tunnel under a
+		// public hostname (e.g. lasso.knowsuchagency.ai). The SDK's default DNS-
+		// rebinding guard rejects any non-loopback Host header when the listener is
+		// on loopback, which 403s ("Forbidden: invalid Host header") every tunnelled
+		// request before it reaches a tool — the actual cause of remote MCP clients
+		// (Claude desktop/mobile) failing *after* a successful Access OAuth login.
+		// The trust gate here is Cloudflare Access (OAuth + policy) / the tailnet,
+		// not the Host header, so disable the loopback guard. See CLAUDE.md.
+		DisableLocalhostProtection: true,
+	})
 }
 
 // resolveBackend maps a tool's optional `host` argument to a Backend. An empty

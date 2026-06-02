@@ -118,6 +118,15 @@ export function GridTab({
   const error = gridQuery.isError ? (gridQuery.error as Error).message : null
   const reload = gridQuery.refetch
 
+  // Authoritative teardown: whenever the Grid view isn't active (and on unmount),
+  // release every grid terminal. Each cell already releases its own attach, but
+  // this backstops a dropped or keepalive-raced per-cell release so no thin grid
+  // attach lingers in the background and clamps a pane viewed full-size in Herdr.
+  React.useEffect(() => {
+    if (active) return
+    void api.gridTermReleaseAll()
+  }, [active])
+
   const all = data?.panes ?? null
   const hostErrors = data?.errors ?? null
 
@@ -533,8 +542,11 @@ function GridCell({
   React.useEffect(() => {
     if (!src) return
     const cleanup = bootTermFrame(id, true)
+    // Touch-only keepalive: bumps the server idle timer but never (re)creates the
+    // attach, so an in-flight keepalive landing after this cell releases can't
+    // resurrect a thin attach that would clamp the pane in the wide Herdr terminal.
     const ka = setInterval(() => {
-      void api.gridTerm(p.host, p.terminal_id).catch(() => {})
+      void api.gridTermTouch(p.host, p.terminal_id).catch(() => {})
     }, KEEPALIVE_MS)
     return () => {
       cleanup()

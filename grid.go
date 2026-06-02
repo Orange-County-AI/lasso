@@ -572,6 +572,77 @@ func releaseGridTerm(host, terminalID string) {
 	}
 }
 
+// serveGridTermTouch bumps a live grid terminal's idle timer WITHOUT ever spawning
+// one. A visible cell already has a live attach, so its keepalive only needs to
+// touch — and a touch (unlike ensureGridTerm) can't resurrect an attach the cell
+// just released. That's the whole point: it closes the race where an in-flight
+// keepalive lands after gridTermRelease and re-spawns a thin attach that then clamps
+// the focused pane's width in the wide Herdr terminal. Returns {alive} so a caller
+// can tell the entry was reaped (and re-attach via /api/grid/term if still visible).
+func serveGridTermTouch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Host       string `json:"host"`
+		TerminalID string `json:"terminal_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Host == "" || !terminalIDRe.MatchString(req.TerminalID) {
+		http.Error(w, "host and a valid terminal_id required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"alive": touchGridTerm(req.Host, req.TerminalID)})
+}
+
+// touchGridTerm bumps lastUsed for a live grid terminal and reports whether it
+// existed. It never creates one, so a keepalive can't undo a release.
+func touchGridTerm(host, terminalID string) bool {
+	key := host + "|" + terminalID
+	gridTerms.mu.Lock()
+	defer gridTerms.mu.Unlock()
+	if e := gridTerms.byKey[key]; e != nil {
+		e.lastUsed = time.Now()
+		return true
+	}
+	return false
+}
+
+// serveGridTermReleaseAll tears down every live grid terminal at once. The frontend
+// calls it when the Grid view is left, as an authoritative backstop: even if a
+// per-cell release was dropped (best-effort, fire-and-forget) or raced a keepalive,
+// no thin grid attach survives to clamp a pane while it's viewed full-size in Herdr.
+// Note: grid ttyds are a server-wide pool, so this also drops cells in any other
+// browser viewing the Grid — consistent with the global-keyed per-cell release.
+func serveGridTermReleaseAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	releaseAllGridTerms()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// releaseAllGridTerms kills every grid ttyd, detaching all of them from herdr so no
+// pane is held to a grid cell's width.
+func releaseAllGridTerms() {
+	gridTerms.mu.Lock()
+	dead := make([]*gridTermEntry, 0, len(gridTerms.byKey))
+	for _, e := range gridTerms.byKey {
+		dead = append(dead, e)
+	}
+	gridTerms.byKey = map[string]*gridTermEntry{}
+	gridTerms.byToken = map[string]*gridTermEntry{}
+	gridTerms.mu.Unlock()
+	for _, e := range dead {
+		e.cancel() // SIGTERMs the ttyd process group; its socket is unlinked on exit
+	}
+}
+
 // ensureGridTerm returns the proxy base path for host's terminal, spawning a
 // dedicated ttyd (running `herdr terminal attach …`) on first use. A repeat call
 // just bumps lastUsed — so the frontend re-POSTs as a keepalive.

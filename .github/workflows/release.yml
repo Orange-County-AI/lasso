@@ -1,0 +1,63 @@
+name: release
+
+# Cut a real GitHub Release when a version tag is pushed (e.g. `git tag v0.3.0 &&
+# git push origin v0.3.0`). Builds the embedded frontend once, cross-compiles a
+# static binary per platform with the tag stamped in, and publishes them plus a
+# checksum file and the installer. `lasso update` and install.sh consume these.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The committed lassoSemver and the pushed tag must agree, so the binary's
+      # stamped version equals the release the CLI compares against.
+      - name: Verify tag matches lassoSemver
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          committed=$(grep -oP 'lassoSemver = "\K[0-9]+\.[0-9]+\.[0-9]+' version.go)
+          if [ "$version" != "$committed" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} != lassoSemver ${committed} in version.go — run 'mise run bump' and retag" >&2
+            exit 1
+          fi
+
+      - name: Build frontend (embedded into the binary)
+        working-directory: web
+        run: bun install --frozen-lockfile && bun run build
+
+      - name: Cross-compile release binaries
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="dist/lasso-${os}-${arch}"
+            echo "building ${out}"
+            CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
+              go build -trimpath -ldflags "-s -w -X main.lassoSemver=${version}" -o "${out}" .
+          done
+          ( cd dist && sha256sum lasso-* > checksums.txt )
+          cp install.sh dist/install.sh
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/lasso-*
+            dist/checksums.txt
+            dist/install.sh
+          generate_release_notes: true
