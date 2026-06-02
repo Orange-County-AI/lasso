@@ -72,7 +72,7 @@ function firstLine(text: string): string {
 // use bg-background (not transparent) so they contrast against the dialog's
 // bg-popover surface.
 const fieldClass =
-  "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+  "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
 const labelClass = "font-medium text-muted-foreground text-xs"
 const imagePathRE = /\/[\w\-/.]+\.(?:png|jpe?g|gif|webp)/gi
 
@@ -482,10 +482,10 @@ export function CreateAgentDialog({
                   type="button"
                   onClick={() => setType(t)}
                   className={cn(
-                    "flex-1 rounded-md border bg-background px-3 py-1.5 text-sm capitalize transition-colors",
+                    "flex-1 rounded-md border bg-background px-3 py-1.5 text-sm capitalize transition-all",
                     type === t
-                      ? "border-primary bg-primary/15 text-primary"
-                      : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                      ? "border-primary bg-primary/15 text-primary shadow-elev-sm"
+                      : "border-border text-muted-foreground shadow-well hover:bg-accent hover:text-foreground"
                   )}
                 >
                   {t}
@@ -615,7 +615,7 @@ export function CreateAgentDialog({
             {/* Advanced */}
             <button
               type="button"
-              className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground"
+              className="flex w-fit items-center gap-1 self-start rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
               onClick={() => setShowAdvanced((s) => !s)}
             >
               <ChevronDown

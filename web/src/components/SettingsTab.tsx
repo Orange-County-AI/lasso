@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils"
 
 // Native textarea/select styled to match the shadcn <Input>.
 const fieldClass =
-  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
 const labelClass = "font-medium text-muted-foreground text-xs"
 
 function Field({
@@ -100,7 +100,7 @@ export function SettingsTab({ active }: { active: boolean }) {
   } else {
     const ver = info.herdr_version ? ` (${info.herdr_version})` : ""
     herdr = (
-      <Pill tone={info.compatible ? "good" : "bad"}>
+      <Pill tone={info.compatible ? "good" : "bad"} multiline>
         herdr protocol {info.herdr_protocol}
         {ver} · {info.compatible ? "compatible" : "incompatible"}
       </Pill>
@@ -114,12 +114,12 @@ export function SettingsTab({ active }: { active: boolean }) {
           <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
             lasso
           </span>
-          <Pill>
+          <Pill multiline>
             targets protocol{" "}
             {loading ? "…" : errored || !info ? "unknown" : info.lasso_protocol}
           </Pill>
           {info?.lasso_version && (
-            <Pill title="this lasso build's version">
+            <Pill title="this lasso build's version" multiline>
               lasso {info.lasso_version}
             </Pill>
           )}
@@ -127,6 +127,7 @@ export function SettingsTab({ active }: { active: boolean }) {
             <Pill
               tone="warn"
               title="a newer lasso release is available — run `lasso update`"
+              multiline
             >
               update available → {info.latest_version}
             </Pill>

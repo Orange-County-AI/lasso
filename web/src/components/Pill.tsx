@@ -37,7 +37,7 @@ export function Pill({
       className={cn(
         "rounded-md px-2 py-px font-normal text-[13px]",
         multiline
-          ? "h-auto items-start overflow-visible whitespace-normal break-all py-0.5 leading-snug"
+          ? "h-auto min-w-0 items-start overflow-visible whitespace-normal [overflow-wrap:anywhere] py-0.5 leading-snug"
           : "whitespace-nowrap",
         toneClass[tone],
         clickable && "cursor-pointer hover:bg-primary/15",

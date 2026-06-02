@@ -98,7 +98,7 @@ export function Combobox({
         type="button"
         disabled={disabled}
         className={cn(
-          "flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
           !selected && "text-muted-foreground",
           className
         )}
@@ -112,7 +112,7 @@ export function Combobox({
         <Popover.Content
           align="start"
           sideOffset={4}
-          className="isolate z-50 w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none"
+          className="isolate z-50 w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-elev-pop outline-none"
           onOpenAutoFocus={(e) => {
             // Focus the filter input rather than the first list item.
             e.preventDefault()
