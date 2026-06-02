@@ -39,7 +39,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude or codex) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude or codex) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -310,6 +310,7 @@ type createAgentIn struct {
 	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default) or \"codex\"."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
+	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
 func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn) (*mcp.CallToolResult, agentInfo, error) {
@@ -327,6 +328,9 @@ func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn
 		Agent:        in.Agent,
 		Prompt:       in.Prompt, // the prompt rides into agentCommand via agentPrompt; its first line is the title
 		Notes:        in.Notes,
+		// Default to NOT focusing: an MCP-spawned agent shouldn't switch a watching
+		// user away from their current pane. Opt in with focus:true.
+		NoFocus: !in.Focus,
 		// PlanMode intentionally omitted: agents started via MCP never run in plan mode.
 	})
 	if err != nil {

@@ -284,6 +284,11 @@ type createAgentReq struct {
 	PlanMode     bool     `json:"plan_mode"`
 	Attachments  []string `json:"attachments"` // filenames staged under UploadDir
 	UploadDir    string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
+	// NoFocus suppresses focusing the new agent's herdr pane. The web "New Agent"
+	// flow leaves this false (an explicit "take me there"); the MCP create_agent
+	// tool sets it so spawning an agent doesn't yank a watching user away from
+	// their current pane.
+	NoFocus bool `json:"no_focus"`
 }
 
 func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
@@ -399,8 +404,9 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 			"path":   workDir,
 			"label":  req.Title,
 			// Focus the new worktree's pane so the user lands on the agent as it
-			// boots (the New Agent flow is an explicit "take me there").
-			"focus": true,
+			// boots (the New Agent flow is an explicit "take me there"); suppressed
+			// for MCP-spawned agents so they don't yank a watching user away.
+			"focus": !req.NoFocus,
 		})
 		if err != nil {
 			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("worktree.create: %w", err)}
@@ -428,7 +434,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		res, err := b.HerdrCall("workspace.create", map[string]any{
 			"cwd":   workDir,
 			"label": req.Title,
-			"focus": true, // land on the new agent's pane as it boots
+			"focus": !req.NoFocus, // land on the new agent's pane as it boots (web flow); suppressed for MCP
 		})
 		if err != nil {
 			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("workspace.create: %w", err)}
