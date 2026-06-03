@@ -52,8 +52,19 @@ export function FileViewer({
   // Line numbers (1-based) that differ from HEAD, barred gold in the editor when
   // the working tree is dirty for this file.
   const [changedLines, setChangedLines] = React.useState<number[]>([])
+  // Cache-bust counter for binary previews: bumped when the file's signature
+  // changes on disk so the <img>/<iframe> reloads (their src is otherwise static
+  // and the browser would keep serving the cached bytes).
+  const [bust, setBust] = React.useState(0)
 
   const dirty = draft != null && text != null && draft !== text
+
+  // Latest values read by the polling interval below without making it a
+  // dependency (which would tear down and restart the timer on every keystroke).
+  const textRef = React.useRef(text)
+  textRef.current = text
+  const dirtyRef = React.useRef(dirty)
+  dirtyRef.current = dirty
 
   // Is this file dirty in the working tree? Derive its repo-relative path the
   // same way FilesPanel does and look it up in the shared (already-polled) diff
@@ -81,6 +92,7 @@ export function FileViewer({
   // Fetch the file text (binary previews load straight from the file URL).
   React.useEffect(() => {
     setPreview(isMarkdown(path))
+    setBust(0)
     if (binary) {
       setText(null)
       setDraft(null)
@@ -123,6 +135,64 @@ export function FileViewer({
     }
   }, [activeCwd, rel, fileDirty])
 
+  // Poll the open text file so external rewrites (an agent editing it, a build
+  // regenerating it) surface without a manual page reload — mirroring the Files
+  // tree's 5s root poll. We never clobber unsaved edits: the poll is skipped
+  // while the editor is dirty, and the result is re-checked against the same
+  // guard after the async fetch in case the user started typing mid-flight.
+  // Skipped for binary previews (refreshed separately, below) and while the tab
+  // is backgrounded, to avoid needless reads (SFTP round-trips on a remote host).
+  React.useEffect(() => {
+    if (binary) return
+    const id = setInterval(() => {
+      if (document.hidden || dirtyRef.current) return
+      api
+        .fileText(path)
+        .then((t) => {
+          // Re-check the guards: the initial load must have landed, the editor
+          // must still be clean, and the content must have actually changed.
+          if (dirtyRef.current || textRef.current === null) return
+          if (t === textRef.current) return
+          setText(t)
+          setDraft(t)
+        })
+        .catch(() => {
+          /* transient (file gone / host blip); keep the last good content */
+        })
+    }, 5000)
+    return () => clearInterval(id)
+  }, [path, binary])
+
+  // Poll a binary preview's on-disk signature (mtime + size) and bump the
+  // cache-bust counter only when it actually changes, so a regenerated image or
+  // PDF reloads without flickering the preview on every tick.
+  React.useEffect(() => {
+    if (!binary) return
+    let alive = true
+    let sig: string | null = null
+    api.fileSig(path).then((s) => {
+      if (alive) sig = s
+    })
+    const id = setInterval(() => {
+      if (document.hidden) return
+      api.fileSig(path).then((s) => {
+        if (!alive || s === null) return
+        if (sig === null) {
+          sig = s
+          return
+        }
+        if (s !== sig) {
+          sig = s
+          setBust((b) => b + 1)
+        }
+      })
+    }, 5000)
+    return () => {
+      alive = false
+      clearInterval(id)
+    }
+  }, [path, binary])
+
   const save = React.useCallback(async () => {
     if (draft == null || saving) return
     setSaving(true)
@@ -157,6 +227,10 @@ export function FileViewer({
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
   }, [binary, save, requestClose])
+
+  // The binary preview URL, with a cache-bust suffix once the file has changed
+  // on disk so the browser refetches instead of reusing the cached bytes.
+  const mediaURL = bust ? `${api.fileURL(path)}&v=${bust}` : api.fileURL(path)
 
   // Warn before a full page unload (browser close / reload) when dirty.
   React.useEffect(() => {
@@ -226,10 +300,10 @@ export function FileViewer({
       <div className="vbody">
         {image ? (
           <div className="vimg">
-            <img src={api.fileURL(path)} alt={path} />
+            <img src={mediaURL} alt={path} />
           </div>
         ) : pdf ? (
-          <iframe className="vpdf" src={api.fileURL(path)} title={path} />
+          <iframe className="vpdf" src={mediaURL} title={path} />
         ) : error ? (
           <div className="vloading">error: {error}</div>
         ) : draft == null ? (

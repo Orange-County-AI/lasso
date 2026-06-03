@@ -422,6 +422,22 @@ export const api = {
     return r.text()
   },
 
+  // A cheap change signature (Last-Modified + size) fetched via HEAD — no body
+  // download — so a binary preview can poll for on-disk changes and only reload
+  // when the file actually changed. Returns null on any failure (the caller
+  // treats that as "no change observed").
+  fileSig: async (path: string): Promise<string | null> => {
+    try {
+      const r = await fetch(api.fileURL(path), { method: "HEAD" })
+      if (!r.ok) return null
+      const lm = r.headers.get("last-modified") ?? ""
+      const len = r.headers.get("content-length") ?? ""
+      return `${lm}:${len}`
+    } catch {
+      return null
+    }
+  },
+
   // Overwrite an existing file with new content (preserving its mode).
   writeFile: (path: string, content: string) =>
     postJSON<{ ok: boolean }>("/api/file-write", { path, content }),
