@@ -122,7 +122,10 @@ export function PaneSwitcher({
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") {
+    if (e.key === "Escape") {
+      e.preventDefault()
+      onOpenChange(false)
+    } else if (e.key === "ArrowDown") {
       e.preventDefault()
       setActive((a) => Math.min(a + 1, filtered.length - 1))
     } else if (e.key === "ArrowUp") {
