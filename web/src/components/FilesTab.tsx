@@ -132,6 +132,21 @@ export function FilesTab({
     if (follow && activeCwd && activeCwd !== curPath) setCurPath(activeCwd)
   }, [follow, activeCwd, curPath])
 
+  // Turn following back on and jump straight to the active pane's cwd. Done
+  // explicitly (not left to the effect above) because the effect's snap is
+  // gated on activeCwd !== curPath: after you'd only edited the path box
+  // without committing — or re-rooted to a dir that happens to equal the
+  // active cwd — that guard holds and re-checking the box would just flip a
+  // flag without returning you. Re-rooting and resetting the input here makes
+  // "follow active pane" reliably go back.
+  const followActive = () => {
+    setFollow(true)
+    if (activeCwd) {
+      setCurPath(activeCwd)
+      setPathValue(activeCwd)
+    }
+  }
+
   // (Re)load the root whenever it changes — collapse everything and refetch.
   React.useEffect(() => {
     if (!curPath) return
@@ -395,7 +410,9 @@ export function FilesTab({
               <Checkbox
                 aria-label="Follow active pane"
                 checked={follow}
-                onCheckedChange={(v) => setFollow(v === true)}
+                onCheckedChange={(v) =>
+                  v === true ? followActive() : setFollow(false)
+                }
               />
             </TooltipTrigger>
             <TooltipContent>follow active pane</TooltipContent>
