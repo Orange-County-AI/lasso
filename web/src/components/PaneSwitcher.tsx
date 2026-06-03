@@ -24,11 +24,21 @@ const cellKey = (p: GridPane) => `${p.host}|${p.pane_id}`
 const primaryLabel = (p: GridPane) =>
   p.workspace_label || p.tab_label || p.pane_id
 
+// The most specific name *below* the workspace, shown as a badge to tell
+// sibling panes apart. Prefer the pane's own label (herdr's per-pane title);
+// fall back to the tab label — which, for an unnamed pane, is the name herdr
+// shows on its tab. "" when neither adds anything over the primary label.
+const detailLabel = (p: GridPane) => {
+  const detail = p.pane_label || p.tab_label
+  return detail && detail !== primaryLabel(p) ? detail : ""
+}
+
 // Everything worth matching against, lowercased and joined. A query token is a
 // hit if it's a substring anywhere in here.
 const haystack = (p: GridPane) =>
   [
     p.tab_label,
+    p.pane_label,
     p.workspace_label,
     p.host_label,
     p.host,
@@ -68,19 +78,20 @@ export function PaneSwitcher({
   })
   const panes = q.data?.panes ?? [] // backend order = newest first (mirrors Grid)
 
-  // Workspaces with more than one tab — the only ones where a per-row tab badge
-  // earns its keep. Computed off the full set (not the filtered view) so the
-  // search query never flips a badge on or off.
-  const multiTabWorkspaces = React.useMemo(() => {
-    const tabsByWs = new Map<string, Set<string>>()
+  // Workspaces holding more than one pane — the only ones where the shared
+  // workspace label is ambiguous and each row needs its more-specific name
+  // (its tab or pane label) to tell siblings apart. This covers both split
+  // panes in one tab and panes spread across several tabs. Computed off the
+  // full set (not the filtered view) so the search query never flips a badge
+  // on or off.
+  const multiPaneWorkspaces = React.useMemo(() => {
+    const countByWs = new Map<string, number>()
     for (const p of panes) {
-      if (!p.workspace_id || !p.tab_id) continue
-      const set = tabsByWs.get(p.workspace_id) ?? new Set<string>()
-      set.add(p.tab_id)
-      tabsByWs.set(p.workspace_id, set)
+      if (!p.workspace_id) continue
+      countByWs.set(p.workspace_id, (countByWs.get(p.workspace_id) ?? 0) + 1)
     }
     const multi = new Set<string>()
-    for (const [ws, tabs] of tabsByWs) if (tabs.size > 1) multi.add(ws)
+    for (const [ws, n] of countByWs) if (n > 1) multi.add(ws)
     return multi
   }, [panes])
 
@@ -183,16 +194,15 @@ export function PaneSwitcher({
                   <span className="truncate font-bold text-sm">
                     {primaryLabel(p)}
                   </span>
-                  {/* Tab label differentiates sibling tabs in one workspace
-                      (the bold title is the shared workspace label). Only shown
-                      when the workspace actually has more than one tab, and not
-                      when it's just the title's fallback. */}
+                  {/* When a workspace holds several panes, the bold workspace
+                      label is shared, so each row surfaces its more-specific
+                      name (pane label, else tab label) to tell siblings apart —
+                      the same name herdr shows on the pane/tab. */}
                   {p.workspace_id &&
-                    multiTabWorkspaces.has(p.workspace_id) &&
-                    p.tab_label &&
-                    p.tab_label !== primaryLabel(p) && (
+                    multiPaneWorkspaces.has(p.workspace_id) &&
+                    detailLabel(p) && (
                       <span className="shrink-0 rounded bg-foreground/10 px-1.5 py-0.5 font-medium text-[11px] text-foreground/70">
-                        {p.tab_label}
+                        {detailLabel(p)}
                       </span>
                     )}
                   {p.has_agent && p.agent && (

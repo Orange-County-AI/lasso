@@ -457,6 +457,7 @@ type pane struct {
 	TerminalID    string `json:"terminal_id"` // herdr terminal handle, for direct `terminal attach`
 	WorkspaceID   string `json:"workspace_id"`
 	TabID         string `json:"tab_id"`
+	Label         string `json:"label"`          // herdr's per-pane title; "" when the pane is unnamed
 	Cwd           string `json:"cwd"`            // the shell's launch dir — stale once an agent owns the pane
 	ForegroundCwd string `json:"foreground_cwd"` // herdr-resolved cwd of the pane's foreground process; "" when unresolvable
 	Focused       bool   `json:"focused"`

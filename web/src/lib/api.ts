@@ -58,6 +58,7 @@ export interface GridPane {
   workspace_label?: string
   tab_id?: string
   tab_label?: string
+  pane_label?: string
   cwd?: string
   agent?: string
   agent_status?: string

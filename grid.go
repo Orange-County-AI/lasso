@@ -130,6 +130,7 @@ type gridPane struct {
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
 	TabLabel       string `json:"tab_label"`
+	PaneLabel      string `json:"pane_label,omitempty"` // herdr's per-pane title; disambiguates sibling panes in one workspace
 	Cwd            string `json:"cwd"`
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
@@ -479,6 +480,7 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 			WorkspaceLabel: wss[p.WorkspaceID].label,
 			TabID:          p.TabID,
 			TabLabel:       tabs[p.TabID].label,
+			PaneLabel:      p.Label,
 			Cwd:            paneCwd(p),
 			Agent:          kind,
 			AgentStatus:    p.AgentStatus,
