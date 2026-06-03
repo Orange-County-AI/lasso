@@ -17,6 +17,8 @@ import (
 //   - spawning:    create_agent (loop it for the bulk "one per repo" case)
 //   - interaction: list_agents, get_agent, send_agent, read_agent, wait_agent,
 //                  close_agent  (the herdr pane is the stateful conversation)
+//   - introspection: whoami (an agent maps its own $HERDR_PANE_ID back to its
+//                  lasso record, typically to then close_agent itself)
 
 // registerMCPTools wires every tool onto the server. The In/Out struct types
 // drive the JSON Schemas the SDK advertises (field docs come from `jsonschema`
@@ -46,6 +48,11 @@ func registerMCPTools(s *mcp.Server) {
 		Name:        "list_agents",
 		Description: "List the agents lasso has created on a host, each with its live status (working/idle/blocked/unknown) when the agent is running.",
 	}, listAgentsTool)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "whoami",
+		Description: "Identify the calling agent's OWN lasso agent record, so it can then act on itself — most commonly to call close_agent with the returned id once its work is done. Pass the value of your $HERDR_PANE_ID environment variable as pane_id (e.g. \"p_82\"); lasso maps that herdr pane to the agent it created there. The lasso MCP server runs in lasso's own process, NOT your shell, so it cannot read your environment — you MUST supply $HERDR_PANE_ID yourself. On success returns found:true and the same fields as a list_agents entry (id, type, title, repo, branch, work_dir, root_pane, workspace_id, status, host, ...) under `agent`. If it can't resolve (no pane_id given, or the pane isn't one lasso manages) it returns found:false with a human-readable `detail` instead of erroring.",
+	}, whoamiTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_agent",
@@ -193,6 +200,34 @@ func paneReadText(b Backend, paneID, source string, lines int) (string, error) {
 		return "", err
 	}
 	return r.Read.Text, nil
+}
+
+// herdrPaneInfo is the slice of herdr's pane.get response whoami needs: the
+// canonical public pane id and the live agent status.
+type herdrPaneInfo struct {
+	PaneID      string `json:"pane_id"`
+	AgentStatus string `json:"agent_status"`
+}
+
+// paneGet resolves a pane id via herdr's pane.get. herdr accepts BOTH the raw
+// form an agent reads from its $HERDR_PANE_ID env var (e.g. "p_82", herdr's
+// internal global pane counter) AND the public form lasso persists as an agent's
+// root_pane (e.g. "w<workspace>-<n>"), and echoes back the public id either way —
+// so this is how whoami translates the env-reported pane id into the key it
+// matches agents on. ok is false if herdr can't resolve the id (pane gone, or
+// herdr unreachable).
+func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
+	res, err := b.HerdrCall("pane.get", map[string]any{"pane_id": paneID})
+	if err != nil {
+		return herdrPaneInfo{}, false
+	}
+	var r struct {
+		Pane herdrPaneInfo `json:"pane"`
+	}
+	if json.Unmarshal(res, &r) != nil || r.Pane.PaneID == "" {
+		return herdrPaneInfo{}, false
+	}
+	return r.Pane, true
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +416,67 @@ func listAgentsTool(_ context.Context, _ *mcp.CallToolRequest, in listAgentsIn) 
 		out.Agents = append(out.Agents, agentInfoFrom(host, rec, statuses[rec.RootPane]))
 	}
 	return nil, out, nil
+}
+
+// ---------------------------------------------------------------------------
+// whoami
+// ---------------------------------------------------------------------------
+
+type whoamiIn struct {
+	Host   string `json:"host,omitempty" jsonschema:"Host the calling agent runs on; omit for the local box."`
+	PaneID string `json:"pane_id,omitempty" jsonschema:"Your own herdr pane id — the value of the $HERDR_PANE_ID environment variable in your shell (e.g. \"p_82\"). The server cannot read your environment, so you must pass it. The public form (\"w<workspace>-<n>\") is also accepted."`
+}
+
+type whoamiOut struct {
+	Found  bool       `json:"found"`            // true if the pane resolved to a lasso agent
+	Agent  *agentInfo `json:"agent,omitempty"`  // the resolved agent (null when found is false)
+	Detail string     `json:"detail,omitempty"` // why resolution failed, when found is false
+}
+
+func whoamiTool(_ context.Context, _ *mcp.CallToolRequest, in whoamiIn) (*mcp.CallToolResult, whoamiOut, error) {
+	host := in.Host
+	if host == "" {
+		host = "local"
+	}
+	b, err := resolveBackend(host)
+	if err != nil {
+		return nil, whoamiOut{}, err
+	}
+	recs, err := listAgents(host)
+	if err != nil {
+		return nil, whoamiOut{}, err
+	}
+	return nil, resolveWhoami(b, host, recs, in.PaneID), nil
+}
+
+// resolveWhoami maps a herdr pane id to the lasso agent that owns it. It asks
+// herdr to canonicalize the id (so the raw $HERDR_PANE_ID form resolves to the
+// public root_pane lasso stores), then matches it against the host's agents.
+// Never errors — an unresolvable pane yields found:false with an explanation, so
+// an agent calling whoami on itself gets a usable answer either way.
+func resolveWhoami(b Backend, host string, recs []AgentRecord, paneID string) whoamiOut {
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return whoamiOut{Detail: "no pane_id given: pass the value of your $HERDR_PANE_ID environment variable (e.g. \"p_82\"). If that variable is empty or unset, you are not running inside a lasso-managed herdr pane."}
+	}
+	// herdr's pane.get accepts both the raw env form and the public form and
+	// echoes the public pane id lasso records as root_pane. Fall back to the raw
+	// id if herdr can't resolve it (so a caller that already passed the public
+	// form still matches even when herdr is unreachable).
+	match, status := paneID, ""
+	if info, ok := paneGet(b, paneID); ok {
+		match, status = info.PaneID, info.AgentStatus
+	}
+	for _, rec := range recs {
+		if rec.RootPane != "" && rec.RootPane == match {
+			if status == "" {
+				status = paneAgentStatus(b, rec.RootPane)
+			}
+			ai := agentInfoFrom(host, rec, status)
+			return whoamiOut{Found: true, Agent: &ai}
+		}
+	}
+	return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on host %q — you may be in a herdr pane lasso did not create, or on a different host than the one you queried.", paneID, host)}
 }
 
 // ---------------------------------------------------------------------------
