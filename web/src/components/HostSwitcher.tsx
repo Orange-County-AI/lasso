@@ -76,7 +76,15 @@ export function HostSwitcher({
   const [data, setData] = React.useState<HostsPayload | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [switching, setSwitching] = React.useState(false)
-  const [busyHost, setBusyHost] = React.useState<string | null>(null)
+  // Hosts with an update/provision in flight. A set (not a single alias) so
+  // several remote actions can run at once — clicking a second host's button
+  // while the first is still spinning starts it concurrently rather than being
+  // ignored. Each endpoint shells out to its own ssh and the server handles them
+  // on independent goroutines, so the only thing that ever serialized them was
+  // this client-side state.
+  const [busyHosts, setBusyHosts] = React.useState<ReadonlySet<string>>(
+    () => new Set()
+  )
   const [open, setOpen] = React.useState(false)
   const [updatingLasso, setUpdatingLasso] = React.useState(false)
 
@@ -137,11 +145,12 @@ export function HostSwitcher({
   // Run a remote action on a host then re-probe so its row reflects the result.
   // "update" runs `herdr update` (host is behind; stops its old server/panes);
   // "provision" installs herdr + supervises it with pitchfork (host had none
-  // running). Both are slow and mutually exclusive across hosts.
+  // running). Both are slow, but they run independently per host — several can be
+  // in flight at once (the button only disables for the host already running).
   const runHostAction = React.useCallback(
     async (alias: string, kind: "update" | "provision") => {
-      if (busyHost) return
-      setBusyHost(alias)
+      if (busyHosts.has(alias)) return
+      setBusyHosts((prev) => new Set(prev).add(alias))
       const verb = kind === "update" ? "Update" : "Setup"
       try {
         const res =
@@ -165,10 +174,14 @@ export function HostSwitcher({
       } catch (e) {
         toast.error(`${verb} failed on ${alias}: ${(e as Error).message}`)
       } finally {
-        setBusyHost(null)
+        setBusyHosts((prev) => {
+          const next = new Set(prev)
+          next.delete(alias)
+          return next
+        })
       }
     },
-    [busyHost, load]
+    [busyHosts, load]
   )
 
   // Update lasso itself: pull + rebuild + restart via the supervisor. The server
@@ -279,7 +292,7 @@ export function HostSwitcher({
               : canProvision
                 ? ("provision" as const)
                 : null
-            const busy = busyHost === h.alias
+            const busy = busyHosts.has(h.alias)
             return (
               <DropdownMenuItem
                 key={h.alias}
