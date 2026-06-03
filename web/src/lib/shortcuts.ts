@@ -12,5 +12,6 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘G", label: "Open the Grid tab" },
   { keys: "⌘H", label: "Open the Herdr tab" },
   { keys: "⌘K", label: "Find a pane…" },
+  { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘]", label: "Toggle the sidebar" },
 ]

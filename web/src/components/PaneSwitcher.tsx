@@ -8,11 +8,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { type GridPane, api } from "@/lib/api"
+import { api, type GridPane } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 // cellKey uniquely identifies a pane across hosts (pane ids are only unique
@@ -59,15 +60,23 @@ export function PaneSwitcher({
   open,
   onOpenChange,
   onFocusInHerdr,
+  termWasFocused = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onFocusInHerdr: () => void
+  // Whether the herdr terminal held keyboard focus when the palette opened. On a
+  // cancel-close we re-focus its xterm so Esc'ing out of ⌘K leaves the keyboard
+  // where it was, rather than stranding it on the (unfocusable-for-typing) iframe.
+  termWasFocused?: boolean
 }) {
   const { host: activeHost } = useApp()
   const [query, setQuery] = React.useState("")
   const [active, setActive] = React.useState(0)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // Set when a pane is chosen so the close handler can tell a pick (choose()
+  // already hands focus to the pane's terminal) from a cancel.
+  const chosenRef = React.useRef(false)
 
   // Shares the Grid tab's query cache (same key), so opening right after viewing
   // the Grid is instant; otherwise it fetches on open.
@@ -124,6 +133,7 @@ export function PaneSwitcher({
   }, [active, open])
 
   const choose = (p: GridPane) => {
+    chosenRef.current = true
     onOpenChange(false)
     // Close first so the Dialog doesn't re-grab focus on unmount — then hand the
     // keyboard to the pane's terminal.
@@ -160,6 +170,22 @@ export function PaneSwitcher({
           ;(e.currentTarget as HTMLElement | null)
             ?.querySelector("input")
             ?.focus()
+        }}
+        onCloseAutoFocus={(e) => {
+          // A chosen pane already had focus handed to its terminal by choose();
+          // leave it. On a cancel (Esc / click-away), Radix restores focus to
+          // whatever held it before the palette opened — but when that was the
+          // herdr terminal iframe, focusing the <iframe> element doesn't reach
+          // the xterm inside, so the user would have to click the pane to type
+          // again. Re-focus its xterm directly instead.
+          if (chosenRef.current) {
+            chosenRef.current = false
+            return
+          }
+          if (termWasFocused) {
+            e.preventDefault()
+            focusHerdrTerminal()
+          }
         }}
       >
         <DialogHeader className="sr-only">

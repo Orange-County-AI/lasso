@@ -569,4 +569,13 @@ export const api = {
   // Create + launch an agent (git worktree or scratch workspace).
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
+
+  // Create a bare herdr workspace running just a shell (no agent) and focus it.
+  // The backend focuses the new workspace server-side; the caller surfaces the
+  // Herdr tab and hands the keyboard to its terminal.
+  createTerminal: (label: string) =>
+    postJSON<{ workspace_id: string; root_pane: string }>(
+      "/api/create-terminal",
+      { label }
+    ),
 }

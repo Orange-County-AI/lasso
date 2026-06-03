@@ -19,6 +19,7 @@ import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
+import { NewTerminalDialog } from "@/components/NewTerminalDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab } from "@/components/SettingsTab"
@@ -169,6 +170,12 @@ function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
+  const [newTermOpen, setNewTermOpen] = React.useState(false)
+  // Whether the herdr terminal held focus when ⌘K opened the palette, captured
+  // at keypress (before Radix moves focus into the dialog) so a cancel-close can
+  // restore the keyboard to its xterm. activeElement is the iframe element when
+  // focus lives inside it.
+  const [paletteFromTerm, setPaletteFromTerm] = React.useState(false)
   // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
   // the collapsed-sidebar indicator stay live even when the Files panel is
   // hidden or the sidebar boots collapsed. `gitReady` gates the badge until we
@@ -282,8 +289,8 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘] → toggle the sidebar. Bound
-  // to the Cmd key only
+  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘I → new terminal, ⌘] → toggle
+  // the sidebar. Bound to the Cmd key only
   // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
   // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
   // this document, so these work even while a terminal holds focus. (See
@@ -303,7 +310,11 @@ function Shell() {
         toggleSidebar()
       } else if (k === "k") {
         e.preventDefault()
+        setPaletteFromTerm(document.activeElement?.id === "term")
         setPaletteOpen(true)
+      } else if (k === "i") {
+        e.preventDefault()
+        setNewTermOpen(true)
       }
     }
     document.addEventListener("keydown", onKey)
@@ -506,6 +517,14 @@ function Shell() {
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onFocusInHerdr={() => switchLeft("herdr")}
+        termWasFocused={paletteFromTerm}
+      />
+      {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
+          agent) and drops the user into its shell in the Herdr tab. */}
+      <NewTerminalDialog
+        open={newTermOpen}
+        onOpenChange={setNewTermOpen}
+        surfaceHerdr={() => switchLeft("herdr")}
       />
     </div>
   )
