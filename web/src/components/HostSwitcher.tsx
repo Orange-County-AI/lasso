@@ -60,6 +60,32 @@ function provisionable(h: HostInfo): boolean {
   return h.reachable && !h.running
 }
 
+// versionOlder reports whether herdr version a is strictly older than b
+// (dotted-numeric compare, e.g. "0.6.7" < "0.6.8"). Returns false when either is
+// missing or non-numeric, so an unparseable version never spuriously offers an
+// upgrade.
+function versionOlder(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false
+  const pa = a.replace(/^v/, "").split(".").map(Number)
+  const pb = b.replace(/^v/, "").split(".").map(Number)
+  const n = Math.max(pa.length, pb.length)
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (Number.isNaN(x) || Number.isNaN(y)) return false
+    if (x !== y) return x < y
+  }
+  return false
+}
+
+// upgradable reports whether a selectable (compatible) host runs an older herdr
+// than this box — a `herdr update` would bring it up to date even though the
+// protocol already matches. localVersion is this machine's herdr version, the
+// reference the fleet tracks.
+function upgradable(h: HostInfo, localVersion: string | undefined): boolean {
+  return usable(h) && versionOlder(h.version, localVersion)
+}
+
 // HostSwitcher lets the app drive a herdr daemon on any compatible ssh-config
 // host as if it were local. It names the active host — the local machine's
 // hostname (laptop icon) or the remote alias (server icon, primary-tinted as a
@@ -85,6 +111,12 @@ export function HostSwitcher({
   const [busyHosts, setBusyHosts] = React.useState<ReadonlySet<string>>(
     () => new Set()
   )
+  // Last failed action per host (alias → message), shown inline so a failed
+  // setup/update is visible after the toast fades instead of the row silently
+  // reverting to the same button. Cleared when the action is retried or succeeds.
+  const [actionErrors, setActionErrors] = React.useState<
+    ReadonlyMap<string, string>
+  >(() => new Map())
   const [open, setOpen] = React.useState(false)
   const [updatingLasso, setUpdatingLasso] = React.useState(false)
 
@@ -151,7 +183,18 @@ export function HostSwitcher({
     async (alias: string, kind: "update" | "provision") => {
       if (busyHosts.has(alias)) return
       setBusyHosts((prev) => new Set(prev).add(alias))
+      // Clear any stale failure for this host as the retry starts.
+      setActionErrors((prev) => {
+        if (!prev.has(alias)) return prev
+        const next = new Map(prev)
+        next.delete(alias)
+        return next
+      })
       const verb = kind === "update" ? "Update" : "Setup"
+      const fail = (msg: string) => {
+        setActionErrors((prev) => new Map(prev).set(alias, msg))
+        toast.error(`${verb} failed on ${alias}: ${msg}`)
+      }
       try {
         const res =
           kind === "update"
@@ -167,12 +210,10 @@ export function HostSwitcher({
         } else {
           if (res.output)
             console.error(`herdr ${kind} on ${alias}:\n${res.output}`)
-          toast.error(
-            `${verb} failed on ${alias}: ${res.error || "see console"}`
-          )
+          fail(res.error || "see console")
         }
       } catch (e) {
-        toast.error(`${verb} failed on ${alias}: ${(e as Error).message}`)
+        fail((e as Error).message)
       } finally {
         setBusyHosts((prev) => {
           const next = new Set(prev)
@@ -284,8 +325,13 @@ export function HostSwitcher({
           {remotes.length > 0 && <DropdownMenuSeparator />}
 
           {remotes.map((h) => {
+            const localProto = data?.local?.protocol ?? 0
+            const localVer = data?.local?.version
             const ok = usable(h)
-            const canUpdate = !ok && behind(h, data?.local?.protocol ?? 0)
+            // A compatible host on an older herdr can still be updated in place;
+            // an incompatible host that's behind must be updated to be usable.
+            const canUpgrade = upgradable(h, localVer)
+            const canUpdate = canUpgrade || (!ok && behind(h, localProto))
             const canProvision = !ok && !canUpdate && provisionable(h)
             const action = canUpdate
               ? ("update" as const)
@@ -293,6 +339,50 @@ export function HostSwitcher({
                 ? ("provision" as const)
                 : null
             const busy = busyHosts.has(h.alias)
+            const err = actionErrors.get(h.alias)
+            // The update/setup button; shared by the not-yet-usable rows and the
+            // usable-but-outdated rows (where it sits next to the version).
+            const actionButton = action && (
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
+                title={
+                  action === "update"
+                    ? canUpgrade
+                      ? `Update herdr on ${h.alias} (${h.version} → ${localVer}; protocol unchanged)`
+                      : `Run \`herdr update\` on ${h.alias} (protocol ${h.protocol} → ${localProto}; stops its running sessions)`
+                    : `Install herdr on ${h.alias} and supervise it with pitchfork`
+                }
+                disabled={busy}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  void runHostAction(h.alias, action)
+                }}
+              >
+                {busy ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : action === "update" ? (
+                  <RefreshCw className="size-3" />
+                ) : (
+                  <Download className="size-3" />
+                )}
+                {busy
+                  ? action === "update"
+                    ? "updating…"
+                    : "setting up…"
+                  : action === "update"
+                    ? "update"
+                    : "set up"}
+              </button>
+            )
+            // A persistent "failed" badge (full error on hover) so a failed
+            // action doesn't just silently revert to the same button.
+            const errBadge = err && (
+              <span className="shrink-0 text-[10px] text-warn" title={err}>
+                failed
+              </span>
+            )
             return (
               <DropdownMenuItem
                 key={h.alias}
@@ -307,40 +397,18 @@ export function HostSwitcher({
                 <Server className="size-3.5" />
                 <span className="flex-1 truncate">{h.alias}</span>
                 {ok ? (
-                  <span className="text-[10px] text-muted-foreground">
-                    {h.version}
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">
+                      {h.version}
+                    </span>
+                    {errBadge}
+                    {canUpgrade && actionButton}
                   </span>
                 ) : action ? (
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
-                    title={
-                      action === "update"
-                        ? `Run \`herdr update\` on ${h.alias} (protocol ${h.protocol} → ${data?.local?.protocol}; stops its running sessions)`
-                        : `Install herdr on ${h.alias} and supervise it with pitchfork`
-                    }
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      void runHostAction(h.alias, action)
-                    }}
-                  >
-                    {busy ? (
-                      <Loader2 className="size-3 animate-spin" />
-                    ) : action === "update" ? (
-                      <RefreshCw className="size-3" />
-                    ) : (
-                      <Download className="size-3" />
-                    )}
-                    {busy
-                      ? action === "update"
-                        ? "updating…"
-                        : "setting up…"
-                      : action === "update"
-                        ? "update"
-                        : "set up"}
-                  </button>
+                  <span className="flex items-center gap-1.5">
+                    {errBadge}
+                    {actionButton}
+                  </span>
                 ) : (
                   <span className="truncate text-[10px] text-warn">
                     {h.err || "unavailable"}

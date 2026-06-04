@@ -123,6 +123,20 @@ func sshConfigHosts() []string {
 // probing
 // ---------------------------------------------------------------------------
 
+// remoteHerdrShell wraps a herdr command line so it runs in the remote user's
+// login shell with the usual user-local install dirs (~/.local/bin and mise's
+// shim dir) forced onto PATH first. `ssh host <cmd>` uses a non-login shell whose
+// PATH omits those dirs, and even `$SHELL -lc` only finds herdr if the login
+// profile happens to add them — a freshly provisioned host (herdr just dropped in
+// ~/.local/bin, profile not yet wired) would otherwise still report "command not
+// found" and keep showing "set up". Prefixing PATH ourselves — matching what the
+// provision script does — makes detection and update robust regardless of how the
+// host's profile is set up. $HOME/$PATH are left for the remote login shell to
+// expand (the single-quoted body is opaque to the outer shell).
+func remoteHerdrShell(herdrCmd string) string {
+	return `${SHELL:-sh} -lc 'export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"; ` + herdrCmd + `'`
+}
+
 // probeHost asks a host whether it has a compatible herdr server running by
 // running `herdr status server --json` over ssh. BatchMode makes hosts that
 // would prompt (password / unknown key) fail fast rather than hang.
@@ -132,20 +146,14 @@ func probeHost(ctx context.Context, alias string, wantProto int) HostInfo {
 	defer cancel()
 	// ClearAllForwardings drops any LocalForward/RemoteForward the user's config
 	// attaches to this host (e.g. a tunnel that conflicts with a busy port) — the
-	// probe only needs to run one command, no forwarding.
-	//
-	// Run herdr through a login shell ("$SHELL -lc"): `ssh host <cmd>` uses a
-	// non-login, non-interactive shell whose PATH usually omits ~/.local/bin
-	// (where herdr installs), so a bare `herdr` reports "command not found" even
-	// though an interactive `ssh host` session finds it. A login shell sources
-	// the profile that puts herdr on PATH. ${SHELL:-sh} falls back if SHELL is
-	// unset.
+	// probe only needs to run one command, no forwarding. remoteHerdrShell runs
+	// herdr in a login shell with the user-local install dirs forced onto PATH.
 	cmd := exec.CommandContext(cctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "ConnectTimeout=4",
 		"-o", "StrictHostKeyChecking=accept-new",
-		alias, `${SHELL:-sh} -lc 'herdr status server --json'`)
+		alias, remoteHerdrShell("herdr status server --json"))
 	out, err := cmd.Output()
 	if err != nil {
 		ee, isExit := err.(*exec.ExitError)
@@ -352,16 +360,16 @@ func serveHostUpdate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// -tt forces a remote PTY even though our stdin is a pipe, so herdr's updater
-	// sees a terminal and runs its prompts (rather than erroring out). The login
-	// shell ($SHELL -lc) puts `herdr` on PATH, matching probeHost. We only run one
-	// command, so clear any forwardings the host's config attaches.
+	// sees a terminal and runs its prompts (rather than erroring out). remoteHerdrShell
+	// runs in a login shell with `herdr` forced onto PATH, matching probeHost. We
+	// only run one command, so clear any forwardings the host's config attaches.
 	cmd := exec.CommandContext(ctx, "ssh",
 		"-tt",
 		"-o", "BatchMode=yes",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "ConnectTimeout=8",
 		"-o", "StrictHostKeyChecking=accept-new",
-		req.Host, `${SHELL:-sh} -lc 'herdr update'`)
+		req.Host, remoteHerdrShell("herdr update"))
 	cmd.Stdin = strings.NewReader("y\nn\n")
 	out, err := cmd.CombinedOutput()
 
@@ -389,13 +397,14 @@ func serveHostUpdate(w http.ResponseWriter, r *http.Request) {
 const hostProvisionTimeout = 5 * time.Minute
 
 // provisionScript bootstraps herdr-under-pitchfork on a remote host, end to end
-// and idempotently: ensure pitchfork (installed via mise, matching our own
-// setup), ensure herdr (herdr.dev/install.sh), register a [daemons.herdr] block
-// in the global pitchfork config if absent, then bring the supervisor up and
-// start the daemon. It's shell-agnostic — rather than trust the login shell's
-// PATH wiring (which on some hosts only activates mise for fish/zsh), it puts the
-// user-local bin + mise shim dirs on PATH itself and activates mise if present.
-// Every step logs a line so the captured output reads as a provisioning log.
+// and idempotently: ensure mise (mise.run) + pitchfork (installed via mise,
+// matching our own setup), ensure herdr (herdr.dev/install.sh), register a
+// [daemons.herdr] block in the global pitchfork config if absent, then bring the
+// supervisor up and start the daemon. It's shell-agnostic — rather than trust the
+// login shell's PATH wiring (which on some hosts only activates mise for
+// fish/zsh), it puts the user-local bin + mise shim dirs on PATH itself and
+// activates mise if present. Every step logs a line so the captured output reads
+// as a provisioning log.
 const provisionScript = `set -u
 log() { printf '==> %s\n' "$*"; }
 
@@ -405,12 +414,19 @@ if command -v mise >/dev/null 2>&1; then
 fi
 hash -r 2>/dev/null || true
 
-# 1. pitchfork (via mise) ----------------------------------------------------
+# 1. mise + pitchfork --------------------------------------------------------
+# A bare host has neither; install mise first (it's how we manage pitchfork) so
+# setup works end to end instead of stopping with "install mise then retry".
 if ! command -v pitchfork >/dev/null 2>&1; then
   if ! command -v mise >/dev/null 2>&1; then
-    echo "ERROR: mise not found on this host; install mise (https://mise.run) then retry" >&2
-    exit 3
+    log "installing mise (mise.run)"
+    curl -fsSL https://mise.run | sh
+    export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+    eval "$(mise activate bash 2>/dev/null)" || true
+    hash -r 2>/dev/null || true
   fi
+  command -v mise >/dev/null 2>&1 || { echo "ERROR: mise install failed (see https://mise.run)" >&2; exit 3; }
+  log "mise $(mise --version 2>/dev/null)"
   log "installing pitchfork via mise"
   mise use -g pitchfork@latest
   hash -r 2>/dev/null || true
