@@ -73,11 +73,15 @@ export function PaneSwitcher({
       promptByTab.set(a.tab_id, a.prompt ?? "")
     const out: Entry[] = []
     const repoName = new Map<string, string>()
-    for (const r of tree.repos)
-      for (const w of r.workspaces) repoName.set(w.id, r.name)
-    const wss = [...tree.scratch, ...tree.repos.flatMap((r) => r.workspaces)]
+    const repos = tree.repos ?? []
+    for (const r of repos)
+      for (const w of r.workspaces ?? []) repoName.set(w.id, r.name)
+    const wss = [
+      ...(tree.scratch ?? []),
+      ...repos.flatMap((r) => r.workspaces ?? []),
+    ]
     for (const w of wss) {
-      for (const t of w.tabs) {
+      for (const t of w.tabs ?? []) {
         out.push({
           tabId: t.id,
           title: t.title || t.kind,

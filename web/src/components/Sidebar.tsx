@@ -70,7 +70,7 @@ export function Sidebar({
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <SectionLabel>spaces</SectionLabel>
-        {tree.data?.scratch.map((ws) => (
+        {(tree.data?.scratch ?? []).map((ws) => (
           <WorkspaceNode
             key={ws.id}
             ws={ws}
@@ -80,7 +80,7 @@ export function Sidebar({
             depth={1}
           />
         ))}
-        {tree.data?.repos.map((repo) => (
+        {(tree.data?.repos ?? []).map((repo) => (
           <RepoNode
             key={repo.path}
             repo={repo}
@@ -93,7 +93,7 @@ export function Sidebar({
 
       <div className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto border-border border-t">
         <SectionLabel>agents</SectionLabel>
-        {agents.data?.agents.map((a) => (
+        {(agents.data?.agents ?? []).map((a) => (
           <AgentRowItem
             key={a.tab_id}
             agent={a}
@@ -102,7 +102,7 @@ export function Sidebar({
             onSelect={() => onSelectTab(a.tab_id)}
           />
         ))}
-        {agents.data && agents.data.agents.length === 0 && (
+        {agents.data && (agents.data.agents ?? []).length === 0 && (
           <div className="px-3 py-2 text-muted-foreground">no agents</div>
         )}
       </div>
@@ -201,7 +201,7 @@ function RepoNode({
         </ContextMenuContent>
       </ContextMenu>
       {open &&
-        repo.workspaces.map((ws) => (
+        (repo.workspaces ?? []).map((ws) => (
           <WorkspaceNode
             key={ws.id}
             ws={ws}
@@ -211,7 +211,7 @@ function RepoNode({
             depth={2}
           />
         ))}
-      {open && repo.workspaces.length === 0 && (
+      {open && (repo.workspaces ?? []).length === 0 && (
         <div className="py-1 pl-8 text-[11px] text-muted-foreground">
           no worktrees
         </div>
@@ -285,7 +285,7 @@ function WorkspaceNode({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-      {ws.tabs.map((tab) => (
+      {(ws.tabs ?? []).map((tab) => (
         <TabNode
           key={tab.id}
           tab={tab}

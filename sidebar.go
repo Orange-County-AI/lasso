@@ -117,9 +117,13 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		primary, ct := repoPrimaryBranchAndTime(be, path)
+		repoWss := byRepo[path]
+		if repoWss == nil {
+			repoWss = []treeWorkspace{}
+		}
 		out = append(out, treeRepo{
 			Path: path, Name: name, PrimaryBranch: primary, Pinned: pinned,
-			LastCommit: ct, Workspaces: byRepo[path],
+			LastCommit: ct, Workspaces: repoWss,
 		})
 	}
 	// Pinned first, then most-recently-committed, then name.

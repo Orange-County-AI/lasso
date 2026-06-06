@@ -9,13 +9,28 @@ import { bootTermFrame, refitTerminal } from "@/lib/terminal"
 // switching tabs is cheap and never loses the agent.
 const KEEPALIVE_MS = 18000
 
+// Release is deferred so React StrictMode's dev double-mount (mount → unmount →
+// remount, same tab) doesn't kill the ttyd the remount reuses, which would
+// 404 the iframe. A real tab switch (different tab unmounts and doesn't come
+// back) still releases after the short grace window; remounting the same tab
+// cancels its pending release.
+const RELEASE_GRACE_MS = 400
+const pendingRelease = new Map<string, ReturnType<typeof setTimeout>>()
+
 export function TabTerminal({ tabId }: { tabId: string }) {
   const [base, setBase] = React.useState<string | null>(null)
   const id = `tabterm-${tabId}`
 
-  // Attach on mount; release on unmount (detaches the viewer, session lives on).
+  // Attach on mount; release (deferred) on unmount — detaches the viewer, the
+  // tmux session lives on.
   React.useEffect(() => {
     let cancelled = false
+    // Re-mounting this tab cancels any release the previous unmount scheduled.
+    const pending = pendingRelease.get(tabId)
+    if (pending) {
+      clearTimeout(pending)
+      pendingRelease.delete(tabId)
+    }
     setBase(null)
     api
       .tabTerm(tabId)
@@ -25,7 +40,11 @@ export function TabTerminal({ tabId }: { tabId: string }) {
       .catch(() => {})
     return () => {
       cancelled = true
-      api.tabTermRelease(tabId)
+      const t = setTimeout(() => {
+        pendingRelease.delete(tabId)
+        api.tabTermRelease(tabId)
+      }, RELEASE_GRACE_MS)
+      pendingRelease.set(tabId, t)
     }
   }, [tabId])
 
