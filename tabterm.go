@@ -123,6 +123,10 @@ func ensureTabTerm(tabID string) (string, error) {
 		return "", err
 	}
 	waitSocket(sock, true, 3*time.Second)
+	// Once the browser attaches, force a repaint: the attach resizes the session
+	// mid-startup and the SIGWINCH eats the shell's first prompt / agent's first
+	// frame, leaving the pane blank until the user types (see nudgeRedraw).
+	go nudgeRedrawWhenAttached(session)
 
 	e := &tabTermEntry{
 		token:    token,

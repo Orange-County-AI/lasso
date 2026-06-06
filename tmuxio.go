@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -147,6 +148,64 @@ func tmuxCaptureScroll(session string, n int) (string, error) {
 func tmuxCurrentPath(session string) (string, error) {
 	out, err := tmuxOut("display-message", "-p", "-t", session, "#{pane_current_path}")
 	return strings.TrimSpace(out), err
+}
+
+// nudgeRedraw forces whatever is running in a session to repaint. A session is
+// created detached at a fixed size, then a differently-sized ttyd client attaches
+// — the resize delivers a SIGWINCH mid-startup that eats bash's first prompt (or
+// an agent TUI's first frame), leaving the pane blank until the user types. We
+// replay that SIGWINCH deliberately: a one-row resize, then back to the client's
+// automatic size, makes both shells (readline redraws on SIGWINCH) and TUIs
+// repaint.
+func nudgeRedraw(session string) {
+	wh, err := tmuxOut("display-message", "-p", "-t", session, "#{window_width} #{window_height}")
+	if err != nil {
+		return
+	}
+	parts := strings.Fields(wh)
+	if len(parts) != 2 {
+		return
+	}
+	w, _ := strconv.Atoi(parts[0])
+	h, _ := strconv.Atoi(parts[1])
+	if w <= 0 || h <= 1 {
+		return
+	}
+	_ = tmux("resize-window", "-t", session, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h-1))
+	_ = tmux("resize-window", "-t", session, "-A") // revert to automatic (client) size
+}
+
+// nudgeRedrawWhenAttached waits for a client to attach, then forces a full
+// redraw a handful of times on a schedule. We can't pick one delay: the frame
+// that needs re-pushing might be a shell prompt after a slow mise/starship rc,
+// OR an agent TUI that only finishes booting seconds later (and whose shell
+// prompt drew first, so cursor-position can't tell us "done"). Re-drawing
+// already-correct content is invisible, so over-nudging is harmless — we just
+// need to land at least one redraw after the program's real frame appears.
+// Best-effort; run in a goroutine after spawning the ttyd.
+func nudgeRedrawWhenAttached(session string) {
+	wait := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(wait) {
+			return
+		}
+		n, err := tmuxOut("display-message", "-p", "-t", session, "#{session_attached}")
+		if err != nil {
+			return // session gone
+		}
+		if s := strings.TrimSpace(n); s != "" && s != "0" {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	// Deltas between nudges → fires at ~0.4s, 1.2s, 2.4s, 4.4s, 7.4s post-attach.
+	for _, d := range []int{400, 800, 1200, 2000, 3000} {
+		time.Sleep(time.Duration(d) * time.Millisecond)
+		if !tmuxHasSession(session) {
+			return
+		}
+		nudgeRedraw(session)
+	}
 }
 
 // tmuxSendLine types one command line into a cooked-mode shell (text, then a
