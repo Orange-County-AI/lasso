@@ -152,8 +152,8 @@ func TestWorkspaceTabCRUD(t *testing.T) {
 	if len(tabs) != 2 || tabs[0].ID != "t1" || tabs[1].ID != "t2" {
 		t.Fatalf("listTabs ordering wrong: %+v", tabs)
 	}
-	if agentTabs, _ := liveAgentTabs(); len(agentTabs) != 1 || agentTabs[0].ID != "t1" {
-		t.Fatalf("liveAgentTabs = %+v", agentTabs)
+	if tabs[0].Kind != "agent" {
+		t.Fatalf("t1 kind = %q, want agent", tabs[0].Kind)
 	}
 	if n := nextTabOrdinal("w1"); n != 2 {
 		t.Errorf("nextTabOrdinal = %d, want 2", n)

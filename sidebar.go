@@ -44,6 +44,10 @@ type treeWorkspace struct {
 	Pinned  bool      `json:"pinned"`
 	Branch  string    `json:"branch,omitempty"`
 	Tabs    []treeTab `json:"tabs"`
+	// AgentStatus is the workspace's aggregate live-agent status for the sidebar
+	// dot (blocked > working > idle), or "" when no tab is running an agent.
+	AgentStatus string `json:"agent_status,omitempty"`
+	AgentKind   string `json:"agent_kind,omitempty"`
 }
 
 type treeRepo struct {
@@ -66,18 +70,12 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 	repoState, _ := listRepoState(sidebarHost)
 	wss, _ := listWorkspaces(sidebarHost)
 	statuses := agentStatuses.snapshot()
-
-	agentByID := map[string]AgentRecord{}
-	if agents, err := listAgents(sidebarHost); err == nil {
-		for _, a := range agents {
-			agentByID[a.ID] = a
-		}
-	}
+	kinds := tabAgentKinds() // tab id → live agent kind (process-based)
 
 	byRepo := map[string][]treeWorkspace{}
 	scratch := []treeWorkspace{}
 	for _, ws := range wss {
-		tw := buildTreeWorkspace(be, ws, agentByID, statuses)
+		tw := buildTreeWorkspace(be, ws, statuses, kinds)
 		if ws.Kind == "git" && ws.Repo != "" {
 			byRepo[ws.Repo] = append(byRepo[ws.Repo], tw)
 		} else {
@@ -139,7 +137,7 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, treePayload{Repos: out, Scratch: scratch})
 }
 
-func buildTreeWorkspace(be Backend, ws Workspace, agentByID map[string]AgentRecord, statuses map[string]string) treeWorkspace {
+func buildTreeWorkspace(be Backend, ws Workspace, statuses, kinds map[string]string) treeWorkspace {
 	tw := treeWorkspace{
 		ID: ws.ID, Title: ws.Title, Repo: ws.Repo, WorkDir: ws.WorkDir,
 		Kind: ws.Kind, Pinned: ws.Pinned, Tabs: []treeTab{},
@@ -151,17 +149,38 @@ func buildTreeWorkspace(be Backend, ws Workspace, agentByID map[string]AgentReco
 	}
 	tabs, _ := listTabs(ws.ID)
 	for _, t := range tabs {
-		tt := treeTab{ID: t.ID, Title: t.Title, Kind: t.Kind, AgentID: t.AgentID}
-		if t.Kind == "agent" {
-			tt.Agent = agentByID[t.AgentID].Agent
+		// Agent-ness is live (a process is running now), not the stored kind: a
+		// tab whose agent exited renders as a shell; a shell where the user ran
+		// claude renders as an agent.
+		tt := treeTab{ID: t.ID, Title: t.Title, Kind: "shell"}
+		if kind := kinds[t.ID]; kind != "" {
+			tt.Kind = "agent"
+			tt.Agent = kind
+			tt.AgentID = t.AgentID
 			tt.Status = statuses[t.ID]
 			if tt.Status == "" {
-				tt.Status = string(StatusUnknown)
+				tt.Status = string(StatusIdle)
+			}
+			tw.AgentStatus = mergeAgentStatus(tw.AgentStatus, tt.Status)
+			if tw.AgentKind == "" {
+				tw.AgentKind = kind
 			}
 		}
 		tw.Tabs = append(tw.Tabs, tt)
 	}
 	return tw
+}
+
+// mergeAgentStatus keeps the most "attention-worthy" status across a workspace's
+// tabs for its sidebar dot: blocked > working > idle.
+func mergeAgentStatus(cur, next string) string {
+	rank := map[string]int{
+		string(StatusBlocked): 3, string(StatusWorking): 2, string(StatusIdle): 1,
+	}
+	if rank[next] > rank[cur] {
+		return next
+	}
+	return cur
 }
 
 // repoPrimaryBranchAndTime resolves a repo's primary branch (origin HEAD, else
@@ -211,31 +230,42 @@ type agentRow struct {
 
 func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 	statuses := agentStatuses.snapshot()
+	kinds := tabAgentKinds() // only tabs running an agent right now
 	agentByID := map[string]AgentRecord{}
 	if agents, err := listAgents(sidebarHost); err == nil {
 		for _, a := range agents {
 			agentByID[a.ID] = a
 		}
 	}
-	tabs, _ := liveAgentTabs()
-	out := make([]agentRow, 0, len(tabs))
-	for _, t := range tabs {
+	out := make([]agentRow, 0, len(kinds))
+	for tabID, kind := range kinds {
+		t, err := getTab(tabID)
+		if err != nil {
+			continue
+		}
 		rec := agentByID[t.AgentID]
 		title := t.Title
 		if title == "" {
 			title = rec.Title
 		}
-		status := statuses[t.ID]
+		status := statuses[tabID]
 		if status == "" {
-			status = string(StatusUnknown)
+			status = string(StatusIdle)
 		}
 		ws, _ := getWorkspace(t.WorkspaceID)
 		out = append(out, agentRow{
-			TabID: t.ID, AgentID: t.AgentID, Title: title, Agent: rec.Agent, Status: status,
+			TabID: tabID, AgentID: t.AgentID, Title: title, Agent: kind, Status: status,
 			WorkspaceID: t.WorkspaceID, WorkspaceTitle: ws.Title, Repo: ws.Repo,
 			Cwd: t.Cwd, Prompt: rec.Description,
 		})
 	}
+	// Stable order: workspace title, then tab title.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].WorkspaceTitle != out[j].WorkspaceTitle {
+			return out[i].WorkspaceTitle < out[j].WorkspaceTitle
+		}
+		return out[i].Title < out[j].Title
+	})
 	writeJSON(w, map[string]any{"agents": out})
 }
 

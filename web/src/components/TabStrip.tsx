@@ -38,10 +38,7 @@ export function TabStrip({
   }
   return (
     <div className="flex h-9 items-center gap-0 overflow-x-auto border-border border-b">
-      <span className="shrink-0 px-3 font-medium text-[13px]">
-        {workspace.title}
-      </span>
-      {workspace.tabs.map((tab) => {
+      {(workspace.tabs ?? []).map((tab) => {
         const status = agentStatuses[tab.id] ?? tab.status ?? "unknown"
         return (
           <div

@@ -1734,8 +1734,17 @@ func (h *hub) run(ctx context.Context) {
 	// the status poller and the CRUD handlers kick() the hub when state changes;
 	// the ticker is just a slow safety net.
 	refresh := func() {
-		sig := treeSignature()
 		statuses := agentStatuses.snapshot()
+		// Fold the live-agent SET (cache keys) into the signature so PanesRev
+		// bumps — and the sidebar refetches /api/tree+/api/agents — when an agent
+		// starts or exits, not just when the DB tree changes. Status *value*
+		// changes still ride the AgentStatuses map (dots update without refetch).
+		keys := make([]string, 0, len(statuses))
+		for k := range statuses {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		sig := treeSignature() + "|agents:" + strings.Join(keys, ",")
 		h.mu.Lock()
 		if sig != h.lastSig {
 			h.lastSig = sig

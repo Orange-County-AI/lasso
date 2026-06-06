@@ -187,6 +187,10 @@ export interface TreeWorkspace {
   pinned: boolean
   branch?: string
   tabs: TreeTab[]
+  // Aggregate live-agent status for the sidebar dot (blocked > working > idle),
+  // or absent when no tab is running an agent.
+  agent_status?: AgentStatus
+  agent_kind?: string
 }
 
 export interface TreeRepo {

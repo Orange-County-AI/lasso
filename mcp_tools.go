@@ -126,7 +126,7 @@ func agentSession(rec AgentRecord) string {
 // callers always get a fresh read). A gone session / exited agent reads idle.
 func agentStatusNow(rec AgentRecord) string {
 	session := agentSession(rec)
-	if !tmuxHasSession(session) || !isAgentCommand(tmuxForegroundCmd(session)) {
+	if !tmuxHasSession(session) || sessionAgentKind(session) == "" {
 		return string(StatusIdle)
 	}
 	screen, err := tmuxCapture(session)

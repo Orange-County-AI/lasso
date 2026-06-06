@@ -587,26 +587,6 @@ func listTabs(workspaceID string) ([]Tab, error) {
 	return out, rows.Err()
 }
 
-// liveAgentTabs returns every live tab running an agent, across all workspaces —
-// the set the status poller scans.
-func liveAgentTabs() ([]Tab, error) {
-	rows, err := db.Query(
-		`SELECT ` + tabCols + ` FROM tabs WHERE kind='agent' AND closed_at='' ORDER BY created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Tab
-	for rows.Next() {
-		t, err := scanTab(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
 // allLiveTabs returns every live tab (any kind) — used by startup reconciliation.
 func allLiveTabs() ([]Tab, error) {
 	rows, err := db.Query(`SELECT ` + tabCols + ` FROM tabs WHERE closed_at='' ORDER BY created_at`)

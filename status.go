@@ -55,59 +55,46 @@ func (s *statusStore) forget(tabID string) {
 	s.mu.Unlock()
 }
 
-// pollOnce scrapes every live agent tab and updates the cache, returning whether
-// any status changed (so the caller can push an SSE frame). A tab whose tmux
-// session is gone, or whose foreground is no longer the agent, reads as idle.
+// pollOnce scrapes every tab that currently has a live agent process (per
+// tabAgentKinds — herdr-style foreground-process detection, not a stored flag)
+// and updates the cache. It returns whether anything changed — a status moved,
+// an agent appeared, or an agent exited — so the caller can push an SSE frame.
+// A tab whose agent has exited is dropped from the cache (it's a plain shell
+// again and stops counting as an agent).
 func (s *statusStore) pollOnce() bool {
-	tabs, err := liveAgentTabs()
-	if err != nil {
-		return false
-	}
+	kinds := tabAgentKinds()
 	now := time.Now()
 	changed := false
-	live := map[string]bool{}
-	for _, tab := range tabs {
-		live[tab.ID] = true
-		session := tabSession(tab.ID)
-		var raw AgentStatus
-		if !tmuxHasSession(session) || !isAgentCommand(tmuxForegroundCmd(session)) {
-			// Session gone or the agent process exited → treat as idle.
-			raw = StatusIdle
-		} else {
-			screen, err := tmuxCapture(session)
-			if err != nil {
-				continue
-			}
-			s.mu.RLock()
-			e := s.m[tab.ID]
-			var prev AgentStatus
-			var lw time.Time
-			if e != nil {
-				prev, lw = e.status, e.lastWorking
-			}
-			s.mu.RUnlock()
-			raw = detectAgentStatus(agentKind(tab.AgentID), screen, prev, &lw, now)
-			s.mu.Lock()
-			if s.m[tab.ID] == nil {
-				s.m[tab.ID] = &statusEntry{}
-			}
-			s.m[tab.ID].lastWorking = lw
-			s.mu.Unlock()
+	for tabID, kind := range kinds {
+		screen, err := tmuxCapture(tabSession(tabID))
+		if err != nil {
+			continue
 		}
+		s.mu.RLock()
+		e := s.m[tabID]
+		var prev AgentStatus
+		var lw time.Time
+		if e != nil {
+			prev, lw = e.status, e.lastWorking
+		}
+		s.mu.RUnlock()
+		raw := detectAgentStatus(kind, screen, prev, &lw, now)
 		s.mu.Lock()
-		if s.m[tab.ID] == nil {
-			s.m[tab.ID] = &statusEntry{}
+		if s.m[tabID] == nil {
+			s.m[tabID] = &statusEntry{}
+			changed = true // a new agent appeared
 		}
-		if s.m[tab.ID].status != raw {
-			s.m[tab.ID].status = raw
+		s.m[tabID].lastWorking = lw
+		if s.m[tabID].status != raw {
+			s.m[tabID].status = raw
 			changed = true
 		}
 		s.mu.Unlock()
 	}
-	// Drop cache entries for tabs that are no longer live.
+	// Drop cache entries for tabs that no longer have a live agent.
 	s.mu.Lock()
 	for id := range s.m {
-		if !live[id] {
+		if _, ok := kinds[id]; !ok {
 			delete(s.m, id)
 			changed = true
 		}

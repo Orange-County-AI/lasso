@@ -14,7 +14,6 @@ import {
   type AgentRow,
   api,
   type TreeRepo,
-  type TreeTab,
   type TreeWorkspace,
 } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
@@ -63,9 +62,6 @@ export function Sidebar({
     if (panesRev >= 0) refreshTree()
   }, [panesRev])
 
-  const liveStatus = (tab: TreeTab): string =>
-    agentStatuses[tab.id] ?? tab.status ?? "unknown"
-
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -76,7 +72,6 @@ export function Sidebar({
             ws={ws}
             selectedTabId={selectedTabId}
             onSelectTab={onSelectTab}
-            liveStatus={liveStatus}
             depth={1}
           />
         ))}
@@ -86,7 +81,6 @@ export function Sidebar({
             repo={repo}
             selectedTabId={selectedTabId}
             onSelectTab={onSelectTab}
-            liveStatus={liveStatus}
           />
         ))}
       </div>
@@ -122,12 +116,10 @@ function RepoNode({
   repo,
   selectedTabId,
   onSelectTab,
-  liveStatus,
 }: {
   repo: TreeRepo
   selectedTabId: string | null
   onSelectTab: (tabId: string) => void
-  liveStatus: (tab: TreeTab) => string
 }) {
   const [open, setOpen] = React.useState(true)
   const rename = async () => {
@@ -207,7 +199,6 @@ function RepoNode({
             ws={ws}
             selectedTabId={selectedTabId}
             onSelectTab={onSelectTab}
-            liveStatus={liveStatus}
             depth={2}
           />
         ))}
@@ -220,20 +211,36 @@ function RepoNode({
   )
 }
 
+// A workspace is a single clickable leaf in the spaces tree (herdr shows
+// workspaces/worktrees here, never individual tabs — tabs live in the TabStrip
+// above the terminal). Its dot shows the workspace's aggregate live-agent status
+// (computed client-side off the SSE status map so it updates without a refetch),
+// or a terminal glyph when no agent is running.
 function WorkspaceNode({
   ws,
   selectedTabId,
   onSelectTab,
-  liveStatus,
   depth,
 }: {
   ws: TreeWorkspace
   selectedTabId: string | null
   onSelectTab: (tabId: string) => void
-  liveStatus: (tab: TreeTab) => string
   depth: number
 }) {
-  const pad = { paddingLeft: `${depth * 12}px` }
+  const { agentStatuses } = useApp()
+  const tabs = ws.tabs ?? []
+  const selected = tabs.some((t) => t.id === selectedTabId)
+  // Open the agent tab if there is one, else the first tab.
+  const primary = tabs.find((t) => agentStatuses[t.id]) ?? tabs[0]
+  // Live workspace status: merge the SSE status of any of its tabs that are
+  // running an agent (blocked > working > idle), falling back to the server's
+  // computed value from the last tree fetch.
+  let status: string | undefined
+  for (const t of tabs) {
+    status = mergeStatus(status, agentStatuses[t.id])
+  }
+  status = status ?? ws.agent_status
+
   const renameWs = async () => {
     const title = window.prompt("Rename workspace:", ws.title)
     if (title == null || !title.trim()) return
@@ -243,124 +250,67 @@ function WorkspaceNode({
     refreshTree()
   }
   return (
-    <div>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div
-            style={pad}
-            className="flex items-center gap-1 py-0.5 pr-2 text-muted-foreground"
-          >
-            <span className="truncate font-medium text-foreground">
-              {ws.title}
-            </span>
-            {ws.branch && (
-              <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px]">
-                <GitBranch className="size-3" />
-                {ws.branch}
-              </span>
-            )}
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem
-            onSelect={async () => {
-              await api.newTab(ws.id).catch((e) => toast.error(String(e)))
-              refreshTree()
-            }}
-          >
-            New tab
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={renameWs}>Rename…</ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            variant="destructive"
-            onSelect={async () => {
-              await api
-                .closeWorkspace(ws.id)
-                .catch((e) => toast.error(String(e)))
-              refreshTree()
-            }}
-          >
-            Close workspace
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-      {(ws.tabs ?? []).map((tab) => (
-        <TabNode
-          key={tab.id}
-          tab={tab}
-          depth={depth + 1}
-          selected={tab.id === selectedTabId}
-          status={liveStatus(tab)}
-          onSelect={() => onSelectTab(tab.id)}
-        />
-      ))}
-    </div>
-  )
-}
-
-function TabNode({
-  tab,
-  depth,
-  selected,
-  status,
-  onSelect,
-}: {
-  tab: TreeTab
-  depth: number
-  selected: boolean
-  status: string
-  onSelect: () => void
-}) {
-  const rename = async () => {
-    const title = window.prompt("Rename:", tab.title)
-    if (title == null || !title.trim()) return
-    await api
-      .renameTab(tab.id, title.trim())
-      .catch((e) => toast.error(String(e)))
-    refreshTree()
-  }
-  return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
           type="button"
-          onClick={onSelect}
+          onClick={() => primary && onSelectTab(primary.id)}
           style={{ paddingLeft: `${depth * 12}px` }}
           className={cn(
-            "flex w-full items-center gap-1.5 py-0.5 pr-2 text-left hover:bg-accent/40",
+            "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
             selected && "bg-accent/60"
           )}
         >
-          {tab.kind === "agent" ? (
+          {status ? (
             <span
               className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
             />
           ) : (
             <Terminal className="size-3 shrink-0 text-muted-foreground" />
           )}
-          <span className="truncate">{tab.title || tab.kind}</span>
-          {tab.agent && (
-            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-              {tab.agent}
+          <span className="truncate">{ws.title}</span>
+          {ws.branch && (
+            <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
+              <GitBranch className="size-3" />
+              {ws.branch}
             </span>
           )}
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={rename}>Rename…</ContextMenuItem>
+        <ContextMenuItem
+          onSelect={async () => {
+            const t = await api.newTab(ws.id).catch((e) => {
+              toast.error(String(e))
+              return null
+            })
+            refreshTree()
+            if (t) onSelectTab(t.id)
+          }}
+        >
+          New tab
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={renameWs}>Rename…</ContextMenuItem>
+        <ContextMenuSeparator />
         <ContextMenuItem
           variant="destructive"
           onSelect={async () => {
-            await api.closeTab(tab.id).catch((e) => toast.error(String(e)))
+            await api.closeWorkspace(ws.id).catch((e) => toast.error(String(e)))
             refreshTree()
           }}
         >
-          Close
+          Close workspace
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )
+}
+
+// mergeStatus keeps the most attention-worthy of two agent statuses (blocked >
+// working > idle); either may be undefined.
+function mergeStatus(a: string | undefined, b: string | undefined) {
+  const rank: Record<string, number> = { blocked: 3, working: 2, idle: 1 }
+  return (rank[b ?? ""] ?? 0) > (rank[a ?? ""] ?? 0) ? b : a
 }
 
 function AgentRowItem({

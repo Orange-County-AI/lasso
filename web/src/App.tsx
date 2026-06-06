@@ -78,8 +78,11 @@ function findWorkspace(
   tabId: string | null
 ): TreeWorkspace | null {
   if (!tree || !tabId) return null
-  const all = [...tree.scratch, ...tree.repos.flatMap((r) => r.workspaces)]
-  return all.find((ws) => ws.tabs.some((t) => t.id === tabId)) ?? null
+  const all = [
+    ...(tree.scratch ?? []),
+    ...(tree.repos ?? []).flatMap((r) => r.workspaces ?? []),
+  ]
+  return all.find((ws) => (ws.tabs ?? []).some((t) => t.id === tabId)) ?? null
 }
 
 function Shell() {
@@ -110,12 +113,14 @@ function Shell() {
   React.useEffect(() => {
     if (!tree.data) return
     const all = [
-      ...tree.data.scratch,
-      ...tree.data.repos.flatMap((r) => r.workspaces),
+      ...(tree.data.scratch ?? []),
+      ...(tree.data.repos ?? []).flatMap((r) => r.workspaces ?? []),
     ]
-    const exists = all.some((ws) => ws.tabs.some((t) => t.id === selectedTabId))
+    const exists = all.some((ws) =>
+      (ws.tabs ?? []).some((t) => t.id === selectedTabId)
+    )
     if (selectedTabId && exists) return
-    const first = all.flatMap((ws) => ws.tabs)[0]
+    const first = all.flatMap((ws) => ws.tabs ?? [])[0]
     setSelectedTabId(first?.id ?? null)
   }, [tree.data, selectedTabId])
 

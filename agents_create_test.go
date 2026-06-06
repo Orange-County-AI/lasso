@@ -86,9 +86,9 @@ func TestCreateScratchAgentPersists(t *testing.T) {
 	if ws, err := getWorkspace(rec.WorkspaceID); err != nil || ws.Kind != "scratch" {
 		t.Fatalf("workspace = %+v err=%v", ws, err)
 	}
-	tabs, _ := liveAgentTabs()
-	if len(tabs) != 1 || tabs[0].ID != rec.TabID || tabs[0].Kind != "agent" {
-		t.Fatalf("agent tab not persisted: %+v", tabs)
+	tab, err := getTab(rec.TabID)
+	if err != nil || tab.Kind != "agent" || tab.WorkspaceID != rec.WorkspaceID {
+		t.Fatalf("agent tab not persisted: %+v err=%v", tab, err)
 	}
 }
 

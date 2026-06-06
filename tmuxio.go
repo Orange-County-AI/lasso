@@ -149,15 +149,6 @@ func tmuxCurrentPath(session string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// tmuxForegroundCmd returns the command name of the session's foreground process
-// (e.g. "claude", "codex", "bash"). Replaces herdr's pane.agent field: when an
-// agent exits the foreground falls back to a shell, which is how we detect the
-// agent is gone.
-func tmuxForegroundCmd(session string) string {
-	out, _ := tmuxOut("display-message", "-p", "-t", session, "#{pane_current_command}")
-	return strings.TrimSpace(out)
-}
-
 // tmuxSendLine types one command line into a cooked-mode shell (text, then a
 // SEPARATE Enter keypress) — the equivalent of herdr's `pane run`. The literal
 // flag (-l) and "--" stop tmux from interpreting text that looks like a key name
@@ -325,19 +316,10 @@ func tmuxKillAgent(session string) bool {
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
 			time.Sleep(200 * time.Millisecond)
-			if !isAgentCommand(tmuxForegroundCmd(session)) {
+			if sessionAgentKind(session) == "" {
 				return true
 			}
 		}
 	}
-	return !isAgentCommand(tmuxForegroundCmd(session))
-}
-
-// isAgentCommand reports whether a foreground command name is one of our agents.
-func isAgentCommand(cmd string) bool {
-	switch strings.ToLower(strings.TrimPrefix(cmd, ".")) {
-	case "claude", "claude-code", "codex":
-		return true
-	}
-	return false
+	return sessionAgentKind(session) == ""
 }
