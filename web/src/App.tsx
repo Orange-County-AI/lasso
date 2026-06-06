@@ -108,26 +108,45 @@ function Shell() {
     [tree.data, selectedTabId]
   )
 
-  // Default the selection to the first available tab once the tree loads, and
-  // drop a stale selection (its tab was closed) onto another tab.
+  // Tabs we've ever seen in the tree. Lets us tell a tab that's *gone* (was
+  // present, now closed → move selection off it) from one that's merely *not
+  // arrived yet* (a freshly-created agent the tree hasn't refetched → keep the
+  // selection so create-focus isn't clobbered by a stale refetch).
+  const seenTabs = React.useRef<Set<string>>(new Set())
+
+  // Default the selection to the first tab once the tree loads, and move off a
+  // selection whose tab was closed — but never off one still loading in.
   React.useEffect(() => {
     if (!tree.data) return
     const all = [
       ...(tree.data.scratch ?? []),
       ...(tree.data.repos ?? []).flatMap((r) => r.workspaces ?? []),
     ]
-    const exists = all.some((ws) =>
-      (ws.tabs ?? []).some((t) => t.id === selectedTabId)
-    )
-    if (selectedTabId && exists) return
-    const first = all.flatMap((ws) => ws.tabs ?? [])[0]
-    setSelectedTabId(first?.id ?? null)
+    const tabs = all.flatMap((ws) => ws.tabs ?? [])
+    for (const t of tabs) seenTabs.current.add(t.id)
+    if (selectedTabId) {
+      const exists = tabs.some((t) => t.id === selectedTabId)
+      // Present, or selected-but-not-yet-in-tree (pending create) → leave it.
+      if (exists || !seenTabs.current.has(selectedTabId)) return
+    }
+    setSelectedTabId(tabs[0]?.id ?? null)
   }, [tree.data, selectedTabId])
 
   const selectTab = React.useCallback((tabId: string) => {
     setSelectedTabId(tabId)
     lsSet("lasso-selected-tab", tabId)
   }, [])
+
+  // The UI agent creator focuses its new agent by asking us to select its tab.
+  // (Agents created via MCP never dispatch this, so they don't steal focus.)
+  React.useEffect(() => {
+    const onSelect = (e: Event) => {
+      const tabId = (e as CustomEvent).detail as string
+      if (tabId) selectTab(tabId)
+    }
+    window.addEventListener("lasso:select-tab", onSelect)
+    return () => window.removeEventListener("lasso:select-tab", onSelect)
+  }, [selectTab])
 
   // Feed the selected workspace's cwd to the Files/Diff panel (which follows
   // useApp().activeCwd).

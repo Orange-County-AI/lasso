@@ -277,6 +277,7 @@ export interface AgentRecord {
   plan_mode: boolean
   work_dir: string
   workspace_id?: string
+  tab_id?: string
   root_pane?: string
   created_at: string
 }

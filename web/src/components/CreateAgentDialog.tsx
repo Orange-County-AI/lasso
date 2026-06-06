@@ -17,7 +17,6 @@ import { Input } from "@/components/ui/input"
 import { api, type CreateAgentPayload, type HostInfo } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
-import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
@@ -390,8 +389,13 @@ export function CreateAgentDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      if (rec.workspace_id) {
-        api.focus(rec.workspace_id).catch(() => {})
+      // Focus the new agent in the UI — select its tab (and show its terminal).
+      // Only the UI creator does this; agents created via MCP must NOT steal the
+      // user's focus, and they don't (MCP never dispatches this).
+      if (rec.tab_id) {
+        window.dispatchEvent(
+          new CustomEvent("lasso:select-tab", { detail: rec.tab_id })
+        )
       }
       createdRef.current = true
       setOpen(false)
@@ -465,13 +469,13 @@ export function CreateAgentDialog({
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
         onCloseAutoFocus={(e) => {
-          // On a create-driven close, send focus to the herdr terminal so the
-          // user can type into the new agent immediately. Otherwise (cancel /
-          // Esc) let Radix restore focus to the trigger as usual.
+          // On a create-driven close, don't let Radix restore focus to the
+          // trigger — the newly-selected tab's terminal takes focus on mount, so
+          // the user can type into the agent immediately. Cancel/Esc keep the
+          // default (focus returns to the trigger).
           if (createdRef.current) {
             createdRef.current = false
             e.preventDefault()
-            focusHerdrTerminal()
           }
         }}
       >

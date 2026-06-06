@@ -2,10 +2,29 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+// liveSeen records which tab sessions we've observed alive in THIS lasso process.
+// It's how the exit watcher distinguishes a shell the user *exited* (was alive,
+// now gone → close the tab) from a session that's gone because the machine
+// rebooted (never alive this process → restore it as a fresh shell on attach).
+var liveSeen = struct {
+	mu sync.Mutex
+	m  map[string]bool
+}{m: map[string]bool{}}
+
+func markSeen(tabID string) { liveSeen.mu.Lock(); liveSeen.m[tabID] = true; liveSeen.mu.Unlock() }
+func unsee(tabID string)    { liveSeen.mu.Lock(); delete(liveSeen.m, tabID); liveSeen.mu.Unlock() }
+func wasSeen(tabID string) bool {
+	liveSeen.mu.Lock()
+	defer liveSeen.mu.Unlock()
+	return liveSeen.m[tabID]
+}
 
 // Startup reconciliation between the saved workspace/tab tree (SQLite) and the
 // live tmux sessions on lasso's server. Across a lasso restart/upgrade the tmux
@@ -51,11 +70,21 @@ func reconcileTabs() {
 func ensureTabSession(tabID string) (string, error) {
 	session := tabSession(tabID)
 	if tmuxHasSession(session) {
+		markSeen(tabID)
 		return session, nil
+	}
+	// Session gone. If we'd seen it alive this process, the user exited the shell
+	// — don't resurrect it (the exit watcher is closing the tab); a stale
+	// re-attach here is exactly the "flash a fresh shell" we want to avoid.
+	if wasSeen(tabID) {
+		return "", fmt.Errorf("tab %s exited", tabID)
 	}
 	tab, err := getTab(tabID)
 	if err != nil {
 		return "", err
+	}
+	if !tab.ClosedAt.IsZero() {
+		return "", fmt.Errorf("tab %s is closed", tabID)
 	}
 	cwd := tab.Cwd
 	if cwd == "" {
@@ -67,7 +96,59 @@ func ensureTabSession(tabID string) (string, error) {
 	if err := tmuxNewSession(session, cwd, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
 		return "", err
 	}
+	markSeen(tabID)
 	return session, nil
+}
+
+// tabExitWatcher closes a tab when its shell exits — the way the user closes a
+// workspace from the terminal (typing `exit` / Ctrl-D). A tab's tmux session,
+// once seen alive this process, vanishing means the shell exited; we close the
+// tab, and if it was the workspace's last live tab, the workspace too. Sessions
+// gone because of a reboot were never seen alive, so they're left for
+// ensureTabSession to restore instead. (Manual UI close routes through
+// closeOneTab, which unsees the tab so this watcher ignores it.)
+func tabExitWatcher(ctx context.Context, h *hub) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			live := map[string]bool{}
+			for _, s := range tmuxListSessions() {
+				live[s] = true
+			}
+			tabs, err := allLiveTabs()
+			if err != nil {
+				continue
+			}
+			changed := false
+			for _, tab := range tabs {
+				if live[tabSession(tab.ID)] {
+					markSeen(tab.ID)
+					continue
+				}
+				if wasSeen(tab.ID) {
+					unsee(tab.ID)
+					closeExitedTab(tab)
+					changed = true
+				}
+			}
+			if changed && h != nil {
+				h.kick()
+			}
+		}
+	}
+}
+
+// closeExitedTab tears down a tab whose shell exited, plus its workspace if that
+// was the last live tab in it.
+func closeExitedTab(tab Tab) {
+	closeOneTab(tab.ID)
+	if rest, _ := listTabs(tab.WorkspaceID); len(rest) == 0 {
+		_ = closeWorkspace(tab.WorkspaceID)
+	}
 }
 
 // cwdSaver periodically persists each live tab's current working directory, so a

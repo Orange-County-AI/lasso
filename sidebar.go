@@ -375,8 +375,11 @@ func serveTabClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// closeOneTab tears down a single tab's runtime + persistence.
+// closeOneTab tears down a single tab's runtime + persistence. Unsees the tab so
+// the exit watcher doesn't treat this deliberate close as a shell-exit (which
+// would also close the workspace).
 func closeOneTab(tabID string) {
+	unsee(tabID)
 	releaseTabTerm(tabID)
 	_ = tmuxKillSession(tabSession(tabID))
 	agentStatuses.forget(tabID)

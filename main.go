@@ -141,6 +141,7 @@ func runServer() {
 	_ = tmuxEnsureServer()
 	reconcileTabs()
 	go cwdSaver(ctx)
+	go tabExitWatcher(ctx, hub) // exiting a shell closes its tab (and empty workspace)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
