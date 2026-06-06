@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -149,6 +152,59 @@ func closeExitedTab(tab Tab) {
 	if rest, _ := listTabs(tab.WorkspaceID); len(rest) == 0 {
 		_ = closeWorkspace(tab.WorkspaceID)
 	}
+}
+
+// sessionClosedFIFO is where tmux's session-closed hook writes each ended
+// session's name, so we close its tab the INSTANT the shell exits instead of up
+// to a poll-tick later — that lag is what let the ttyd client flash
+// "can't find session / Reconnecting…" against the dead session. tabExitWatcher
+// stays as a backstop if the hook/FIFO is unavailable.
+func sessionClosedFIFO() string { return filepath.Join(lassoDir(), "sessions.closed") }
+
+// startSessionCloseListener creates the FIFO and drains it, closing each lasso
+// tab whose session just ended. Best-effort: on any setup error we silently rely
+// on tabExitWatcher.
+func startSessionCloseListener(ctx context.Context, h *hub) {
+	path := sessionClosedFIFO()
+	_ = os.Remove(path)
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		return
+	}
+	// O_RDWR keeps a writer end open so reads block (rather than hit EOF) between
+	// hook writes, and the reader survives idle periods.
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		_ = os.Remove(path)
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		_ = f.Close()
+		_ = os.Remove(path)
+	}()
+	go func() {
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			name := strings.TrimSpace(sc.Text())
+			if !strings.HasPrefix(name, "lasso_") {
+				continue
+			}
+			tabID := strings.TrimPrefix(name, "lasso_")
+			// Only react to a session that was alive (a user exit). Deliberate
+			// closes unsee the tab first (closeOneTab), so they're skipped here —
+			// same rule as the watcher.
+			if !wasSeen(tabID) {
+				continue
+			}
+			unsee(tabID)
+			if tab, err := getTab(tabID); err == nil {
+				closeExitedTab(tab)
+			}
+			if h != nil {
+				h.kick()
+			}
+		}
+	}()
 }
 
 // cwdSaver periodically persists each live tab's current working directory, so a

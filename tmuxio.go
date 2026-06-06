@@ -79,7 +79,12 @@ func tmuxEnsureServer() error {
 		"set", "-g", "status", "off", ";",
 		"set", "-g", "history-limit", "50000", ";",
 		"set", "-g", "default-terminal", "tmux-256color", ";",
-		"setw", "-g", "aggressive-resize", "on",
+		"setw", "-g", "aggressive-resize", "on", ";",
+		// Notify lasso the instant a session ends (the user exited the shell) so
+		// its tab closes immediately, before the ttyd client flashes a reconnect
+		// against the dead session. See startSessionCloseListener.
+		"set-hook", "-g", "session-closed",
+		`run-shell "echo #{hook_session_name} >> `+sessionClosedFIFO()+`"`,
 	)
 }
 

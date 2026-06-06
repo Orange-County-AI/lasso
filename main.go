@@ -138,10 +138,11 @@ func runServer() {
 	// session detaches (destroy-unattached off, so background sessions survive),
 	// reconcile the saved tab tree against live sessions, and keep tab cwds fresh
 	// for post-reboot restoration.
+	startSessionCloseListener(ctx, hub) // FIFO must exist before the hook fires
 	_ = tmuxEnsureServer()
 	reconcileTabs()
 	go cwdSaver(ctx)
-	go tabExitWatcher(ctx, hub) // exiting a shell closes its tab (and empty workspace)
+	go tabExitWatcher(ctx, hub) // backstop for the FIFO listener above
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {

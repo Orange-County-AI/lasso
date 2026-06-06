@@ -1,7 +1,7 @@
 import * as React from "react"
 
 import { api } from "@/lib/api"
-import { bootTermFrame, refitTerminal } from "@/lib/terminal"
+import { bootTermFrame, refitTerminal, whenTerminalReady } from "@/lib/terminal"
 
 // One terminal for a tab: a ttyd attached to the tab's tmux session
 // (`/api/tab/term` → /tab-term/<token>/). Only the selected tab is mounted; the
@@ -19,6 +19,10 @@ const pendingRelease = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function TabTerminal({ tabId }: { tabId: string }) {
   const [base, setBase] = React.useState<string | null>(null)
+  // Whether the terminal has painted real content yet. A fresh shell/agent boots
+  // (rc sourcing, the agent's TUI) for a beat after attach; we mask that with a
+  // loading overlay so the user never stares at a blank pane.
+  const [ready, setReady] = React.useState(false)
   const id = `tabterm-${tabId}`
 
   // Attach on mount; release (deferred) on unmount — detaches the viewer, the
@@ -65,20 +69,30 @@ export function TabTerminal({ tabId }: { tabId: string }) {
     return () => clearInterval(t)
   }, [tabId])
 
-  // Wire xterm once the iframe element exists, and refit when its src lands.
+  // Wire xterm once the iframe element exists, refit when its src lands, and lift
+  // the loading overlay once the terminal has actually painted.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-wire when base changes (new iframe)
   React.useEffect(() => {
     if (!base) return
+    setReady(false)
     const cleanup = bootTermFrame(id, false)
     refitTerminal(id)
-    return cleanup
+    const cancel = whenTerminalReady(id, () => setReady(true))
+    return () => {
+      cancel()
+      cleanup()
+    }
   }, [base, id])
 
-  if (!base)
-    return (
-      <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-        attaching…
-      </div>
-    )
-  return <iframe id={id} src={base} title="terminal" className="frame" />
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {base && <iframe id={id} src={base} title="terminal" className="frame" />}
+      {(!base || !ready) && (
+        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-[var(--h-bg)] text-muted-foreground text-sm">
+          <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          {base ? "starting…" : "attaching…"}
+        </div>
+      )}
+    </div>
+  )
 }
