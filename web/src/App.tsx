@@ -338,13 +338,9 @@ function Shell() {
               <CreateAgentDialog variant="header" />
             </div>
             <div className="relative flex min-h-0 flex-1 flex-col">
-              {selectedTabId ? (
-                <TabTerminal key={selectedTabId} tabId={selectedTabId} />
-              ) : (
-                <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                  No tab selected. Create an agent, or pick a workspace.
-                </div>
-              )}
+              {/* One persistent viewport, mounted once and pointed at the
+                  selected tab — never remounted per tab (see TabTerminal). */}
+              <TabTerminal tabId={selectedTabId ?? null} />
             </div>
           </div>
         </ResizablePanel>

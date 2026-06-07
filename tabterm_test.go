@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestTmuxAttachArgv(t *testing.T) {
@@ -19,10 +18,10 @@ func TestTmuxAttachArgv(t *testing.T) {
 	}
 }
 
-// TestTabTermSpawns spawns a real ttyd attached to a tab's tmux session and
-// checks the proxy base + that releasing detaches the viewer while the session
-// survives (the core persistence guarantee).
-func TestTabTermSpawns(t *testing.T) {
+// TestViewportSpawns spawns the real persistent viewport ttyd (attached to the
+// per-instance park session) and checks the proxy base is stable across calls,
+// and that pointing it at a tab lazily creates that tab's session.
+func TestViewportSpawns(t *testing.T) {
 	requireTmux(t)
 	if _, err := exec.LookPath("ttyd"); err != nil {
 		t.Skip("ttyd not installed")
@@ -38,31 +37,36 @@ func TestTabTermSpawns(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	srvCtx = ctx
-	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		cancel()
+		_ = tmuxKillSession(tmuxParkSession())
+		viewport.token, viewport.base, viewport.proxy = "", "", nil
+	})
 
-	dir := t.TempDir()
-	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "x", WorkDir: dir, Kind: "scratch"})
-	_ = insertTab(Tab{ID: "tt1", WorkspaceID: "w1", Cwd: dir, Kind: "shell"})
-
-	base, err := ensureTabTerm("tt1")
+	base, err := ensureViewport()
 	if err != nil {
-		t.Fatalf("ensureTabTerm: %v", err)
+		t.Fatalf("ensureViewport: %v", err)
 	}
 	if !strings.HasPrefix(base, "/tab-term/") {
 		t.Fatalf("base = %q, want /tab-term/ prefix", base)
 	}
-	if !tmuxHasSession(tabSession("tt1")) {
-		t.Fatal("tmux session should exist after ensureTabTerm")
+	if !tmuxHasSession(tmuxParkSession()) {
+		t.Fatal("park session should exist after ensureViewport")
 	}
-	// A second call reuses the same entry (keepalive), same base.
-	if b2, _ := ensureTabTerm("tt1"); b2 != base {
-		t.Fatalf("second ensureTabTerm = %q, want %q", b2, base)
+	// Idempotent: the base is stable (one viewport, no per-tab churn).
+	if b2, _ := ensureViewport(); b2 != base {
+		t.Fatalf("second ensureViewport = %q, want %q", b2, base)
 	}
 
-	releaseTabTerm("tt1")
-	time.Sleep(200 * time.Millisecond)
-	// Releasing only detaches the viewer; the tmux session must still be alive.
-	if !tmuxHasSession(tabSession("tt1")) {
-		t.Fatal("tmux session should survive a viewer release")
+	// Pointing at a tab lazily creates its session (the viewport then survives it).
+	dir := t.TempDir()
+	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "x", WorkDir: dir, Kind: "scratch"})
+	_ = insertTab(Tab{ID: "tt1", WorkspaceID: "w1", Cwd: dir, Kind: "shell"})
+	session, created, err := ensureTabSession("tt1")
+	if err != nil || !created {
+		t.Fatalf("ensureTabSession = %q,%v,%v", session, created, err)
+	}
+	if !tmuxHasSession(session) {
+		t.Fatal("tab session should exist after ensureTabSession")
 	}
 }

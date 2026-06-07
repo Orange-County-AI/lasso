@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,32 +63,55 @@ func reconcileTabs() {
 	for _, s := range tmuxListSessions() {
 		if strings.HasPrefix(s, "lasso_") && !want[s] {
 			_ = tmuxKillSession(s)
+			continue
+		}
+		// Reap a park session left behind by a crashed lasso instance (named
+		// lassopark_<pid>), but never another LIVE instance's park — only kill it
+		// if its pid is gone. Our own park is kept (we're alive).
+		if pid, ok := strings.CutPrefix(s, "lassopark_"); ok {
+			if n, err := strconv.Atoi(pid); err == nil && !processAlive(n) {
+				_ = tmuxKillSession(s)
+			}
 		}
 	}
+}
+
+// processAlive reports whether a pid is a live process (signal 0 probe).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // ensureTabSession returns a tab's tmux session, creating a fresh shell in the
 // tab's saved cwd if the session isn't live (after a reboot the tmux server is
 // gone). Agents are NOT relaunched — a recreated tab is a bare shell. Called by
-// the per-tab ttyd attach path so sessions come back lazily on first view.
-func ensureTabSession(tabID string) (string, error) {
+// the viewport attach path so sessions come back lazily on first view. The
+// boolean reports whether this call CREATED the session (a brand-new shell that
+// needs its prompt primed) versus reusing a live one.
+func ensureTabSession(tabID string) (string, bool, error) {
 	session := tabSession(tabID)
 	if tmuxHasSession(session) {
 		markSeen(tabID)
-		return session, nil
+		return session, false, nil
 	}
 	// Session gone. If we'd seen it alive this process, the user exited the shell
 	// — don't resurrect it (the exit watcher is closing the tab); a stale
 	// re-attach here is exactly the "flash a fresh shell" we want to avoid.
 	if wasSeen(tabID) {
-		return "", fmt.Errorf("tab %s exited", tabID)
+		return "", false, fmt.Errorf("tab %s exited", tabID)
 	}
 	tab, err := getTab(tabID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !tab.ClosedAt.IsZero() {
-		return "", fmt.Errorf("tab %s is closed", tabID)
+		return "", false, fmt.Errorf("tab %s is closed", tabID)
 	}
 	cwd := tab.Cwd
 	if cwd == "" {
@@ -97,10 +121,10 @@ func ensureTabSession(tabID string) (string, error) {
 		cwd, _ = os.UserHomeDir()
 	}
 	if err := tmuxNewSession(session, cwd, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
-		return "", err
+		return "", false, err
 	}
 	markSeen(tabID)
-	return session, nil
+	return session, true, nil
 }
 
 // tabExitWatcher closes a tab when its shell exits — the way the user closes a

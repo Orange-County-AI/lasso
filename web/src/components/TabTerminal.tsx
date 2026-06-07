@@ -3,64 +3,57 @@ import * as React from "react"
 import { api } from "@/lib/api"
 import { bootTermFrame, refitTerminal, whenTerminalReady } from "@/lib/terminal"
 
-// One terminal for a tab: a ttyd attached to the tab's tmux session
-// (`/api/tab/term` → /tab-term/<token>/). Only the selected tab is mounted; the
-// tmux session keeps running detached when we leave (destroy-unattached off), so
-// switching tabs is cheap and never loses the agent.
+// The viewport: a SINGLE persistent terminal iframe (one ttyd) that we point at
+// whichever tab is selected by re-POSTing /api/tab/term — the backend uses tmux
+// `switch-client` to repaint the already-warm client at the new session. The
+// iframe is mounted once and never recreated, so the slow xterm⇄ttyd attach
+// handshake is paid a single time (at app load, on the park session); switching
+// tabs after that is instant. This replaced the per-tab mount/remount that paid
+// the handshake on every switch.
 const KEEPALIVE_MS = 18000
 
-// Release is deferred so React StrictMode's dev double-mount (mount → unmount →
-// remount, same tab) doesn't kill the ttyd the remount reuses, which would
-// 404 the iframe. A real tab switch (different tab unmounts and doesn't come
-// back) still releases after the short grace window; remounting the same tab
-// cancels its pending release.
-const RELEASE_GRACE_MS = 400
-const pendingRelease = new Map<string, ReturnType<typeof setTimeout>>()
-
-export function TabTerminal({ tabId }: { tabId: string }) {
+export function TabTerminal({ tabId }: { tabId: string | null }) {
   const [base, setBase] = React.useState<string | null>(null)
-  // Whether the terminal has painted real content yet. A fresh shell/agent boots
-  // (rc sourcing, the agent's TUI) for a beat after attach; we mask that with a
-  // loading overlay so the user never stares at a blank pane.
+  // Whether the viewport's xterm has painted at least once (handshake done). It
+  // stays true across tab switches — only the very first warm-up shows a spinner.
   const [ready, setReady] = React.useState(false)
-  const id = `tabterm-${tabId}`
+  const id = "tabterm-viewport"
 
-  // Attach on mount; release (deferred) on unmount — detaches the viewer, the
-  // tmux session lives on.
+  // Warm the viewport once on mount (POST with no tab → attach to park). This
+  // overlaps the attach handshake with app load so the first selected tab is
+  // already warm.
   React.useEffect(() => {
     let cancelled = false
-    // Re-mounting this tab cancels any release the previous unmount scheduled.
-    const pending = pendingRelease.get(tabId)
-    if (pending) {
-      clearTimeout(pending)
-      pendingRelease.delete(tabId)
-    }
-    setBase(null)
     api
-      .tabTerm(tabId)
+      .tabTerm("")
       .then((r) => {
         if (!cancelled) setBase(r.base)
       })
       .catch(() => {})
     return () => {
       cancelled = true
-      const t = setTimeout(() => {
-        pendingRelease.delete(tabId)
-        api.tabTermRelease(tabId)
-      }, RELEASE_GRACE_MS)
-      pendingRelease.set(tabId, t)
     }
-  }, [tabId])
+  }, [])
 
-  // Keepalive; re-attach if the pool reaped us while still mounted.
+  // Point the viewport at the selected tab whenever it changes (instant switch —
+  // no iframe churn). Refit after a beat so the new session sizes to the pane.
+  React.useEffect(() => {
+    if (!base || !tabId) return
+    api.tabTerm(tabId).catch(() => {})
+    const t = setTimeout(() => refitTerminal(id), 60)
+    return () => clearTimeout(t)
+  }, [tabId, base])
+
+  // Keepalive: if the viewport ttyd died (crash), respawn it and pick up the new
+  // base (which remounts the iframe — the only time we pay the handshake again).
   React.useEffect(() => {
     const t = setInterval(() => {
       api
-        .tabTermTouch(tabId)
+        .tabTermTouch()
         .then((r) => {
           if (!r.alive)
             api
-              .tabTerm(tabId)
+              .tabTerm(tabId ?? "")
               .then((x) => setBase(x.base))
               .catch(() => {})
         })
@@ -69,8 +62,8 @@ export function TabTerminal({ tabId }: { tabId: string }) {
     return () => clearInterval(t)
   }, [tabId])
 
-  // Wire xterm once the iframe element exists, refit when its src lands, and lift
-  // the loading overlay once the terminal has actually painted.
+  // Wire xterm once the iframe element exists; lift the loading overlay once it
+  // has actually painted. base only changes on (rare) respawn.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-wire when base changes (new iframe)
   React.useEffect(() => {
     if (!base) return
@@ -86,8 +79,23 @@ export function TabTerminal({ tabId }: { tabId: string }) {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {base && <iframe id={id} src={base} title="terminal" className="frame" />}
-      {(!base || !ready) && (
+      {/* The iframe stays mounted always (warming on park); hidden until a tab is
+          selected so the user never sees the park shell flash. */}
+      {base && (
+        <iframe
+          id={id}
+          src={base}
+          title="terminal"
+          className="frame"
+          style={{ display: tabId ? "block" : "none" }}
+        />
+      )}
+      {!tabId && (
+        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+          No tab selected. Create an agent, or pick a workspace.
+        </div>
+      )}
+      {tabId && (!base || !ready) && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 bg-[var(--h-bg)] text-muted-foreground text-sm">
           <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
           {base ? "starting…" : "attaching…"}

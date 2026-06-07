@@ -471,18 +471,13 @@ export const api = {
   tree: () => getJSON<TreePayload>("/api/tree"),
   agentsList: () => getJSON<{ agents: AgentRow[] }>("/api/agents"),
 
-  // Attach a ttyd to a tab's tmux session; returns the iframe base path.
+  // Point the single persistent viewport ttyd at a tab's tmux session (an empty
+  // tab_id just warms the viewport). Returns the stable iframe base path — the
+  // frontend keeps one iframe on it and re-POSTs to switch tabs.
   tabTerm: (tab_id: string) =>
     postJSON<{ base: string }>("/api/tab/term", { tab_id }),
-  tabTermTouch: (tab_id: string) =>
-    postJSON<{ alive: boolean }>("/api/tab/term-touch", { tab_id }),
-  tabTermRelease: (tab_id: string) =>
-    fetch("/api/tab/term-release", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tab_id }),
-      keepalive: true,
-    }).catch(() => {}),
+  // Whether the viewport ttyd is still alive (respawn + reload base if not).
+  tabTermTouch: () => postJSON<{ alive: boolean }>("/api/tab/term-touch", {}),
 
   newTab: (workspace_id: string, title?: string) =>
     postJSON<TreeTab>("/api/tab/new", { workspace_id, title }),

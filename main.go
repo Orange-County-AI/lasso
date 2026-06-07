@@ -141,6 +141,10 @@ func runServer() {
 	startSessionCloseListener(ctx, hub) // FIFO must exist before the hook fires
 	_ = tmuxEnsureServer()
 	reconcileTabs()
+	// Warm the viewport ttyd now (attached to the park session) so the slow
+	// browser xterm⇄ttyd attach handshake overlaps app load instead of stalling
+	// the first tab the user opens. Best-effort.
+	go func() { _, _ = ensureViewport() }()
 	go cwdSaver(ctx)
 	go tabExitWatcher(ctx, hub) // backstop for the FIFO listener above
 
@@ -197,10 +201,10 @@ func runServer() {
 	mux.HandleFunc("/api/grid/rename", serveGridRename)
 	mux.HandleFunc("/api/grid/close", serveGridClose)
 	mux.HandleFunc("/grid-term/", serveGridTermProxy)
-	// per-tab terminals (tmux attach), replacing the herdr grid terminals above
+	// the viewport: one persistent ttyd (tmux attach) switched between tab
+	// sessions, replacing both the herdr grid terminals and the old per-tab pool.
 	mux.HandleFunc("/api/tab/term", serveTabTerm)
 	mux.HandleFunc("/api/tab/term-touch", serveTabTermTouch)
-	mux.HandleFunc("/api/tab/term-release", serveTabTermRelease)
 	mux.HandleFunc("/tab-term/", serveTabTermProxy)
 	// sidebar: the workspace/tab tree + agent list + their mutations (tmux-era)
 	mux.HandleFunc("/api/tree", serveTree)

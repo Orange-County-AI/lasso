@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -242,11 +243,15 @@ func waitAttached(session string) bool {
 // the shell both (a) has a client attached to answer the terminal queries
 // starship makes while rendering, and (b) processes an input event — readline
 // computes the prompt and sits idle in select() without painting it, so the pane
-// stays blank until the user types (a resize/Ctrl-L don't help, only an actual
-// line-accept does; and with no client attached even that is flaky). So: wait for
-// the client, then send an Enter (an empty command — harmless), retrying only
-// while the pane is still blank, stopping the moment the prompt appears so we
-// never type into a shell already in use.
+// stays blank until the user types.
+//
+// We prime with a single Enter (an empty command — harmless) rather than a
+// resize: a resize only repaints starship's LAST line, leaving an orphan `❯`
+// above the real prompt the Enter then draws in full (the "double prompt"). One
+// line-accept on a still-blank shell draws the FULL multi-line prompt cleanly and
+// alone. We re-check before each Enter and stop the moment the prompt appears, so
+// a shell that's already painted (or that the user has started typing in) is
+// never touched.
 //
 // SHELL-ONLY: never call this on an agent session — the Enter could submit a
 // half-typed agent command.
@@ -255,31 +260,75 @@ func primeShellPromptWhenAttached(session string) {
 		return
 	}
 	deadline := time.Now().Add(12 * time.Second)
-	// Step 1: resize-nudge until the shell paints anything. A bash+starship shell
-	// stalls its first prompt for seconds on the terminal handshake after attach; a
-	// resize (SIGWINCH) interrupts that wait and forces a redraw far sooner than an
-	// Enter alone, which otherwise sits behind the same stall. This repaints only
-	// starship's last line, though.
-	painted := false
 	for time.Now().Before(deadline) {
 		if !tmuxHasSession(session) {
 			return
 		}
 		if out, _ := tmuxCapture(session); strings.TrimSpace(out) != "" {
-			painted = true
-			break
+			return // prompt is up — nothing to prime
 		}
-		nudgeRedraw(session)
-		time.Sleep(250 * time.Millisecond)
+		_ = tmuxSendEnter(session)
+		time.Sleep(300 * time.Millisecond)
 	}
-	if !painted || !tmuxHasSession(session) {
-		return
+}
+
+// --- the persistent viewport: one ttyd, switched between sessions -------------
+//
+// Instead of spawning a ttyd + `tmux attach` per tab (paying the slow browser
+// xterm⇄ttyd attach handshake every time a tab is first viewed), lasso keeps ONE
+// long-lived ttyd whose tmux client we re-point at the selected tab's session
+// with `switch-client`. The browser connects once; thereafter a tab switch is
+// just tmux repainting the already-warm client — instant, no reconnect. See
+// tabterm.go.
+//
+// The client always has somewhere to live: a hidden per-instance "park" session
+// that always exists, so killing a tab's session never detaches (and kills) the
+// viewport — tmux falls the client back to a still-living session instead.
+
+// tmuxParkSession is this lasso process's park session. It's keyed by PID (not a
+// fixed name) so two lasso instances sharing the tmux server (e.g. a dev build
+// and the prod daemon both on ~/.lasso/tmux.sock) get DISTINCT parks: a fresh or
+// reconnected browser client always lands on its OWN instance's park, which is
+// how each instance scopes "its" client(s) for switch-client (see
+// tmuxAdoptableClients). The name avoids the "lasso_" tab prefix so reconcile's
+// orphan sweep never touches it.
+func tmuxParkSession() string { return fmt.Sprintf("lassopark_%d", os.Getpid()) }
+
+// tmuxEnsurePark creates this instance's park session (idempotent). A plain shell
+// in $HOME; it's never shown except for the sub-second flash before the first
+// switch-client, and never enumerated as a tab.
+func tmuxEnsurePark() error {
+	park := tmuxParkSession()
+	if tmuxHasSession(park) {
+		return nil
 	}
-	// Step 2: one Enter (an empty command) so starship redraws its FULL multi-line
-	// prompt — the path/git line plus the prompt char — not just the last line the
-	// resize repainted. Harmless on a shell that's only just appeared and which the
-	// user can't have started typing in yet (it was blank a moment ago).
-	_ = tmuxSendEnter(session)
+	home, _ := os.UserHomeDir()
+	return tmuxNewSession(park, home, nil)
+}
+
+// tmuxClientSessions maps every attached client's tty → the session it's
+// currently viewing. The viewport watcher uses this to (a) discover clients that
+// (re)connected onto our park and (b) tell which of our clients aren't yet on the
+// wanted session — switching only those, so a steady viewport never re-repaints.
+func tmuxClientSessions() map[string]string {
+	out, err := tmuxOut("list-clients", "-F", "#{client_tty}\t#{client_session}")
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		tty, sess, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if ok && tty != "" {
+			m[tty] = sess
+		}
+	}
+	return m
+}
+
+// tmuxSwitchClient points the client at tty to view session, without tearing down
+// its connection — the heart of the warm-viewport model.
+func tmuxSwitchClient(tty, session string) error {
+	return tmux("switch-client", "-c", tty, "-t", session)
 }
 
 // tmuxSendLine types one command line into a cooked-mode shell (text, then a

@@ -64,15 +64,18 @@ func TestEnsureTabSessionRecreates(t *testing.T) {
 	_ = insertTab(Tab{ID: "t1", WorkspaceID: "w1", Cwd: dir, Kind: "shell"})
 
 	// No session exists yet (simulating post-reboot); ensureTabSession creates it.
-	session, err := ensureTabSession("t1")
+	session, created, err := ensureTabSession("t1")
 	if err != nil {
 		t.Fatalf("ensureTabSession: %v", err)
+	}
+	if !created {
+		t.Fatal("first ensure should report created=true")
 	}
 	if !tmuxHasSession(session) {
 		t.Fatal("session should be created on first ensure")
 	}
-	// Idempotent: a second call returns the same live session.
-	if s2, err := ensureTabSession("t1"); err != nil || s2 != session {
-		t.Fatalf("ensureTabSession second call = %q,%v want %q", s2, err, session)
+	// Idempotent: a second call returns the same live session, created=false.
+	if s2, created2, err := ensureTabSession("t1"); err != nil || s2 != session || created2 {
+		t.Fatalf("ensureTabSession second call = %q,%v,%v want %q,false", s2, created2, err, session)
 	}
 }
