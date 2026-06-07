@@ -107,6 +107,21 @@ export function Sidebar({
     }
   }
 
+  // The workspace whose tab is currently open (a scratch workspace or a worktree;
+  // repo main-checkouts aren't bulk-deletable, so they resolve to null).
+  const activeWorkspaceId = React.useMemo(() => {
+    const t = tree.data
+    if (!t || !selectedTabId) return null
+    const has = (ws: TreeWorkspace) =>
+      (ws.tabs ?? []).some((x) => x.id === selectedTabId)
+    for (const ws of t.scratch ?? []) if (has(ws)) return ws.id
+    for (const repo of t.repos ?? [])
+      for (const ws of repo.workspaces ?? []) if (has(ws)) return ws.id
+    return null
+  }, [tree.data, selectedTabId])
+  const activeWsRef = React.useRef<string | null>(null)
+  activeWsRef.current = activeWorkspaceId
+
   // Multi-select for bulk deletion: ⌘/Ctrl-click (or the context menu) toggles a
   // workspace into `delSel`; an action bar then deletes them all at once.
   const [delSel, setDelSel] = React.useState<Set<string>>(new Set())
@@ -114,8 +129,17 @@ export function Sidebar({
   const toggleDel = React.useCallback((id: string) => {
     setDelSel((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        // Starting a fresh selection: fold in the currently-open workspace so the
+        // one you're looking at is included alongside the one you ⌘-clicked.
+        if (next.size === 0) {
+          const active = activeWsRef.current
+          if (active && active !== id) next.add(active)
+        }
+        next.add(id)
+      }
       return next
     })
   }, [])
