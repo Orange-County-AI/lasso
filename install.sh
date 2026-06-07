@@ -78,30 +78,20 @@ case ":${PATH}:" in
     ;;
 esac
 
-# --- herdr prerequisite ----------------------------------------------------
-# lasso is a UI over herdr, so install it automatically when missing — the whole
-# point is a frictionless one-command setup. Honors LASSO_SKIP_HERDR=1 to opt out.
-if ! command -v herdr >/dev/null 2>&1; then
-  if [ "${LASSO_SKIP_HERDR:-}" = "1" ]; then
-    echo
-    echo "lasso drives herdr, which isn't installed yet. Install it with:"
-    echo "  curl -fsSL https://herdr.dev/install.sh | sh"
-  else
-    echo
-    echo "lasso: herdr not found — installing it (set LASSO_SKIP_HERDR=1 to skip) …"
-    # Non-fatal: a herdr install hiccup shouldn't abort a successful lasso setup.
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL https://herdr.dev/install.sh | sh || herdr_ok=0
-    elif command -v wget >/dev/null 2>&1; then
-      wget -qO- https://herdr.dev/install.sh | sh || herdr_ok=0
-    else
-      herdr_ok=0
-    fi
-    if [ "${herdr_ok:-1}" = "0" ]; then
-      echo "lasso: couldn't install herdr automatically — install it with:" >&2
-      echo "  curl -fsSL https://herdr.dev/install.sh | sh" >&2
-    fi
-  fi
+# --- runtime prerequisites -------------------------------------------------
+# lasso runs its terminals and agents in tmux and serves them through ttyd, so
+# both must be on PATH. They're system packages (not auto-installed here); warn
+# if missing so the user can grab them with their package manager.
+missing=""
+command -v tmux >/dev/null 2>&1 || missing="${missing} tmux"
+command -v ttyd >/dev/null 2>&1 || missing="${missing} ttyd"
+if [ -n "$missing" ]; then
+  echo
+  echo "lasso: missing prerequisite(s):${missing}"
+  echo "  install with your package manager, e.g.:"
+  echo "    macOS:  brew install${missing}"
+  echo "    Debian/Ubuntu:  sudo apt install${missing}"
+  echo "  (then 'lasso doctor' to confirm)"
 fi
 
 echo

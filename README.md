@@ -1,27 +1,36 @@
 # lasso
 
-A web viewer for [herdr](https://herdr.dev) workspaces — a single Go binary that
-serves a two-pane UI over your tailnet: herdr's terminal alongside a live git
-diff, a file browser, and a grid of every pane herdr is running, across every
-host you're connected to. It also exposes an [MCP](https://modelcontextprotocol.io)
-server at `/mcp` so an agent can spawn and drive other agents through lasso.
+A web UI for running and orchestrating coding agents — a single Go binary that
+serves a terminal-centric workspace over your tailnet (or a Cloudflare tunnel):
+a sidebar of your git repos and their worktrees, live agents (Claude Code /
+Codex) with their status, a fast terminal, and a git diff + file browser
+alongside. It also exposes an [MCP](https://modelcontextprotocol.io) server at
+`/mcp` so an agent can spawn and drive other agents through lasso.
+
+Terminals and agents run in **tmux** (on a dedicated server socket), so they
+survive lasso restarts and updates.
 
 ## What's in it
 
-Two resizable, collapsible columns:
+Three resizable, collapsible columns:
 
-- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), a **Grid**
-  of every herdr pane (click to focus, right-click to rename/close,
-  ⌘/ctrl/shift-click to multi-select), and **Settings** (the lasso version and
-  whether an update is available, the herdr protocol/version with a one-click
-  `herdr update`, and the New-Agent defaults).
-- **Right** — the git **Diff** of the focused pane's repo (working tree, or the
-  branch vs. its base when clean), a **Files** browser that follows the active
-  pane's directory and opens files in a markdown/code/image viewer, a **Browser**
-  web-preview iframe for a dev server, and a plain **Terminal** shell outside
-  herdr.
+- **Left — sidebar.** Your git repos as collapsible roots with their worktrees
+  nested underneath, plus scratch (non-git) workspaces. Right-click to create a
+  worktree, rename, or close; ⌘/ctrl-click to multi-select and bulk-delete. Each
+  agent shows a live status dot (idle / working / blocked).
+- **Center — terminal.** A tab strip per workspace over one persistent terminal
+  (a `ttyd` session pointed at the selected tab's tmux session via
+  `switch-client`, so switching tabs is instant). The **New Agent** button (⌘O)
+  spins up a Claude Code or Codex agent in a fresh worktree or scratch dir.
+- **Right — tools.** The git **Diff** of the active workspace (working tree, or
+  the branch vs. its base when clean), a **Files** browser that follows the
+  active directory and opens files in a markdown/code/image viewer, a **Browser**
+  web-preview iframe for a dev server, a **Scratch** pad, and **Settings**
+  (appearance + New-Agent defaults).
 
-The UI follows herdr's active pane live and repaints to match herdr's theme.
+The UI is dark-first with a System / Light / Dark toggle (the
+[Onyx](https://github.com/knowsuchagency/onyx) design system); the terminal
+palette follows the same mode.
 
 ## Install
 
@@ -30,12 +39,9 @@ curl -fsSL https://go.52labs.us/install-lasso | sh
 ```
 
 This drops a prebuilt binary at `~/.local/bin/lasso` (override with
-`LASSO_INSTALL_DIR`). lasso drives **herdr**, which the installer fetches
-automatically if it's missing (set `LASSO_SKIP_HERDR=1` to install it yourself):
-
-```bash
-curl -fsSL https://herdr.dev/install.sh | sh
-```
+`LASSO_INSTALL_DIR`). lasso needs **tmux** and **ttyd** on `PATH` — install them
+with your package manager (`brew install tmux ttyd`, `apt install tmux`, etc.).
+Run `lasso doctor` to check.
 
 Then:
 
@@ -43,8 +49,6 @@ Then:
 lasso start          # run it in the background
 open http://127.0.0.1:8090
 ```
-
-Run `lasso doctor` if anything looks off.
 
 ## Using the CLI
 
@@ -57,18 +61,18 @@ The binary is both the server and its own control surface:
 | `lasso restart` | stop (if running) then start |
 | `lasso status` | report whether it's running, and its URL |
 | `lasso update` | update to the latest release (see [Updating](#updating)) |
-| `lasso doctor` | check herdr, the socket, the port, and the version |
+| `lasso doctor` | check tmux, ttyd, the port, and whether an update is available |
 | `lasso version` | print the version |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
-`start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
+`start`/`restart`/`serve` accept the server flags (`-listen`,
 `-insecure-no-auth`, …); `lasso serve -h` lists them.
 
 ## Run from source
 
 ```bash
 mise run build      # build the frontend (web/dist) then the binary
-./lasso             # serves on 127.0.0.1:8090, spawns ttyd running herdr
+./lasso             # serves on 127.0.0.1:8090
 mise run dev        # Vite dev server (frontend HMR) + Go backend, on your tailnet
 mise run test       # Go tests
 ```
@@ -82,24 +86,36 @@ locally, and CI builds it for releases.
 `mise run dev` serves the UI through Vite with hot reload and proxies the API and
 terminal routes to the Go backend: frontend edits reload instantly, Go changes
 need a task restart. It binds your tailscale interface and uses a dedicated dev
-port that bumps if busy, so it never clashes with a production instance.
+port (8190) that bumps if busy, so it never clashes with a production instance
+(8090).
 
 ## Architecture
 
-One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
-(WebSocket), talks to the herdr server over its unix socket to track the focused
-pane and workspace layout, and pushes live state to the browser over SSE. It can
-drive herdr on the local box or on SSH-reachable hosts (the footer's host
-switcher / the Grid), so one lasso fronts a whole fleet. Each instance spawns its
-own ttyds on per-PID unix sockets, so several can run at once without colliding.
-The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
-plus an unauthenticated MCP server at `/mcp`; see the route table in `main.go`.
+One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminal
+(WebSocket), owns the terminal/agent layer directly via **tmux**, and pushes
+live state to the browser over SSE.
+
+- **tmux** on a dedicated server socket (`~/.lasso/tmux.sock`, `-f /dev/null`)
+  backs every terminal and agent — one session per tab, isolated from your
+  default tmux and surviving lasso restarts. A SQLite db (`~/.lasso/lasso.db`)
+  stores the workspace/tab tree so the layout is restored after a reboot (as
+  fresh shells; agents aren't auto-relaunched).
+- **Agent status** (idle / working / blocked) comes from screen-scraping
+  `tmux capture-pane` plus process detection — only Claude Code and Codex.
+- The data + terminal routes live under `/api/*` and `/tab-term/`, plus an
+  unauthenticated MCP server at `/mcp`; see the route table in `main.go`.
+
+The `/mcp` server's tools — `create_agent`, `list_agents`, `send_agent`,
+`read_agent`, `wait_agent`, `close_agent`, `whoami` — let an agent spawn and
+drive other agents end to end. An agent reads its own `$LASSO_TAB_ID` to identify
+itself via `whoami`.
 
 ## Theming
 
-Both panes adopt the theme from `~/.config/herdr/config.toml` (`[theme].name`)
-and repaint live when you change it — no restart. Leave `-theme auto` to follow
-herdr, or force one with `-theme <name>` (`lasso serve -h` lists the names).
+The UI uses the **Onyx** design system (dark-first, indigo accent). Pick System,
+Light, or Dark in **Settings → Appearance**; the choice persists per device and
+repaints both the UI and the terminal live, no restart. There is no theme config
+file.
 
 ## Updating
 
@@ -116,7 +132,7 @@ The Settings tab surfaces "update available → vX.Y.Z" when a newer release exi
 
 ## Exposing it
 
-The left pane is a **writable shell** (and `/mcp` is unauthenticated), so never
+The terminal is a **writable shell** (and `/mcp` is unauthenticated), so never
 bind to `0.0.0.0` — on a VPS that's the public internet. Two safe ways to reach
 it off-box:
 
@@ -134,6 +150,11 @@ tunnel's ingress at `http://127.0.0.1:8090` and gate the hostname with
 writable shell and the MCP endpoint. A loopback bind needs no `-insecure-no-auth`.
 Because the tunnel serves **HTTPS**, the browser runs in a secure context, so
 Files-tab downloads work (see the caveat below).
+
+OAuth-based MCP clients (Claude Desktop / claude.ai connectors) connecting to
+`/mcp` over the public hostname require **Managed OAuth enabled on the Cloudflare
+Access app** — Access then acts as the OAuth authorization server. The origin
+implements no OAuth of its own.
 
 ### Over your tailnet
 
@@ -172,9 +193,3 @@ git push origin main --tags
 binaries (linux/darwin × amd64/arm64) with the tag stamped in, and publishes a
 GitHub Release with the binaries, `checksums.txt`, and `install.sh`. The tag must
 match `lassoSemver` (the workflow enforces it).
-
-## Dogfooding
-
-To run lasso from *inside* a herdr session (e.g. building lasso with itself), its
-embedded terminal would otherwise refuse to nest. Set `allow_nested = true` under
-`[experimental]` in `~/.config/herdr/config.toml` to allow it.
