@@ -107,6 +107,40 @@ export function Sidebar({
     }
   }
 
+  // Multi-select for bulk deletion: ⌘/Ctrl-click (or the context menu) toggles a
+  // workspace into `delSel`; an action bar then deletes them all at once.
+  const [delSel, setDelSel] = React.useState<Set<string>>(new Set())
+  const [confirmBulk, setConfirmBulk] = React.useState(false)
+  const toggleDel = React.useCallback((id: string) => {
+    setDelSel((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+  const clearDel = React.useCallback(() => setDelSel(new Set()), [])
+  // Clear the selection with Escape.
+  React.useEffect(() => {
+    if (delSel.size === 0) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") clearDel()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [delSel.size, clearDel])
+  const bulkDelete = React.useCallback(async () => {
+    const ids = [...delSel]
+    setConfirmBulk(false)
+    clearDel()
+    await Promise.all(
+      ids.map((id) =>
+        api.closeWorkspace(id).catch((e) => toast.error(String(e)))
+      )
+    )
+    refreshTree()
+  }, [delSel, clearDel])
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
       {/* The spaces region is `relative` so the create-workspace button can pin to
@@ -125,6 +159,8 @@ export function Sidebar({
                   selectedTabId={selectedTabId}
                   onSelectTab={onSelectTab}
                   depth={1}
+                  delSel={delSel}
+                  onToggleDel={toggleDel}
                 />
               ))}
               {(tree.data?.repos ?? []).map((repo) => (
@@ -133,6 +169,8 @@ export function Sidebar({
                   repo={repo}
                   selectedTabId={selectedTabId}
                   onSelectTab={onSelectTab}
+                  delSel={delSel}
+                  onToggleDel={toggleDel}
                 />
               ))}
             </div>
@@ -143,15 +181,40 @@ export function Sidebar({
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
-        <button
-          type="button"
-          title="New workspace"
-          aria-label="New workspace"
-          onClick={() => setNewWsOpen(true)}
-          className="absolute right-1.5 bottom-1.5 flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground"
-        >
-          <Plus className="size-3.5" />
-        </button>
+        {delSel.size === 0 && (
+          <button
+            type="button"
+            title="New workspace"
+            aria-label="New workspace"
+            onClick={() => setNewWsOpen(true)}
+            className="absolute right-1.5 bottom-1.5 flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        )}
+        {/* Bulk-delete bar: appears while one or more workspaces are ⌘/Ctrl-clicked
+            (or selected via the context menu). */}
+        {delSel.size > 0 && (
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 border-border border-t bg-card px-3 py-1.5">
+            <span className="text-muted-foreground text-xs">
+              {delSel.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => setConfirmBulk(true)}
+              className="rounded bg-[var(--h-bad)] px-2 py-0.5 font-medium text-white text-xs hover:bg-[var(--h-bad)]/90"
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={clearDel}
+              className="ml-auto rounded px-2 py-0.5 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
+            >
+              Clear
+            </button>
+          </div>
+        )}
         <PromptDialog
           open={newWsOpen}
           onOpenChange={setNewWsOpen}
@@ -160,6 +223,28 @@ export function Sidebar({
           submitLabel="Create"
           onSubmit={submitNewWorkspace}
         />
+        <AlertDialog open={confirmBulk} onOpenChange={setConfirmBulk}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Delete {delSel.size} workspace{delSel.size === 1 ? "" : "s"}?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Closing them ends every tab in each, including any running
+                agents. This can’t be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={bulkDelete}
+                className="bg-[var(--h-bad)] text-white hover:bg-[var(--h-bad)]/90"
+              >
+                Delete {delSel.size}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
 
       <div className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto border-border border-t">
@@ -193,10 +278,14 @@ function RepoNode({
   repo,
   selectedTabId,
   onSelectTab,
+  delSel,
+  onToggleDel,
 }: {
   repo: TreeRepo
   selectedTabId: string | null
   onSelectTab: (tabId: string) => void
+  delSel: Set<string>
+  onToggleDel: (id: string) => void
 }) {
   const { agentStatuses } = useApp()
   const [open, setOpen] = React.useState(true)
@@ -337,6 +426,8 @@ function RepoNode({
             selectedTabId={selectedTabId}
             onSelectTab={onSelectTab}
             depth={2}
+            delSel={delSel}
+            onToggleDel={onToggleDel}
           />
         ))}
     </div>
@@ -353,15 +444,20 @@ function WorkspaceNode({
   selectedTabId,
   onSelectTab,
   depth,
+  delSel,
+  onToggleDel,
 }: {
   ws: TreeWorkspace
   selectedTabId: string | null
   onSelectTab: (tabId: string) => void
   depth: number
+  delSel: Set<string>
+  onToggleDel: (id: string) => void
 }) {
   const { agentStatuses } = useApp()
   const tabs = ws.tabs ?? []
   const selected = tabs.some((t) => t.id === selectedTabId)
+  const markedForDelete = delSel.has(ws.id)
   // Open the agent tab if there is one, else the first tab.
   const primary = tabs.find((t) => agentStatuses[t.id]) ?? tabs[0]
   // Live workspace status: merge the SSE status of any of its tabs that are
@@ -391,11 +487,22 @@ function WorkspaceNode({
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            onClick={() => primary && onSelectTab(primary.id)}
+            onClick={(e) => {
+              // ⌘/Ctrl-click toggles this workspace in the bulk-delete selection
+              // instead of opening it.
+              if (e.metaKey || e.ctrlKey) {
+                e.preventDefault()
+                onToggleDel(ws.id)
+                return
+              }
+              if (primary) onSelectTab(primary.id)
+            }}
             style={{ paddingLeft: `${depth * 12}px` }}
             className={cn(
               "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
-              selected && "bg-accent/60"
+              selected && "bg-accent/60",
+              markedForDelete &&
+                "bg-[var(--h-bad)]/15 ring-1 ring-[var(--h-bad)]/60 ring-inset"
             )}
           >
             {status ? (
@@ -437,6 +544,9 @@ function WorkspaceNode({
             Rename…
           </ContextMenuItem>
           <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => onToggleDel(ws.id)}>
+            {markedForDelete ? "Deselect" : "Select"} (⌘-click)
+          </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
             onSelect={() => {
