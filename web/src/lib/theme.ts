@@ -1,9 +1,10 @@
 // ONYX_XTERM_THEME is the fixed xterm.js palette for every terminal, derived
-// from the Onyx design tokens (onyx preset.json / colors_and_type.css). Onyx
-// defines only bg/fg/accent/warn/danger/ok, so the ANSI 16 are filled in around
-// those: indigo→blue, accent-1→magenta, ok→green, warn→yellow, danger→red, and
-// a derived cyan (Onyx has none). Replaces the old per-theme palette the server
-// used to push over /api/theme; the theme switcher is gone (dark-only Onyx).
+// from the Onyx design tokens (onyx preset.json / colors_and_type.css). It runs
+// indigo-forward to match Onyx's cool, achromatic-plus-indigo look: the cool
+// slots (blue+cyan+magenta) all collapse into the indigo accent family, while
+// green/yellow/red stay as the Onyx ok/warn/danger tokens so they remain
+// functional status colors (git diff, ls). Replaces the old per-theme palette
+// the server pushed over /api/theme; the theme switcher is gone (dark-only Onyx).
 export const ONYX_XTERM_THEME: Record<string, unknown> = {
   background: "#06070c",
   foreground: "#f4f5fa",
@@ -15,8 +16,8 @@ export const ONYX_XTERM_THEME: Record<string, unknown> = {
   green: "#4ade9a",
   yellow: "#f2b144",
   blue: "#7b7fff",
-  magenta: "#9d7cff",
-  cyan: "#6db3c4",
+  magenta: "#9498ff",
+  cyan: "#9498ff",
   white: "#b7bbc8",
   brightBlack: "#3b3f4e",
   brightRed: "#f57b80",
@@ -24,7 +25,7 @@ export const ONYX_XTERM_THEME: Record<string, unknown> = {
   brightYellow: "#f6c674",
   brightBlue: "#9498ff",
   brightMagenta: "#b3a4ff",
-  brightCyan: "#8fcdd9",
+  brightCyan: "#b3a4ff",
   brightWhite: "#f4f5fa",
 }
 
