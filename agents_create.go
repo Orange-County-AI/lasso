@@ -424,8 +424,12 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	rec.TabID = rec.ID
 	rec.WorkspaceID = "w" + rec.ID
 	session := tabSession(rec.TabID)
-	if err := tmuxNewSession(session, rec.WorkDir, []string{"LASSO_TAB_ID=" + rec.TabID}); err != nil {
-		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("tmux new-session: %w", err)}
+	// Claim a pre-booted shell (instant) when possible, else cold-start — the same
+	// warm-pool path tabs and workspaces use (startTabShell / prewarm.go), so the
+	// agent boots without paying the shell rc wait. The agent command is launched
+	// once the shell settles into the work dir (see launchAgentInSession).
+	if err := startTabShell(rec.TabID, rec.WorkDir); err != nil {
+		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("start agent shell: %w", err)}
 	}
 	if err := insertWorkspace(Workspace{
 		ID: rec.WorkspaceID, Host: host, Title: rec.Title, Repo: rec.Repo,
@@ -455,7 +459,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// slow over SSH on a remote host) and types sent into it before it's ready get
 	// their leading characters eaten. The backend is captured so the launch always
 	// targets the host the agent was created on, even if the active host changes.
-	go launchAgentInSession(session, setup, agentCommand(req.Agent, rec.PlanMode, agentPrompt(rec)))
+	go launchAgentInSession(session, rec.WorkDir, rec.TabID, setup, agentCommand(req.Agent, rec.PlanMode, agentPrompt(rec)))
 
 	// Persist this host's remembered selections, then append the record. Errors
 	// here are non-fatal: the agent is already running, so we still return it.
@@ -711,14 +715,34 @@ func createWorktree(b Backend, repo, base, branch, titleSlug string) (string, er
 	return workDir, nil
 }
 
-// launchAgentInSession runs the optional setup script then the agent command in a
-// freshly-created tmux session, then auto-accepts the agent's trust dialog. It
-// first waits for the session's shell to settle (tmuxWaitReady): a new shell is
-// still sourcing its rc, and characters typed before it's ready get their leading
-// bytes eaten. Runs in a goroutine so createAgent returns immediately. tmux is
-// local, so no backend is needed.
-func launchAgentInSession(session, setup, agentCmd string) {
+// launchAgentInSession runs the optional setup script then the agent command in
+// the tab's tmux session, then auto-accepts the agent's trust dialog. Runs in a
+// goroutine so createAgent returns immediately. tmux is local, so no backend is
+// needed.
+//
+// The session may be a warm-pool claim, which cd's into workDir asynchronously (a
+// cold session already starts there), so we first wait until the shell is
+// actually in workDir before sending anything — otherwise setup/agent would run
+// in $HOME. We then wait for the shell to settle (tmuxWaitReady): characters typed
+// before the rc finishes get their leading bytes eaten.
+func launchAgentInSession(session, workDir, tabID, setup, agentCmd string) {
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if !tmuxHasSession(session) {
+			return
+		}
+		if cur, _ := tmuxCurrentPath(session); cur == workDir {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
 	tmuxWaitReady(session)
+	// Warm-pool shells aren't tagged with LASSO_TAB_ID (only a cold tmuxNewSession
+	// is), so export it here for the agent's MCP whoami. Harmless on the cold path,
+	// where the same value is already set.
+	if tabID != "" {
+		_ = tmuxSendLine(session, "export LASSO_TAB_ID="+shellSingleQuote(tabID))
+	}
 	if s := strings.TrimSpace(setup); s != "" {
 		_ = tmuxSendLine(session, s)
 	}
