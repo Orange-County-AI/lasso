@@ -3,6 +3,17 @@ import { ChevronRight, GitBranch, Pin, Plus, Terminal } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
+import { PromptDialog } from "@/components/PromptDialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -68,12 +79,11 @@ export function Sidebar({
     if (panesRev >= 0) refreshTree()
   }, [panesRev])
 
-  // Create a bare scratch workspace (a shell, no agent) and focus it. Routed to
-  // from the footer "+" and the empty-area right-click.
-  const createWorkspace = React.useCallback(async () => {
-    const name = window.prompt("New workspace name:", "scratch")
-    if (name == null) return
-    const title = name.trim() || "scratch"
+  // The new-workspace name modal (opened by the footer "+" and the empty-area
+  // right-click). Submitting creates a bare scratch workspace (a shell, no agent)
+  // and focuses it.
+  const [newWsOpen, setNewWsOpen] = React.useState(false)
+  const submitNewWorkspace = async (title: string) => {
     try {
       const { workspace_id, tab_id, work_dir } =
         await api.createWorkspace(title)
@@ -90,7 +100,7 @@ export function Sidebar({
     } catch (e) {
       toast.error(String(e))
     }
-  }, [onSelectTab])
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
@@ -123,7 +133,7 @@ export function Sidebar({
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem onSelect={createWorkspace}>
+            <ContextMenuItem onSelect={() => setNewWsOpen(true)}>
               New workspace…
             </ContextMenuItem>
           </ContextMenuContent>
@@ -132,11 +142,19 @@ export function Sidebar({
           type="button"
           title="New workspace"
           aria-label="New workspace"
-          onClick={createWorkspace}
+          onClick={() => setNewWsOpen(true)}
           className="absolute right-1.5 bottom-1.5 flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground"
         >
           <Plus className="size-3.5" />
         </button>
+        <PromptDialog
+          open={newWsOpen}
+          onOpenChange={setNewWsOpen}
+          title="New workspace"
+          placeholder="Workspace name"
+          submitLabel="Create"
+          onSubmit={submitNewWorkspace}
+        />
       </div>
 
       <div className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto border-border border-t">
@@ -350,71 +368,114 @@ function WorkspaceNode({
   }
   status = status ?? ws.agent_status
 
-  const renameWs = async () => {
-    const title = window.prompt("Rename workspace:", ws.title)
-    if (title == null || !title.trim()) return
-    await api
-      .renameWorkspace(ws.id, title.trim())
-      .catch((e) => toast.error(String(e)))
+  // Rename modal + close confirmation (the latter only when the workspace has
+  // more than one tab — closing it kills them all).
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const [confirmClose, setConfirmClose] = React.useState(false)
+  const submitRename = async (title: string) => {
+    await api.renameWorkspace(ws.id, title).catch((e) => toast.error(String(e)))
+    refreshTree()
+  }
+  const doClose = async () => {
+    await api.closeWorkspace(ws.id).catch((e) => toast.error(String(e)))
     refreshTree()
   }
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          type="button"
-          onClick={() => primary && onSelectTab(primary.id)}
-          style={{ paddingLeft: `${depth * 12}px` }}
-          className={cn(
-            "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
-            selected && "bg-accent/60"
-          )}
-        >
-          {status ? (
-            <span
-              className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
-            />
-          ) : (
-            <Terminal className="size-3 shrink-0 text-muted-foreground" />
-          )}
-          <span className="truncate">{ws.title}</span>
-          {ws.branch && (
-            <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
-              <GitBranch className="size-3" />
-              {ws.branch}
-            </span>
-          )}
-        </button>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem
-          onSelect={async () => {
-            const t = await api.newTab(ws.id).catch((e) => {
-              toast.error(String(e))
-              return null
-            })
-            if (t) {
-              treeAddTab(ws.id, { id: t.id, title: t.title, kind: "shell" })
-              onSelectTab(t.id)
-            }
-            refreshTree()
-          }}
-        >
-          New tab
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={renameWs}>Rename…</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          variant="destructive"
-          onSelect={async () => {
-            await api.closeWorkspace(ws.id).catch((e) => toast.error(String(e)))
-            refreshTree()
-          }}
-        >
-          Close workspace
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={() => primary && onSelectTab(primary.id)}
+            style={{ paddingLeft: `${depth * 12}px` }}
+            className={cn(
+              "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
+              selected && "bg-accent/60"
+            )}
+          >
+            {status ? (
+              <span
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  STATUS_DOT[status]
+                )}
+              />
+            ) : (
+              <Terminal className="size-3 shrink-0 text-muted-foreground" />
+            )}
+            <span className="truncate">{ws.title}</span>
+            {ws.branch && (
+              <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
+                <GitBranch className="size-3" />
+                {ws.branch}
+              </span>
+            )}
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            onSelect={async () => {
+              const t = await api.newTab(ws.id).catch((e) => {
+                toast.error(String(e))
+                return null
+              })
+              if (t) {
+                treeAddTab(ws.id, { id: t.id, title: t.title, kind: "shell" })
+                onSelectTab(t.id)
+              }
+              refreshTree()
+            }}
+          >
+            New tab
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => setRenameOpen(true)}>
+            Rename…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={() => {
+              // A multi-tab workspace close kills every tab — confirm first.
+              if (tabs.length > 1) setConfirmClose(true)
+              else doClose()
+            }}
+          >
+            Close workspace
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <PromptDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        title="Rename workspace"
+        placeholder="Workspace name"
+        defaultValue={ws.title}
+        submitLabel="Rename"
+        onSubmit={submitRename}
+      />
+
+      <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close “{ws.title}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This workspace has {tabs.length} tabs. Closing it ends all of
+              them, including any running agents. This can’t be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={doClose}
+              className="bg-[var(--h-bad)] text-white hover:bg-[var(--h-bad)]/90"
+            >
+              Close workspace
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 
