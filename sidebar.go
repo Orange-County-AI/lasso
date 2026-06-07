@@ -642,7 +642,9 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	wsID := "w" + newID()
 	tabID := newID()
 	session := tabSession(tabID)
-	if err := tmuxNewSession(session, workDir, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
+	// Claim a pre-booted shell (instant) when possible, else cold-start. Like
+	// serveNewTab — see startTabShell / prewarm.go.
+	if err := startTabShell(tabID, workDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -658,11 +660,26 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Run the configured scratch setup in the shell (no agent). Best-effort and
-	// backgrounded so create returns immediately; waits for the rc to settle so
-	// the leading characters aren't eaten.
+	// backgrounded so create returns immediately. Wait until the shell has settled
+	// into the workspace dir before sending — a warm-pool claim cd's there
+	// asynchronously (a cold session already starts there), so this keeps setup
+	// from running in $HOME — then wait for the rc so leading chars aren't eaten.
 	if defaults, derr := hostDefaults(be.Name()); derr == nil {
 		if s := strings.TrimSpace(defaults.ScratchSetup); s != "" {
-			go func(sess, setup string) { tmuxWaitReady(sess); _ = tmuxSendLine(sess, setup) }(session, s)
+			go func(sess, dir, setup string) {
+				deadline := time.Now().Add(15 * time.Second)
+				for time.Now().Before(deadline) {
+					if !tmuxHasSession(sess) {
+						return
+					}
+					if cur, _ := tmuxCurrentPath(sess); cur == dir {
+						break
+					}
+					time.Sleep(150 * time.Millisecond)
+				}
+				tmuxWaitReady(sess)
+				_ = tmuxSendLine(sess, setup)
+			}(session, workDir, s)
 		}
 	}
 	kickHub()
