@@ -164,6 +164,27 @@ func tmuxCurrentPath(session string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
+// tmuxPaneCurrentCommand returns the command name of a session's foreground
+// process (#{pane_current_command}). For an idle shell this is the shell name
+// (bash/zsh/…); while it's running a child (e.g. an rc step like mise/fnox, or a
+// user program) it's that child. Used to tell whether a pre-warmed shell has
+// finished sourcing its rc (foregroundIsShell). NB: unreliable for distinguishing
+// AGENT binaries (their comm names are odd) — only used here for plain shells.
+func tmuxPaneCurrentCommand(session string) string {
+	out, _ := tmuxOut("display-message", "-p", "-t", session, "#{pane_current_command}")
+	return strings.TrimSpace(out)
+}
+
+// foregroundIsShell reports whether a session's foreground process is an idle
+// shell (no child program running) — i.e. it's sitting at its prompt.
+func foregroundIsShell(session string) bool {
+	switch strings.TrimPrefix(tmuxPaneCurrentCommand(session), "-") { // login shells show "-bash"
+	case "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh":
+		return true
+	}
+	return false
+}
+
 // nudgeRedraw forces whatever is running in a session to repaint. A session is
 // created detached at a fixed size, then a differently-sized ttyd client attaches
 // — the resize delivers a SIGWINCH mid-startup that eats bash's first prompt (or

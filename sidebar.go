@@ -437,7 +437,7 @@ func serveNewTab(w http.ResponseWriter, r *http.Request) {
 		title = strconv.Itoa(ord + 1)
 	}
 	tabID := newID()
-	if err := tmuxNewSession(tabSession(tabID), ws.WorkDir, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
+	if err := startTabShell(tabID, ws.WorkDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -481,7 +481,7 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 				}
 				// Workspace exists but has no live tab — fall through to add one.
 				tabID := newID()
-				if err := tmuxNewSession(tabSession(tabID), repo, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
+				if err := startTabShell(tabID, repo); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -495,7 +495,7 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 	// Create the main-checkout workspace + an initial shell tab at the repo root.
 	wsID := "w" + newID()
 	tabID := newID()
-	if err := tmuxNewSession(tabSession(tabID), repo, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
+	if err := startTabShell(tabID, repo); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -601,7 +601,7 @@ func serveCreateWorktreeOnly(w http.ResponseWriter, r *http.Request) {
 	}
 	wsID := "w" + newID()
 	tabID := newID()
-	if err := tmuxNewSession(tabSession(tabID), workDir, []string{"LASSO_TAB_ID=" + tabID}); err != nil {
+	if err := startTabShell(tabID, workDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
