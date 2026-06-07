@@ -1,28 +1,36 @@
 import { api, type ThemePayload } from "@/lib/api"
 
-// The fixed terminal iframes whose xterm.js theme we keep in sync with herdr's
-// (the left "Herdr" terminal and the right shell). The Grid tab's per-pane
-// terminals are matched by class instead — see termFrames.
+// Legacy fixed terminal iframes (the herdr terminal + right shell), kept for
+// any still-mounted herdr-era frames. The per-tab terminals are matched by
+// class instead — see termFrames.
 const TERM_FRAME_IDS = ["term", "shellframe"]
 
 // GRID_FRAME_CLASS marks each Grid cell's terminal iframe so it's re-themed
 // alongside the fixed terminals (its id is dynamic, one per host+pane).
 export const GRID_FRAME_CLASS = "gridterm"
 
-// termFrames collects every terminal iframe the theme should track: the two
-// fixed ones by id, plus every live Grid cell terminal by class.
+// TERM_FRAME_CLASS marks the per-tab terminal iframes (TabTerminal renders the
+// ttyd iframe with this class; its id is `tabterm-<tabId>`). Matching by class
+// is what keeps the live terminal in sync with theme changes — without it the
+// terminal stays on ttyd's default palette while the UI repaints.
+const TERM_FRAME_CLASS = "frame"
+
+// termFrames collects every terminal iframe the theme should track: legacy
+// fixed ones by id, plus every live Grid cell and per-tab terminal by class.
+// Deduped, since a frame could in principle match more than one selector.
 function termFrames(): HTMLIFrameElement[] {
-  const out: HTMLIFrameElement[] = []
+  const seen = new Set<HTMLIFrameElement>()
   for (const id of TERM_FRAME_IDS) {
     const el = document.getElementById(id) as HTMLIFrameElement | null
-    if (el) out.push(el)
+    if (el) seen.add(el)
   }
-  out.push(
-    ...Array.from(
-      document.querySelectorAll<HTMLIFrameElement>(`iframe.${GRID_FRAME_CLASS}`)
-    )
-  )
-  return out
+  for (const cls of [GRID_FRAME_CLASS, TERM_FRAME_CLASS]) {
+    for (const el of document.querySelectorAll<HTMLIFrameElement>(
+      `iframe.${cls}`
+    ))
+      seen.add(el)
+  }
+  return Array.from(seen)
 }
 
 // The terminal font stack. JetBrainsMono Nerd Font carries the icon glyphs that
