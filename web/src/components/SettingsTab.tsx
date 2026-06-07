@@ -42,13 +42,11 @@ function Field({
   )
 }
 
-// The Settings tab: lasso↔herdr socket-protocol compatibility (top) plus the
-// "New Agent" creator configuration. Lasso targets a fixed protocol (baked in
-// at build time); the daemon reports its own over the socket, and when they
-// drift terminals and RPC silently break, so we surface it here. The creator
-// defaults (where to scan for repos, the default agent, the scratch setup
-// script) are global; each repo's files-to-copy + setup commands are scoped to
-// the active host. All of it persists in ~/.lasso/lasso.db.
+// The Settings tab: the lasso build version + update status (top) plus the
+// "New Agent" creator configuration. The creator defaults (where to scan for
+// repos, the default agent, the scratch setup script) are global; each repo's
+// files-to-copy + setup commands are scoped to the active host. All of it
+// persists in ~/.lasso/lasso.db.
 export function SettingsTab({ active }: { active: boolean }) {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const versionQuery = useQuery({
@@ -57,8 +55,6 @@ export function SettingsTab({ active }: { active: boolean }) {
     enabled: active,
   })
   const info = versionQuery.data ?? null
-  const loading = versionQuery.isLoading
-  const errored = versionQuery.isError
 
   // Which host's settings to edit — each host stores them in its own lasso.db.
   // The picker lists the local machine plus every reachable, compatible remote
@@ -85,28 +81,6 @@ export function SettingsTab({ active }: { active: boolean }) {
   }, [activeHost, selectedHost])
   const host = selectedHost ?? activeHost ?? "local"
 
-  // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
-  let herdr: React.ReactNode
-  if (loading) {
-    herdr = <Pill>herdr …</Pill>
-  } else if (errored || !info) {
-    herdr = <Pill tone="warn">herdr unavailable</Pill>
-  } else if (info.err) {
-    herdr = (
-      <Pill tone="warn" title={info.err}>
-        herdr unreachable
-      </Pill>
-    )
-  } else {
-    const ver = info.herdr_version ? ` (${info.herdr_version})` : ""
-    herdr = (
-      <Pill tone={info.compatible ? "good" : "bad"} multiline>
-        herdr protocol {info.herdr_protocol}
-        {ver} · {info.compatible ? "compatible" : "incompatible"}
-      </Pill>
-    )
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="border-border border-b bg-background px-3 py-2">
@@ -114,10 +88,6 @@ export function SettingsTab({ active }: { active: boolean }) {
           <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
             lasso
           </span>
-          <Pill multiline>
-            targets protocol{" "}
-            {loading ? "…" : errored || !info ? "unknown" : info.lasso_protocol}
-          </Pill>
           {info?.lasso_version && (
             <Pill title="this lasso build's version" multiline>
               lasso {info.lasso_version}
@@ -132,12 +102,6 @@ export function SettingsTab({ active }: { active: boolean }) {
               update available → {info.latest_version}
             </Pill>
           )}
-          {herdr}
-          {!loading && !errored && info && !info.err && !info.compatible && (
-            <span className="text-[13px] text-warn">
-              rebuild lasso (or update herdr) so both speak the same protocol
-            </span>
-          )}
           <Button
             variant="outline"
             size="icon"
@@ -151,7 +115,7 @@ export function SettingsTab({ active }: { active: boolean }) {
             variant="outline"
             size="icon"
             className="size-7"
-            title="re-check protocol compatibility"
+            title="re-check for lasso updates"
             onClick={() => versionQuery.refetch()}
           >
             <RotateCw />
