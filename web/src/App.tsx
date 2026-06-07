@@ -47,6 +47,83 @@ type TabDef = {
   badge?: React.ReactNode
 }
 
+// A tab strip that shows full text labels when they fit, and collapses every
+// tab to its icon when the track is too narrow for the labels — rather than
+// truncating the last tab to "Settin…" or forcing a horizontal scroll.
+function FitTabs({
+  tabs,
+  leading,
+  trailing,
+  listClassName,
+}: {
+  tabs: TabDef[]
+  leading?: React.ReactNode
+  trailing?: React.ReactNode
+  listClassName?: string
+}) {
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+  const measureRef = React.useRef<HTMLDivElement>(null)
+  const [compact, setCompact] = React.useState(false)
+
+  React.useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    const measure = measureRef.current
+    if (!scroll || !measure) return
+    const check = () => {
+      // `measure` always renders the full-text tabs (hidden), so its natural
+      // width is the space the labels need. If that can't fit the visible
+      // track, switch to icons. The +1 absorbs sub-pixel rounding.
+      setCompact(measure.scrollWidth > scroll.clientWidth + 1)
+    }
+    const ro = new ResizeObserver(check)
+    ro.observe(scroll)
+    ro.observe(measure)
+    check()
+    return () => ro.disconnect()
+  }, [])
+
+  return (
+    <TabsList className={cn(stripClass, listClassName)}>
+      {leading}
+      {/* Tabs live in their own region; the leading/trailing controls stay fixed
+          on the row. no-scrollbar hides the scrollbar so it doesn't steal row
+          height. */}
+      <div
+        ref={scrollRef}
+        className="no-scrollbar relative flex min-w-0 flex-1 overflow-x-auto"
+      >
+        {tabs.map(({ value, label, icon: Icon, badge }) => (
+          <TabsTrigger
+            key={value}
+            value={value}
+            className={tabClass}
+            title={compact ? label : undefined}
+          >
+            {compact ? <Icon className="size-4" aria-label={label} /> : label}
+            {badge}
+          </TabsTrigger>
+        ))}
+        {/* Hidden full-text copy used only to measure the width the labels
+            need; absolutely positioned so it never affects layout or the
+            track's own width (which would create a measurement feedback loop). */}
+        <div
+          ref={measureRef}
+          aria-hidden
+          className="pointer-events-none invisible absolute top-0 left-0 flex"
+        >
+          {tabs.map(({ value, label, badge }) => (
+            <span key={value} className={tabClass}>
+              {label}
+              {badge}
+            </span>
+          ))}
+        </div>
+      </div>
+      {trailing}
+    </TabsList>
+  )
+}
+
 function Pane({
   show,
   children,
@@ -289,44 +366,41 @@ function Shell() {
             onValueChange={(v) => setRightView(v as RightView)}
             className="flex h-full flex-col gap-0"
           >
-            <TabsList className={stripClass}>
-              {(
-                [
-                  {
-                    value: "files",
-                    label: "Files",
-                    icon: Files,
-                    badge: (
-                      <GitStatusBadge
-                        dirty={diffDirty}
-                        ready={gitReady}
-                        className="ml-1.5"
-                        textClassName="text-[13px]"
-                      />
-                    ),
-                  },
-                  { value: "scratch", label: "Scratch", icon: NotebookPen },
-                  { value: "browser", label: "Browser", icon: Globe },
-                  { value: "settings", label: "Settings", icon: Settings },
-                ] as TabDef[]
-              ).map(({ value, label, badge }) => (
-                <TabsTrigger key={value} value={value} className={tabClass}>
-                  {label}
-                  {badge}
-                </TabsTrigger>
-              ))}
-              <button
-                type="button"
-                className={cn(
-                  tabClass,
-                  "ml-auto flex items-center hover:text-primary"
-                )}
-                title="collapse panel (⌘])"
-                onClick={toggleRight}
-              >
-                <ChevronRight className="size-4" />
-              </button>
-            </TabsList>
+            <FitTabs
+              tabs={[
+                {
+                  value: "files",
+                  label: "Files",
+                  icon: Files,
+                  badge: (
+                    <GitStatusBadge
+                      dirty={diffDirty}
+                      ready={gitReady}
+                      className="ml-1.5"
+                      textClassName="text-[13px]"
+                    />
+                  ),
+                },
+                { value: "scratch", label: "Scratch", icon: NotebookPen },
+                { value: "browser", label: "Browser", icon: Globe },
+                { value: "settings", label: "Settings", icon: Settings },
+              ]}
+              trailing={
+                // Styled like the tab icons (same box model) rather than a
+                // bordered box, so it sits on the same baseline as them.
+                <button
+                  type="button"
+                  className={cn(
+                    tabClass,
+                    "flex items-center hover:text-primary"
+                  )}
+                  title="collapse panel (⌘])"
+                  onClick={toggleRight}
+                >
+                  <ChevronRight className="size-4" />
+                </button>
+              }
+            />
             <div className="relative min-h-0 flex-1">
               <Pane show={rightView === "files"}>
                 <FilesPanel />
