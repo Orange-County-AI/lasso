@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { ChevronRight, GitBranch, Pin, Terminal } from "lucide-react"
+import { ChevronRight, GitBranch, Pin, Plus, Terminal } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -45,6 +45,13 @@ function openNewAgent(repo: string, base: string) {
   )
 }
 
+// openCreateWorkspace opens the same creator with no prefill — a blank canvas to
+// spin up a new workspace (git worktree or scratch). The "spaces" footer button
+// and the empty-area right-click both route here.
+function openCreateWorkspace() {
+  window.dispatchEvent(new CustomEvent("lasso:new-agent"))
+}
+
 export function Sidebar({
   selectedTabId,
   onSelectTab,
@@ -64,25 +71,49 @@ export function Sidebar({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <SectionLabel>spaces</SectionLabel>
-        {(tree.data?.scratch ?? []).map((ws) => (
-          <WorkspaceNode
-            key={ws.id}
-            ws={ws}
-            selectedTabId={selectedTabId}
-            onSelectTab={onSelectTab}
-            depth={1}
-          />
-        ))}
-        {(tree.data?.repos ?? []).map((repo) => (
-          <RepoNode
-            key={repo.path}
-            repo={repo}
-            selectedTabId={selectedTabId}
-            onSelectTab={onSelectTab}
-          />
-        ))}
+      {/* The spaces region is `relative` so the create-workspace button can pin to
+          its bottom-right without scrolling with the list. Right-clicking the
+          empty area below the tree opens the same "New workspace…" action; the
+          repo/workspace rows have their own context menus that take precedence. */}
+      <div className="relative min-h-0 flex-1">
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div className="h-full overflow-y-auto pb-12">
+              <SectionLabel>spaces</SectionLabel>
+              {(tree.data?.scratch ?? []).map((ws) => (
+                <WorkspaceNode
+                  key={ws.id}
+                  ws={ws}
+                  selectedTabId={selectedTabId}
+                  onSelectTab={onSelectTab}
+                  depth={1}
+                />
+              ))}
+              {(tree.data?.repos ?? []).map((repo) => (
+                <RepoNode
+                  key={repo.path}
+                  repo={repo}
+                  selectedTabId={selectedTabId}
+                  onSelectTab={onSelectTab}
+                />
+              ))}
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={openCreateWorkspace}>
+              New workspace…
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        <button
+          type="button"
+          title="New workspace"
+          onClick={openCreateWorkspace}
+          className="absolute right-2 bottom-2 flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[12px] text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+        >
+          <Plus className="size-3.5" />
+          Workspace
+        </button>
       </div>
 
       <div className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto border-border border-t">
