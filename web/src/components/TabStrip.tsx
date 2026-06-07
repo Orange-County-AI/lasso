@@ -54,13 +54,19 @@ export function TabStrip({
               type="button"
               className="flex items-center gap-1.5"
               onClick={() => onSelectTab(tab.id)}
+              title={tab.title || tab.kind}
             >
               {tab.kind === "agent" && (
                 <span
-                  className={cn("size-2 rounded-full", STATUS_DOT[status])}
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    STATUS_DOT[status]
+                  )}
                 />
               )}
-              {tab.title || tab.kind}
+              <span className="max-w-[16ch] truncate">
+                {tab.title || tab.kind}
+              </span>
             </button>
             <button
               type="button"
