@@ -205,6 +205,7 @@ func runServer() {
 	// sessions, replacing both the herdr grid terminals and the old per-tab pool.
 	mux.HandleFunc("/api/tab/term", serveTabTerm)
 	mux.HandleFunc("/api/tab/term-touch", serveTabTermTouch)
+	mux.HandleFunc("/api/tab/term-ready", serveTabReady)
 	mux.HandleFunc("/tab-term/", serveTabTermProxy)
 	// sidebar: the workspace/tab tree + agent list + their mutations (tmux-era)
 	mux.HandleFunc("/api/tree", serveTree)

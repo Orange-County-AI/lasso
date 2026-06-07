@@ -280,11 +280,16 @@ func primeShellPromptWhenAttached(session string) {
 			return
 		}
 		if out, _ := tmuxCapture(session); strings.TrimSpace(out) != "" {
-			// Prompt is in the grid. Force the warm client to take a clean full
-			// frame of it — an incremental stream to a switched client is
-			// unreliable, and a resize nudge reflows it into a duplicate `❯`. A
-			// switch-client always sends a full redraw (it's how switching to an
-			// existing tab renders correctly), so bounce the client off and back.
+			// Prompt is in the grid, but the priming line-accept left it pushed down
+			// with blank rows above (the initial prompt scrolled off). Ctrl-L
+			// redraws it at the top for a clean, top-aligned terminal.
+			_ = tmuxSendCtrlL(session)
+			time.Sleep(200 * time.Millisecond)
+			// Force the warm client to take a clean full frame — an incremental
+			// stream to a switched client is unreliable, and a resize nudge reflows
+			// it into a duplicate `❯`. switch-client always sends a full redraw
+			// (it's how switching to an existing tab renders correctly), so bounce
+			// the client off the session and back.
 			forceViewportRedraw(session)
 			return
 		}
@@ -372,6 +377,13 @@ func tmuxSendEnter(session string) error {
 // tmuxSendCtrlC sends Ctrl-C (interrupt) — used to stop a running agent.
 func tmuxSendCtrlC(session string) error {
 	return tmux("send-keys", "-t", session, "C-c")
+}
+
+// tmuxSendCtrlL sends Ctrl-L (clear + redraw) — readline clears the screen and
+// repaints the prompt at the top. Used to clean up the blank rows the prime's
+// line-accept leaves above a fresh shell's prompt.
+func tmuxSendCtrlL(session string) error {
+	return tmux("send-keys", "-t", session, "C-l")
 }
 
 // tmuxSendText pastes text into a session as a BRACKETED PASTE (no trailing

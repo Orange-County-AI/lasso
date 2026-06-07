@@ -478,6 +478,9 @@ export const api = {
     postJSON<{ base: string }>("/api/tab/term", { tab_id }),
   // Whether the viewport ttyd is still alive (respawn + reload base if not).
   tabTermTouch: () => postJSON<{ alive: boolean }>("/api/tab/term-touch", {}),
+  // Whether a tab's session has painted content yet (drives the loading overlay).
+  tabReady: (tab_id: string) =>
+    postJSON<{ ready: boolean }>("/api/tab/term-ready", { tab_id }),
 
   newTab: (workspace_id: string, title?: string) =>
     postJSON<TreeTab>("/api/tab/new", { workspace_id, title }),

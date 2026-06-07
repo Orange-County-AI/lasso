@@ -233,6 +233,32 @@ func forceViewportRedraw(session string) {
 	}
 }
 
+// serveTabReady (POST /api/tab/term-ready {tab_id}) reports whether a tab's
+// session has painted content yet (its prompt / agent frame). The frontend polls
+// this after switching to a tab to drive the "starting…" loading overlay, so a
+// freshly created shell shows a spinner during its rc boot instead of a blank
+// pane with a bare cursor.
+func serveTabReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		TabID string `json:"tab_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ready := false
+	if req.TabID != "" {
+		if out, err := tmuxCapture(tabSession(req.TabID)); err == nil && strings.TrimSpace(out) != "" {
+			ready = true
+		}
+	}
+	writeJSON(w, map[string]any{"ready": ready})
+}
+
 // serveTabTermProxy routes /tab-term/<token>/… to the viewport ttyd (HTTP + WS).
 func serveTabTermProxy(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/tab-term/")

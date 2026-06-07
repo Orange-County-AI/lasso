@@ -1,7 +1,7 @@
 import * as React from "react"
 
 import { api } from "@/lib/api"
-import { bootTermFrame, refitTerminal, whenTerminalReady } from "@/lib/terminal"
+import { bootTermFrame, refitTerminal } from "@/lib/terminal"
 
 // The viewport: a SINGLE persistent terminal iframe (one ttyd) that we point at
 // whichever tab is selected by re-POSTing /api/tab/term — the backend uses tmux
@@ -14,8 +14,10 @@ const KEEPALIVE_MS = 18000
 
 export function TabTerminal({ tabId }: { tabId: string | null }) {
   const [base, setBase] = React.useState<string | null>(null)
-  // Whether the viewport's xterm has painted at least once (handshake done). It
-  // stays true across tab switches — only the very first warm-up shows a spinner.
+  // Whether the SELECTED tab's session has painted its prompt/frame yet. Reset on
+  // every tab switch and driven by polling the backend (does the tmux pane have
+  // content), so a freshly created shell shows a "starting…" spinner during its
+  // rc boot instead of a blank pane with a bare cursor.
   const [ready, setReady] = React.useState(false)
   const id = "tabterm-viewport"
 
@@ -35,13 +37,41 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
     }
   }, [])
 
-  // Point the viewport at the selected tab whenever it changes (instant switch —
-  // no iframe churn). Refit after a beat so the new session sizes to the pane.
+  // Point the viewport at the selected tab whenever it changes, and show the
+  // loading overlay until that tab's session has actually painted — polled from
+  // the backend, since a freshly created shell takes a beat to boot its rc and an
+  // existing tab returns ready on the first poll (so the overlay barely flashes).
   React.useEffect(() => {
     if (!base || !tabId) return
+    setReady(false)
     api.tabTerm(tabId).catch(() => {})
-    const t = setTimeout(() => refitTerminal(id), 60)
-    return () => clearTimeout(t)
+    const fit = setTimeout(() => refitTerminal(id), 60)
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const deadline = Date.now() + 30000
+    const poll = () => {
+      if (cancelled) return
+      api
+        .tabReady(tabId)
+        .then((r) => {
+          if (cancelled) return
+          if (r.ready || Date.now() > deadline) {
+            setReady(true)
+            refitTerminal(id) // the switch-client redraw landed; size it to the pane
+          } else {
+            timer = setTimeout(poll, 200)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) timer = setTimeout(poll, 400)
+        })
+    }
+    poll()
+    return () => {
+      cancelled = true
+      clearTimeout(fit)
+      clearTimeout(timer)
+    }
   }, [tabId, base])
 
   // Keepalive: if the viewport ttyd died (crash), respawn it and pick up the new
@@ -62,19 +92,14 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
     return () => clearInterval(t)
   }, [tabId])
 
-  // Wire xterm once the iframe element exists; lift the loading overlay once it
-  // has actually painted. base only changes on (rare) respawn.
+  // Wire xterm once the iframe element exists (base only changes on rare respawn).
+  // Readiness is driven by the per-tab poll above, not xterm's first paint.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-wire when base changes (new iframe)
   React.useEffect(() => {
     if (!base) return
-    setReady(false)
     const cleanup = bootTermFrame(id, false)
     refitTerminal(id)
-    const cancel = whenTerminalReady(id, () => setReady(true))
-    return () => {
-      cancel()
-      cleanup()
-    }
+    return cleanup
   }, [base, id])
 
   return (
