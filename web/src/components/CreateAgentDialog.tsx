@@ -472,7 +472,7 @@ export function CreateAgentDialog({
           // faint tint, so it reads as the row's primary action without a solid fill.
           <button
             type="button"
-            className="my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
+            className="mx-2 my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
             title="create a new agent (⌘O)"
           >
             <Plus className="size-3.5" />
