@@ -204,19 +204,8 @@ func nudgeRedraw(session string) {
 // need to land at least one redraw after the program's real frame appears.
 // Best-effort; run in a goroutine after spawning the ttyd.
 func nudgeRedrawWhenAttached(session string) {
-	wait := time.Now().Add(10 * time.Second)
-	for {
-		if time.Now().After(wait) {
-			return
-		}
-		n, err := tmuxOut("display-message", "-p", "-t", session, "#{session_attached}")
-		if err != nil {
-			return // session gone
-		}
-		if s := strings.TrimSpace(n); s != "" && s != "0" {
-			break
-		}
-		time.Sleep(150 * time.Millisecond)
+	if !waitAttached(session) {
+		return
 	}
 	// Deltas between nudges → fires at ~0.4s, 1.2s, 2.4s, 4.4s, 7.4s post-attach.
 	for _, d := range []int{400, 800, 1200, 2000, 3000} {
@@ -225,6 +214,55 @@ func nudgeRedrawWhenAttached(session string) {
 			return
 		}
 		nudgeRedraw(session)
+	}
+}
+
+// waitAttached blocks until a client (ttyd) attaches to session — returns true —
+// or a ~10s timeout / the session vanishing (false). Both the redraw nudge and
+// the shell-prompt prime need a real attached client first: tmux only answers a
+// program's terminal queries (cursor-position DSR, etc.) when a client is there
+// to answer for, and SIGWINCH/repaint only matter once someone's watching.
+func waitAttached(session string) bool {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := tmuxOut("display-message", "-p", "-t", session, "#{session_attached}")
+		if err != nil {
+			return false // session gone
+		}
+		if s := strings.TrimSpace(n); s != "" && s != "0" {
+			return true
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return false
+}
+
+// primeShellPromptWhenAttached makes a SHELL session paint its prompt. Some
+// prompt frameworks (notably starship on bash) don't draw the first prompt until
+// the shell both (a) has a client attached to answer the terminal queries
+// starship makes while rendering, and (b) processes an input event — readline
+// computes the prompt and sits idle in select() without painting it, so the pane
+// stays blank until the user types (a resize/Ctrl-L don't help, only an actual
+// line-accept does; and with no client attached even that is flaky). So: wait for
+// the client, then send an Enter (an empty command — harmless), retrying only
+// while the pane is still blank, stopping the moment the prompt appears so we
+// never type into a shell already in use.
+//
+// SHELL-ONLY: never call this on an agent session — the Enter could submit a
+// half-typed agent command.
+func primeShellPromptWhenAttached(session string) {
+	if !waitAttached(session) {
+		return
+	}
+	for _, d := range []int{150, 300, 500, 800} { // ~0.15, 0.45, 0.95, 1.75s post-attach
+		time.Sleep(time.Duration(d) * time.Millisecond)
+		if !tmuxHasSession(session) {
+			return
+		}
+		if out, _ := tmuxCapture(session); strings.TrimSpace(out) != "" {
+			return // prompt (or any output) is up — done
+		}
+		_ = tmuxSendEnter(session)
 	}
 }
 

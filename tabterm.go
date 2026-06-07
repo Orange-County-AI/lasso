@@ -133,6 +133,16 @@ func ensureTabTerm(tabID string) (string, error) {
 	// mid-startup and the SIGWINCH eats the shell's first prompt / agent's first
 	// frame, leaving the pane blank until the user types (see nudgeRedraw).
 	go nudgeRedrawWhenAttached(session)
+	// A bare shell's prompt (starship) won't paint until the shell processes an
+	// input event with a client attached to answer its terminal queries — a resize
+	// isn't enough. Prime SHELL tabs with an Enter after attach. Never agent tabs:
+	// the Enter could submit a half-typed agent command. (Uses the stored kind, so
+	// a reconciled agent-turned-shell after a reboot isn't primed — rare; the user
+	// can press a key. We deliberately don't probe the live process, which races a
+	// freshly-launched agent.)
+	if t, err := getTab(tabID); err == nil && t.Kind != "agent" {
+		go primeShellPromptWhenAttached(session)
+	}
 
 	e := &tabTermEntry{
 		token:    token,
