@@ -26,6 +26,7 @@ import {
   api,
   type TreePayload,
   type TreeRepo,
+  type TreeTab,
   type TreeWorkspace,
 } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
@@ -58,6 +59,14 @@ const STATUS_DOT: Record<string, string> = {
 function refreshTree() {
   queryClient.invalidateQueries({ queryKey: qk.tree })
   queryClient.invalidateQueries({ queryKey: qk.agents })
+}
+
+// A tab is "named" if its title isn't blank or a bare number (the default
+// "1","2",… auto-names). Only named tabs surface in the spaces tree under their
+// scratch workspace; numbered tabs stay in the TabStrip and don't pollute it.
+function isNamedTab(t: TreeTab): boolean {
+  const s = (t.title ?? "").trim()
+  return s !== "" && !/^\d+$/.test(s)
 }
 
 // A single top-level row of the unified "spaces" list: either a standalone
@@ -623,11 +632,23 @@ function WorkspaceNode({
   onBulkDelete: () => void
 }) {
   const { agentStatuses } = useApp()
+  const [open, setOpen] = React.useState(true)
   const tabs = ws.tabs ?? []
   const selected = tabs.some((t) => t.id === selectedTabId)
   const markedForDelete = delSel.has(ws.id)
   // Open the agent tab if there is one, else the first tab.
   const primary = tabs.find((t) => agentStatuses[t.id]) ?? tabs[0]
+  // A scratch workspace expands (like a repo over its worktrees) to list its
+  // *named* tabs as nested rows. Numbered tabs stay in the TabStrip only.
+  const namedTabs = tabs.filter(isNamedTab)
+  const expandable =
+    ws.kind === "scratch" && depth === 1 && namedTabs.length > 0
+  // When the active tab is one of the visible nested rows, let that row carry the
+  // highlight; otherwise (selected tab is a hidden numbered tab) keep it on the row.
+  const rowSelected =
+    expandable && namedTabs.some((t) => t.id === selectedTabId)
+      ? false
+      : selected
   // Live workspace status: merge the SSE status of any of its tabs that are
   // running an agent (blocked > working > idle), falling back to the server's
   // computed value from the last tree fetch.
@@ -653,44 +674,66 @@ function WorkspaceNode({
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <button
-            type="button"
-            onClick={(e) => {
-              // ⌘/Ctrl-click toggles this workspace in the bulk-delete selection
-              // instead of opening it.
-              if (e.metaKey || e.ctrlKey) {
-                e.preventDefault()
-                onToggleDel(ws.id)
-                return
-              }
-              if (primary) onSelectTab(primary.id)
-            }}
+          <div
             style={{ paddingLeft: `${depth * 12}px` }}
             className={cn(
-              "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
-              selected && "bg-accent/60",
+              "flex w-full items-center gap-1 py-1 pr-2 hover:bg-accent/40",
+              rowSelected && "bg-accent/60",
               markedForDelete &&
                 "bg-[var(--h-bad)]/15 ring-1 ring-[var(--h-bad)]/60 ring-inset"
             )}
           >
-            {status ? (
-              <span
-                className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  STATUS_DOT[status]
-                )}
-              />
-            ) : (
-              <Terminal className="size-3 shrink-0 text-muted-foreground" />
+            {expandable && (
+              <button
+                type="button"
+                aria-label={open ? "collapse" : "expand"}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setOpen((o) => !o)
+                }}
+                className="shrink-0"
+              >
+                <ChevronRight
+                  className={cn(
+                    "size-3 transition-transform",
+                    open && "rotate-90"
+                  )}
+                />
+              </button>
             )}
-            <span className="truncate">{ws.title}</span>
-            {ws.branch && (
-              <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
-                <GitBranch className="size-3" />
-                {ws.branch}
-              </span>
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                // ⌘/Ctrl-click toggles this workspace in the bulk-delete selection
+                // instead of opening it.
+                if (e.metaKey || e.ctrlKey) {
+                  e.preventDefault()
+                  onToggleDel(ws.id)
+                  return
+                }
+                if (primary) onSelectTab(primary.id)
+              }}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            >
+              {status ? (
+                <span
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    STATUS_DOT[status]
+                  )}
+                />
+              ) : (
+                <Terminal className="size-3 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate">{ws.title}</span>
+              {ws.branch && (
+                <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
+                  <GitBranch className="size-3" />
+                  {ws.branch}
+                </span>
+              )}
+            </button>
+          </div>
         </ContextMenuTrigger>
         {markedForDelete ? (
           // Right-clicking a selected workspace during a multi-select offers only
@@ -738,6 +781,18 @@ function WorkspaceNode({
         )}
       </ContextMenu>
 
+      {expandable &&
+        open &&
+        namedTabs.map((tab) => (
+          <TabNode
+            key={tab.id}
+            tab={tab}
+            depth={depth + 1}
+            selected={tab.id === selectedTabId}
+            onSelectTab={onSelectTab}
+          />
+        ))}
+
       <PromptDialog
         open={renameOpen}
         onOpenChange={setRenameOpen}
@@ -768,6 +823,81 @@ function WorkspaceNode({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </>
+  )
+}
+
+// A single named tab nested under its scratch workspace in the spaces tree
+// (mirrors how a worktree row sits under its repo). Clicking switches to the tab
+// — kept in sync with the TabStrip via the shared selectedTabId. Right-click to
+// rename or close it.
+function TabNode({
+  tab,
+  depth,
+  selected,
+  onSelectTab,
+}: {
+  tab: TreeTab
+  depth: number
+  selected: boolean
+  onSelectTab: (tabId: string) => void
+}) {
+  const { agentStatuses } = useApp()
+  const status = agentStatuses[tab.id] ?? tab.status
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const submitRename = async (title: string) => {
+    await api.renameTab(tab.id, title).catch((e) => toast.error(String(e)))
+    refreshTree()
+  }
+  return (
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={() => onSelectTab(tab.id)}
+            style={{ paddingLeft: `${depth * 12}px` }}
+            className={cn(
+              "flex w-full items-center gap-1.5 py-1 pr-2 text-left hover:bg-accent/40",
+              selected && "bg-accent/60"
+            )}
+          >
+            {tab.kind === "agent" && status ? (
+              <span
+                className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
+              />
+            ) : (
+              <Terminal className="size-3 shrink-0 text-muted-foreground" />
+            )}
+            <span className="truncate">{tab.title}</span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => setRenameOpen(true)}>
+            Rename…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={async () => {
+              await api.closeTab(tab.id).catch((e) => toast.error(String(e)))
+              refreshTree()
+            }}
+          >
+            Close tab
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <PromptDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        title="Rename tab"
+        placeholder="Tab name"
+        defaultValue={tab.title}
+        submitLabel="Rename"
+        onSubmit={submitRename}
+      />
     </>
   )
 }
