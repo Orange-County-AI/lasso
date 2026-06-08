@@ -300,6 +300,8 @@ export const api = {
     postJSON<{ ok: boolean }>("/api/workspace/rename", { workspace_id, title }),
   closeWorkspace: (workspace_id: string) =>
     postJSON<{ ok: boolean }>("/api/workspace/close", { workspace_id }),
+  pinWorkspace: (workspace_id: string, pinned: boolean) =>
+    postJSON<{ ok: boolean }>("/api/workspace/pin", { workspace_id, pinned }),
   pinRepo: (repo: string, pinned: boolean) =>
     postJSON<{ ok: boolean }>("/api/repo/pin", { repo, pinned }),
   // Open (creating on first use) a terminal on a repo's primary branch — its

@@ -134,6 +134,7 @@ func runServer() {
 	mux.HandleFunc("/api/workspace/create", serveCreateWorkspace)
 	mux.HandleFunc("/api/workspace/rename", serveWorkspaceRenameDB)
 	mux.HandleFunc("/api/workspace/close", serveWorkspaceClose)
+	mux.HandleFunc("/api/workspace/pin", serveWorkspacePin)
 	mux.HandleFunc("/api/repo/pin", serveRepoPin)
 	mux.HandleFunc("/api/repo/rename", serveRepoRename)
 	mux.HandleFunc("/api/repo/open", serveOpenRepo)

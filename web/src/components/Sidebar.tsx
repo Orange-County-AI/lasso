@@ -602,6 +602,16 @@ function WorkspaceNode({
             <ContextMenuItem onSelect={() => setRenameOpen(true)}>
               Rename…
             </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={async () => {
+                await api
+                  .pinWorkspace(ws.id, !ws.pinned)
+                  .catch((e) => toast.error(String(e)))
+                refreshTree()
+              }}
+            >
+              {ws.pinned ? "Unpin" : "Pin to top"}
+            </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => onToggleDel(ws.id)}>
               Select (⌘-click)

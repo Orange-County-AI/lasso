@@ -166,6 +166,10 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Name < out[j].Name
 	})
+	// Scratch workspaces: pinned first, otherwise keep DB (creation) order.
+	sort.SliceStable(scratch, func(i, j int) bool {
+		return scratch[i].Pinned && !scratch[j].Pinned
+	})
 	writeJSON(w, treePayload{Repos: out, Scratch: scratch})
 }
 
@@ -523,6 +527,28 @@ func serveRepoPin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pinRepo(sidebarHost, req.Repo, req.Pinned); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	kickHub()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// serveWorkspacePin toggles a scratch workspace's pinned flag (floats it to the
+// top of the scratch list).
+func serveWorkspacePin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkspaceID string `json:"workspace_id"`
+		Pinned      bool   `json:"pinned"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.WorkspaceID == "" {
+		http.Error(w, "workspace_id required", http.StatusBadRequest)
+		return
+	}
+	if err := setWorkspacePinned(req.WorkspaceID, req.Pinned); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
