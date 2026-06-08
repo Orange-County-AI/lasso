@@ -229,13 +229,28 @@ func nudgeRedraw(session string) {
 // redraw a handful of times on a schedule. We can't pick one delay: the frame
 // that needs re-pushing might be a shell prompt after a slow mise/starship rc,
 // OR an agent TUI that only finishes booting seconds later (and whose shell
-// prompt drew first, so cursor-position can't tell us "done"). Re-drawing
-// already-correct content is invisible, so over-nudging is harmless — we just
-// need to land at least one redraw after the program's real frame appears.
-// Best-effort; run in a goroutine after spawning the ttyd.
+// prompt drew first, so cursor-position can't tell us "done").
+//
+// The nudge exists for ONE purpose: recover a first frame eaten by the attach
+// SIGWINCH (a freshly-created session attaches blank until something repaints).
+// It is NOT free to over-fire: each nudgeRedraw is a real ±1 window resize, and
+// an agent TUI like Claude Code renders its UI anchored to the bottom WITHOUT the
+// alternate screen, so every resize repaints that frame one row up and back — a
+// visible one-row "bounce". serveTabTerm drives this on EVERY switch to an agent
+// tab (the frontend re-POSTs /api/tab/term per switch), so an ungated schedule
+// thrashes an already-painted Claude for ~7s every time you navigate to it.
+//
+// So gate on the pane actually being blank: skip entirely if it already has
+// content (a re-viewed, already-painted session needs no recovery), and stop the
+// moment a nudge brings content up (don't thrash the frames after recovery). This
+// keeps the blank-first-frame fix while not bouncing a live TUI. Best-effort; run
+// in a goroutine after spawning the ttyd.
 func nudgeRedrawWhenAttached(session string) {
 	if !waitAttached(session) {
 		return
+	}
+	if out, _ := tmuxCapture(session); strings.TrimSpace(out) != "" {
+		return // already painted — nudging would only bounce it
 	}
 	// Deltas between nudges → fires at ~0.4s, 1.2s, 2.4s, 4.4s, 7.4s post-attach.
 	for _, d := range []int{400, 800, 1200, 2000, 3000} {
@@ -244,6 +259,9 @@ func nudgeRedrawWhenAttached(session string) {
 			return
 		}
 		nudgeRedraw(session)
+		if out, _ := tmuxCapture(session); strings.TrimSpace(out) != "" {
+			return // frame recovered — further nudges would just bounce it
+		}
 	}
 }
 
