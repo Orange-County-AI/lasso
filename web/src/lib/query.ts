@@ -28,6 +28,10 @@ export const qk = {
   diff: (host: string, path: string) => ["diff", host, path] as const,
   sidebarPct: ["sidebar-pct"] as const,
   version: ["version"] as const,
+  // Multi-host: the host list, the cross-host grid, and persisted UI prefs.
+  hosts: ["hosts"] as const,
+  grid: ["grid"] as const,
+  uiState: ["ui-state"] as const,
 }
 
 // Optimistic tree edits: a freshly-created tab/workspace is written into the
@@ -104,4 +108,9 @@ export function invalidateHostScoped() {
   queryClient.invalidateQueries({ queryKey: ["repos"] })
   queryClient.invalidateQueries({ queryKey: ["repo-branches"] })
   queryClient.invalidateQueries({ queryKey: qk.version })
+  // The sidebar tree and the grid are scoped to the active host, so re-scope
+  // them when the host changes.
+  queryClient.invalidateQueries({ queryKey: qk.tree })
+  queryClient.invalidateQueries({ queryKey: qk.agents })
+  queryClient.invalidateQueries({ queryKey: qk.grid })
 }

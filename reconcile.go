@@ -48,6 +48,11 @@ func reconcileTabs() {
 	}
 	want := map[string]bool{}
 	for _, t := range tabs {
+		// Remote tabs live on another host's tmux server; the local reconcile
+		// neither stats their cwd nor manages their sessions. Skip them.
+		if tabHost(t.ID) != "" {
+			continue
+		}
 		session := tabSession(t.ID)
 		// Retire a tab whose directory no longer exists (e.g. the worktree was
 		// removed) so it doesn't linger in the sidebar pointing at nothing.
@@ -96,6 +101,12 @@ func processAlive(pid int) bool {
 // needs its prompt primed) versus reusing a live one.
 func ensureTabSession(tabID string) (string, bool, error) {
 	session := tabSession(tabID)
+	// Re-assert the session→host mapping from the DB: a lasso restart clears the
+	// in-memory sessionHosts map, so without this a remote session would resolve
+	// to the local server and look dead. (No-op for local tabs.)
+	host := tabHost(tabID)
+	setSessionHost(session, host)
+
 	if tmuxHasSession(session) {
 		markSeen(tabID)
 		return session, false, nil
@@ -113,6 +124,13 @@ func ensureTabSession(tabID string) (string, bool, error) {
 	if !tab.ClosedAt.IsZero() {
 		return "", false, fmt.Errorf("tab %s is closed", tabID)
 	}
+	// Reboot recovery (recreate a fresh shell) is LOCAL-only — we can't cheaply
+	// probe a remote host's filesystem here, and remote sessions live on the
+	// remote tmux server independent of lasso. A missing remote session is an
+	// error (the remote host or its tmux server is down).
+	if host != "" {
+		return "", false, fmt.Errorf("tab %s not live on host %s", tabID, host)
+	}
 	cwd := tab.Cwd
 	if cwd == "" {
 		cwd, _ = os.UserHomeDir()
@@ -128,6 +146,20 @@ func ensureTabSession(tabID string) (string, bool, error) {
 	markPrimePending(session)
 	markSeen(tabID)
 	return session, true, nil
+}
+
+// tabHost returns the host a tab lives on ("" = local), resolved via its
+// workspace's host column.
+func tabHost(tabID string) string {
+	t, err := getTab(tabID)
+	if err != nil {
+		return ""
+	}
+	ws, err := getWorkspace(t.WorkspaceID)
+	if err != nil || isLocalHost(ws.Host) {
+		return ""
+	}
+	return ws.Host
 }
 
 // tabExitWatcher closes a tab when its shell exits — the way the user closes a
@@ -155,6 +187,9 @@ func tabExitWatcher(ctx context.Context, h *hub) {
 			}
 			changed := false
 			for _, tab := range tabs {
+				if tabHost(tab.ID) != "" {
+					continue // remote tab — not on the local server we just listed
+				}
 				if live[tabSession(tab.ID)] {
 					markSeen(tab.ID)
 					continue
@@ -250,6 +285,9 @@ func cwdSaver(ctx context.Context) {
 				continue
 			}
 			for _, tab := range tabs {
+				if tabHost(tab.ID) != "" {
+					continue // remote tab cwd is saved by its own host's lasso path
+				}
 				session := tabSession(tab.ID)
 				if !tmuxHasSession(session) {
 					continue

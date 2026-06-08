@@ -365,7 +365,7 @@ func appendAgent(host string, rec AgentRecord) error {
 // listAgents returns the agents created on a host, oldest first (append order).
 func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
-		`SELECT id, title, type, repo, base_branch, branch, agent, description, notes,
+		`SELECT id, host, title, type, repo, base_branch, branch, agent, description, notes,
 			attachments, plan_mode, work_dir, workspace_id, root_pane, tab_id, created_at
 		 FROM agents WHERE host=? ORDER BY created_at`, host)
 	if err != nil {
@@ -377,7 +377,7 @@ func listAgents(host string) ([]AgentRecord, error) {
 		var rec AgentRecord
 		var att, created string
 		var plan int
-		if err := rows.Scan(&rec.ID, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
+		if err := rows.Scan(&rec.ID, &rec.Host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
 			&rec.Branch, &rec.Agent, &rec.Description, &rec.Notes, &att, &plan,
 			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &rec.TabID, &created); err != nil {
 			return nil, err

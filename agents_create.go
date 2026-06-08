@@ -113,10 +113,19 @@ func splitGlobs(spec string) []string {
 // GET/POST /api/agent-config — creator settings + agent records
 // ---------------------------------------------------------------------------
 
+// reqHost reads the optional ?host= query param (the frontend's withHost helper
+// appends it), defaulting to the active backend's host.
+func reqHost(r *http.Request) string {
+	if h := r.URL.Query().Get("host"); h != "" {
+		return h
+	}
+	return sbHost()
+}
+
 func serveAgentConfig(w http.ResponseWriter, r *http.Request) {
-	// Settings (defaults) plus last-used selections + the agent log all live in
-	// the local lasso.db.
-	host := "local"
+	// Settings (defaults) plus last-used selections + the agent log are keyed by
+	// host in the local lasso.db; repo scans hit the host's filesystem.
+	host := reqHost(r)
 	switch r.Method {
 	case http.MethodGet:
 		c, err := hostAgentConfig(host)
@@ -158,7 +167,7 @@ func serveRepoConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	host := "local"
+	host := reqHost(r)
 	var req repoConfigPatch
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -192,7 +201,7 @@ type repoEntry struct {
 }
 
 func serveRepos(w http.ResponseWriter, r *http.Request) {
-	host := "local"
+	host := reqHost(r)
 	root, repos, err := hostReposList(host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -211,7 +220,12 @@ func serveRepoBranches(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	local, remote, def := branchList(curBackend(), path)
+	be, err := resolveBackend(reqHost(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	local, remote, def := branchList(be, expandTildeOn(be, path))
 	writeJSON(w, map[string]any{"branches": local, "remoteBranches": remote, "default": def})
 }
 
@@ -250,6 +264,7 @@ func gitDefaultBranch(cur Backend, repo string) string {
 // ---------------------------------------------------------------------------
 
 type createAgentReq struct {
+	Host         string   `json:"host"`   // target host ("" / "local" = local box, else ssh alias)
 	Type         string   `json:"type"`   // "git" | "scratch"
 	Prompt       string   `json:"prompt"` // the agent's instruction; its first line is the title
 	Title        string   `json:"title"`  // optional explicit title override; defaults to the prompt's first line
@@ -279,7 +294,17 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rec, err := createAgent(curBackend(), req)
+	// Target the requested host (defaults to the active backend when unset, so the
+	// web creator without a host picker still behaves as before).
+	b := curBackend()
+	if req.Host != "" {
+		var err error
+		if b, err = resolveBackend(req.Host); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	rec, err := createAgent(b, req)
 	if err != nil {
 		var ce *createErr
 		if errors.As(err, &ce) {
@@ -329,6 +354,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 
 	rec := AgentRecord{
 		ID:          strconv.FormatInt(time.Now().UnixNano(), 36),
+		Host:        host,
 		Title:       req.Title,
 		Type:        req.Type,
 		Agent:       req.Agent,
@@ -400,12 +426,20 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	rec.TabID = rec.ID
 	rec.WorkspaceID = "w" + rec.ID
 	session := tabSession(rec.TabID)
-	// Claim a pre-booted shell (instant) when possible, else cold-start — the same
-	// warm-pool path tabs and workspaces use (startTabShell / prewarm.go), so the
-	// agent boots without paying the shell rc wait. The agent command is launched
-	// once the shell settles into the work dir (see launchAgentInSession).
-	if err := startTabShell(rec.TabID, rec.WorkDir); err != nil {
-		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("start agent shell: %w", err)}
+	// Create the tmux session backing the agent's tab. Locally, claim a pre-booted
+	// warm shell (instant) when possible (startTabShell / prewarm.go). On a remote
+	// host the warm pool doesn't apply, so cold-create the session directly on that
+	// host's tmux server (over SSH); tmuxNewSessionOn records the session→host
+	// mapping so every later tmux op for it routes there. The agent command is
+	// launched once the shell settles into the work dir (see launchAgentInSession).
+	if isLocalHost(host) {
+		if err := startTabShell(rec.TabID, rec.WorkDir); err != nil {
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("start agent shell: %w", err)}
+		}
+	} else {
+		if err := tmuxNewSessionOn(host, session, rec.WorkDir, []string{"LASSO_TAB_ID=" + rec.TabID}); err != nil {
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("start remote agent shell: %w", err)}
+		}
 	}
 	if err := insertWorkspace(Workspace{
 		ID: rec.WorkspaceID, Host: host, Title: rec.Title, Repo: rec.Repo,
@@ -682,7 +716,13 @@ func createWorktree(b Backend, repo, base, branch, titleSlug string) (string, er
 // in $HOME. We then wait for the shell to settle (tmuxWaitReady): characters typed
 // before the rc finishes get their leading bytes eaten.
 func launchAgentInSession(session, workDir, tabID, setup, agentCmd string) {
-	deadline := time.Now().Add(15 * time.Second)
+	// Remote sessions settle slower (each probe is an ssh round trip + the remote
+	// rc boot), so give them a longer window before sending the agent command.
+	settle := 15 * time.Second
+	if hostForSession(session) != "" {
+		settle = 45 * time.Second
+	}
+	deadline := time.Now().Add(settle)
 	for time.Now().Before(deadline) {
 		if !tmuxHasSession(session) {
 			return

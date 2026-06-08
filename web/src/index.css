@@ -682,3 +682,146 @@
 .dragging iframe {
   pointer-events: none;
 }
+
+/* --- Grid view (cross-host terminal wall) --- */
+.termgrid {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 14px;
+  /* Flex wrap (not CSS grid) so the cells in each row grow to fill the row's
+     full width — a CSS grid leaves empty tracks, stranding a lone last-row cell
+     at its min width. align-content: start packs rows to the top. */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-content: start;
+}
+/* A zero-height, full-width flex item that forces a row break, so the top row
+   can hold just the remainder cells (which then grow to fill the width). The
+   negative margins cancel the extra row-gap the break would otherwise add. */
+.termbreak {
+  flex-basis: 100%;
+  width: 100%;
+  height: 0;
+  margin: -7px 0;
+}
+.termcell {
+  /* grow to share the row's width, wrapping when a cell can't keep ~360px */
+  flex: 1 1 360px;
+  display: flex;
+  flex-direction: column;
+  height: 260px;
+  /* Blend the (subtle) border toward muted so each cell reads as a distinct
+     tile rather than dissolving into the background. */
+  border: 1px solid color-mix(in srgb, var(--color-border) 45%, var(--color-muted-foreground));
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-background);
+}
+.termcell.focused {
+  border-color: var(--color-primary);
+}
+.termcell.selected {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+  border-color: var(--color-primary);
+}
+.termcell-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.termcell-head:hover {
+  background: var(--color-accent);
+}
+/* Keep a single, steady cursor across the whole header rather than flipping
+   between pointer / text / default over its spans — the hover highlight already
+   signals it's clickable. */
+.termcell-head,
+.termcell-head * {
+  cursor: default;
+}
+.termcell-host {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.termcell-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.termcell-agent {
+  flex: 0 0 auto;
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+}
+.termcell-agent.working {
+  color: var(--color-warn);
+}
+.termcell-agent.blocked {
+  color: var(--color-bad);
+}
+.termcell-agent.idle,
+.termcell-agent.done {
+  color: var(--color-good);
+}
+.termcell-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.termcell-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--color-background);
+  /* Fade the terminal in once it's live (the loading overlay sits on top until
+     then), so the reveal is smooth rather than a hard cut over ttyd's churn. */
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+.termcell-body iframe.is-loading {
+  opacity: 0;
+}
+.termcell-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Opaque so it fully hides the connecting iframe underneath. */
+  background: var(--color-background);
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+}
+.termcell-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  animation: termcell-spin 0.7s linear infinite;
+}
+@keyframes termcell-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* file list */

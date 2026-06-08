@@ -199,14 +199,19 @@ func hostSetDefaults(host string, p defaultsPatch) error {
 	return applyDefaults(p)
 }
 
-// hostReposList lists repos (scanned on the local fs, merged with per-repo state).
+// hostReposList lists repos scanned on the host's filesystem (over SSH for a
+// remote host), merged with that host's per-repo state from the local db.
 func hostReposList(host string) (string, []repoEntry, error) {
-	return reposList(localFsBackend(), "local")
+	be, err := resolveBackend(host)
+	if err != nil {
+		return "", nil, err
+	}
+	return reposList(be, hostOrLocal(host))
 }
 
-// hostRepoConfig reads one repo's per-repo settings.
+// hostRepoConfig reads one repo's per-repo settings (keyed by host).
 func hostRepoConfig(host, path string) (RepoConfig, error) {
-	return getRepoState("local", path)
+	return getRepoState(hostOrLocal(host), path)
 }
 
 // hostSetRepoConfig writes one repo's per-repo settings.

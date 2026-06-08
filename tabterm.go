@@ -88,6 +88,28 @@ func serveTabTerm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "valid tab_id required", http.StatusBadRequest)
 		return
 	}
+	// A tab on a REMOTE host can't be shown through the local warm viewport:
+	// tmux `switch-client` only moves a client among sessions on the SAME tmux
+	// server. So remote tabs get their own ttyd that `ssh -tt`-attaches the remote
+	// session directly (ensureRemoteViewport), respawned when the wanted session
+	// changes. Local tabs keep the warm, switch-client'd viewport.
+	if req.TabID != "" {
+		if host := tabHost(req.TabID); host != "" {
+			session, _, err := ensureTabSession(req.TabID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			base, err := ensureRemoteViewport(host, session)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			writeJSON(w, map[string]any{"base": base})
+			return
+		}
+	}
+
 	base, err := ensureViewport()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -279,11 +301,86 @@ func serveTabTermProxy(w http.ResponseWriter, r *http.Request) {
 		proxy = viewport.proxy
 	}
 	viewport.mu.Unlock()
+	if proxy == nil { // not the local viewport — try the remote viewport
+		remoteViewport.mu.Lock()
+		if token == remoteViewport.token {
+			proxy = remoteViewport.proxy
+		}
+		remoteViewport.mu.Unlock()
+	}
 	if proxy == nil {
 		http.NotFound(w, r)
 		return
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// --- the remote viewport: one ttyd that ssh-attaches a remote tab's session ----
+//
+// A remote tab can't ride the warm local viewport (switch-client can't cross tmux
+// servers). Instead a single dedicated ttyd runs `ssh -tt host 'tmux … attach -t
+// <session>'`. It's respawned whenever the wanted remote session changes (a fresh
+// token/sock each time), so the frontend re-points its iframe at the new base.
+// Only one is kept at a time — switching back to a local tab leaves it idle until
+// the next remote switch reclaims it. Slower than the local warm path (each
+// remote switch pays the attach handshake), but remote is inherently slower.
+var remoteViewport struct {
+	mu      sync.Mutex
+	token   string
+	sock    string
+	base    string
+	proxy   *httputil.ReverseProxy
+	cancel  context.CancelFunc
+	host    string // host the current attach targets
+	session string // session the current attach targets
+}
+
+// ensureRemoteViewport makes the remote-viewport ttyd attach host:session,
+// respawning it if it's pointed elsewhere or dead, and returns its proxy base.
+func ensureRemoteViewport(host, session string) (string, error) {
+	remoteViewport.mu.Lock()
+	defer remoteViewport.mu.Unlock()
+
+	if remoteViewport.token != "" && remoteViewport.host == host && remoteViewport.session == session {
+		if _, err := os.Stat(remoteViewport.sock); err == nil {
+			return remoteViewport.base, nil // still attached to the right session
+		}
+	}
+	// Tear down whatever's there (wrong target or dead ttyd).
+	if remoteViewport.cancel != nil {
+		remoteViewport.cancel()
+		remoteViewport.cancel = nil
+	}
+	remoteViewport.token, remoteViewport.base, remoteViewport.proxy = "", "", nil
+
+	be, err := hostBackend(host)
+	if err != nil {
+		return "", err
+	}
+
+	var tok [9]byte
+	if _, err := rand.Read(tok[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(tok[:])
+	sock := tabTermSock(token)
+	basePath := "/tab-term/" + token
+
+	ctx, cancel := context.WithCancel(srvCtx)
+	if err := startTtydArgv(ctx, sock, basePath, be.TmuxAttachArgv(session), nil); err != nil {
+		cancel()
+		return "", err
+	}
+	waitSocket(sock, true, 3*time.Second)
+
+	remoteViewport.token = token
+	remoteViewport.sock = sock
+	remoteViewport.base = basePath + "/"
+	remoteViewport.proxy = unixSocketProxy(sock)
+	remoteViewport.cancel = cancel
+	remoteViewport.host = host
+	remoteViewport.session = session
+	return remoteViewport.base, nil
 }
 
 // serveTabTermTouch (POST /api/tab/term-touch) reports whether the viewport ttyd

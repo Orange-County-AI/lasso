@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -120,11 +119,38 @@ func agentSession(rec AgentRecord) string {
 	return tabSession(id)
 }
 
-// agentStatusNow detects an agent's status on demand by scraping its tmux pane —
-// not the poller cache, which is paused when no browser is connected (so MCP
-// callers always get a fresh read). A gone session / exited agent reads idle.
+// recSession is agentSession plus a re-assertion of the session→host mapping from
+// the record, so a remote agent's tmux commands route over SSH even after a lasso
+// restart cleared the in-memory map. Use this for any RUNTIME tmux op on an agent.
+func recSession(rec AgentRecord) string {
+	s := agentSession(rec)
+	setSessionHost(s, rec.Host)
+	return s
+}
+
+// agentStatusNow detects an agent's status on demand by scraping its tmux pane.
+// For a LOCAL agent it always does a fresh read (the poller pauses when no browser
+// is connected). For a REMOTE agent each read is an ssh round trip, so it serves a
+// recently-cached value when the poller has one and only sshes on a cache miss —
+// bounding the ssh cost of wait_agent. A gone session / exited agent reads idle.
 func agentStatusNow(rec AgentRecord) string {
-	session := agentSession(rec)
+	session := recSession(rec)
+	if !isLocalHost(rec.Host) {
+		if st, ok := agentStatuses.statusFresh(rec.Host, rec.TabID, 2*time.Second); ok {
+			return string(st)
+		}
+		if !tmuxHasSession(session) {
+			return string(StatusIdle)
+		}
+		screen, err := tmuxCapture(session)
+		if err != nil {
+			return string(StatusUnknown)
+		}
+		var lw time.Time
+		st := detectAgentStatus(rec.Agent, screen, agentStatuses.status(rec.Host, rec.TabID), &lw, time.Now())
+		agentStatuses.set(rec.Host, rec.TabID, st)
+		return string(st)
+	}
 	if !tmuxHasSession(session) || sessionAgentKind(session) == "" {
 		return string(StatusIdle)
 	}
@@ -133,13 +159,13 @@ func agentStatusNow(rec AgentRecord) string {
 		return string(StatusUnknown)
 	}
 	var lw time.Time
-	return string(detectAgentStatus(rec.Agent, screen, agentStatuses.status(rec.TabID), &lw, time.Now()))
+	return string(detectAgentStatus(rec.Agent, screen, agentStatuses.status(rec.Host, rec.TabID), &lw, time.Now()))
 }
 
 // agentReadText reads an agent's terminal: "visible" = the current screen,
 // anything else = recent scrollback (lines, default 200).
 func agentReadText(rec AgentRecord, source string, lines int) (string, error) {
-	session := agentSession(rec)
+	session := recSession(rec)
 	if !tmuxHasSession(session) {
 		return "", fmt.Errorf("agent %q has no live terminal", rec.ID)
 	}
@@ -159,30 +185,34 @@ func agentReadText(rec AgentRecord, source string, lines int) (string, error) {
 type listHostsIn struct{}
 
 type hostEntry struct {
-	Host       string `json:"host"`       // value to pass as `host` (always "local")
-	Label      string `json:"label"`      // display name (hostname)
-	Reachable  bool   `json:"reachable"`  // always true for local
-	Running    bool   `json:"running"`    // always true for local
-	Compatible bool   `json:"compatible"` // always true for local
+	Host       string `json:"host"`       // value to pass as `host` ("local" or an ssh alias)
+	Label      string `json:"label"`      // display name (hostname / alias)
+	Reachable  bool   `json:"reachable"`  // ssh connected (always true for local)
+	Running    bool   `json:"running"`    // usable as a target: reachable + tmux present
+	Compatible bool   `json:"compatible"` // same as running (no protocol to match in the tmux model)
 	Version    string `json:"version,omitempty"`
+	Err        string `json:"err,omitempty"`
 }
 
 type listHostsOut struct {
-	Active string      `json:"active"` // the host the lasso UI drives (always "local")
+	Active string      `json:"active"` // the host the lasso UI currently drives
 	Hosts  []hostEntry `json:"hosts"`
 }
 
 func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
-	name, _ := os.Hostname()
-	if name == "" {
-		name = "local"
-	}
 	out := listHostsOut{
-		Active: "local",
+		Active: curBackend().Name(),
 		Hosts: []hostEntry{{
-			Host: "local", Label: name, Reachable: true,
+			Host: "local", Label: localHostname(), Reachable: true,
 			Running: true, Compatible: true, Version: lassoVersion(),
 		}},
+	}
+	for _, h := range discoverHosts(ctx, false) {
+		out.Hosts = append(out.Hosts, hostEntry{
+			Host: h.Alias, Label: h.Alias,
+			Reachable: h.Reachable, Running: h.usable(), Compatible: h.usable(),
+			Version: h.TmuxVersion, Err: h.Err,
+		})
 	}
 	return nil, out, nil
 }
@@ -336,7 +366,7 @@ func agentTabLive(rec AgentRecord) bool {
 			return t.ClosedAt.IsZero()
 		}
 	}
-	return tmuxHasSession(agentSession(rec))
+	return tmuxHasSession(recSession(rec))
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +464,7 @@ func sendAgentTool(_ context.Context, _ *mcp.CallToolRequest, in sendAgentIn) (*
 	if err != nil {
 		return nil, sendAgentOut{}, err
 	}
-	session := agentSession(rec)
+	session := recSession(rec)
 	if !tmuxHasSession(session) {
 		return nil, sendAgentOut{}, fmt.Errorf("agent %q has no live terminal to send to", in.AgentID)
 	}
@@ -548,7 +578,7 @@ func closeAgentTool(_ context.Context, _ *mcp.CallToolRequest, in closeAgentIn) 
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}
-	session := agentSession(rec)
+	session := recSession(rec)
 
 	// 1. Always kill the agent process first (Ctrl-C), so it dies even if the
 	//    tab/shell is kept.

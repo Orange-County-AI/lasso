@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { api, type CreateAgentPayload } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
 import { qk, treeAddScratchWorkspace, treeAddWorktree } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
@@ -153,10 +154,26 @@ export function CreateAgentDialog({
     setPlaceholderIdx(Math.floor(Math.random() * PROMPT_PLACEHOLDERS.length))
   }, [open])
 
-  // Everything targets the local backend (~/.lasso/lasso.db / filesystem).
-  const host = "local"
+  // Target host for the new agent. Seeded from the active host each open; the
+  // host picker (shown only when reachable remote hosts exist) can override it.
+  const { host: activeHost } = useApp()
+  const [host, setHost] = React.useState("local")
+  React.useEffect(() => {
+    if (open) setHost(activeHost || "local")
+  }, [open, activeHost])
 
-  // Server state via TanStack Query, fetched while the dialog is open.
+  const hostsQuery = useQuery({
+    queryKey: qk.hosts,
+    queryFn: () => api.hosts(),
+    enabled: open,
+    staleTime: 20_000,
+  })
+  const remoteHosts = (hostsQuery.data?.hosts ?? []).filter(
+    (h) => h.reachable && h.has_tmux
+  )
+
+  // Server state via TanStack Query, fetched while the dialog is open — re-keyed
+  // by the selected host so the repo/branch pickers reflect that host's fs.
   const configQuery = useQuery({
     queryKey: qk.agentConfig(host),
     queryFn: () => api.agentConfig(host),
@@ -325,6 +342,7 @@ export function CreateAgentDialog({
         attachments = up.files
       }
       const payload: CreateAgentPayload = {
+        host,
         type,
         prompt: prompt.trim(),
         agent,
@@ -342,9 +360,14 @@ export function CreateAgentDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      // Surface the new agent's workspace in the tree immediately so the tab
-      // strip + sidebar render it before the refetch lands.
-      if (rec.workspace_id && rec.tab_id) {
+      // If the agent was created on a different host than the active one, switch
+      // to it so the sidebar tree re-scopes and the new tab resolves (the focus
+      // dispatch below then lands on it once the re-scoped tree arrives).
+      const created = rec.host || host
+      if (created !== (activeHost || "local")) {
+        void api.switchHost(created)
+      } else if (rec.workspace_id && rec.tab_id) {
+        // Same host: surface the new workspace optimistically before the refetch.
         const tab = {
           id: rec.tab_id,
           title: rec.title,
@@ -485,6 +508,28 @@ export function CreateAgentDialog({
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
         >
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            {/* Host picker — only when reachable remote hosts exist. The new
+                agent's worktree/session is created on the chosen host. */}
+            {remoteHosts.length > 0 && (
+              <Field label="Host" htmlFor="agent-host">
+                <select
+                  id="agent-host"
+                  className={fieldClass}
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                >
+                  <option value="local">
+                    {hostsQuery.data?.hostname ?? "local"}
+                  </option>
+                  {remoteHosts.map((h) => (
+                    <option key={h.alias} value={h.alias}>
+                      {h.alias}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+
             {/* Type toggle */}
             <div className="flex gap-2">
               {(["git", "scratch"] as const).map((t) => (

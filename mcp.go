@@ -41,19 +41,11 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 	})
 }
 
-// resolveBackend maps a tool's optional `host` argument to a Backend. lasso is
-// local-only, so this always returns the local backend (the `host` argument is
-// accepted for forward/backward compatibility and ignored).
-func resolveBackend(host string) (Backend, error) {
-	return curBackend(), nil
-}
-
 // findAgentRecord looks up an agent created on host by its lasso id, so the
 // interaction tools can recover its tmux session from the persisted record.
+// resolveBackend (hostpool.go) maps the `host` argument to a Backend.
 func findAgentRecord(host, id string) (AgentRecord, error) {
-	if host == "" {
-		host = "local"
-	}
+	host = hostOrLocal(host)
 	recs, err := listAgents(host)
 	if err != nil {
 		return AgentRecord{}, err

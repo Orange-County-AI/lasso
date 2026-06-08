@@ -147,6 +147,17 @@ func runServer() {
 	mux.HandleFunc("/api/repo-config", serveRepoConfig)
 	mux.HandleFunc("/api/repos", serveRepos)
 	mux.HandleFunc("/api/repo-branches", serveRepoBranches)
+	// multi-host: list ssh-config hosts + switch the active one.
+	mux.HandleFunc("/api/hosts", serveHosts)
+	mux.HandleFunc("/api/host", serveHostSwitch)
+	// grid: the cross-host terminal wall + its per-pane ttyd proxy.
+	mux.HandleFunc("/api/grid", serveGrid)
+	mux.HandleFunc("/api/grid/term", serveGridTerm)
+	mux.HandleFunc("/api/grid/term-touch", serveGridTermTouch)
+	mux.HandleFunc("/api/grid/term-release", serveGridTermRelease)
+	mux.HandleFunc("/api/grid/rename", serveGridRename)
+	mux.HandleFunc("/api/grid/close", serveGridClose)
+	mux.HandleFunc("/grid-term/", serveGridTermProxy)
 	mux.HandleFunc("/api/create-agent", serveCreateAgent)
 	mux.HandleFunc("/api/agent-upload", serveAgentUpload)
 	mux.HandleFunc("/api/self-update", serveSelfUpdate)
@@ -890,6 +901,16 @@ func (h *hub) clientCount() int {
 
 func (h *hub) snapshot() Active { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
 
+// bumpTermRev increments the terminal-reload revision and kicks a refresh, so
+// every browser reloads its terminal iframes onto the newly active host (see
+// serveHostSwitch + the frontend's HOST_CHANGED_EVENT).
+func (h *hub) bumpTermRev() {
+	h.mu.Lock()
+	h.termRev++
+	h.mu.Unlock()
+	h.kick()
+}
+
 func (h *hub) run(ctx context.Context) {
 	h.rootCtx = ctx
 	h.trigger = make(chan struct{}, 1)
@@ -919,7 +940,7 @@ func (h *hub) run(ctx context.Context) {
 			h.rev++
 		}
 		a := Active{
-			Host:          "local",
+			Host:          curBackend().Name(),
 			PanesRev:      h.rev,
 			TermRev:       h.termRev,
 			AgentStatuses: statuses,

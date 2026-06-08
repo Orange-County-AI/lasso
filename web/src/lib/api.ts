@@ -25,6 +25,56 @@ export interface Pane {
   agent_status?: string
 }
 
+// ---------------------------------------------------------------------------
+// Multi-host: ssh-config hosts lasso can drive, and the cross-host grid.
+// ---------------------------------------------------------------------------
+
+// One ssh-config host. Usable (selectable, a valid agent/grid target) when
+// reachable && has_tmux; otherwise the UI greys it out and shows `err`.
+export interface HostInfo {
+  alias: string
+  reachable: boolean
+  has_tmux: boolean
+  tmux_version?: string
+  home?: string
+  err?: string
+}
+
+export interface HostsPayload {
+  active: string // the host lasso currently drives ("local" or an alias)
+  hostname: string // local machine label, shown for the local host
+  hosts: HostInfo[]
+}
+
+// One live tab on one host, as rendered by the grid. A "pane" maps 1:1 to a tab
+// (lasso's terminal granularity is the tab's tmux session).
+export interface GridPane {
+  host: string
+  host_label: string
+  tab_id: string
+  workspace_id: string
+  workspace_label: string
+  tab_label: string
+  cwd: string
+  agent?: string
+  agent_status?: AgentStatus
+  has_agent: boolean
+  prompt?: string
+}
+
+export interface GridPayload {
+  panes: GridPane[]
+  errors?: Record<string, string> // host → why it couldn't be reached
+}
+
+// Server-persisted, global UI preferences (the grid's filters + sidebar state).
+export interface UIState {
+  grid_agents_only: boolean
+  grid_hidden_hosts: string[]
+  grid_selected: string[] // "host|tab_id" keys of multi-selected cells
+  sidebar_collapsed: boolean
+}
+
 export interface FileEntry {
   name: string
   dir: boolean
@@ -175,6 +225,7 @@ export interface RepoConfig {
 // One agent lasso has spawned.
 export interface AgentRecord {
   id: string
+  host?: string
   title: string
   type: "git" | "scratch"
   repo?: string
@@ -224,6 +275,8 @@ export interface RepoBranches {
 
 // The body POSTed to /api/create-agent.
 export interface CreateAgentPayload {
+  // Target host ("" / "local" = the local box, else an ssh alias).
+  host?: string
   type: "git" | "scratch"
   // The agent's instruction; its first line becomes the title (branch/dir name,
   // workspace label, list/toast headline).
@@ -494,4 +547,52 @@ export const api = {
   // Create + launch an agent (git worktree or scratch workspace).
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
+
+  // --- Multi-host + grid ---
+
+  // List ssh-config hosts lasso can drive (refresh forces a re-probe).
+  hosts: (refresh = false) =>
+    getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
+
+  // Switch the active host (the file browser, diff, repo picker, sidebar tree
+  // and new-agent target follow it). Bumps term_rev so iframes reload.
+  switchHost: (host: string) =>
+    postJSON<{ active: string }>("/api/host", { host }),
+
+  // The cross-host pane list (every host's live tabs).
+  gridPanes: () => getJSON<GridPayload>("/api/grid"),
+
+  // Ensure a ttyd attached to a grid pane and get its iframe base path.
+  gridTerm: (host: string, tab_id: string) =>
+    postJSON<{ base: string }>("/api/grid/term", { host, tab_id }),
+
+  // Keepalive so a visible cell's ttyd isn't reaped.
+  gridTermTouch: (host: string, tab_id: string) =>
+    postJSON<{ alive: boolean }>("/api/grid/term-touch", { host, tab_id }),
+
+  // Tear down a cell's ttyd when it scrolls out of view / the grid is left.
+  // keepalive:true so it still fires during page unload.
+  gridTermRelease: (host: string, tab_id: string) =>
+    fetch("/api/grid/term-release", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, tab_id }),
+      keepalive: true,
+    }).then(() => undefined),
+
+  // Rename a workspace from the grid.
+  gridRename: (host: string, workspace_id: string, label: string) =>
+    postJSON<{ ok: boolean }>("/api/grid/rename", {
+      host,
+      workspace_id,
+      label,
+    }),
+
+  // Close one or more panes (kills their sessions, host-aware).
+  gridClose: (panes: { host: string; tab_id: string }[]) =>
+    postJSON<{ ok: boolean }>("/api/grid/close", { panes }),
+
+  // Server-persisted UI prefs (grid filters + sidebar collapsed).
+  uiState: () => getJSON<UIState>("/api/ui-state"),
+  saveUIState: (s: UIState) => postJSON<UIState>("/api/ui-state", s),
 }

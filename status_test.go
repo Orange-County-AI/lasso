@@ -16,7 +16,7 @@ func TestPollOnceIgnoresDeadAgents(t *testing.T) {
 	_ = insertTab(Tab{ID: "a1", WorkspaceID: "wa1", Title: "T", Cwd: "/x", Kind: "agent", AgentID: "a1"})
 
 	agentStatuses.pollOnce()
-	if got := agentStatuses.status("a1"); got != StatusUnknown {
+	if got := agentStatuses.status("", "a1"); got != StatusUnknown {
 		t.Errorf("status = %q, want unknown (no live agent process)", got)
 	}
 	if snap := agentStatuses.snapshot(); len(snap) != 0 {

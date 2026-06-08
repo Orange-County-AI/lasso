@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,28 +30,52 @@ import (
 // tmux session names — so they're safe verbatim.
 func tabSession(tabID string) string { return "lasso_" + tabID }
 
-// tmuxPrefix is the leading argv every tmux call carries: our private socket and
-// "no user config". Built fresh per call so the socket path is always current.
+// tmuxPrefix is the leading argv every LOCAL tmux call carries: our private
+// socket and "no user config". Built fresh per call so the socket path is always
+// current. (Remote calls build their own prefix in remoteBackend.TmuxArgv.)
 func tmuxPrefix() []string {
 	return []string{"-S", lassoTmuxSock(), "-f", "/dev/null"}
 }
 
-// tmux runs a tmux command on our server, discarding stdout (returns any error,
-// with stderr folded into the message like gitOutLocal does).
-func tmux(args ...string) error {
-	_, err := tmuxOut(args...)
-	return err
+// --- host-aware session routing ------------------------------------------------
+//
+// Every tmux session is created on exactly one host and never migrates, so we
+// route a session's tmux commands by looking up the host it was created on.
+// sessionHosts records that mapping; an unregistered session (every LOCAL one)
+// resolves to "" → the local backend, so local behavior is unchanged and only
+// remote sessions are tagged.
+
+var sessionHosts sync.Map // session name → host alias ("" / "local" = local)
+
+func setSessionHost(session, host string) {
+	if isLocalHost(host) {
+		sessionHosts.Delete(session) // local is the default; no need to store
+		return
+	}
+	sessionHosts.Store(session, host)
 }
 
-// tmuxOut runs a tmux command on our server and returns its stdout.
-func tmuxOut(args ...string) (string, error) {
-	return tmuxIn("", args...)
+func clearSessionHost(session string) { sessionHosts.Delete(session) }
+
+// hostForSession returns the host a session lives on ("" = local).
+func hostForSession(session string) string {
+	if v, ok := sessionHosts.Load(session); ok {
+		return v.(string)
+	}
+	return ""
 }
 
-// tmuxIn runs a tmux command on our server with stdin wired to in (used by
-// load-buffer for the bracketed-paste path). Empty in means no stdin.
-func tmuxIn(in string, args ...string) (string, error) {
-	cmd := exec.Command("tmux", append(tmuxPrefix(), args...)...)
+// tmuxRun executes a tmux command against host's lasso tmux server (host="" =
+// local), with stdin wired to in (empty = none). It builds the argv via the
+// host's Backend.TmuxArgv, so local runs `tmux …` and remote runs `ssh host
+// 'tmux …'` over the control master.
+func tmuxRun(host, in string, args ...string) (string, error) {
+	be, err := hostBackend(host)
+	if err != nil {
+		return "", err
+	}
+	argv := be.TmuxArgv(args)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if in != "" {
 		cmd.Stdin = strings.NewReader(in)
 	}
@@ -66,15 +91,34 @@ func tmuxIn(in string, args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// tmuxEnsureServer starts our tmux server (idempotent) and pins the server-wide
-// options lasso relies on. destroy-unattached MUST be off before any session
-// goes unattached, or a detached (background) session would vanish — so this is
-// called once at startup before any new-session, and defensively by
-// tmuxNewSession. start-server on a running server is a no-op.
-func tmuxEnsureServer() error {
+// Host-targeted runners. The bare tmux/tmuxOut/tmuxIn wrappers target the LOCAL
+// host (host="") — used by the no-session local helpers (server setup, warm pool,
+// reconcile). Session helpers call the …H variants with hostForSession(session).
+func tmuxH(host string, args ...string) error              { _, err := tmuxRun(host, "", args...); return err }
+func tmuxOutH(host string, args ...string) (string, error) { return tmuxRun(host, "", args...) }
+func tmuxInH(host, in string, args ...string) (string, error) {
+	return tmuxRun(host, in, args...)
+}
+
+func tmux(args ...string) error                        { return tmuxH("", args...) }
+func tmuxOut(args ...string) (string, error)           { return tmuxOutH("", args...) }
+func tmuxIn(in string, args ...string) (string, error) { return tmuxInH("", in, args...) }
+
+// tmuxEnsureServer starts the LOCAL tmux server (idempotent) and pins lasso's
+// server-wide options. See tmuxEnsureServerOn.
+func tmuxEnsureServer() error { return tmuxEnsureServerOn("") }
+
+// tmuxEnsureServerOn starts host's tmux server (idempotent) and pins the
+// server-wide options lasso relies on. destroy-unattached MUST be off before any
+// session goes unattached, or a detached (background) session would vanish — so
+// this is called before any new-session, and defensively by tmuxNewSession.
+// start-server on a running server is a no-op. The session-closed FIFO hook is
+// LOCAL-only (it writes to the local ~/.lasso/sessions.closed, which only the
+// local process can tail); remote session-exit detection rides the poll watcher.
+func tmuxEnsureServerOn(host string) error {
 	// One round-trip: start the server, then set options. The `;` separators are
 	// their own argv entries (tmux command sequence), not shell tokens.
-	return tmux(
+	args := []string{
 		"start-server", ";",
 		"set", "-g", "destroy-unattached", "off", ";",
 		"set", "-g", "status", "off", ";",
@@ -88,23 +132,33 @@ func tmuxEnsureServer() error {
 		// clamp the window under `latest`; being small, it's ignored under
 		// `largest`. Set explicitly because nudgeRedraw's resize-window flips the
 		// per-window option to manual and must restore it.
-		"setw", "-g", "window-size", "largest", ";",
+		"setw", "-g", "window-size", "largest",
+	}
+	if isLocalHost(host) {
 		// Notify lasso the instant a session ends (the user exited the shell) so
 		// its tab closes immediately, before the ttyd client flashes a reconnect
-		// against the dead session. See startSessionCloseListener.
-		"set-hook", "-g", "session-closed",
-		`run-shell "echo #{hook_session_name} >> `+sessionClosedFIFO()+`"`,
-	)
+		// against the dead session. See startSessionCloseListener. Local only.
+		args = append(args, ";",
+			"set-hook", "-g", "session-closed",
+			`run-shell "echo #{hook_session_name} >> `+sessionClosedFIFO()+`"`)
+	}
+	return tmuxH(host, args...)
 }
 
-// tmuxNewSession creates a detached session named session, rooted at cwd, with
-// each "KEY=VAL" in env exported into the session (tmux >=3.2 `new-session -e`).
-// We always tag the session with LASSO_TAB_ID so an agent running inside can
-// identify which tab/agent it is (MCP whoami).
-// Initial geometry is generous; ttyd resizes the pane to the real viewport on
-// attach (aggressive-resize sizes per attached client).
+// tmuxNewSession creates a detached LOCAL session. See tmuxNewSessionOn.
 func tmuxNewSession(session, cwd string, env []string) error {
-	if err := tmuxEnsureServer(); err != nil {
+	return tmuxNewSessionOn("", session, cwd, env)
+}
+
+// tmuxNewSessionOn creates a detached session on host, rooted at cwd, with each
+// "KEY=VAL" in env exported into the session (tmux >=3.2 `new-session -e`). We
+// always tag the session with LASSO_TAB_ID so an agent running inside can
+// identify which tab/agent it is (MCP whoami). Records the session→host mapping
+// FIRST so every later command for this session routes to the right host.
+// Initial geometry is generous; ttyd resizes the pane on attach.
+func tmuxNewSessionOn(host, session, cwd string, env []string) error {
+	setSessionHost(session, host)
+	if err := tmuxEnsureServerOn(host); err != nil {
 		return err
 	}
 	args := []string{"new-session", "-d", "-s", session, "-x", "200", "-y", "50"}
@@ -114,18 +168,21 @@ func tmuxNewSession(session, cwd string, env []string) error {
 	for _, kv := range env {
 		args = append(args, "-e", kv)
 	}
-	return tmux(args...)
+	return tmuxH(host, args...)
 }
 
-// tmuxHasSession reports whether session exists on our server.
+// tmuxHasSession reports whether session exists on its host's server.
 func tmuxHasSession(session string) bool {
-	return tmux("has-session", "-t", session) == nil
+	return tmuxH(hostForSession(session), "has-session", "-t", session) == nil
 }
 
-// tmuxListSessions returns the names of all sessions on our server (empty when
-// the server isn't running / has none).
-func tmuxListSessions() []string {
-	out, err := tmuxOut("list-sessions", "-F", "#{session_name}")
+// tmuxListSessions returns the names of all sessions on the LOCAL server.
+func tmuxListSessions() []string { return tmuxListSessionsOn("") }
+
+// tmuxListSessionsOn returns the names of all sessions on host's server (empty
+// when the server isn't running / has none / the host is unreachable).
+func tmuxListSessionsOn(host string) []string {
+	out, err := tmuxOutH(host, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		return nil
 	}
@@ -139,28 +196,31 @@ func tmuxListSessions() []string {
 }
 
 // tmuxKillSession terminates a session (and the processes inside it). Used when
-// a tab/workspace is closed.
+// a tab/workspace is closed. Clears the session→host mapping.
 func tmuxKillSession(session string) error {
-	return tmux("kill-session", "-t", session)
+	host := hostForSession(session)
+	err := tmuxH(host, "kill-session", "-t", session)
+	clearSessionHost(session)
+	return err
 }
 
 // tmuxCapture returns the visible screen of a session's active pane, the input
 // to the agent-status heuristics (detect.go) and the composer/trust checks.
 func tmuxCapture(session string) (string, error) {
-	return tmuxOut("capture-pane", "-p", "-t", session)
+	return tmuxOutH(hostForSession(session), "capture-pane", "-p", "-t", session)
 }
 
 // tmuxCaptureScroll returns the last n lines of scrollback + screen (n>0), for
 // the "recent output" MCP read. n is clamped to a sane ceiling by the caller.
 func tmuxCaptureScroll(session string, n int) (string, error) {
-	return tmuxOut("capture-pane", "-p", "-S", fmt.Sprintf("-%d", n), "-t", session)
+	return tmuxOutH(hostForSession(session), "capture-pane", "-p", "-S", fmt.Sprintf("-%d", n), "-t", session)
 }
 
 // tmuxCurrentPath returns the live cwd of a session's foreground process — the
 // the live foreground-process cwd (drives the file viewer + the cwd we save
 // to recreate a shell after a reboot).
 func tmuxCurrentPath(session string) (string, error) {
-	out, err := tmuxOut("display-message", "-p", "-t", session, "#{pane_current_path}")
+	out, err := tmuxOutH(hostForSession(session), "display-message", "-p", "-t", session, "#{pane_current_path}")
 	return strings.TrimSpace(out), err
 }
 
@@ -171,7 +231,7 @@ func tmuxCurrentPath(session string) (string, error) {
 // finished sourcing its rc (foregroundIsShell). NB: unreliable for distinguishing
 // AGENT binaries (their comm names are odd) — only used here for plain shells.
 func tmuxPaneCurrentCommand(session string) string {
-	out, _ := tmuxOut("display-message", "-p", "-t", session, "#{pane_current_command}")
+	out, _ := tmuxOutH(hostForSession(session), "display-message", "-p", "-t", session, "#{pane_current_command}")
 	return strings.TrimSpace(out)
 }
 
@@ -200,7 +260,8 @@ func foregroundIsShell(session string) bool {
 // current client now — a second SIGWINCH, another harmless repaint. (`-A` only
 // resizes once; it does NOT restore automatic mode.)
 func nudgeRedraw(session string) {
-	wh, err := tmuxOut("display-message", "-p", "-t", session, "#{window_width} #{window_height}")
+	host := hostForSession(session)
+	wh, err := tmuxOutH(host, "display-message", "-p", "-t", session, "#{window_width} #{window_height}")
 	if err != nil {
 		return
 	}
@@ -213,8 +274,8 @@ func nudgeRedraw(session string) {
 	if w <= 0 || h <= 1 {
 		return
 	}
-	_ = tmux("resize-window", "-t", session, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h-1))
-	_ = tmux("setw", "-t", session, "window-size", "largest") // repaint + restore auto-sizing
+	_ = tmuxH(host, "resize-window", "-t", session, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h-1))
+	_ = tmuxH(host, "setw", "-t", session, "window-size", "largest") // repaint + restore auto-sizing
 }
 
 // nudgeRedrawWhenAttached waits for a client to attach, then forces a full
@@ -247,7 +308,7 @@ func nudgeRedrawWhenAttached(session string) {
 func waitAttached(session string) bool {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		n, err := tmuxOut("display-message", "-p", "-t", session, "#{session_attached}")
+		n, err := tmuxOutH(hostForSession(session), "display-message", "-p", "-t", session, "#{session_attached}")
 		if err != nil {
 			return false // session gone
 		}
@@ -383,7 +444,7 @@ func tmuxSwitchClient(tty, session string) error {
 // flag (-l) and "--" stop tmux from interpreting text that looks like a key name
 // ("Enter", "C-c") or starts with "-".
 func tmuxSendLine(session, line string) error {
-	if err := tmux("send-keys", "-t", session, "-l", "--", line); err != nil {
+	if err := tmuxH(hostForSession(session), "send-keys", "-t", session, "-l", "--", line); err != nil {
 		return err
 	}
 	return tmuxSendEnter(session)
@@ -392,19 +453,19 @@ func tmuxSendLine(session, line string) error {
 // tmuxSendEnter sends a real Enter keypress (distinct from a pasted "\n"). For an
 // interactive agent TUI this is what actually submits a turn — see tmuxSubmit.
 func tmuxSendEnter(session string) error {
-	return tmux("send-keys", "-t", session, "Enter")
+	return tmuxH(hostForSession(session), "send-keys", "-t", session, "Enter")
 }
 
 // tmuxSendCtrlC sends Ctrl-C (interrupt) — used to stop a running agent.
 func tmuxSendCtrlC(session string) error {
-	return tmux("send-keys", "-t", session, "C-c")
+	return tmuxH(hostForSession(session), "send-keys", "-t", session, "C-c")
 }
 
 // tmuxSendCtrlL sends Ctrl-L (clear + redraw) — readline clears the screen and
 // repaints the prompt at the top. Used to clean up the blank rows the prime's
 // line-accept leaves above a fresh shell's prompt.
 func tmuxSendCtrlL(session string) error {
-	return tmux("send-keys", "-t", session, "C-l")
+	return tmuxH(hostForSession(session), "send-keys", "-t", session, "C-l")
 }
 
 // tmuxSendText pastes text into a session as a BRACKETED PASTE (no trailing
@@ -414,11 +475,12 @@ func tmuxSendCtrlL(session string) error {
 // (the hard-won composer-submit lesson). The buffer is named per-call and deleted
 // after paste (-d) so concurrent sends don't clobber each other.
 func tmuxSendText(session, text string) error {
+	host := hostForSession(session)
 	buf := "lasso_" + randSuffix()
-	if _, err := tmuxIn(text, "load-buffer", "-b", buf, "-"); err != nil {
+	if _, err := tmuxInH(host, text, "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
-	return tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", session)
+	return tmuxH(host, "paste-buffer", "-p", "-d", "-b", buf, "-t", session)
 }
 
 // tmuxWaitReady blocks until a fresh session's shell stops changing its visible

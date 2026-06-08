@@ -65,19 +65,25 @@ const TERM_FRAME_IDS = ["term", "shellframe"]
 // terminal stays on ttyd's default palette while the UI repaints.
 const TERM_FRAME_CLASS = "frame"
 
+// GRID_FRAME_CLASS marks each Grid cell's terminal iframe so it's re-themed
+// alongside the main viewport on a mode change / ttyd reconnect.
+export const GRID_FRAME_CLASS = "gridterm"
+
 // termFrames collects every terminal iframe the theme should track: the fixed
-// ones by id, plus every per-tab terminal by class. Deduped, since a frame could
-// in principle match more than one selector.
+// ones by id, plus every per-tab and grid terminal by class. Deduped, since a
+// frame could in principle match more than one selector.
 function termFrames(): HTMLIFrameElement[] {
   const seen = new Set<HTMLIFrameElement>()
   for (const id of TERM_FRAME_IDS) {
     const el = document.getElementById(id) as HTMLIFrameElement | null
     if (el) seen.add(el)
   }
-  for (const el of document.querySelectorAll<HTMLIFrameElement>(
-    `iframe.${TERM_FRAME_CLASS}`
-  ))
-    seen.add(el)
+  for (const cls of [TERM_FRAME_CLASS, GRID_FRAME_CLASS]) {
+    for (const el of Array.from(
+      document.querySelectorAll<HTMLIFrameElement>(`iframe.${cls}`)
+    ))
+      seen.add(el)
+  }
   return Array.from(seen)
 }
 

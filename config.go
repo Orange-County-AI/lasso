@@ -65,7 +65,10 @@ type RepoConfig struct {
 // The yaml tags are retained only so a legacy config.yaml can be unmarshaled
 // during the one-time DB migration (see migrateFromYAML).
 type AgentRecord struct {
-	ID          string   `yaml:"id" json:"id"`
+	ID string `yaml:"id" json:"id"`
+	// Host is the host the agent runs on ("local" or an ssh-config alias). It
+	// selects the tmux server its session lives on (agentStatusNow, send/read/close).
+	Host        string   `yaml:"-" json:"host,omitempty"`
 	Title       string   `yaml:"title" json:"title"`
 	Type        string   `yaml:"type" json:"type"` // "git" | "scratch"
 	Repo        string   `yaml:"repo,omitempty" json:"repo,omitempty"`

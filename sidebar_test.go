@@ -96,7 +96,7 @@ func TestServeTreeOrderingAndPin(t *testing.T) {
 	}
 
 	// Pinning the older repo floats it to the top.
-	if err := pinRepo(sidebarHost, filepath.Join(root, "old"), true); err != nil {
+	if err := pinRepo(sbHost(), filepath.Join(root, "old"), true); err != nil {
 		t.Fatal(err)
 	}
 	p = get()

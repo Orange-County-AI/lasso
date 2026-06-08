@@ -2,6 +2,7 @@ import * as React from "react"
 
 import { EmptyWorkspace } from "@/components/EmptyWorkspace"
 import { api } from "@/lib/api"
+import { HOST_CHANGED_EVENT } from "@/lib/app-store"
 import { bootTermFrame, focusTerminal, refitTerminal } from "@/lib/terminal"
 
 // The viewport: a SINGLE persistent terminal iframe (one ttyd) that we point at
@@ -45,7 +46,16 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
   React.useEffect(() => {
     if (!base || !tabId) return
     setReady(false)
-    api.tabTerm(tabId).catch(() => {})
+    // The returned base can CHANGE when the tab lives on a remote host: a remote
+    // tab is shown through its own `ssh -tt` ttyd, not the warm local viewport. So
+    // adopt the returned base — same value (local→local) is a no-op; a different
+    // one remounts the iframe onto the right host's terminal.
+    api
+      .tabTerm(tabId)
+      .then((r) => {
+        if (r.base) setBase(r.base)
+      })
+      .catch(() => {})
     const fit = setTimeout(() => refitTerminal(id), 60)
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
@@ -94,6 +104,22 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
     return () => clearInterval(t)
   }, [tabId])
 
+  // When the active host switches (term_rev bump), re-point the viewport at the
+  // current tab so its base reflects the new host's terminal (the selected tab may
+  // not change, e.g. switching back to a host you already had a tab open on).
+  React.useEffect(() => {
+    const onHostChange = () => {
+      api
+        .tabTerm(tabId ?? "")
+        .then((r) => {
+          if (r.base) setBase(r.base)
+        })
+        .catch(() => {})
+    }
+    window.addEventListener(HOST_CHANGED_EVENT, onHostChange)
+    return () => window.removeEventListener(HOST_CHANGED_EVENT, onHostChange)
+  }, [tabId])
+
   // Wire xterm once the iframe element exists (base only changes on rare respawn).
   // Readiness is driven by the per-tab poll above, not xterm's first paint.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-wire when base changes (new iframe)
@@ -119,7 +145,7 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
       )}
       {!tabId && <EmptyWorkspace />}
       {tabId && (!base || !ready) && (
-        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-[var(--h-bg)] text-muted-foreground text-sm">
+        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-background text-muted-foreground text-sm">
           <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
           {base ? "starting…" : "attaching…"}
         </div>
