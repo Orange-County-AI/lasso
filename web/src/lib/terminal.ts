@@ -224,13 +224,13 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
   // iframe is same-origin, so we can re-dispatch. Clones land on the parent
   // `document`, not this one, so there's no re-entrancy.
   //
-  // For our OWN shortcuts (matchShortcut) we must neutralize the original
-  // unconditionally — not just when the re-dispatched clone is claimed. On
-  // macOS ⌘[/⌘] are the browser's history Back/Forward; if the original isn't
-  // cancelled here the iframe navigates and the ttyd page reloads (the
-  // "terminal flash"), which also swallowed the toggle. For any other Cmd/Ctrl
-  // combo we still mirror a parent claim (preventDefault ⇒ dispatchEvent returns
-  // false) so e.g. Cmd-C copy keeps reaching xterm when nobody claimed it.
+  // For our OWN keydown shortcuts (⌘K/⌘I — matchShortcut) we neutralize the
+  // original unconditionally, so xterm never also acts on them, not just when the
+  // re-dispatched clone is claimed. For any other Cmd/Ctrl combo we still mirror
+  // a parent claim (preventDefault ⇒ dispatchEvent returns false) so e.g. Cmd-C
+  // copy keeps reaching xterm when nobody claimed it. (⌘[/⌘] never get here —
+  // the browser consumes them for history nav; they're handled by the history
+  // trap, see lib/history-toggle.ts.)
   doc.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {

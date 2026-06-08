@@ -31,6 +31,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, type TreeWorkspace } from "@/lib/api"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { installHistoryToggle } from "@/lib/history-toggle"
 import { qk } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -267,21 +268,18 @@ function Shell() {
     else p.collapse()
   }, [])
 
-  // ⌘[ toggles the left sidebar, ⌘] the right panel, ⌘K the switcher, ⌘I opens
-  // the new-workspace modal. Cmd-only so terminal control keys (Ctrl-*) are never
-  // clobbered; the terminal iframes re-dispatch Cmd shortcuts to this document so
-  // they work with focus inside. Capture phase + stopPropagation so we cancel
-  // before macOS browsers run ⌘[/⌘] as history Back/Forward (a bubble-phase
-  // listener is too late — the page would navigate instead of toggling).
+  // ⌘K opens the switcher, ⌘I the new-workspace modal. Cmd-only so terminal
+  // control keys (Ctrl-*) are never clobbered; the terminal iframes re-dispatch
+  // Cmd shortcuts to this document so they work with focus inside. (⌘[/⌘] are
+  // NOT keydowns — macOS reserves them for history nav and eats them before the
+  // page; they're handled by the history trap below.)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const action = matchShortcut(e)
       if (!action) return
       e.preventDefault()
       e.stopPropagation()
-      if (action === "toggle-left") toggleLeft()
-      else if (action === "toggle-right") toggleRight()
-      else if (action === "palette") setPaletteOpen(true)
+      if (action === "palette") setPaletteOpen(true)
       else if (action === "shortcuts") setShortcutsOpen(true)
       else if (action === "new-workspace")
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
@@ -290,7 +288,14 @@ function Shell() {
     }
     document.addEventListener("keydown", onKey, true)
     return () => document.removeEventListener("keydown", onKey, true)
-  }, [toggleLeft, toggleRight])
+  }, [])
+
+  // ⌘[ / ⌘] (and the Back/Forward buttons / swipe) toggle the side panels via a
+  // history trap, since macOS browsers won't deliver those keys to the page.
+  React.useEffect(
+    () => installHistoryToggle(toggleLeft, toggleRight),
+    [toggleLeft, toggleRight]
+  )
 
   return (
     <div className="relative h-full w-full">
