@@ -431,6 +431,35 @@ func closeOneTab(tabID string) {
 	_ = closeTab(tabID)
 }
 
+// serveAgentClose closes an agent from the sidebar: close its tab, then — if
+// that leaves its workspace empty — close the workspace too, so the agent's
+// worktree disappears from the spaces pane rather than lingering as an empty
+// shell. Mirrors the default path of the close_agent MCP tool. (A soft close:
+// the git worktree on disk is left intact; only the sidebar row goes away.)
+func serveAgentClose(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabID string `json:"tab_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.TabID == "" {
+		http.Error(w, "tab_id required", http.StatusBadRequest)
+		return
+	}
+	// Capture the workspace before the tab row is gone.
+	wsID := ""
+	if t, err := getTab(req.TabID); err == nil {
+		wsID = t.WorkspaceID
+	}
+	closeOneTab(req.TabID)
+	if wsID != "" && len(mustTabs(wsID)) == 0 {
+		_ = closeWorkspace(wsID)
+	}
+	kickHub()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // serveWorkspaceClose closes a workspace and all its tabs.
 func serveWorkspaceClose(w http.ResponseWriter, r *http.Request) {
 	var req struct {

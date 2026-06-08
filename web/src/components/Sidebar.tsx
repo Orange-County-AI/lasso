@@ -824,7 +824,7 @@ function AgentRowItem({
           variant="destructive"
           onSelect={async () => {
             await api
-              .closeTab(agent.tab_id)
+              .closeAgent(agent.tab_id)
               .catch((e) => toast.error(String(e)))
             refreshTree()
           }}

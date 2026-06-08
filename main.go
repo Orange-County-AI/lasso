@@ -140,6 +140,7 @@ func runServer() {
 	mux.HandleFunc("/api/tab/new", serveNewTab)
 	mux.HandleFunc("/api/tab/rename", serveTabRename)
 	mux.HandleFunc("/api/tab/close", serveTabClose)
+	mux.HandleFunc("/api/agent/close", serveAgentClose)
 	mux.HandleFunc("/api/workspace/create", serveCreateWorkspace)
 	mux.HandleFunc("/api/workspace/rename", serveWorkspaceRenameDB)
 	mux.HandleFunc("/api/workspace/close", serveWorkspaceClose)

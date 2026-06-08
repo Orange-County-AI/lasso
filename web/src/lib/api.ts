@@ -292,6 +292,11 @@ export const api = {
     postJSON<{ ok: boolean }>("/api/tab/rename", { tab_id, title }),
   closeTab: (tab_id: string) =>
     postJSON<{ ok: boolean }>("/api/tab/close", { tab_id }),
+  // Close an agent: closes its tab and, if that empties its workspace, closes the
+  // workspace too (its worktree leaves the spaces pane; the on-disk worktree is
+  // kept). Use this for the agents-pane "Close agent", not the bare closeTab.
+  closeAgent: (tab_id: string) =>
+    postJSON<{ ok: boolean }>("/api/agent/close", { tab_id }),
   // Create a bare scratch workspace (a shell, no agent).
   createWorkspace: (title?: string) =>
     postJSON<{ workspace_id: string; tab_id: string; work_dir: string }>(
