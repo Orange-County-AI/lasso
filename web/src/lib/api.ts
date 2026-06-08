@@ -330,6 +330,12 @@ export const api = {
   files: (path: string) =>
     getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
 
+  // The live working directory of a tab's terminal (its tmux pane cwd), polled
+  // by the Shell so the Files/Diff panel follows the active terminal as it cd's
+  // around. Falls back to the tab's saved launch dir when no session is live.
+  tabCwd: (tab: string) =>
+    getJSON<{ cwd: string }>(`/api/tab-cwd?tab=${encodeURIComponent(tab)}`),
+
   fileURL: (path: string) => `/api/file?path=${encodeURIComponent(path)}`,
 
   // A URL that forces a browser download (Content-Disposition: attachment) and

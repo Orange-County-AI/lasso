@@ -246,14 +246,38 @@ function Shell() {
     return () => window.removeEventListener("lasso:select-tab", onSelect)
   }, [selectTab])
 
-  // Feed the selected workspace's cwd to the Files/Diff panel (which follows
-  // useApp().activeCwd).
+  // Feed the selected tab's cwd to the Files/Diff panel (which follows
+  // useApp().activeCwd). The workspace's work_dir is only the tab's *launch*
+  // dir; we seed from it for an instant value, then poll the terminal's live
+  // pane cwd so the panel follows the active terminal as the user cd's around.
   React.useEffect(() => {
-    if (activeWorkspace?.work_dir)
-      window.dispatchEvent(
-        new CustomEvent("lasso:cwd", { detail: activeWorkspace.work_dir })
-      )
-  }, [activeWorkspace?.work_dir])
+    if (!selectedTabId) return
+    const emit = (cwd: string | undefined) => {
+      if (cwd)
+        window.dispatchEvent(new CustomEvent("lasso:cwd", { detail: cwd }))
+    }
+    // Instant seed so the panel isn't blank while the first poll is in flight.
+    emit(activeWorkspace?.work_dir)
+    let cancelled = false
+    const poll = () =>
+      api
+        .tabCwd(selectedTabId)
+        .then((r) => {
+          if (!cancelled) emit(r.cwd)
+        })
+        .catch(() => {
+          /* session not live yet / transient host blip — keep last cwd */
+        })
+    void poll()
+    // Backgrounded tabs don't change cwd visibly; skip polling while hidden.
+    const id = setInterval(() => {
+      if (!document.hidden) void poll()
+    }, 2500)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [selectedTabId, activeWorkspace?.work_dir])
 
   const toggleLeft = React.useCallback(() => {
     const p = leftPanel.current

@@ -122,6 +122,7 @@ func runServer() {
 	})
 	mux.HandleFunc("/api/events", hub.serveSSE)
 	mux.HandleFunc("/api/files", serveFiles)
+	mux.HandleFunc("/api/tab-cwd", serveTabCwd)
 	mux.HandleFunc("/api/file", serveFile)
 	mux.HandleFunc("/api/file-delete", serveFileDelete)
 	mux.HandleFunc("/api/file-rename", serveFileRename)
@@ -1067,6 +1068,26 @@ func serveFiles(w http.ResponseWriter, r *http.Request) {
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
 	writeJSON(w, map[string]any{"path": path, "parent": filepath.Dir(path), "entries": out})
+}
+
+// serveTabCwd reports the live working directory of a tab's terminal — its tmux
+// session's foreground-process cwd. The file panel polls this so it follows the
+// active terminal as the user cd's around, not just the tab's launch dir. Falls
+// back to the tab's saved cwd when the session isn't live (pre-attach / after a
+// reboot, before the shell is recreated).
+func serveTabCwd(w http.ResponseWriter, r *http.Request) {
+	tabID := r.URL.Query().Get("tab")
+	if tabID == "" {
+		http.Error(w, "tab required", http.StatusBadRequest)
+		return
+	}
+	cwd, err := tmuxCurrentPath(tabSession(tabID))
+	if err != nil || cwd == "" {
+		if t, terr := getTab(tabID); terr == nil {
+			cwd = t.Cwd
+		}
+	}
+	writeJSON(w, map[string]string{"cwd": cwd})
 }
 
 // serveFileDelete removes a file or directory (directories recursively). It
