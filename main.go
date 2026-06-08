@@ -71,6 +71,14 @@ func runServer() {
 	}
 	defer db.Close()
 
+	// Ensure ~/.lasso/settings.json has a "theme" key with sensible defaults
+	// before any UI toggle, so an external reader (e.g. a statusline) started
+	// ahead of the browser still finds the live appearance. Best-effort; the
+	// browser keeps it current via /api/theme.
+	if err := seedThemeFile(); err != nil {
+		log.Printf("seed theme.json: %v", err)
+	}
+
 	// Auth credentials come from the environment (UI_AUTH=user:pass), never
 	// argv — so they don't leak via `ps`. Safety guard: refuse to bind to a
 	// non-loopback address without auth, so this can't accidentally expose a
@@ -140,6 +148,7 @@ func runServer() {
 	mux.HandleFunc("/api/repo/open", serveOpenRepo)
 	mux.HandleFunc("/api/create-worktree", serveCreateWorktreeOnly)
 	mux.HandleFunc("/api/ui-state", serveUIState)
+	mux.HandleFunc("/api/theme", serveTheme)
 	mux.HandleFunc("/api/paste-image", servePasteImage)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
