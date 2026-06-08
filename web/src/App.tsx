@@ -32,6 +32,7 @@ import { api, type TreeWorkspace } from "@/lib/api"
 import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { qk } from "@/lib/query"
+import { matchShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 type RightView = "files" | "scratch" | "browser" | "settings"
@@ -268,27 +269,23 @@ function Shell() {
   // ⌘[ toggles the left sidebar, ⌘] the right panel, ⌘K the switcher, ⌘I opens
   // the new-workspace modal. Cmd-only so terminal control keys (Ctrl-*) are never
   // clobbered; the terminal iframes re-dispatch Cmd shortcuts to this document so
-  // they work with focus inside.
+  // they work with focus inside. Capture phase + stopPropagation so we cancel
+  // before macOS browsers run ⌘[/⌘] as history Back/Forward (a bubble-phase
+  // listener is too late — the page would navigate instead of toggling).
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      const k = e.key.toLowerCase()
-      if (k === "[") {
-        e.preventDefault()
-        toggleLeft()
-      } else if (k === "]") {
-        e.preventDefault()
-        toggleRight()
-      } else if (k === "k") {
-        e.preventDefault()
-        setPaletteOpen(true)
-      } else if (k === "i") {
-        e.preventDefault()
+      const action = matchShortcut(e)
+      if (!action) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (action === "toggle-left") toggleLeft()
+      else if (action === "toggle-right") toggleRight()
+      else if (action === "palette") setPaletteOpen(true)
+      else if (action === "new-workspace")
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
-      }
     }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
+    document.addEventListener("keydown", onKey, true)
+    return () => document.removeEventListener("keydown", onKey, true)
   }, [toggleLeft, toggleRight])
 
   return (
