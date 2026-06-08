@@ -38,6 +38,10 @@ import { cn } from "@/lib/utils"
 
 type RightView = "files" | "scratch" | "browser" | "settings"
 
+// Persist each side panel's collapsed state so it survives reloads/restarts.
+const LEFT_COLLAPSED_KEY = "lasso-left-collapsed"
+const RIGHT_COLLAPSED_KEY = "lasso-right-collapsed"
+
 const stripClass =
   "h-auto w-full justify-start gap-0 rounded-none border-b border-border bg-background p-0"
 const tabClass =
@@ -188,8 +192,12 @@ function findWorkspace(
 
 function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
-  const [rightCollapsed, setRightCollapsed] = React.useState(false)
-  const [leftCollapsed, setLeftCollapsed] = React.useState(false)
+  const [rightCollapsed, setRightCollapsed] = React.useState(
+    () => lsGet(RIGHT_COLLAPSED_KEY) === "true"
+  )
+  const [leftCollapsed, setLeftCollapsed] = React.useState(
+    () => lsGet(LEFT_COLLAPSED_KEY) === "true"
+  )
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const [selectedTabId, setSelectedTabId] = React.useState<string | null>(() =>
@@ -328,11 +336,15 @@ function Shell() {
         <ResizablePanel
           id="sidebar"
           panelRef={leftPanel}
-          defaultSize={18}
+          defaultSize={leftCollapsed ? 0 : 18}
           minSize={12}
           collapsible
           collapsedSize={0}
-          onResize={(s) => setLeftCollapsed(s.asPercentage < 0.05)}
+          onResize={(s) => {
+            const collapsed = s.asPercentage < 0.05
+            setLeftCollapsed(collapsed)
+            lsSet(LEFT_COLLAPSED_KEY, String(collapsed))
+          }}
           className="min-h-0"
         >
           <Sidebar selectedTabId={selectedTabId} onSelectTab={selectTab} />
@@ -410,11 +422,15 @@ function Shell() {
         <ResizablePanel
           id="right"
           panelRef={rightPanel}
-          defaultSize={32}
+          defaultSize={rightCollapsed ? 0 : 32}
           minSize={15}
           collapsible
           collapsedSize={0}
-          onResize={(s) => setRightCollapsed(s.asPercentage < 0.05)}
+          onResize={(s) => {
+            const collapsed = s.asPercentage < 0.05
+            setRightCollapsed(collapsed)
+            lsSet(RIGHT_COLLAPSED_KEY, String(collapsed))
+          }}
           className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
         >
           <Tabs
