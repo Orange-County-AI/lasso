@@ -38,9 +38,19 @@ import { cn } from "@/lib/utils"
 
 type RightView = "files" | "scratch" | "browser" | "settings"
 
-// Persist each side panel's collapsed state so it survives reloads/restarts.
+// Persist each side panel's collapsed state and width (% of the group) so both
+// survive reloads/restarts.
 const LEFT_COLLAPSED_KEY = "lasso-left-collapsed"
 const RIGHT_COLLAPSED_KEY = "lasso-right-collapsed"
+const LEFT_WIDTH_KEY = "lasso-left-width"
+const RIGHT_WIDTH_KEY = "lasso-right-width"
+
+// Read a persisted panel width (percentage), falling back to a default when
+// it's missing or unparseable.
+function lsGetWidth(key: string, fallback: number): number {
+  const n = Number.parseFloat(lsGet(key) ?? "")
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
 
 const stripClass =
   "h-auto w-full justify-start gap-0 rounded-none border-b border-border bg-background p-0"
@@ -207,6 +217,12 @@ function Shell() {
   const leftPanel = React.useRef<PanelImperativeHandle>(null)
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
 
+  // Last expanded width of each side panel (% of the group). Seeded from
+  // localStorage so a restart restores the user's chosen width, and updated on
+  // every resize so expanding from collapsed returns to where they left it.
+  const leftWidth = React.useRef(lsGetWidth(LEFT_WIDTH_KEY, 18))
+  const rightWidth = React.useRef(lsGetWidth(RIGHT_WIDTH_KEY, 32))
+
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
   const gitReady = diff.data != null
@@ -308,13 +324,13 @@ function Shell() {
   const toggleLeft = React.useCallback(() => {
     const p = leftPanel.current
     if (!p) return
-    if (p.isCollapsed()) p.resize("18%")
+    if (p.isCollapsed()) p.resize(`${leftWidth.current}%`)
     else p.collapse()
   }, [])
   const toggleRight = React.useCallback(() => {
     const p = rightPanel.current
     if (!p) return
-    if (p.isCollapsed()) p.resize("32%")
+    if (p.isCollapsed()) p.resize(`${rightWidth.current}%`)
     else p.collapse()
   }, [])
 
@@ -354,7 +370,7 @@ function Shell() {
         <ResizablePanel
           id="sidebar"
           panelRef={leftPanel}
-          defaultSize={leftCollapsed ? 0 : 18}
+          defaultSize={leftCollapsed ? 0 : leftWidth.current}
           minSize={12}
           collapsible
           collapsedSize={0}
@@ -362,6 +378,10 @@ function Shell() {
             const collapsed = s.asPercentage < 0.05
             setLeftCollapsed(collapsed)
             lsSet(LEFT_COLLAPSED_KEY, String(collapsed))
+            if (!collapsed) {
+              leftWidth.current = s.asPercentage
+              lsSet(LEFT_WIDTH_KEY, String(s.asPercentage))
+            }
           }}
           className="min-h-0"
         >
@@ -444,7 +464,7 @@ function Shell() {
         <ResizablePanel
           id="right"
           panelRef={rightPanel}
-          defaultSize={rightCollapsed ? 0 : 32}
+          defaultSize={rightCollapsed ? 0 : rightWidth.current}
           minSize={15}
           collapsible
           collapsedSize={0}
@@ -452,6 +472,10 @@ function Shell() {
             const collapsed = s.asPercentage < 0.05
             setRightCollapsed(collapsed)
             lsSet(RIGHT_COLLAPSED_KEY, String(collapsed))
+            if (!collapsed) {
+              rightWidth.current = s.asPercentage
+              lsSet(RIGHT_WIDTH_KEY, String(s.asPercentage))
+            }
           }}
           className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
         >
