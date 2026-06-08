@@ -65,7 +65,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_agent",
-		Description: "Read an agent's terminal output. source 'recent' returns scrollback (default), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
+		Description: "Read an agent's terminal output. source 'recent' returns scrollback (default 1000 lines, up to 50000 via the lines arg, or pass lines=-1 for the full available scrollback), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
 	}, readAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -136,8 +136,14 @@ func agentStatusNow(rec AgentRecord) string {
 	return string(detectAgentStatus(rec.Agent, screen, agentStatuses.status(rec.TabID), &lw, time.Now()))
 }
 
+// agentReadCeiling caps a positive `lines` request so a single read can't ask
+// for more than tmux's history-limit (set in tmuxEnsureServer) actually holds.
+const agentReadCeiling = 50000
+
 // agentReadText reads an agent's terminal: "visible" = the current screen,
-// anything else = recent scrollback (lines, default 200).
+// anything else = recent scrollback. lines < 0 returns the full available
+// scrollback; lines == 0 falls back to 200; positive values are clamped to
+// agentReadCeiling.
 func agentReadText(rec AgentRecord, source string, lines int) (string, error) {
 	session := agentSession(rec)
 	if !tmuxHasSession(session) {
@@ -146,8 +152,14 @@ func agentReadText(rec AgentRecord, source string, lines int) (string, error) {
 	if source == "visible" {
 		return tmuxCapture(session)
 	}
-	if lines <= 0 {
+	if lines < 0 {
+		return tmuxCaptureAll(session)
+	}
+	if lines == 0 {
 		lines = 200
+	}
+	if lines > agentReadCeiling {
+		lines = agentReadCeiling
 	}
 	return tmuxCaptureScroll(session, lines)
 }
@@ -450,7 +462,7 @@ type readAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit for the local box."`
 	AgentID string `json:"agent_id" jsonschema:"The agent's id."`
 	Source  string `json:"source,omitempty" jsonschema:"\"recent\" (scrollback, default) or \"visible\" (current screen)."`
-	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines to return (default 100)."`
+	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines of scrollback to return (default 1000, capped at 50000). Pass -1 to return the full available scrollback. Ignored when source is \"visible\"."`
 }
 
 type readAgentOut struct {
@@ -468,7 +480,7 @@ func readAgentTool(_ context.Context, _ *mcp.CallToolRequest, in readAgentIn) (*
 	}
 	lines := in.Lines
 	if lines == 0 {
-		lines = 100
+		lines = 1000
 	}
 	text, err := agentReadText(rec, source, lines)
 	if err != nil {

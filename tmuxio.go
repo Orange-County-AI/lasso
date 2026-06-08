@@ -156,6 +156,14 @@ func tmuxCaptureScroll(session string, n int) (string, error) {
 	return tmuxOut("capture-pane", "-p", "-S", fmt.Sprintf("-%d", n), "-t", session)
 }
 
+// tmuxCaptureAll returns the entire available scrollback + screen of a session's
+// active pane. `-S -` starts the capture at the very beginning of the history
+// buffer (up to the session's history-limit), so callers get everything tmux
+// still holds rather than a fixed tail.
+func tmuxCaptureAll(session string) (string, error) {
+	return tmuxOut("capture-pane", "-p", "-S", "-", "-t", session)
+}
+
 // tmuxCurrentPath returns the live cwd of a session's foreground process — the
 // the live foreground-process cwd (drives the file viewer + the cwd we save
 // to recreate a shell after a reboot).
