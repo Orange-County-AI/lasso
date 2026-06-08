@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
-import { ChevronRight, GitBranch, Plus, Terminal } from "lucide-react"
+import {
+  ChevronLeft,
+  ChevronRight,
+  GitBranch,
+  Plus,
+  Terminal,
+} from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -121,9 +127,11 @@ function openNewAgent(repo: string, base: string) {
 export function Sidebar({
   selectedTabId,
   onSelectTab,
+  onCollapse,
 }: {
   selectedTabId: string | null
   onSelectTab: (tabId: string) => void
+  onCollapse?: () => void
 }) {
   const { panesRev, agentStatuses } = useApp()
   const tree = useQuery({ queryKey: qk.tree, queryFn: api.tree })
@@ -319,7 +327,22 @@ export function Sidebar({
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div className="h-full overflow-y-auto pb-12">
-              <SectionLabel>spaces</SectionLabel>
+              <SectionLabel
+                trailing={
+                  onCollapse && (
+                    <button
+                      type="button"
+                      title="collapse sidebar (⌘[)"
+                      className="-my-1 flex items-center text-muted-foreground hover:text-primary"
+                      onClick={onCollapse}
+                    >
+                      <ChevronLeft className="size-4" />
+                    </button>
+                  )
+                }
+              >
+                spaces
+              </SectionLabel>
               {items.map((item) => {
                 const drag = dragFor(item.key)
                 return (
@@ -443,10 +466,17 @@ export function Sidebar({
   )
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({
+  children,
+  trailing,
+}: {
+  children: React.ReactNode
+  trailing?: React.ReactNode
+}) {
   return (
-    <div className="px-3 pt-3 pb-1 font-semibold text-[11px] text-muted-foreground uppercase tracking-wider">
-      {children}
+    <div className="flex items-center justify-between px-3 pt-3 pb-1 font-semibold text-[11px] text-muted-foreground uppercase tracking-wider">
+      <span>{children}</span>
+      {trailing}
     </div>
   )
 }
