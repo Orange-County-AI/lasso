@@ -365,7 +365,11 @@ function Shell() {
           }}
           className="min-h-0"
         >
-          <Sidebar selectedTabId={selectedTabId} onSelectTab={selectTab} />
+          <Sidebar
+            selectedTabId={selectedTabId}
+            onSelectTab={selectTab}
+            onCollapse={toggleLeft}
+          />
         </ResizablePanel>
 
         <ResizableHandle withHandle className={cn(leftCollapsed && "hidden")} />
