@@ -41,7 +41,6 @@ type treeWorkspace struct {
 	Repo    string    `json:"repo,omitempty"`
 	WorkDir string    `json:"work_dir"`
 	Kind    string    `json:"kind"`
-	Pinned  bool      `json:"pinned"`
 	Branch  string    `json:"branch,omitempty"`
 	Tabs    []treeTab `json:"tabs"`
 	// AgentStatus is the workspace's aggregate live-agent status for the sidebar
@@ -54,7 +53,6 @@ type treeRepo struct {
 	Path          string          `json:"path"`
 	Name          string          `json:"name"`
 	PrimaryBranch string          `json:"primary_branch"`
-	Pinned        bool            `json:"pinned"`
 	LastCommit    int64           `json:"last_commit"` // unix secs (ordering + display)
 	Workspaces    []treeWorkspace `json:"workspaces"`  // linked worktrees only
 	// The repo row is itself the main checkout: clicking it opens a
@@ -72,7 +70,17 @@ type treeRepo struct {
 type treePayload struct {
 	Repos   []treeRepo      `json:"repos"`
 	Scratch []treeWorkspace `json:"scratch"`
+	// Order is the authoritative top-level display order of the "spaces" list as
+	// stable keys ("ws:<id>" for scratch, "repo:<path>" for repos). The frontend
+	// renders one unified list from it; items absent from Order (e.g. just-created)
+	// are appended at the bottom client-side. See serveTree + getSpacesOrder.
+	Order []string `json:"order"`
 }
+
+// spacesKeyWorkspace / spacesKeyRepo build the stable keys used to order the
+// unified sidebar "spaces" list (kept in sync with the frontend).
+func spacesKeyWorkspace(id string) string { return "ws:" + id }
+func spacesKeyRepo(path string) string    { return "repo:" + path }
 
 func serveTree(w http.ResponseWriter, r *http.Request) {
 	be := curBackend()
@@ -128,12 +136,8 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = filepath.Base(path)
 		}
-		pinned := false
-		if rc := repoState[path]; rc != nil {
-			pinned = rc.Pinned
-			if rc.DisplayName != "" {
-				name = rc.DisplayName
-			}
+		if rc := repoState[path]; rc != nil && rc.DisplayName != "" {
+			name = rc.DisplayName
 		}
 		primary, ct := repoPrimaryBranchAndTime(be, path)
 		repoWss := byRepo[path]
@@ -141,7 +145,7 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 			repoWss = []treeWorkspace{}
 		}
 		tr := treeRepo{
-			Path: path, Name: name, PrimaryBranch: primary, Pinned: pinned,
+			Path: path, Name: name, PrimaryBranch: primary,
 			LastCommit: ct, Workspaces: repoWss,
 		}
 		if main, ok := mainByRepo[path]; ok {
@@ -156,27 +160,57 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, tr)
 	}
-	// Pinned first, then most-recently-committed, then name.
+	// Seed (default) order for items the user hasn't manually placed: repos by
+	// most-recently-committed, then name. Scratch keeps DB (creation) order. This
+	// is only a tie-breaker for never-placed rows — once the user drags, the stored
+	// spaces_order governs everything below.
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Pinned != out[j].Pinned {
-			return out[i].Pinned
-		}
 		if out[i].LastCommit != out[j].LastCommit {
 			return out[i].LastCommit > out[j].LastCommit
 		}
 		return out[i].Name < out[j].Name
 	})
-	// Scratch workspaces: pinned first, otherwise keep DB (creation) order.
-	sort.SliceStable(scratch, func(i, j int) bool {
-		return scratch[i].Pinned && !scratch[j].Pinned
-	})
-	writeJSON(w, treePayload{Repos: out, Scratch: scratch})
+	writeJSON(w, treePayload{Repos: out, Scratch: scratch, Order: spacesOrder(scratch, out)})
+}
+
+// spacesOrder resolves the unified top-level order of the "spaces" list: the
+// user's stored order first (stale keys dropped), then any current rows not yet
+// placed appended at the bottom in seed order (scratch creation order, then
+// repos by recency). This is what lands a freshly-created workspace at the bottom.
+func spacesOrder(scratch []treeWorkspace, repos []treeRepo) []string {
+	defaultKeys := make([]string, 0, len(scratch)+len(repos))
+	for _, ws := range scratch {
+		defaultKeys = append(defaultKeys, spacesKeyWorkspace(ws.ID))
+	}
+	for _, r := range repos {
+		defaultKeys = append(defaultKeys, spacesKeyRepo(r.Path))
+	}
+	exists := make(map[string]bool, len(defaultKeys))
+	for _, k := range defaultKeys {
+		exists[k] = true
+	}
+	stored, _ := getSpacesOrder()
+	order := make([]string, 0, len(defaultKeys))
+	seen := make(map[string]bool, len(defaultKeys))
+	for _, k := range stored {
+		if exists[k] && !seen[k] {
+			order = append(order, k)
+			seen[k] = true
+		}
+	}
+	for _, k := range defaultKeys {
+		if !seen[k] {
+			order = append(order, k)
+			seen[k] = true
+		}
+	}
+	return order
 }
 
 func buildTreeWorkspace(be Backend, ws Workspace, statuses, kinds map[string]string) treeWorkspace {
 	tw := treeWorkspace{
 		ID: ws.ID, Title: ws.Title, Repo: ws.Repo, WorkDir: ws.WorkDir,
-		Kind: ws.Kind, Pinned: ws.Pinned, Tabs: []treeTab{},
+		Kind: ws.Kind, Tabs: []treeTab{},
 	}
 	if ws.Kind == "git" && ws.WorkDir != "" {
 		if out, err := be.GitOut(ws.WorkDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
@@ -513,42 +547,18 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"tab_id": tabID, "workspace_id": wsID})
 }
 
-// serveRepoPin toggles a repo's pinned flag (floats it to the top of the tree).
-func serveRepoPin(w http.ResponseWriter, r *http.Request) {
+// serveSpacesReorder persists the user's drag-and-drop ordering of the unified
+// "spaces" list. The client sends the full current key list ("ws:<id>" /
+// "repo:<path>") in its new order; we store it verbatim (serveTree drops any
+// stale keys and appends new rows at the bottom on read).
+func serveSpacesReorder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Repo   string `json:"repo"`
-		Pinned bool   `json:"pinned"`
+		Order []string `json:"order"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Repo == "" {
-		http.Error(w, "repo required", http.StatusBadRequest)
-		return
-	}
-	if err := pinRepo(sidebarHost, req.Repo, req.Pinned); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	kickHub()
-	writeJSON(w, map[string]any{"ok": true})
-}
-
-// serveWorkspacePin toggles a scratch workspace's pinned flag (floats it to the
-// top of the scratch list).
-func serveWorkspacePin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		WorkspaceID string `json:"workspace_id"`
-		Pinned      bool   `json:"pinned"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.WorkspaceID == "" {
-		http.Error(w, "workspace_id required", http.StatusBadRequest)
-		return
-	}
-	if err := setWorkspacePinned(req.WorkspaceID, req.Pinned); err != nil {
+	if err := setSpacesOrder(req.Order); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

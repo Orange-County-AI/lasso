@@ -162,14 +162,13 @@ func TestWorkspaceTabCRUD(t *testing.T) {
 		t.Errorf("nextTabOrdinal = %d, want 2", n)
 	}
 
-	// rename + pin + cwd
+	// rename + cwd
 	_ = renameWorkspace("w1", "renamed")
-	_ = setWorkspacePinned("w1", true)
 	_ = renameTab("t1", "Bob")
 	_ = setTabCwd("t1", "/wt/sub")
 	got, _ = getWorkspace("w1")
-	if got.Title != "renamed" || !got.Pinned {
-		t.Errorf("after rename/pin: %+v", got)
+	if got.Title != "renamed" {
+		t.Errorf("after rename: %+v", got)
 	}
 	tb, _ := getTab("t1")
 	if tb.Title != "Bob" || tb.Cwd != "/wt/sub" {
@@ -191,21 +190,18 @@ func TestWorkspaceTabCRUD(t *testing.T) {
 	}
 }
 
-func TestRepoPinAndDisplayName(t *testing.T) {
+func TestRepoDisplayName(t *testing.T) {
 	openTestDB(t)
-	if err := pinRepo("local", "/r", true); err != nil {
-		t.Fatal(err)
-	}
 	if err := setRepoDisplayName("local", "/r", "My Repo"); err != nil {
 		t.Fatal(err)
 	}
 	rc, _ := getRepoState("local", "/r")
-	if !rc.Pinned || rc.DisplayName != "My Repo" {
-		t.Errorf("repo state = %+v, want pinned + display name", rc)
+	if rc.DisplayName != "My Repo" {
+		t.Errorf("repo state = %+v, want display name", rc)
 	}
 	// Round-trips through listRepoState too.
 	all, _ := listRepoState("local")
-	if all["/r"] == nil || !all["/r"].Pinned || all["/r"].DisplayName != "My Repo" {
+	if all["/r"] == nil || all["/r"].DisplayName != "My Repo" {
 		t.Errorf("listRepoState = %+v", all["/r"])
 	}
 }

@@ -241,6 +241,34 @@ func saveUIState(us uiState) error {
 	return setSetting("ui_state", string(b))
 }
 
+// getSpacesOrder reads the user's manual top-level ordering of the sidebar
+// "spaces" list — a JSON array of stable keys ("ws:<id>" for scratch workspaces,
+// "repo:<path>" for repos). Empty (nil) when the user hasn't reordered yet, in
+// which case serveTree falls back to its default seed order.
+func getSpacesOrder() ([]string, error) {
+	var v string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key='spaces_order'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var order []string
+	_ = json.Unmarshal([]byte(v), &order)
+	return order, nil
+}
+
+// setSpacesOrder persists the manual top-level ordering verbatim (the client
+// sends the full current key list on every drag, so this is a plain replace).
+func setSpacesOrder(order []string) error {
+	b, err := json.Marshal(order)
+	if err != nil {
+		return err
+	}
+	return setSetting("spaces_order", string(b))
+}
+
 // ---------------------------------------------------------------------------
 // host_state — per-host remembered selections
 // ---------------------------------------------------------------------------
@@ -314,11 +342,6 @@ func listRepoState(host string) (map[string]*RepoConfig, error) {
 		out[path] = rc
 	}
 	return out, rows.Err()
-}
-
-// pinRepo sets a repo's pinned flag (floats it to the top of the sidebar tree).
-func pinRepo(host, repo string, pinned bool) error {
-	return upsertRepoField(host, repo, "pinned", strconv.Itoa(boolToInt(pinned)))
 }
 
 // setRepoDisplayName overrides a repo's sidebar name ("" clears the override).
@@ -610,11 +633,6 @@ func allLiveTabs() ([]Tab, error) {
 
 func renameWorkspace(id, title string) error {
 	_, err := db.Exec(`UPDATE workspaces SET title=? WHERE id=?`, title, id)
-	return err
-}
-
-func setWorkspacePinned(id string, pinned bool) error {
-	_, err := db.Exec(`UPDATE workspaces SET pinned=? WHERE id=?`, boolToInt(pinned), id)
 	return err
 }
 

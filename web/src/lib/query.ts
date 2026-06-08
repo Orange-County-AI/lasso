@@ -41,6 +41,7 @@ export function treeAddTab(workspaceId: string, tab: TreeTab) {
     const add = (w: TreeWorkspace): TreeWorkspace =>
       w.id === workspaceId ? { ...w, tabs: [...(w.tabs ?? []), tab] } : w
     return {
+      ...old,
       scratch: (old.scratch ?? []).map(add),
       repos: (old.repos ?? []).map((r) => ({
         ...r,
@@ -53,12 +54,28 @@ export function treeAddTab(workspaceId: string, tab: TreeTab) {
   })
 }
 
-// treeAddScratchWorkspace prepends a new scratch workspace (a scratch agent).
+// Stable keys for the unified "spaces" order (kept in sync with the backend's
+// spacesKeyWorkspace/spacesKeyRepo in sidebar.go).
+export const spacesKeyWorkspace = (id: string) => `ws:${id}`
+export const spacesKeyRepo = (path: string) => `repo:${path}`
+
+// treeAddScratchWorkspace appends a new scratch workspace. It's intentionally NOT
+// added to `order`, so the sidebar renders it at the bottom (matching "new
+// workspaces go to the bottom"); the next refetch reconciles the authoritative
+// order with the new key appended server-side.
 export function treeAddScratchWorkspace(ws: TreeWorkspace) {
   queryClient.setQueryData<TreePayload>(qk.tree, (old) => {
     if (!old || (old.scratch ?? []).some((w) => w.id === ws.id)) return old
-    return { ...old, scratch: [ws, ...(old.scratch ?? [])] }
+    return { ...old, scratch: [...(old.scratch ?? []), ws] }
   })
+}
+
+// treeReorderSpaces optimistically applies a drag-and-drop reordering so the drop
+// reflects immediately, before the refetch confirms it.
+export function treeReorderSpaces(order: string[]) {
+  queryClient.setQueryData<TreePayload>(qk.tree, (old) =>
+    old ? { ...old, order } : old
+  )
 }
 
 // treeAddWorktree adds a worktree workspace under an already-listed repo. (If the

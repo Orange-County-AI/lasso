@@ -359,7 +359,6 @@ export function CreateAgentDialog({
             repo: rec.repo,
             work_dir: rec.work_dir,
             kind: "git",
-            pinned: false,
             branch: rec.branch,
             tabs: [tab],
           })
@@ -369,7 +368,6 @@ export function CreateAgentDialog({
             title: rec.title,
             work_dir: rec.work_dir,
             kind: "scratch",
-            pinned: false,
             tabs: [tab],
           })
         }

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { ChevronRight, GitBranch, Pin, Plus, Terminal } from "lucide-react"
+import { ChevronRight, GitBranch, Plus, Terminal } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -24,6 +24,7 @@ import {
 import {
   type AgentRow,
   api,
+  type TreePayload,
   type TreeRepo,
   type TreeWorkspace,
 } from "@/lib/api"
@@ -31,16 +32,21 @@ import { useApp } from "@/lib/app-store"
 import {
   qk,
   queryClient,
+  spacesKeyRepo,
+  spacesKeyWorkspace,
   treeAddScratchWorkspace,
   treeAddTab,
+  treeReorderSpaces,
   treeSetRepoMain,
 } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
-// The left sidebar: a "spaces" tree (git repos with their worktrees nested,
-// ordered by latest commit, pinned first; plus scratch workspaces) over an
-// "agents" pane that shows every agent's live status. Selecting a tab/agent
-// shows its terminal in the center.
+// The left sidebar: a "spaces" tree (git repos with their worktrees nested, plus
+// standalone scratch workspaces) over an "agents" pane that shows every agent's
+// live status. Selecting a tab/agent shows its terminal in the center. The
+// top-level "spaces" rows are a single manually-ordered list — drag to reorder;
+// new workspaces land at the bottom (order persists server-side via /api/tree's
+// `order` + /api/spaces/reorder).
 
 const STATUS_DOT: Record<string, string> = {
   working: "bg-[var(--h-warn)] animate-pulse",
@@ -52,6 +58,56 @@ const STATUS_DOT: Record<string, string> = {
 function refreshTree() {
   queryClient.invalidateQueries({ queryKey: qk.tree })
   queryClient.invalidateQueries({ queryKey: qk.agents })
+}
+
+// A single top-level row of the unified "spaces" list: either a standalone
+// scratch workspace or a repo (which expands to its nested worktrees).
+type SpaceItem =
+  | { key: string; kind: "ws"; ws: TreeWorkspace }
+  | { key: string; kind: "repo"; repo: TreeRepo }
+
+// unifiedSpaces flattens the tree payload into one ordered list, following the
+// server's `order` (stable keys) and appending any rows not yet placed in it —
+// freshly-created/optimistic rows — at the bottom.
+function unifiedSpaces(tree: TreePayload | undefined): SpaceItem[] {
+  if (!tree) return []
+  const scratch = tree.scratch ?? []
+  const repos = tree.repos ?? []
+  const wsById = new Map(scratch.map((w) => [w.id, w]))
+  const repoByPath = new Map(repos.map((r) => [r.path, r]))
+  const items: SpaceItem[] = []
+  const placed = new Set<string>()
+  for (const key of tree.order ?? []) {
+    if (placed.has(key)) continue
+    if (key.startsWith("ws:")) {
+      const ws = wsById.get(key.slice(3))
+      if (ws) {
+        items.push({ key, kind: "ws", ws })
+        placed.add(key)
+      }
+    } else if (key.startsWith("repo:")) {
+      const repo = repoByPath.get(key.slice(5))
+      if (repo) {
+        items.push({ key, kind: "repo", repo })
+        placed.add(key)
+      }
+    }
+  }
+  for (const ws of scratch) {
+    const key = spacesKeyWorkspace(ws.id)
+    if (!placed.has(key)) {
+      items.push({ key, kind: "ws", ws })
+      placed.add(key)
+    }
+  }
+  for (const repo of repos) {
+    const key = spacesKeyRepo(repo.path)
+    if (!placed.has(key)) {
+      items.push({ key, kind: "repo", repo })
+      placed.add(key)
+    }
+  }
+  return items
 }
 
 // openNewAgent asks the (always-mounted) CreateAgentDialog to open prefilled with
@@ -97,7 +153,6 @@ export function Sidebar({
         title,
         work_dir,
         kind: "scratch",
-        pinned: false,
         tabs: [{ id: tab_id, title: "1", kind: "shell" }],
       })
       onSelectTab(tab_id)
@@ -181,6 +236,79 @@ export function Sidebar({
     refreshTree()
   }, [delSel, clearDel])
 
+  // The unified, manually-ordered top-level "spaces" list (scratch workspaces +
+  // repos interleaved). Drag a row onto another to reorder; the full new key
+  // order is persisted server-side.
+  const items = React.useMemo(() => unifiedSpaces(tree.data), [tree.data])
+  const [dragKey, setDragKey] = React.useState<string | null>(null)
+  const [dropTarget, setDropTarget] = React.useState<{
+    key: string
+    pos: "before" | "after"
+  } | null>(null)
+  const commitReorder = React.useCallback(
+    (from: string, to: string, pos: "before" | "after") => {
+      if (from === to) return
+      const keys = items.map((i) => i.key)
+      const without = keys.filter((k) => k !== from)
+      const idx = without.indexOf(to)
+      if (idx < 0) return
+      without.splice(pos === "before" ? idx : idx + 1, 0, from)
+      if (without.join(" ") === keys.join(" ")) return
+      treeReorderSpaces(without)
+      api.reorderSpaces(without).catch((e) => {
+        toast.error(String(e))
+        refreshTree()
+      })
+    },
+    [items]
+  )
+  // Native HTML5 drag props for one top-level row. Grabbing anywhere in a repo's
+  // block (header or its nested worktrees) drags the whole repo; rows still
+  // open on a plain click. Returns props to spread plus an indicator className.
+  const dragFor = (key: string) => ({
+    props: {
+      draggable: true,
+      onDragStart: (e: React.DragEvent) => {
+        setDragKey(key)
+        e.dataTransfer.effectAllowed = "move"
+        e.dataTransfer.setData("text/plain", key)
+      },
+      onDragOver: (e: React.DragEvent) => {
+        if (!dragKey || dragKey === key) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = "move"
+        const rect = e.currentTarget.getBoundingClientRect()
+        const pos: "before" | "after" =
+          e.clientY < rect.top + rect.height / 2 ? "before" : "after"
+        if (dropTarget?.key !== key || dropTarget.pos !== pos) {
+          setDropTarget({ key, pos })
+        }
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setDropTarget((cur) => (cur?.key === key ? null : cur))
+        }
+      },
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault()
+        if (dragKey) commitReorder(dragKey, key, dropTarget?.pos ?? "before")
+        setDragKey(null)
+        setDropTarget(null)
+      },
+      onDragEnd: () => {
+        setDragKey(null)
+        setDropTarget(null)
+      },
+    },
+    className: cn(
+      dragKey === key && "opacity-40",
+      dropTarget?.key === key &&
+        (dropTarget.pos === "before"
+          ? "border-[var(--h-accent)] border-t-2"
+          : "border-[var(--h-accent)] border-b-2")
+    ),
+  })
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
       {/* The spaces region is `relative` so the create-workspace button can pin to
@@ -192,29 +320,33 @@ export function Sidebar({
           <ContextMenuTrigger asChild>
             <div className="h-full overflow-y-auto pb-12">
               <SectionLabel>spaces</SectionLabel>
-              {(tree.data?.scratch ?? []).map((ws) => (
-                <WorkspaceNode
-                  key={ws.id}
-                  ws={ws}
-                  selectedTabId={selectedTabId}
-                  onSelectTab={onSelectTab}
-                  depth={1}
-                  delSel={delSel}
-                  onToggleDel={toggleDel}
-                  onBulkDelete={openBulkDelete}
-                />
-              ))}
-              {(tree.data?.repos ?? []).map((repo) => (
-                <RepoNode
-                  key={repo.path}
-                  repo={repo}
-                  selectedTabId={selectedTabId}
-                  onSelectTab={onSelectTab}
-                  delSel={delSel}
-                  onToggleDel={toggleDel}
-                  onBulkDelete={openBulkDelete}
-                />
-              ))}
+              {items.map((item) => {
+                const drag = dragFor(item.key)
+                return (
+                  <div key={item.key} {...drag.props} className={drag.className}>
+                    {item.kind === "ws" ? (
+                      <WorkspaceNode
+                        ws={item.ws}
+                        selectedTabId={selectedTabId}
+                        onSelectTab={onSelectTab}
+                        depth={1}
+                        delSel={delSel}
+                        onToggleDel={toggleDel}
+                        onBulkDelete={openBulkDelete}
+                      />
+                    ) : (
+                      <RepoNode
+                        repo={item.repo}
+                        selectedTabId={selectedTabId}
+                        onSelectTab={onSelectTab}
+                        delSel={delSel}
+                        onToggleDel={toggleDel}
+                        onBulkDelete={openBulkDelete}
+                      />
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
@@ -357,7 +489,6 @@ function RepoNode({
         repo: repo.path,
         work_dir: repo.path,
         kind: "git",
-        pinned: false,
         branch: repo.primary_branch,
         tabs: [{ id: tab_id, title: "1", kind: "shell" }],
       })
@@ -409,9 +540,6 @@ function RepoNode({
               onClick={openRepo}
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
             >
-              {repo.pinned && (
-                <Pin className="size-3 shrink-0 text-[var(--h-accent)]" />
-              )}
               {status && (
                 <span
                   className={cn(
@@ -452,16 +580,6 @@ function RepoNode({
             New worktree (shell)…
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem
-            onSelect={async () => {
-              await api
-                .pinRepo(repo.path, !repo.pinned)
-                .catch((e) => toast.error(String(e)))
-              refreshTree()
-            }}
-          >
-            {repo.pinned ? "Unpin" : "Pin to top"}
-          </ContextMenuItem>
           <ContextMenuItem onSelect={rename}>Rename…</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -601,16 +719,6 @@ function WorkspaceNode({
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => setRenameOpen(true)}>
               Rename…
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={async () => {
-                await api
-                  .pinWorkspace(ws.id, !ws.pinned)
-                  .catch((e) => toast.error(String(e)))
-                refreshTree()
-              }}
-            >
-              {ws.pinned ? "Unpin" : "Pin to top"}
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => onToggleDel(ws.id)}>

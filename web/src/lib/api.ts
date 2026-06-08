@@ -96,7 +96,6 @@ export interface TreeWorkspace {
   repo?: string
   work_dir: string
   kind: "git" | "scratch"
-  pinned: boolean
   branch?: string
   tabs: TreeTab[]
   // Aggregate live-agent status for the sidebar dot (blocked > working > idle),
@@ -109,7 +108,6 @@ export interface TreeRepo {
   path: string
   name: string
   primary_branch: string
-  pinned: boolean
   last_commit: number
   workspaces: TreeWorkspace[] // linked worktrees only
   // The repo row is itself the main checkout (primary branch). main_tab_id is
@@ -126,6 +124,10 @@ export interface TreeRepo {
 export interface TreePayload {
   repos: TreeRepo[]
   scratch: TreeWorkspace[]
+  // Authoritative top-level display order of the unified "spaces" list as stable
+  // keys ("ws:<id>" for scratch, "repo:<path>" for repos). Rows absent from it
+  // (e.g. just-created) are rendered at the bottom by the sidebar.
+  order: string[]
 }
 
 export interface AgentRow {
@@ -300,10 +302,10 @@ export const api = {
     postJSON<{ ok: boolean }>("/api/workspace/rename", { workspace_id, title }),
   closeWorkspace: (workspace_id: string) =>
     postJSON<{ ok: boolean }>("/api/workspace/close", { workspace_id }),
-  pinWorkspace: (workspace_id: string, pinned: boolean) =>
-    postJSON<{ ok: boolean }>("/api/workspace/pin", { workspace_id, pinned }),
-  pinRepo: (repo: string, pinned: boolean) =>
-    postJSON<{ ok: boolean }>("/api/repo/pin", { repo, pinned }),
+  // Persist the user's drag-and-drop ordering of the unified "spaces" list (the
+  // full current key list in its new order).
+  reorderSpaces: (order: string[]) =>
+    postJSON<{ ok: boolean }>("/api/spaces/reorder", { order }),
   // Open (creating on first use) a terminal on a repo's primary branch — its
   // main checkout at the repo root.
   openRepo: (repo: string) =>

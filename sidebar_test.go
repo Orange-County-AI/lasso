@@ -37,7 +37,7 @@ func initRepo(t *testing.T, dir, date string) {
 	run("commit", "-q", "-m", "init")
 }
 
-func TestServeTreeOrderingAndPin(t *testing.T) {
+func TestServeTreeOrderingAndReorder(t *testing.T) {
 	requireTmux(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -87,22 +87,37 @@ func TestServeTreeOrderingAndPin(t *testing.T) {
 	if len(p.Repos) != 2 {
 		t.Fatalf("repos = %d, want 2", len(p.Repos))
 	}
-	// Newer commit first.
-	if p.Repos[0].Name != "new" || p.Repos[1].Name != "old" {
-		t.Fatalf("order = [%s, %s], want [new, old]", p.Repos[0].Name, p.Repos[1].Name)
-	}
 	if p.Repos[0].PrimaryBranch != "main" {
 		t.Errorf("primary branch = %q, want main", p.Repos[0].PrimaryBranch)
 	}
+	// Default (seed) order with no stored ordering: newer commit first.
+	oldKey := spacesKeyRepo(oldPath)
+	newKey := spacesKeyRepo(newPath)
+	if want := []string{newKey, oldKey}; !equalStrs(p.Order, want) {
+		t.Fatalf("default order = %v, want %v", p.Order, want)
+	}
 
-	// Pinning the older repo floats it to the top.
-	if err := pinRepo(sidebarHost, filepath.Join(root, "old"), true); err != nil {
+	// A stored manual order floats the older repo to the top; stale keys are
+	// ignored and live rows not named are appended at the bottom.
+	if err := setSpacesOrder([]string{oldKey, "repo:/gone", "ws:gone"}); err != nil {
 		t.Fatal(err)
 	}
 	p = get()
-	if p.Repos[0].Name != "old" || !p.Repos[0].Pinned {
-		t.Fatalf("after pin, first = %q pinned=%v, want old/true", p.Repos[0].Name, p.Repos[0].Pinned)
+	if want := []string{oldKey, newKey}; !equalStrs(p.Order, want) {
+		t.Fatalf("after reorder, order = %v, want %v", p.Order, want)
 	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestServeNewTabAndClose(t *testing.T) {
