@@ -81,14 +81,25 @@ func tmuxEnsureServer() error {
 		"set", "-g", "history-limit", "50000", ";",
 		"set", "-g", "default-terminal", "tmux-256color", ";",
 		"setw", "-g", "aggressive-resize", "on", ";",
-		// Windows size to the LARGEST attached client, so the active viewer fills
-		// the pane (no dead "·" filler columns). `largest` over `latest` because a
-		// stale/orphaned client left behind by a hard backend restart (e.g. a ttyd
-		// orphan stuck at the default 80x24, or a degenerate 2x1) would otherwise
-		// clamp the window under `latest`; being small, it's ignored under
-		// `largest`. Set explicitly because nudgeRedraw's resize-window flips the
+		// Window sizes to the LATEST (most-recently-active) attached client — the
+		// one whose keyboard you're using right now. When >1 client views the same
+		// session (two browser tabs, a phone alongside a desktop, or a lingering
+		// ghost from a ttyd reconnect), their widths differ; `latest` sizes the
+		// window to whoever is typing, so a long prompt wraps to *their* viewport.
+		//
+		// `largest` (the previous choice) instead sized to the WIDEST client, which
+		// silently corrupts every narrower viewer: tmux hands the program (Claude
+		// Code) the wide COLUMNS, it lays out an un-wrapped line that overruns the
+		// narrow client, and the start of the line scrolls off-screen — content
+		// LOST, not merely padded. `latest` can't do that: the active client is by
+		// definition full-width for itself; any wider co-viewer just sees benign "·"
+		// filler columns. The stale-small-orphan worry that motivated `largest` is
+		// moot under `latest` — a ghost generates no input, so it never becomes the
+		// latest client once you type; the worst case is a freshly-attaching client
+		// flashing 80x24 for the instant before xterm fits, which self-heals on the
+		// fit resize. Set explicitly because nudgeRedraw's resize-window flips the
 		// per-window option to manual and must restore it.
-		"setw", "-g", "window-size", "largest", ";",
+		"setw", "-g", "window-size", "latest", ";",
 		// Notify lasso the instant a session ends (the user exited the shell) so
 		// its tab closes immediately, before the ttyd client flashes a reconnect
 		// against the dead session. See startSessionCloseListener.
@@ -202,11 +213,13 @@ func foregroundIsShell(session string) bool {
 // TUIs repaint.
 //
 // CRITICAL: resize-window flips the window's window-size option to *manual* as a
-// side effect, which would freeze the geometry so a later client widen leaves
-// dead "·" filler columns. The trailing `setw window-size largest` both restores
-// automatic sizing (so future resizes follow the client) AND resizes back to the
-// current client now — a second SIGWINCH, another harmless repaint. (`-A` only
-// resizes once; it does NOT restore automatic mode.)
+// side effect, which would freeze the geometry so a later client resize leaves
+// the window mismatched (dead "·" filler columns, or — worse — a too-wide window
+// that scrolls a narrow client's line off-screen). The trailing `setw
+// window-size latest` both restores automatic sizing (so future resizes follow
+// the active client) AND resizes back to the current client now — a second
+// SIGWINCH, another harmless repaint. (`-A` only resizes once; it does NOT
+// restore automatic mode.)
 func nudgeRedraw(session string) {
 	wh, err := tmuxOut("display-message", "-p", "-t", session, "#{window_width} #{window_height}")
 	if err != nil {
@@ -222,7 +235,7 @@ func nudgeRedraw(session string) {
 		return
 	}
 	_ = tmux("resize-window", "-t", session, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h-1))
-	_ = tmux("setw", "-t", session, "window-size", "largest") // repaint + restore auto-sizing
+	_ = tmux("setw", "-t", session, "window-size", "latest") // repaint + restore auto-sizing
 }
 
 // nudgeRedrawWhenAttached waits for a client to attach, then forces a full
