@@ -177,11 +177,16 @@ export function FilesTab({
     }
   }, [curPath])
 
-  // Poll the root directory every 5s so files that land after the tree first
-  // loaded show up on their own — e.g. an attachment copied into a fresh agent's
-  // work dir a moment after creation, which the viewer otherwise misses because
-  // it listed the dir before the copy. Only the root is polled (where new files
-  // almost always appear); the cache is updated only when its entries actually
+  // Keep a ref of the expanded set so the poll below can read the current
+  // expansion without re-arming its interval every time a directory toggles.
+  const expandedRef = React.useRef(expanded)
+  expandedRef.current = expanded
+
+  // Poll the visible directories every 5s so files that land after the tree
+  // first loaded show up on their own — e.g. an attachment copied into a fresh
+  // agent's work dir a moment after creation, or files an agent writes/renames
+  // under an expanded subtree. The root plus every currently-expanded directory
+  // is refetched; the cache is updated only when a directory's entries actually
   // changed, so an idle tree never re-renders. Skipped while the tree isn't
   // visible (Diff subtab, collapsed sidebar → zero width; backgrounded tab) to
   // avoid needless ReadDir calls (SFTP round-trips on a remote host).
@@ -193,20 +198,23 @@ export function FilesTab({
         (e, i) =>
           e.name === b[i].name && e.dir === b[i].dir && e.size === b[i].size
       )
-    const tick = () => {
-      if (document.hidden || !rootRef.current?.clientWidth) return
+    const refresh = (dir: string) =>
       api
-        .files(rootPath)
+        .files(dir)
         .then((data) => {
           setChildrenByPath((prev) => {
-            const cur = prev[rootPath]
+            const cur = prev[dir]
             if (cur && sameEntries(cur, data.entries)) return prev
-            return { ...prev, [rootPath]: data.entries }
+            return { ...prev, [dir]: data.entries }
           })
         })
         .catch(() => {
           /* transient (dir gone / host blip); keep the last good listing */
         })
+    const tick = () => {
+      if (document.hidden || !rootRef.current?.clientWidth) return
+      const dirs = new Set([rootPath, ...expandedRef.current])
+      for (const dir of dirs) void refresh(dir)
     }
     const id = setInterval(tick, 5000)
     return () => clearInterval(id)
