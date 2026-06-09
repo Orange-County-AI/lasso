@@ -76,10 +76,17 @@ export function treeReorderSpaces(order: string[]) {
 }
 
 // treeAddWorktree adds a worktree workspace under an already-listed repo. (If the
-// repo isn't in the tree yet, the refetch will surface it.)
+// repo isn't in the tree yet, the refetch will surface it.) Skips the insert when
+// a workspace with this id is already in the tree — the server persists the row
+// before createAgent returns, so a refetch can land it first; appending blindly
+// would render the same worktree twice until the next refetch reconciled it.
 export function treeAddWorktree(repoPath: string, ws: TreeWorkspace) {
   queryClient.setQueryData<TreePayload>(qk.tree, (old) => {
     if (!old) return old
+    const present = (old.repos ?? []).some((r) =>
+      (r.workspaces ?? []).some((w) => w.id === ws.id)
+    )
+    if (present) return old
     return {
       ...old,
       repos: (old.repos ?? []).map((r) =>
