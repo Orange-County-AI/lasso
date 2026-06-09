@@ -331,6 +331,15 @@ export function FilesTab({
     a.remove()
   }
 
+  const copyPath = async (full: string) => {
+    try {
+      await navigator.clipboard.writeText(full)
+      toast.success("Copied path to clipboard")
+    } catch {
+      toast.error("Failed to copy path")
+    }
+  }
+
   // Recursively render a directory's entries. `dir` is absolute; `depth` drives
   // indentation. Children render only for expanded directories.
   const renderDir = (dir: string, depth: number): React.ReactNode => {
@@ -362,6 +371,7 @@ export function FilesTab({
             dirChanged={dirChanged}
             dropActive={dropTarget === target}
             onClick={() => (e.dir ? toggleDir(full) : onOpenFile(full))}
+            onCopyPath={() => copyPath(full)}
             onRename={() => {
               setRenameTarget({ name: e.name, full, dir: e.dir, parent: dir })
               setRenameValue(e.name)
@@ -557,6 +567,7 @@ function FileRow({
   dirChanged,
   dropActive,
   onClick,
+  onCopyPath,
   onRename,
   onDelete,
   onDownload,
@@ -575,6 +586,7 @@ function FileRow({
   dirChanged?: boolean
   dropActive?: boolean
   onClick: () => void
+  onCopyPath?: () => void
   onRename?: () => void
   onDelete?: () => void
   onDownload?: () => void
@@ -631,12 +643,15 @@ function FileRow({
   )
 
   // The parent ("..") row gets no menu — there's nothing to act on.
-  if (!onRename && !onDelete && !onDownload) return row
+  if (!onCopyPath && !onRename && !onDelete && !onDownload) return row
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
+        {onCopyPath && (
+          <ContextMenuItem onSelect={onCopyPath}>Copy path</ContextMenuItem>
+        )}
         {onDownload && (
           <ContextMenuItem onSelect={onDownload}>Download</ContextMenuItem>
         )}
