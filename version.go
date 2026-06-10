@@ -16,7 +16,7 @@ var lassoSemver = "0.5.1"
 // exact commit it was built from, e.g. "0.1.0 (dc1e696)". The semver says
 // "which release", the commit says "which build of it" — useful when several
 // builds share a version (a dirty rebuild, a hotfix between bumps). Shown in the
-// Settings tab.
+// Settings tab and host switcher.
 func lassoVersion() string {
 	return lassoSemver + " (" + lassoCommit() + ")"
 }

@@ -17,7 +17,7 @@ func whoamiRecs() []AgentRecord {
 // reads idle — we only assert the identity here.)
 func TestResolveWhoamiMapsTabToAgent(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir()) // agentStatusNow scrapes tmux on its own socket
-	out := resolveWhoami(whoamiRecs(), "self")
+	out := resolveWhoami("local", whoamiRecs(), "self")
 	if !out.Found || out.Agent == nil {
 		t.Fatalf("expected found, got %+v", out)
 	}
@@ -30,7 +30,7 @@ func TestResolveWhoamiMapsTabToAgent(t *testing.T) {
 func TestResolveWhoamiMatchesByAgentID(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	recs := []AgentRecord{{ID: "legacy", Title: "x", CreatedAt: time.Now()}}
-	out := resolveWhoami(recs, "legacy")
+	out := resolveWhoami("local", recs, "legacy")
 	if !out.Found || out.Agent == nil || out.Agent.ID != "legacy" {
 		t.Fatalf("expected to match by agent id, got %+v", out)
 	}
@@ -39,7 +39,7 @@ func TestResolveWhoamiMatchesByAgentID(t *testing.T) {
 // No tab_id: a structured answer telling the caller to pass $LASSO_TAB_ID, not an
 // opaque error.
 func TestResolveWhoamiEmptyTabID(t *testing.T) {
-	out := resolveWhoami(whoamiRecs(), "  ")
+	out := resolveWhoami("local", whoamiRecs(), "  ")
 	if out.Found || out.Agent != nil {
 		t.Fatalf("expected not found, got %+v", out)
 	}
@@ -50,7 +50,7 @@ func TestResolveWhoamiEmptyTabID(t *testing.T) {
 
 // A tab lasso doesn't manage: found:false with an explanation, no error.
 func TestResolveWhoamiUnknownTab(t *testing.T) {
-	out := resolveWhoami(whoamiRecs(), "nope")
+	out := resolveWhoami("local", whoamiRecs(), "nope")
 	if out.Found || out.Agent != nil {
 		t.Fatalf("expected not found, got %+v", out)
 	}

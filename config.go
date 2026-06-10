@@ -123,22 +123,56 @@ func lassoScratchDir() string   { return filepath.Join(lassoDir(), "scratch") }
 func lassoUploadsDir() string   { return filepath.Join(lassoDir(), "uploads") }
 func lassoConfigPath() string   { return filepath.Join(lassoDir(), "config.yaml") }
 
-// loadLassoConfig assembles the creator config from the database: global
-// settings plus the remembered selections, per-repo state, and agent log.
-func loadLassoConfig() (*LassoConfig, error) {
+// lassoDirFor is lassoDir for a specific backend's host. The local backend uses
+// lassoDir() (honoring LASSO_DIR, creating subdirs locally); a remote backend
+// resolves ~/.lasso under *that host's* home and ensures the subdirs exist
+// there. Agent worktrees/scratch dirs must live on the host the agent runs on —
+// using the local ~/.lasso path on a remote host fails with "permission denied"
+// (the local home may not even exist remotely).
+func lassoDirFor(b Backend) string {
+	// The local backend, or an explicit LASSO_DIR override (tests), resolves the
+	// local ~/.lasso. Only a real remote backend resolves against the remote home.
+	if _, ok := b.(*localBackend); ok || os.Getenv("LASSO_DIR") != "" {
+		return lassoDir()
+	}
+	home, err := b.HomeDir()
+	if err != nil || home == "" {
+		return lassoDir() // fall back rather than guessing a remote path
+	}
+	dir := filepath.Join(home, ".lasso")
+	for _, sub := range []string{"", "worktrees", "scratch", "uploads"} {
+		_ = b.MkdirAll(filepath.Join(dir, sub), 0o755)
+	}
+	return dir
+}
+
+func lassoWorktreesDirFor(b Backend) string {
+	return filepath.Join(lassoDirFor(b), "worktrees")
+}
+func lassoScratchDirFor(b Backend) string {
+	return filepath.Join(lassoDirFor(b), "scratch")
+}
+func lassoUploadsDirFor(b Backend) string {
+	return filepath.Join(lassoDirFor(b), "uploads")
+}
+
+// loadLassoConfig assembles the creator config for one host from the database:
+// global settings plus that host's remembered selections, per-repo state, and
+// agent log.
+func loadLassoConfig(host string) (*LassoConfig, error) {
 	s, err := getSettings()
 	if err != nil {
 		return nil, err
 	}
-	hs, err := getHostState()
+	hs, err := getHostState(host)
 	if err != nil {
 		return nil, err
 	}
-	repos, err := listRepoState()
+	repos, err := listRepoState(host)
 	if err != nil {
 		return nil, err
 	}
-	agents, err := listAgents()
+	agents, err := listAgents(host)
 	if err != nil {
 		return nil, err
 	}

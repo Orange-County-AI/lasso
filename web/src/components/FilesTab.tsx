@@ -189,7 +189,7 @@ export function FilesTab({
   // is refetched; the cache is updated only when a directory's entries actually
   // changed, so an idle tree never re-renders. Skipped while the tree isn't
   // visible (Diff subtab, collapsed sidebar → zero width; backgrounded tab) to
-  // avoid needless ReadDir calls.
+  // avoid needless ReadDir calls (SFTP round-trips on a remote host).
   React.useEffect(() => {
     if (!rootPath) return
     const sameEntries = (a: FileEntry[], b: FileEntry[]) =>
@@ -209,7 +209,7 @@ export function FilesTab({
           })
         })
         .catch(() => {
-          /* transient (dir gone / read blip); keep the last good listing */
+          /* transient (dir gone / host blip); keep the last good listing */
         })
     const tick = () => {
       if (document.hidden || !rootRef.current?.clientWidth) return

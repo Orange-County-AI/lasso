@@ -60,7 +60,7 @@ func TestViewportSpawns(t *testing.T) {
 
 	// Pointing at a tab lazily creates its session (the viewport then survives it).
 	dir := t.TempDir()
-	_ = insertWorkspace(Workspace{ID: "w1", Title: "x", WorkDir: dir, Kind: "scratch"})
+	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "x", WorkDir: dir, Kind: "scratch"})
 	_ = insertTab(Tab{ID: "tt1", WorkspaceID: "w1", Cwd: dir, Kind: "shell"})
 	session, created, err := ensureTabSession("tt1")
 	if err != nil || !created {

@@ -153,15 +153,18 @@ export function CreateAgentDialog({
     setPlaceholderIdx(Math.floor(Math.random() * PROMPT_PLACEHOLDERS.length))
   }, [open])
 
+  // Everything targets the local backend (~/.lasso/lasso.db / filesystem).
+  const host = "local"
+
   // Server state via TanStack Query, fetched while the dialog is open.
   const configQuery = useQuery({
-    queryKey: qk.agentConfig(),
-    queryFn: () => api.agentConfig(),
+    queryKey: qk.agentConfig(host),
+    queryFn: () => api.agentConfig(host),
     enabled: open,
   })
   const reposQuery = useQuery({
-    queryKey: qk.repos(),
-    queryFn: () => api.repos(),
+    queryKey: qk.repos(host),
+    queryFn: () => api.repos(host),
     enabled: open,
   })
   const config = configQuery.data ?? null
@@ -182,8 +185,8 @@ export function CreateAgentDialog({
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
 
   const branchesQuery = useQuery({
-    queryKey: qk.repoBranches(repo),
-    queryFn: () => api.repoBranches(repo),
+    queryKey: qk.repoBranches(host, repo),
+    queryFn: () => api.repoBranches(repo, host),
     enabled: open && type === "git" && !!repo,
   })
   const branches = React.useMemo(() => {
@@ -272,7 +275,7 @@ export function CreateAgentDialog({
     e.preventDefault()
     setPastingImage(true)
     try {
-      const { path } = await api.pasteImage(file)
+      const { path } = await api.pasteImage(file, host)
       const textarea = promptRef.current
       if (!textarea) {
         onPromptChange(prompt + (prompt ? "\n" : "") + path)
@@ -317,7 +320,7 @@ export function CreateAgentDialog({
       let uploadDir: string | undefined
       let attachments: string[] | undefined
       if (files.length > 0) {
-        const up = await api.uploadAgentFiles(files)
+        const up = await api.uploadAgentFiles(files, host)
         uploadDir = up.upload_dir
         attachments = up.files
       }

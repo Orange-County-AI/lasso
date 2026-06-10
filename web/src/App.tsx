@@ -308,7 +308,7 @@ function Shell() {
           if (!cancelled) emit(r.cwd)
         })
         .catch(() => {
-          /* session not live yet / transient blip — keep last cwd */
+          /* session not live yet / transient host blip — keep last cwd */
         })
     void poll()
     // Backgrounded tabs don't change cwd visibly; skip polling while hidden.

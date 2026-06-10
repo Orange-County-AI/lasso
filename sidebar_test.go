@@ -66,8 +66,8 @@ func TestServeTreeOrderingAndReorder(t *testing.T) {
 	// Repos appear in the tree only when they have a workspace; give
 	// each a main-checkout workspace (work_dir == repo root) so ordering + pinning
 	// are exercised.
-	_ = insertWorkspace(Workspace{ID: "wold", Title: "old", Repo: oldPath, WorkDir: oldPath, Kind: "git"})
-	_ = insertWorkspace(Workspace{ID: "wnew", Title: "new", Repo: newPath, WorkDir: newPath, Kind: "git"})
+	_ = insertWorkspace(Workspace{ID: "wold", Host: "local", Title: "old", Repo: oldPath, WorkDir: oldPath, Kind: "git"})
+	_ = insertWorkspace(Workspace{ID: "wnew", Host: "local", Title: "new", Repo: newPath, WorkDir: newPath, Kind: "git"})
 
 	get := func() treePayload {
 		req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
@@ -132,7 +132,7 @@ func TestServeNewTabAndClose(t *testing.T) {
 		}
 	})
 	dir := t.TempDir()
-	_ = insertWorkspace(Workspace{ID: "w1", Title: "ws", WorkDir: dir, Kind: "scratch"})
+	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "ws", WorkDir: dir, Kind: "scratch"})
 
 	// New shell tab.
 	body := `{"workspace_id":"w1","title":"logs"}`

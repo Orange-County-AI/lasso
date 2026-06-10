@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { TERM_RELOAD_EVENT } from "@/lib/app-store"
+import { HOST_CHANGED_EVENT } from "@/lib/app-store"
 import { bootTermFrame, refitTerminal } from "@/lib/terminal"
 
 // A ttyd terminal iframe (the terminal at /terminal/ or the shell at /shell/).
@@ -26,9 +26,9 @@ export function TerminalFrame({
   // tears the frame down with no prompt.
   const [reloadKey, setReloadKey] = React.useState(0)
   React.useEffect(() => {
-    const onReload = () => setReloadKey((k) => k + 1)
-    window.addEventListener(TERM_RELOAD_EVENT, onReload)
-    return () => window.removeEventListener(TERM_RELOAD_EVENT, onReload)
+    const onHostChange = () => setReloadKey((k) => k + 1)
+    window.addEventListener(HOST_CHANGED_EVENT, onHostChange)
+    return () => window.removeEventListener(HOST_CHANGED_EVENT, onHostChange)
   }, [])
 
   // Re-wire xterm whenever the iframe element is (re)created — on mount and on

@@ -6,7 +6,8 @@ export interface ActiveState {
   cwd?: string
   pane_id?: string
   panes_rev?: number
-  // A counter that bumps when terminals must reload.
+  // The local host label and a counter that bumps when terminals must reload.
+  host?: string
   term_rev?: number
   // tab id → agent status (idle|working|blocked), pushed by the status poller.
   agent_statuses?: Record<string, string>
@@ -261,6 +262,13 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await r.json()) as T
 }
 
+// withHost appends ?host=/&host= to a config endpoint. The backend is
+// local-only now, so callers pass "local"; omitted = the backend default.
+function withHost(url: string, host?: string): string {
+  if (!host) return url
+  return `${url}${url.includes("?") ? "&" : "?"}host=${encodeURIComponent(host)}`
+}
+
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
 
@@ -442,8 +450,8 @@ export const api = {
 
   // Write a pasted image to disk and return its path to insert into the
   // description.
-  pasteImage: async (file: Blob): Promise<{ path: string }> => {
-    const r = await fetch("/api/paste-image", {
+  pasteImage: async (file: Blob, host?: string): Promise<{ path: string }> => {
+    const r = await fetch(withHost("/api/paste-image", host), {
       method: "POST",
       headers: { "Content-Type": file.type || "image/png" },
       body: file,
@@ -455,7 +463,8 @@ export const api = {
   // --- Agent creation ---
 
   // The creator's settings + agent log (~/.lasso/lasso.db).
-  agentConfig: () => getJSON<AgentConfig>("/api/agent-config"),
+  agentConfig: (host?: string) =>
+    getJSON<AgentConfig>(withHost("/api/agent-config", host)),
 
   // Update the global creator defaults (repos_root, branch_prefix,
   // default_agent, scratch_setup); omitted fields are left unchanged.
@@ -465,36 +474,41 @@ export const api = {
         AgentConfig,
         "repos_root" | "branch_prefix" | "default_agent" | "scratch_setup"
       >
-    >
-  ) => postJSON<AgentConfig>("/api/agent-config", cfg),
+    >,
+    host?: string
+  ) => postJSON<AgentConfig>(withHost("/api/agent-config", host), cfg),
 
   // Save a repo's per-repo creator settings (copy-files globs + setup script).
   // These live with the repo, not the agent, so they're edited in Settings.
-  saveRepoConfig: (cfg: {
-    path: string
-    copy_files?: string
-    setup?: string
-  }) => postJSON<RepoConfig>("/api/repo-config", cfg),
+  saveRepoConfig: (
+    cfg: {
+      path: string
+      copy_files?: string
+      setup?: string
+    },
+    host?: string
+  ) => postJSON<RepoConfig>(withHost("/api/repo-config", host), cfg),
 
   // Git repos discovered under repos_root, each with its remembered state.
-  repos: () =>
-    getJSON<{ root: string; repos: RepoEntry[] }>("/api/repos"),
+  repos: (host?: string) =>
+    getJSON<{ root: string; repos: RepoEntry[] }>(withHost("/api/repos", host)),
 
   // Local + remote branches of a repo, plus its detected default branch.
-  repoBranches: (path: string) =>
+  repoBranches: (path: string, host?: string) =>
     getJSON<RepoBranches>(
-      `/api/repo-branches?path=${encodeURIComponent(path)}`
+      withHost(`/api/repo-branches?path=${encodeURIComponent(path)}`, host)
     ),
 
   // Stage attachment files before creating the agent; returns the staging dir
   // id + stored filenames to pass to createAgent, which moves them into the
   // work dir.
   uploadAgentFiles: async (
-    files: File[]
+    files: File[],
+    host?: string
   ): Promise<{ upload_dir: string; files: string[] }> => {
     const form = new FormData()
     for (const f of files) form.append("files", f, f.name)
-    const r = await fetch("/api/agent-upload", {
+    const r = await fetch(withHost("/api/agent-upload", host), {
       method: "POST",
       body: form,
     })

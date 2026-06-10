@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// memBackend is a virtual filesystem whose paths exist only in these maps, never
-// on the local disk. That's the whole point — if backendGlob/copyRepoFiles
-// reached for the local os (the old filepath.Glob bug) they'd find nothing here.
-// It embeds Backend so only the methods these helpers actually use need
-// implementing.
+// memBackend is a virtual filesystem standing in for a remote host: its paths
+// exist only in these maps, never on the local disk. That's the whole point —
+// if backendGlob/copyRepoFiles reached for the local os (the old filepath.Glob
+// bug) they'd find nothing here. It embeds Backend so only the methods these
+// helpers actually use need implementing.
 type memBackend struct {
 	Backend
 	dirs  map[string]bool
@@ -30,6 +30,10 @@ func newMemBackend() *memBackend {
 		wrote: map[string]string{},
 	}
 }
+
+// Name identifies the (single) fake host. The embedded nil Backend would panic
+// here, and host-scoped DB lookups key off curBackend().Name().
+func (b *memBackend) Name() string { return "local" }
 
 func (b *memBackend) mkdirAllAncestors(p string) {
 	for d := p; d != "/" && d != "." && d != ""; d = filepath.Dir(d) {

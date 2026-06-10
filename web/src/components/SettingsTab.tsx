@@ -187,15 +187,16 @@ export function ShortcutsDialog({
 // setup, persisted via /api/agent-config and /api/repo-config (~/.lasso/lasso.db).
 function AgentCreatorSettings({ active }: { active: boolean }) {
   const queryClient = useQueryClient()
+  const host = "local"
 
   const configQuery = useQuery({
-    queryKey: qk.agentConfig(),
-    queryFn: () => api.agentConfig(),
+    queryKey: qk.agentConfig(host),
+    queryFn: () => api.agentConfig(host),
     enabled: active,
   })
   const reposQuery = useQuery({
-    queryKey: qk.repos(),
-    queryFn: () => api.repos(),
+    queryKey: qk.repos(host),
+    queryFn: () => api.repos(host),
     enabled: active,
   })
   const repos = reposQuery.data?.repos ?? []
@@ -239,24 +240,30 @@ function AgentCreatorSettings({ active }: { active: boolean }) {
 
   const saveDefaultsMutation = useMutation({
     mutationFn: () =>
-      api.saveAgentConfig({
-        repos_root: reposRoot,
-        default_agent: defaultAgent,
-        scratch_setup: scratchSetup,
-      }),
+      api.saveAgentConfig(
+        {
+          repos_root: reposRoot,
+          default_agent: defaultAgent,
+          scratch_setup: scratchSetup,
+        },
+        host
+      ),
     onSuccess: () => {
       // Repos root may have changed — refetch both config and the repo scan.
-      queryClient.invalidateQueries({ queryKey: qk.agentConfig() })
-      queryClient.invalidateQueries({ queryKey: qk.repos() })
+      queryClient.invalidateQueries({ queryKey: qk.agentConfig(host) })
+      queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
   })
 
   const saveRepoMutation = useMutation({
     mutationFn: () =>
-      api.saveRepoConfig({ path: repoPath, copy_files: copyFiles, setup }),
+      api.saveRepoConfig(
+        { path: repoPath, copy_files: copyFiles, setup },
+        host
+      ),
     onSuccess: () => {
       setSavedRepo(repoPath)
-      queryClient.invalidateQueries({ queryKey: qk.repos() })
+      queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
   })
 

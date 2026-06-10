@@ -12,6 +12,9 @@ import (
 // os.* / git directly; the interface remains as a seam handlers route through
 // (curBackend()) and tests can substitute.
 type Backend interface {
+	// Name is the host identity — always "local".
+	Name() string
+
 	// Filesystem ops mirror the os.* calls the file handlers make.
 	ReadDir(path string) ([]fileEntry, error)
 	Stat(path string) (fs.FileInfo, error)
@@ -56,6 +59,8 @@ func setBackend(b Backend) {
 // ---------------------------------------------------------------------------
 
 type localBackend struct{}
+
+func (b *localBackend) Name() string { return "local" }
 
 func (b *localBackend) ReadDir(path string) ([]fileEntry, error) {
 	ents, err := os.ReadDir(path)

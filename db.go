@@ -14,20 +14,19 @@ import (
 	_ "modernc.org/sqlite" // pure-Go (CGO-free) sqlite driver, registers "sqlite"
 )
 
-// Lasso's state — the "New Agent" creator settings, its remembered selections,
-// and the log of agents it has spawned — lives in a single SQLite database at
-// ~/.lasso/lasso.db. It replaces the earlier config.yaml; an existing
-// config.yaml is imported once on first open (see migrateFromYAML).
+// Lasso's state — the "New Agent" creator settings, its per-host remembered
+// selections, and the log of agents it has spawned — lives in a single SQLite
+// database at ~/.lasso/lasso.db. It replaces the earlier config.yaml; an
+// existing config.yaml is imported once on first open (see migrateFromYAML).
 //
-// The database belongs to the machine lasso runs on, the same way the old
-// config.yaml did. A legacy `host` column survives on several tables (always
-// 'local'); it's no longer threaded through the code and exists only so existing
-// databases keep their schema.
+// The database is host-LOCAL: it belongs to the machine lasso runs on, the same
+// way the old config.yaml did. Host-scoped rows (repo/branch/path) are keyed by
+// host "local"; pure user settings (branch prefix, default agent, …) stay global.
 //
-//	settings    key/value, global user settings
-//	host_state  remembered selections (last repo/agent/type)
-//	repo_state  per-repo settings + memory (copy-files/setup/base)
-//	agents      append-only log of every agent created
+//	settings    key/value, global, host-agnostic user settings
+//	host_state  per-host remembered selections (last repo/agent/type)
+//	repo_state  per-host, per-repo settings + memory (copy-files/setup/base)
+//	agents      append-only log, each row tagged with the host it ran on
 //
 // modernc.org/sqlite is pure Go, so the binary stays CGO-free and portable.
 
@@ -199,18 +198,21 @@ func setSetting(key, value string) error {
 	return err
 }
 
-// uiState is the browser's persisted, global UI preferences (e.g. whether the
-// right sidebar is collapsed). It's kept server-side (one JSON blob in settings)
-// rather than in localStorage so the UI looks the same across browsers/devices
-// reaching the same lasso.
+// uiState is the browser's persisted, global (host-agnostic) UI preferences:
+// the Grid tab's filters and whether the right sidebar is collapsed. It's kept
+// server-side (one JSON blob in settings) rather than in localStorage so the UI
+// looks the same across browsers/devices reaching the same lasso.
 type uiState struct {
-	SidebarCollapsed bool `json:"sidebar_collapsed"`
+	GridAgentsOnly   bool     `json:"grid_agents_only"`
+	GridHiddenHosts  []string `json:"grid_hidden_hosts"`
+	GridSelected     []string `json:"grid_selected"`
+	SidebarCollapsed bool     `json:"sidebar_collapsed"`
 }
 
-// getUIState reads the persisted UI prefs (zero value — sidebar expanded — when
-// nothing is stored yet).
+// getUIState reads the persisted UI prefs (zero value — everything on, sidebar
+// expanded — when nothing is stored yet).
 func getUIState() (uiState, error) {
-	var us uiState
+	us := uiState{GridHiddenHosts: []string{}, GridSelected: []string{}}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -220,6 +222,12 @@ func getUIState() (uiState, error) {
 		return us, err
 	}
 	_ = json.Unmarshal([]byte(v), &us)
+	if us.GridHiddenHosts == nil {
+		us.GridHiddenHosts = []string{}
+	}
+	if us.GridSelected == nil {
+		us.GridSelected = []string{}
+	}
 	return us, nil
 }
 
@@ -262,7 +270,7 @@ func setSpacesOrder(order []string) error {
 }
 
 // ---------------------------------------------------------------------------
-// host_state — remembered selections
+// host_state — per-host remembered selections
 // ---------------------------------------------------------------------------
 
 type hostState struct {
@@ -271,10 +279,10 @@ type hostState struct {
 	LastAgentType string
 }
 
-func getHostState() (hostState, error) {
+func getHostState(host string) (hostState, error) {
 	var hs hostState
 	err := db.QueryRow(
-		`SELECT last_repo, last_agent, last_agent_type FROM host_state WHERE host='local'`).
+		`SELECT last_repo, last_agent, last_agent_type FROM host_state WHERE host=?`, host).
 		Scan(&hs.LastRepo, &hs.LastAgent, &hs.LastAgentType)
 	if err == sql.ErrNoRows {
 		return hostState{}, nil
@@ -284,29 +292,29 @@ func getHostState() (hostState, error) {
 
 // upsertHostField sets one host_state column, leaving the others at their
 // defaults on insert and untouched on update.
-func upsertHostField(column, value string) error {
+func upsertHostField(host, column, value string) error {
 	q := fmt.Sprintf(
-		`INSERT INTO host_state(host, %s) VALUES('local', ?)
+		`INSERT INTO host_state(host, %s) VALUES(?, ?)
 		 ON CONFLICT(host) DO UPDATE SET %s=excluded.%s`, column, column, column)
-	_, err := db.Exec(q, value)
+	_, err := db.Exec(q, host, value)
 	return err
 }
 
-func setLastRepo(repo string) error     { return upsertHostField("last_repo", repo) }
-func setLastAgent(agent string) error   { return upsertHostField("last_agent", agent) }
-func setLastAgentType(typ string) error { return upsertHostField("last_agent_type", typ) }
+func setLastRepo(host, repo string) error     { return upsertHostField(host, "last_repo", repo) }
+func setLastAgent(host, agent string) error   { return upsertHostField(host, "last_agent", agent) }
+func setLastAgentType(host, typ string) error { return upsertHostField(host, "last_agent_type", typ) }
 
 // ---------------------------------------------------------------------------
-// repo_state — per-repo settings + memory
+// repo_state — per-host, per-repo settings + memory
 // ---------------------------------------------------------------------------
 
-// getRepoState returns the config for one repo (zero value if none).
-func getRepoState(repo string) (RepoConfig, error) {
+// getRepoState returns the per-host config for one repo (zero value if none).
+func getRepoState(host, repo string) (RepoConfig, error) {
 	var rc RepoConfig
 	var pinned int
 	err := db.QueryRow(
-		`SELECT copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host='local' AND repo_path=?`,
-		repo).Scan(&rc.CopyFiles, &rc.Setup, &rc.LastBaseBranch, &pinned, &rc.DisplayName)
+		`SELECT copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host=? AND repo_path=?`,
+		host, repo).Scan(&rc.CopyFiles, &rc.Setup, &rc.LastBaseBranch, &pinned, &rc.DisplayName)
 	if err == sql.ErrNoRows {
 		return RepoConfig{}, nil
 	}
@@ -314,11 +322,11 @@ func getRepoState(repo string) (RepoConfig, error) {
 	return rc, err
 }
 
-// listRepoState returns every repo's config keyed by absolute path.
-func listRepoState() (map[string]*RepoConfig, error) {
+// listRepoState returns every repo's per-host config keyed by absolute path.
+func listRepoState(host string) (map[string]*RepoConfig, error) {
 	out := map[string]*RepoConfig{}
 	rows, err := db.Query(
-		`SELECT repo_path, copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host='local'`)
+		`SELECT repo_path, copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host=?`, host)
 	if err != nil {
 		return out, err
 	}
@@ -337,32 +345,32 @@ func listRepoState() (map[string]*RepoConfig, error) {
 }
 
 // setRepoDisplayName overrides a repo's sidebar name ("" clears the override).
-func setRepoDisplayName(repo, name string) error {
-	return upsertRepoField(repo, "display_name", name)
+func setRepoDisplayName(host, repo, name string) error {
+	return upsertRepoField(host, repo, "display_name", name)
 }
 
-func upsertRepoField(repo, column, value string) error {
+func upsertRepoField(host, repo, column, value string) error {
 	q := fmt.Sprintf(
-		`INSERT INTO repo_state(host, repo_path, %s) VALUES('local', ?, ?)
+		`INSERT INTO repo_state(host, repo_path, %s) VALUES(?, ?, ?)
 		 ON CONFLICT(host, repo_path) DO UPDATE SET %s=excluded.%s`, column, column, column)
-	_, err := db.Exec(q, repo, value)
+	_, err := db.Exec(q, host, repo, value)
 	return err
 }
 
-func setRepoCopyFiles(repo, v string) error {
-	return upsertRepoField(repo, "copy_files", v)
+func setRepoCopyFiles(host, repo, v string) error {
+	return upsertRepoField(host, repo, "copy_files", v)
 }
-func setRepoSetup(repo, v string) error { return upsertRepoField(repo, "setup", v) }
-func setLastBaseBranch(repo, v string) error {
-	return upsertRepoField(repo, "last_base_branch", v)
+func setRepoSetup(host, repo, v string) error { return upsertRepoField(host, repo, "setup", v) }
+func setLastBaseBranch(host, repo, v string) error {
+	return upsertRepoField(host, repo, "last_base_branch", v)
 }
 
 // ---------------------------------------------------------------------------
 // agents — append-only log
 // ---------------------------------------------------------------------------
 
-// appendAgent records a freshly created agent.
-func appendAgent(rec AgentRecord) error {
+// appendAgent records a freshly created agent, tagged with the host it ran on.
+func appendAgent(host string, rec AgentRecord) error {
 	att, _ := json.Marshal(rec.Attachments)
 	if rec.Attachments == nil {
 		att = []byte("[]")
@@ -370,19 +378,19 @@ func appendAgent(rec AgentRecord) error {
 	_, err := db.Exec(
 		`INSERT INTO agents(id, host, title, type, repo, base_branch, branch, agent,
 			description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, tab_id, created_at)
-		 VALUES(?,'local',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		rec.ID, rec.Title, rec.Type, rec.Repo, rec.BaseBranch, rec.Branch, rec.Agent,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		rec.ID, host, rec.Title, rec.Type, rec.Repo, rec.BaseBranch, rec.Branch, rec.Agent,
 		rec.Description, rec.Notes, string(att), boolToInt(rec.PlanMode), rec.WorkDir,
 		rec.WorkspaceID, rec.RootPane, rec.TabID, rec.CreatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
-// listAgents returns every agent created, oldest first (append order).
-func listAgents() ([]AgentRecord, error) {
+// listAgents returns the agents created on a host, oldest first (append order).
+func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
 		`SELECT id, title, type, repo, base_branch, branch, agent, description, notes,
 			attachments, plan_mode, work_dir, workspace_id, root_pane, tab_id, created_at
-		 FROM agents ORDER BY created_at`)
+		 FROM agents WHERE host=? ORDER BY created_at`, host)
 	if err != nil {
 		return nil, err
 	}
@@ -430,6 +438,7 @@ func agentKind(agentID string) string {
 // repo, or a standalone scratch dir.
 type Workspace struct {
 	ID        string    `json:"id"`
+	Host      string    `json:"host"`
 	Title     string    `json:"title"`
 	Repo      string    `json:"repo,omitempty"` // "" for scratch
 	WorkDir   string    `json:"work_dir"`
@@ -476,8 +485,8 @@ func insertWorkspace(ws Workspace) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO workspaces(id, host, title, repo, work_dir, kind, pinned, created_at, closed_at)
-		 VALUES(?,'local',?,?,?,?,?,?,?)`,
-		ws.ID, ws.Title, ws.Repo, ws.WorkDir, ws.Kind,
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		ws.ID, hostOrLocal(ws.Host), ws.Title, ws.Repo, ws.WorkDir, ws.Kind,
 		boolToInt(ws.Pinned), ws.CreatedAt.Format(time.RFC3339Nano), tsOrEmpty(ws.ClosedAt))
 	return err
 }
@@ -500,11 +509,18 @@ func insertTab(t Tab) error {
 	return err
 }
 
+func hostOrLocal(h string) string {
+	if h == "" {
+		return "local"
+	}
+	return h
+}
+
 func scanWorkspace(rows *sql.Rows) (Workspace, error) {
 	var ws Workspace
 	var pinned int
-	var host, created, closed string // host: legacy column, always 'local', unused
-	err := rows.Scan(&ws.ID, &host, &ws.Title, &ws.Repo, &ws.WorkDir, &ws.Kind,
+	var created, closed string
+	err := rows.Scan(&ws.ID, &ws.Host, &ws.Title, &ws.Repo, &ws.WorkDir, &ws.Kind,
 		&pinned, &created, &closed)
 	ws.Pinned = pinned != 0
 	ws.CreatedAt = parseTS(created)
@@ -530,10 +546,10 @@ func getWorkspace(id string) (Workspace, error) {
 	return scanWorkspace(rows)
 }
 
-// listWorkspaces returns the live workspaces (closed_at=”) oldest first.
-func listWorkspaces() ([]Workspace, error) {
+// listWorkspaces returns a host's live workspaces (closed_at=”) oldest first.
+func listWorkspaces(host string) ([]Workspace, error) {
 	rows, err := db.Query(
-		`SELECT ` + workspaceCols + ` FROM workspaces WHERE closed_at='' ORDER BY created_at`)
+		`SELECT `+workspaceCols+` FROM workspaces WHERE host=? AND closed_at='' ORDER BY created_at`, host)
 	if err != nil {
 		return nil, err
 	}
@@ -749,15 +765,15 @@ func addColumnIfMissing(table, col, def string) error {
 // Their tmux sessions don't exist yet — startup reconciliation recreates fresh
 // shells lazily on first attach.
 func backfillWorkspacesFromAgents() error {
-	rows, err := db.Query(`SELECT id, title, type, repo, work_dir, created_at, tab_id FROM agents`)
+	rows, err := db.Query(`SELECT id, host, title, type, repo, work_dir, created_at, tab_id FROM agents`)
 	if err != nil {
 		return err
 	}
-	type row struct{ id, title, typ, repo, workDir, created, tabID string }
+	type row struct{ id, host, title, typ, repo, workDir, created, tabID string }
 	var todo []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.title, &r.typ, &r.repo, &r.workDir, &r.created, &r.tabID); err != nil {
+		if err := rows.Scan(&r.id, &r.host, &r.title, &r.typ, &r.repo, &r.workDir, &r.created, &r.tabID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -778,7 +794,7 @@ func backfillWorkspacesFromAgents() error {
 			kind = "scratch"
 		}
 		if err := insertWorkspace(Workspace{
-			ID: wsID, Title: r.title, Repo: r.repo,
+			ID: wsID, Host: hostOrLocal(r.host), Title: r.title, Repo: r.repo,
 			WorkDir: r.workDir, Kind: kind, CreatedAt: created,
 		}); err != nil {
 			return err
@@ -802,7 +818,8 @@ func backfillWorkspacesFromAgents() error {
 
 // migrateFromYAML imports an existing ~/.lasso/config.yaml into the (empty) DB
 // once, then renames it to config.yaml.imported so it's neither re-imported nor
-// lost. A missing file, or a non-empty settings table, is a no-op.
+// lost. A missing file, or a non-empty settings table, is a no-op. All legacy
+// data is host-local, so it lands under host "local".
 func migrateFromYAML() error {
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM settings`).Scan(&n); err != nil {
@@ -839,7 +856,7 @@ func migrateFromYAML() error {
 		return err
 	}
 	if c.LastRepo != "" {
-		if err := setLastRepo(c.LastRepo); err != nil {
+		if err := setLastRepo("local", c.LastRepo); err != nil {
 			return err
 		}
 	}
@@ -848,23 +865,23 @@ func migrateFromYAML() error {
 			continue
 		}
 		if rc.CopyFiles != "" {
-			if err := setRepoCopyFiles(path, rc.CopyFiles); err != nil {
+			if err := setRepoCopyFiles("local", path, rc.CopyFiles); err != nil {
 				return err
 			}
 		}
 		if rc.Setup != "" {
-			if err := setRepoSetup(path, rc.Setup); err != nil {
+			if err := setRepoSetup("local", path, rc.Setup); err != nil {
 				return err
 			}
 		}
 		if rc.LastBaseBranch != "" {
-			if err := setLastBaseBranch(path, rc.LastBaseBranch); err != nil {
+			if err := setLastBaseBranch("local", path, rc.LastBaseBranch); err != nil {
 				return err
 			}
 		}
 	}
 	for _, rec := range c.Agents {
-		if err := appendAgent(rec); err != nil {
+		if err := appendAgent("local", rec); err != nil {
 			return err
 		}
 	}

@@ -141,7 +141,7 @@ export function FileViewer({
   // while the editor is dirty, and the result is re-checked against the same
   // guard after the async fetch in case the user started typing mid-flight.
   // Skipped for binary previews (refreshed separately, below) and while the tab
-  // is backgrounded, to avoid needless reads.
+  // is backgrounded, to avoid needless reads (SFTP round-trips on a remote host).
   React.useEffect(() => {
     if (binary) return
     const id = setInterval(() => {
@@ -157,7 +157,7 @@ export function FileViewer({
           setDraft(t)
         })
         .catch(() => {
-          /* transient (file gone / read blip); keep the last good content */
+          /* transient (file gone / host blip); keep the last good content */
         })
     }, 5000)
     return () => clearInterval(id)

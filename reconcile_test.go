@@ -19,7 +19,7 @@ func TestReconcileTabs(t *testing.T) {
 
 	// A live tab whose cwd exists.
 	good := t.TempDir()
-	_ = insertWorkspace(Workspace{ID: "wg", Title: "g", WorkDir: good, Kind: "scratch"})
+	_ = insertWorkspace(Workspace{ID: "wg", Host: "local", Title: "g", WorkDir: good, Kind: "scratch"})
 	_ = insertTab(Tab{ID: "good", WorkspaceID: "wg", Cwd: good, Kind: "shell"})
 	if err := tmuxNewSession(tabSession("good"), good, nil); err != nil {
 		t.Fatalf("new-session good: %v", err)
@@ -27,7 +27,7 @@ func TestReconcileTabs(t *testing.T) {
 
 	// A tab whose cwd is gone → should be retired (closed + session killed).
 	gone := filepath.Join(t.TempDir(), "deleted")
-	_ = insertWorkspace(Workspace{ID: "wd", Title: "d", WorkDir: gone, Kind: "git"})
+	_ = insertWorkspace(Workspace{ID: "wd", Host: "local", Title: "d", WorkDir: gone, Kind: "git"})
 	_ = insertTab(Tab{ID: "dead", WorkspaceID: "wd", Cwd: gone, Kind: "agent", AgentID: "dead"})
 
 	// An orphan session with no live tab row → should be killed.
@@ -60,7 +60,7 @@ func TestEnsureTabSessionRecreates(t *testing.T) {
 		}
 	})
 	dir := t.TempDir()
-	_ = insertWorkspace(Workspace{ID: "w1", Title: "x", WorkDir: dir, Kind: "scratch"})
+	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "x", WorkDir: dir, Kind: "scratch"})
 	_ = insertTab(Tab{ID: "t1", WorkspaceID: "w1", Cwd: dir, Kind: "shell"})
 
 	// No session exists yet (simulating post-reboot); ensureTabSession creates it.

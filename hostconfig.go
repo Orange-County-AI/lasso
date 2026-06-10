@@ -6,9 +6,10 @@ import (
 	"strings"
 )
 
-// Creator settings, stored in ~/.lasso/lasso.db. "Settings" means the creator
-// defaults (repos_root, branch_prefix, default_agent, scratch_setup) and
-// per-repo copy-files/setup, plus the agent log and last-used selections.
+// Creator settings, stored in the local ~/.lasso/lasso.db. "Settings" means the
+// creator defaults (repos_root, branch_prefix, default_agent, scratch_setup) and
+// per-repo copy-files/setup, plus the agent log and last-used selections. All
+// state is keyed as host "local".
 
 // creatorDefaults is the JSON shape of the four creator settings, shared by the
 // CLI and the provider. The tags match LassoConfig so either decodes it.
@@ -37,7 +38,7 @@ type repoConfigPatch struct {
 }
 
 // ---------------------------------------------------------------------------
-// core logic — operates on the in-process db + a backend's fs
+// core logic — operates on the in-process db (this host's own) + a backend's fs
 // ---------------------------------------------------------------------------
 
 // applyDefaults writes the provided default fields to the settings table.
@@ -61,14 +62,14 @@ func applyDefaults(p defaultsPatch) error {
 	return nil
 }
 
-// reposList scans repos_root for git repos on be, merged with the per-repo
+// reposList scans repos_root for git repos on be, merged with host's per-repo
 // state from the in-process db.
-func reposList(be Backend) (string, []repoEntry, error) {
+func reposList(be Backend, host string) (string, []repoEntry, error) {
 	s, err := getSettings()
 	if err != nil {
 		return "", nil, err
 	}
-	repoState, err := listRepoState()
+	repoState, err := listRepoState(host)
 	if err != nil {
 		return "", nil, err
 	}
@@ -139,19 +140,19 @@ func reposListWith(be Backend, reposRoot string, repoState map[string]*RepoConfi
 	return strings.Join(expanded, "\n"), repos
 }
 
-// applyRepoConfig writes a repo's copy-files/setup, returning its state.
-func applyRepoConfig(path string, copyFiles, setup *string) (RepoConfig, error) {
+// applyRepoConfig writes a repo's copy-files/setup for host, returning its state.
+func applyRepoConfig(host, path string, copyFiles, setup *string) (RepoConfig, error) {
 	if copyFiles != nil {
-		if err := setRepoCopyFiles(path, *copyFiles); err != nil {
+		if err := setRepoCopyFiles(host, path, *copyFiles); err != nil {
 			return RepoConfig{}, err
 		}
 	}
 	if setup != nil {
-		if err := setRepoSetup(path, *setup); err != nil {
+		if err := setRepoSetup(host, path, *setup); err != nil {
 			return RepoConfig{}, err
 		}
 	}
-	return getRepoState(path)
+	return getRepoState(host, path)
 }
 
 // branchList returns a repo's local + remote branches and detected default,
@@ -184,28 +185,43 @@ func branchList(be Backend, path string) (local, remote []string, def string) {
 }
 
 // ---------------------------------------------------------------------------
-// settings accessors — all backed by ~/.lasso/lasso.db
+// host-scoped settings — all backed by the local lasso.db (host "local")
 // ---------------------------------------------------------------------------
 
-// getDefaults reads the creator defaults from the lasso.db.
-func getDefaults() (creatorDefaults, error) {
+// hostDefaults reads the creator defaults from the local lasso.db.
+func hostDefaults(host string) (creatorDefaults, error) {
 	s, err := getSettings()
 	return creatorDefaults{s.ReposRoot, s.BranchPrefix, s.DefaultAgent, s.ScratchSetup}, err
 }
 
-// listReposLocal lists repos (scanned on the local fs, merged with per-repo state).
-func listReposLocal() (string, []repoEntry, error) {
-	return reposList(localFsBackend())
+// hostSetDefaults writes the creator defaults to the local lasso.db.
+func hostSetDefaults(host string, p defaultsPatch) error {
+	return applyDefaults(p)
 }
 
-// loadAgentConfig returns the creator config the UI shows: defaults from the db
-// merged with the last-used selections + agent log.
-func loadAgentConfig() (*LassoConfig, error) {
-	def, err := getDefaults()
+// hostReposList lists repos (scanned on the local fs, merged with per-repo state).
+func hostReposList(host string) (string, []repoEntry, error) {
+	return reposList(localFsBackend(), "local")
+}
+
+// hostRepoConfig reads one repo's per-repo settings.
+func hostRepoConfig(host, path string) (RepoConfig, error) {
+	return getRepoState("local", path)
+}
+
+// hostSetRepoConfig writes one repo's per-repo settings.
+func hostSetRepoConfig(host, path string, copyFiles, setup *string) (RepoConfig, error) {
+	return applyRepoConfig("local", path, copyFiles, setup)
+}
+
+// hostAgentConfig returns the creator config the UI shows: defaults from the
+// local db merged with this lasso's last-used selections + agent log.
+func hostAgentConfig(host string) (*LassoConfig, error) {
+	def, err := hostDefaults(host)
 	if err != nil {
 		return nil, err
 	}
-	c, err := loadLassoConfig()
+	c, err := loadLassoConfig(host)
 	if err != nil {
 		return nil, err
 	}
