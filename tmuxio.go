@@ -80,6 +80,23 @@ func tmuxEnsureServer() error {
 		"set", "-g", "status", "off", ";",
 		"set", "-g", "history-limit", "50000", ";",
 		"set", "-g", "default-terminal", "tmux-256color", ";",
+		// Hand the mouse wheel to tmux. Without this (the default `mouse off`),
+		// tmux enables no mouse reporting, so xterm.js handles the wheel itself —
+		// and because tmux owns the *alternate screen*, xterm translates wheel
+		// up/down into cursor up/down keystrokes. At a shell prompt that walks
+		// command history instead of scrolling; the user wants to see previous
+		// output. With `mouse on` tmux owns the wheel and does the right thing per
+		// context: at the shell it enters copy-mode and scrolls our 50k-line
+		// scrollback, and inside an alt-screen TUI (Claude Code, less, vim) it
+		// forwards the wheel — see alternate-scroll below. Native click-drag
+		// selection is now tmux's; hold Shift to bypass tmux and get xterm's own
+		// selection.
+		"set", "-g", "mouse", "on", ";",
+		// In an alt-screen program that hasn't enabled its own mouse reporting,
+		// translate the wheel into cursor keys so the program scrolls. Default is
+		// on, but `-f /dev/null` plus future tmux default changes make it worth
+		// pinning: it's what keeps wheel-scroll working inside Claude Code/less.
+		"setw", "-g", "alternate-scroll", "on", ";",
 		"setw", "-g", "aggressive-resize", "on", ";",
 		// Window sizes to the LATEST (most-recently-active) attached client — the
 		// one whose keyboard you're using right now. When >1 client views the same
