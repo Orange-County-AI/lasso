@@ -195,14 +195,14 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Name < out[j].Name
 	})
-	writeJSON(w, treePayload{Repos: out, Scratch: scratch, Order: spacesOrder(scratch, out)})
+	writeJSON(w, treePayload{Repos: out, Scratch: scratch, Order: spacesOrder(host, scratch, out)})
 }
 
 // spacesOrder resolves the unified top-level order of the "spaces" list: the
 // user's stored order first (stale keys dropped), then any current rows not yet
 // placed appended at the bottom in seed order (scratch creation order, then
 // repos by recency). This is what lands a freshly-created workspace at the bottom.
-func spacesOrder(scratch []treeWorkspace, repos []treeRepo) []string {
+func spacesOrder(host string, scratch []treeWorkspace, repos []treeRepo) []string {
 	defaultKeys := make([]string, 0, len(scratch)+len(repos))
 	for _, ws := range scratch {
 		defaultKeys = append(defaultKeys, spacesKeyWorkspace(ws.ID))
@@ -214,7 +214,7 @@ func spacesOrder(scratch []treeWorkspace, repos []treeRepo) []string {
 	for _, k := range defaultKeys {
 		exists[k] = true
 	}
-	stored, _ := getSpacesOrder()
+	stored, _ := getSpacesOrder(host)
 	order := make([]string, 0, len(defaultKeys))
 	seen := make(map[string]bool, len(defaultKeys))
 	for _, k := range stored {
@@ -480,6 +480,10 @@ func closeOneTab(tabID string) {
 	// enough. If this tab was the viewport's current target, the frontend repoints
 	// it at the next selected tab (and the watcher follows).
 	host := tabHost(tabID)
+	// Re-assert the session→host mapping from the DB before the kill: after a
+	// lasso restart a never-viewed remote tab isn't in sessionHosts yet, and an
+	// unrouted kill-session would hit the local server and leak the remote one.
+	setSessionHost(tabSession(tabID), host)
 	_ = tmuxKillSession(tabSession(tabID))
 	agentStatuses.forget(host, tabID)
 	_ = closeTab(tabID)
@@ -675,7 +679,7 @@ func serveSpacesReorder(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := setSpacesOrder(req.Order); err != nil {
+	if err := setSpacesOrder(sbHost(), req.Order); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

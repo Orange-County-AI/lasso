@@ -241,13 +241,23 @@ func saveUIState(us uiState) error {
 	return setSetting("ui_state", string(b))
 }
 
-// getSpacesOrder reads the user's manual top-level ordering of the sidebar
+// spacesOrderKey is the settings key holding host's manual sidebar ordering.
+// Each host gets its own ordering (its spaces are disjoint from other hosts');
+// the local host keeps the bare legacy key so existing orderings survive.
+func spacesOrderKey(host string) string {
+	if isLocalHost(host) {
+		return "spaces_order"
+	}
+	return "spaces_order:" + host
+}
+
+// getSpacesOrder reads the user's manual top-level ordering of host's sidebar
 // "spaces" list — a JSON array of stable keys ("ws:<id>" for scratch workspaces,
 // "repo:<path>" for repos). Empty (nil) when the user hasn't reordered yet, in
 // which case serveTree falls back to its default seed order.
-func getSpacesOrder() ([]string, error) {
+func getSpacesOrder(host string) ([]string, error) {
 	var v string
-	err := db.QueryRow(`SELECT value FROM settings WHERE key='spaces_order'`).Scan(&v)
+	err := db.QueryRow(`SELECT value FROM settings WHERE key=?`, spacesOrderKey(host)).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -259,14 +269,14 @@ func getSpacesOrder() ([]string, error) {
 	return order, nil
 }
 
-// setSpacesOrder persists the manual top-level ordering verbatim (the client
+// setSpacesOrder persists host's manual top-level ordering verbatim (the client
 // sends the full current key list on every drag, so this is a plain replace).
-func setSpacesOrder(order []string) error {
+func setSpacesOrder(host string, order []string) error {
 	b, err := json.Marshal(order)
 	if err != nil {
 		return err
 	}
-	return setSetting("spaces_order", string(b))
+	return setSetting(spacesOrderKey(host), string(b))
 }
 
 // ---------------------------------------------------------------------------

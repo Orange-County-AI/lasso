@@ -108,8 +108,10 @@ func probeHost(ctx context.Context, alias string) HostInfo {
 	// One command emits three lines we parse: HOME, TMUX (version, if installed).
 	// `command -v tmux` keeps it quiet when tmux is absent. ClearAllForwardings
 	// drops any tunnel the user's config attaches to this host — the probe only
-	// runs a command.
-	const probe = `printf 'HOME=%s\n' "$HOME"; if command -v tmux >/dev/null 2>&1; then printf 'TMUX=%s\n' "$(tmux -V 2>/dev/null)"; fi`
+	// runs a command. The PATH export matches remotePathExport (remote.go): a
+	// non-interactive ssh shell misses Homebrew/~/.local/bin, where tmux often
+	// lives (macOS hosts), and the probe must see the same PATH later commands do.
+	const probe = remotePathExport + `printf 'HOME=%s\n' "$HOME"; if command -v tmux >/dev/null 2>&1; then printf 'TMUX=%s\n' "$(tmux -V 2>/dev/null)"; fi`
 	cmd := exec.CommandContext(cctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ClearAllForwardings=yes",

@@ -99,7 +99,7 @@ func TestServeTreeOrderingAndReorder(t *testing.T) {
 
 	// A stored manual order floats the older repo to the top; stale keys are
 	// ignored and live rows not named are appended at the bottom.
-	if err := setSpacesOrder([]string{oldKey, "repo:/gone", "ws:gone"}); err != nil {
+	if err := setSpacesOrder("local", []string{oldKey, "repo:/gone", "ws:gone"}); err != nil {
 		t.Fatal(err)
 	}
 	p = get()

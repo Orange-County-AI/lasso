@@ -232,7 +232,7 @@ func tmuxCaptureScroll(session string, n int) (string, error) {
 // buffer (up to the session's history-limit), so callers get everything tmux
 // still holds rather than a fixed tail.
 func tmuxCaptureAll(session string) (string, error) {
-	return tmuxOut("capture-pane", "-p", "-S", "-", "-t", session)
+	return tmuxOutH(hostForSession(session), "capture-pane", "-p", "-S", "-", "-t", session)
 }
 
 // tmuxCurrentPath returns the live cwd of a session's foreground process — the

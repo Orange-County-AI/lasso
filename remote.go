@@ -80,6 +80,10 @@ func newRemoteBackend(parent context.Context, alias string) (*remoteBackend, err
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + b.ctlPath,
 		"-o", "ControlPersist=60",
+		// Drop any port forwards the user's ssh config attaches to this host —
+		// lasso only runs commands, and an already-bound LocalForward would fail
+		// the bind on every connection (noise at best).
+		"-o", "ClearAllForwardings=yes",
 		"-fNT",
 		alias,
 	}
@@ -121,12 +125,20 @@ func (b *remoteBackend) remoteTmuxSock() string {
 	return `"$HOME/.lasso/tmux.sock"`
 }
 
+// remotePathExport widens PATH at the start of every remote command. A
+// non-interactive ssh shell gets the sshd default PATH, which misses Homebrew
+// (/opt/homebrew/bin on macOS hosts like minime/gigachad) and ~/.local/bin —
+// where tmux and the agent CLIs actually live — so a bare `tmux` would be
+// "command not found" there. The remote shell expands $PATH/$HOME; this string
+// is never interpreted locally (exec.Command, no local shell).
+const remotePathExport = `export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"; `
+
 // TmuxArgv builds a non-interactive remote tmux command, multiplexed over the
 // control master. Each arg is shell-quoted; the tmux command-sequence separator
 // ";" survives as its own quoted token (the remote shell hands tmux a literal ";"
 // argv element, which tmux treats as a separator).
 func (b *remoteBackend) TmuxArgv(args []string) []string {
-	cmd := "tmux -S " + b.remoteTmuxSock() + " -f /dev/null"
+	cmd := remotePathExport + "tmux -S " + b.remoteTmuxSock() + " -f /dev/null"
 	for _, a := range args {
 		cmd += " " + shellQuote(a)
 	}
@@ -138,7 +150,7 @@ func (b *remoteBackend) TmuxArgv(args []string) []string {
 // (over the control master) so the attached TUI renders, then attaches to the
 // session on the remote lasso tmux server.
 func (b *remoteBackend) TmuxAttachArgv(session string) []string {
-	cmd := "tmux -S " + b.remoteTmuxSock() + " -f /dev/null attach -t " + shellQuote(session)
+	cmd := remotePathExport + "tmux -S " + b.remoteTmuxSock() + " -f /dev/null attach -t " + shellQuote(session)
 	return []string{
 		"ssh", "-tt",
 		"-o", "BatchMode=yes",
@@ -150,7 +162,7 @@ func (b *remoteBackend) TmuxAttachArgv(session string) []string {
 // runOut runs a shell command string on the remote host over the control master
 // and returns stdout, surfacing stderr in the error.
 func (b *remoteBackend) runOut(remoteCmd string) (string, error) {
-	args := append(b.ctlOpts(), b.alias, remoteCmd)
+	args := append(b.ctlOpts(), b.alias, remotePathExport+remoteCmd)
 	out, err := exec.Command("ssh", args...).Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
