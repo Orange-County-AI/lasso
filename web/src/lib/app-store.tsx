@@ -11,6 +11,9 @@ interface AppState {
   activeCwd: string | null
   activePaneID: string | null
   panesRev: number
+  // Bumps when the server-persisted UI layout (/api/ui-state) is written, so
+  // the Shell re-pulls it and applies another client's panel widths.
+  uiRev: number
   // tab id → agent status (idle|working|blocked), pushed by the status poller.
   agentStatuses: Record<string, string>
 }
@@ -26,6 +29,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     activeCwd: null,
     activePaneID: null,
     panesRev: -1,
+    uiRev: -1,
     agentStatuses: {},
   })
 
@@ -46,6 +50,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       activeCwd: a.cwd || prev.activeCwd,
       activePaneID: a.pane_id || prev.activePaneID,
       panesRev: typeof a.panes_rev === "number" ? a.panes_rev : prev.panesRev,
+      uiRev: typeof a.ui_rev === "number" ? a.ui_rev : prev.uiRev,
       agentStatuses: a.agent_statuses ?? prev.agentStatuses,
     }))
   }, [])

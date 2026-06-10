@@ -8,8 +8,19 @@ export interface ActiveState {
   panes_rev?: number
   // A counter that bumps when terminals must reload.
   term_rev?: number
+  // A counter that bumps when /api/ui-state is written, so other clients
+  // re-pull and apply the new layout.
+  ui_rev?: number
   // tab id → agent status (idle|working|blocked), pushed by the status poller.
   agent_statuses?: Record<string, string>
+}
+
+// Server-persisted UI layout prefs — the side panels' last-open widths (% of
+// the panel group), shared across browsers/tabs (last write wins). Zero/absent
+// means "never saved".
+export interface UIState {
+  left_width?: number
+  right_width?: number
 }
 
 export interface Pane {
@@ -267,6 +278,10 @@ export const api = {
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
 
   version: () => getJSON<VersionInfo>("/api/version"),
+
+  // --- persisted UI layout (shared across clients; last write wins) ---
+  uiState: () => getJSON<UIState>("/api/ui-state"),
+  saveUIState: (s: UIState) => postJSON<UIState>("/api/ui-state", s),
 
   // --- sidebar tree + workspace/tab/repo mutations ---
   tree: () => getJSON<TreePayload>("/api/tree"),

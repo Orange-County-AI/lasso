@@ -23,7 +23,7 @@ export const qk = {
   tree: ["tree"] as const,
   agents: ["agents"] as const,
   diff: (path: string) => ["diff", path] as const,
-  sidebarPct: ["sidebar-pct"] as const,
+  uiState: ["ui-state"] as const,
   version: ["version"] as const,
 }
 

@@ -352,6 +352,7 @@ type Active struct {
 	TabID       string `json:"tab_id"`
 	PanesRev    int    `json:"panes_rev"` // bumps when the workspace/tab tree changes
 	TermRev     int    `json:"term_rev"`  // bumps so the browser reloads terminal iframes
+	UIRev       int    `json:"ui_rev"`    // bumps when /api/ui-state is written, so other clients re-pull the layout
 	// AgentStatuses maps each live agent tab id to its status (idle|working|
 	// blocked), produced by the status poller. The sidebar's agent pane reads it.
 	AgentStatuses map[string]string `json:"agent_statuses"`
@@ -871,6 +872,7 @@ type hub struct {
 	rev     int    // sidebar tree revision (bumped when lastSig changes)
 	lastSig string // last seen tree+agents signature
 	termRev int    // terminal-reload revision (retained in the SSE payload)
+	uiRev   int    // ui-state revision (bumped when /api/ui-state is written)
 	clients map[chan Active]struct{}
 
 	rootCtx context.Context
@@ -889,6 +891,16 @@ func (h *hub) kick() {
 	case h.trigger <- struct{}{}:
 	default:
 	}
+}
+
+// bumpUI signals that the persisted UI prefs changed (POST /api/ui-state):
+// ui_rev bumps in the SSE payload so other connected clients re-fetch the
+// state and apply the new layout (last write wins).
+func (h *hub) bumpUI() {
+	h.mu.Lock()
+	h.uiRev++
+	h.mu.Unlock()
+	h.kick()
 }
 
 // clientCount returns how many browsers are currently connected (the status
@@ -932,6 +944,7 @@ func (h *hub) run(ctx context.Context) {
 		a := Active{
 			PanesRev:      h.rev,
 			TermRev:       h.termRev,
+			UIRev:         h.uiRev,
 			AgentStatuses: statuses,
 		}
 		changed := !sameActive(a, h.cur)
@@ -968,6 +981,7 @@ func (h *hub) run(ctx context.Context) {
 // is no longer comparable with == because it carries a map).
 func sameActive(a, b Active) bool {
 	if a.PanesRev != b.PanesRev || a.TermRev != b.TermRev ||
+		a.UIRev != b.UIRev ||
 		len(a.AgentStatuses) != len(b.AgentStatuses) {
 		return false
 	}

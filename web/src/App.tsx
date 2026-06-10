@@ -29,10 +29,10 @@ import {
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, type TreeWorkspace } from "@/lib/api"
-import { AppProvider, lsGet, lsSet } from "@/lib/app-store"
+import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { installHistoryToggle } from "@/lib/history-toggle"
-import { qk } from "@/lib/query"
+import { qk, queryClient } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
@@ -218,10 +218,78 @@ function Shell() {
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
 
   // Last expanded width of each side panel (% of the group). Seeded from
-  // localStorage so a restart restores the user's chosen width, and updated on
-  // every resize so expanding from collapsed returns to where they left it.
+  // localStorage for an instant first paint, and updated on every resize so
+  // expanding from collapsed returns to where they left it. The durable copy
+  // lives server-side (/api/ui-state) so the layout survives a lasso restart
+  // and stays consistent across browsers/tabs: widths are pulled below and
+  // pushed (debounced) on resize; other clients' writes arrive via the SSE
+  // ui_rev. Last write wins.
   const leftWidth = React.useRef(lsGetWidth(LEFT_WIDTH_KEY, 18))
   const rightWidth = React.useRef(lsGetWidth(RIGHT_WIDTH_KEY, 32))
+
+  // What the server is known to hold, so an incoming pull doesn't get echoed
+  // straight back as a push. pushable stays false until the first fetch lands —
+  // a freshly-opened tab must not clobber the server with its localStorage seed.
+  const serverWidths = React.useRef<{ left?: number; right?: number }>({})
+  const pushable = React.useRef(false)
+  const pushTimer = React.useRef<number | null>(null)
+
+  // Persist the current widths server-side, debounced past the drag's resize
+  // stream so only the width the user settles on is written.
+  const schedulePush = React.useCallback(() => {
+    if (!pushable.current) return
+    if (pushTimer.current !== null) window.clearTimeout(pushTimer.current)
+    pushTimer.current = window.setTimeout(() => {
+      pushTimer.current = null
+      const left = leftWidth.current
+      const right = rightWidth.current
+      const s = serverWidths.current
+      const same = (a: number | undefined, b: number) =>
+        a !== undefined && Math.abs(a - b) < 0.5
+      if (same(s.left, left) && same(s.right, right)) return
+      serverWidths.current = { left, right }
+      api.saveUIState({ left_width: left, right_width: right }).catch(() => {
+        /* offline / transient — localStorage still has the widths */
+      })
+    }, 400)
+  }, [])
+  React.useEffect(
+    () => () => {
+      if (pushTimer.current !== null) window.clearTimeout(pushTimer.current)
+    },
+    []
+  )
+
+  // Pull the server widths on load, and again whenever any client writes them
+  // (the SSE ui_rev bumps on every /api/ui-state POST).
+  const { uiRev } = useApp()
+  React.useEffect(() => {
+    if (uiRev >= 0) void queryClient.invalidateQueries({ queryKey: qk.uiState })
+  }, [uiRev])
+  const uiState = useQuery({ queryKey: qk.uiState, queryFn: api.uiState })
+  React.useEffect(() => {
+    const us = uiState.data
+    if (!us) return
+    serverWidths.current = { left: us.left_width, right: us.right_width }
+    pushable.current = true
+    const apply = (
+      pct: number | undefined,
+      widthRef: React.RefObject<number>,
+      key: string,
+      panel: React.RefObject<PanelImperativeHandle | null>
+    ) => {
+      // Zero/absent = never saved; the ±0.5% tolerance keeps a pull from
+      // fighting this tab's own in-flight drag over rounding noise.
+      if (!pct || !Number.isFinite(pct)) return
+      if (Math.abs(pct - widthRef.current) < 0.5) return
+      widthRef.current = pct
+      lsSet(key, String(pct))
+      const p = panel.current
+      if (p && !p.isCollapsed()) p.resize(`${pct}%`)
+    }
+    apply(us.left_width, leftWidth, LEFT_WIDTH_KEY, leftPanel)
+    apply(us.right_width, rightWidth, RIGHT_WIDTH_KEY, rightPanel)
+  }, [uiState.data])
 
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
@@ -381,6 +449,7 @@ function Shell() {
             if (!collapsed) {
               leftWidth.current = s.asPercentage
               lsSet(LEFT_WIDTH_KEY, String(s.asPercentage))
+              schedulePush()
             }
           }}
           className="min-h-0"
@@ -475,6 +544,7 @@ function Shell() {
             if (!collapsed) {
               rightWidth.current = s.asPercentage
               lsSet(RIGHT_WIDTH_KEY, String(s.asPercentage))
+              schedulePush()
             }
           }}
           className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
