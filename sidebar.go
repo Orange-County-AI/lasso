@@ -367,10 +367,7 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		rec := agentByID[t.AgentID]
-		ws, _ := getWorkspace(t.WorkspaceID)
-		// The workspace title IS the agent's display name (one terminal per
-		// workspace); fall back to the agent record for pre-migration rows.
-		title := ws.Title
+		title := t.Title
 		if title == "" {
 			title = rec.Title
 		}
@@ -378,6 +375,7 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 		if status == "" {
 			status = string(StatusIdle)
 		}
+		ws, _ := getWorkspace(t.WorkspaceID)
 		out = append(out, agentRow{
 			TabID: tabID, AgentID: t.AgentID, Title: title, Agent: kind, Status: status,
 			WorkspaceID: t.WorkspaceID, WorkspaceTitle: ws.Title, Repo: ws.Repo,
@@ -411,6 +409,28 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// serveTabRename renames a tab (covers renaming an agent: its tab title drives
+// both the sidebar render and ⌘K search).
+func serveTabRename(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabID string `json:"tab_id"`
+		Title string `json:"title"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.TabID == "" || strings.TrimSpace(req.Title) == "" {
+		http.Error(w, "tab_id and non-empty title required", http.StatusBadRequest)
+		return
+	}
+	if err := renameTab(req.TabID, strings.TrimSpace(req.Title)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	kickHub()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // serveWorkspaceRenameDB renames a workspace in the DB.
 func serveWorkspaceRenameDB(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -428,6 +448,24 @@ func serveWorkspaceRenameDB(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	kickHub()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// serveTabClose closes one tab: kill its tmux session, detach its viewer, drop
+// its cached status, and soft-close the row.
+func serveTabClose(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabID string `json:"tab_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.TabID == "" {
+		http.Error(w, "tab_id required", http.StatusBadRequest)
+		return
+	}
+	closeOneTab(req.TabID)
 	kickHub()
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -535,6 +573,45 @@ func serveRepoClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// serveNewTab adds a plain shell tab to a workspace (a new tmux session in the
+// workspace's directory).
+func serveNewTab(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkspaceID string `json:"workspace_id"`
+		Title       string `json:"title"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ws, err := getWorkspace(req.WorkspaceID)
+	if err != nil {
+		http.Error(w, "workspace not found", http.StatusNotFound)
+		return
+	}
+	ord := nextTabOrdinal(ws.ID)
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		// Default to numeric naming (ordinal + 1, monotonic).
+		title = strconv.Itoa(ord + 1)
+	}
+	tabID := newID()
+	if err := startTabShellOn(ws.Host, tabID, ws.WorkDir); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tab := Tab{
+		ID: tabID, WorkspaceID: ws.ID, Title: title, Cwd: ws.WorkDir,
+		Kind: "shell", Ordinal: ord, CreatedAt: time.Now(),
+	}
+	if err := insertTab(tab); err != nil {
+		_ = tmuxKillSession(tabSession(tabID))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	kickHub()
+	writeJSON(w, tab)
+}
+
 // serveOpenRepo opens a terminal on a repo's primary branch — the repo's main
 // checkout (work_dir == repo root). A repo row isn't just a grouping of
 // worktrees: it's itself a workspace. Returns the tab to select, creating the
@@ -566,7 +643,7 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				_ = insertTab(Tab{ID: tabID, WorkspaceID: ws.ID, Title: "", Cwd: repo, Kind: "shell", CreatedAt: time.Now()})
+				_ = insertTab(Tab{ID: tabID, WorkspaceID: ws.ID, Title: nextTabName(ws.ID), Cwd: repo, Kind: "shell", CreatedAt: time.Now()})
 				kickHub()
 				writeJSON(w, map[string]any{"tab_id": tabID, "workspace_id": ws.ID})
 				return
@@ -586,7 +663,7 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 		title = rc.DisplayName
 	}
 	_ = insertWorkspace(Workspace{ID: wsID, Host: sbHost(), Title: title, Repo: repo, WorkDir: repo, Kind: "git", CreatedAt: now})
-	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: "", Cwd: repo, Kind: "shell", CreatedAt: now})
+	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: nextTabName(wsID), Cwd: repo, Kind: "shell", CreatedAt: now})
 	kickHub()
 	writeJSON(w, map[string]any{"tab_id": tabID, "workspace_id": wsID})
 }
@@ -686,7 +763,7 @@ func serveCreateWorktreeOnly(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	_ = insertWorkspace(Workspace{ID: wsID, Host: sbHost(), Title: title, Repo: repo, WorkDir: workDir, Kind: "git", CreatedAt: now})
-	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: "", Cwd: workDir, Kind: "shell", CreatedAt: now})
+	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: nextTabName(wsID), Cwd: workDir, Kind: "shell", CreatedAt: now})
 	_ = setLastBaseBranch(sbHost(), repo, base)
 	kickHub()
 	writeJSON(w, map[string]any{"workspace_id": wsID, "work_dir": workDir, "branch": branch})
@@ -722,7 +799,7 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	tabID := newID()
 	session := tabSession(tabID)
 	// Claim a pre-booted shell (instant) when possible, else cold-start — or a
-	// remote session over SSH when a remote host is active.
+	// remote session over SSH when a remote host is active. Like serveNewTab.
 	if err := startTabShellOn(sbHost(), tabID, workDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -733,7 +810,7 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: "", Cwd: workDir, Kind: "shell", CreatedAt: now}); err != nil {
+	if err := insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: nextTabName(wsID), Cwd: workDir, Kind: "shell", CreatedAt: now}); err != nil {
 		_ = tmuxKillSession(session)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -11,9 +11,9 @@ import { api } from "@/lib/api"
 import { qk } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
-// One searchable entry: a workspace (its one terminal — shell or agent),
-// enriched with its repo context and (for agents) the initial prompt, so ⌘K
-// matches renamed titles, the repo, and the prompt text.
+// One searchable entry: a tab (shell or agent), enriched with its workspace +
+// repo context and (for agents) the initial prompt, so ⌘K matches renamed
+// titles, the workspace, the repo, and the prompt text.
 interface Entry {
   tabId: string
   title: string
@@ -38,9 +38,9 @@ const haystack = (e: Entry) =>
     .join(" ")
     .toLowerCase()
 
-// PaneSwitcher: a ⌘K command palette over every workspace + agent. Type to
-// filter (by title — including renames —, repo, agent, or prompt); ↑/↓ to
-// move; Enter to select the workspace (shows its terminal in the center).
+// PaneSwitcher: a ⌘K command palette over every workspace tab + agent. Type to
+// filter (by title — including renames —, workspace, repo, agent, or prompt);
+// ↑/↓ to move; Enter to select the tab (shows its terminal in the center).
 export function PaneSwitcher({
   open,
   onOpenChange,
@@ -81,20 +81,18 @@ export function PaneSwitcher({
       ...repos.flatMap((r) => r.workspaces ?? []),
     ]
     for (const w of wss) {
-      // One terminal per workspace: the workspace IS the entry; its tab is
-      // just the selection handle.
-      const t = (w.tabs ?? [])[0]
-      if (!t) continue
-      out.push({
-        tabId: t.id,
-        title: w.title || t.kind,
-        workspace: w.title,
-        repo: w.repo ? (repoName.get(w.id) ?? "") : "",
-        kind: t.kind,
-        agent: t.agent ?? "",
-        status: t.status ?? "",
-        prompt: promptByTab.get(t.id) ?? "",
-      })
+      for (const t of w.tabs ?? []) {
+        out.push({
+          tabId: t.id,
+          title: t.title || t.kind,
+          workspace: w.title,
+          repo: w.repo ? (repoName.get(w.id) ?? "") : "",
+          kind: t.kind,
+          agent: t.agent ?? "",
+          status: t.status ?? "",
+          prompt: promptByTab.get(t.id) ?? "",
+        })
+      }
     }
     return out
   }, [treeQ.data, agentsQ.data])
@@ -155,13 +153,13 @@ export function PaneSwitcher({
         }}
       >
         <DialogHeader className="sr-only">
-          <DialogTitle>Find a workspace or agent</DialogTitle>
+          <DialogTitle>Find a tab or agent</DialogTitle>
         </DialogHeader>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Search workspaces/agents by name, repo, agent, or prompt…"
+          placeholder="Search tabs/agents by name, workspace, repo, agent, or prompt…"
           className="w-full border-border border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
         />
         <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
@@ -199,11 +197,10 @@ export function PaneSwitcher({
                     </span>
                   )}
                 </span>
-                {e.repo && (
-                  <span className="flex w-full items-center gap-2 truncate text-muted-foreground text-xs">
-                    {e.repo}
-                  </span>
-                )}
+                <span className="flex w-full items-center gap-2 truncate text-muted-foreground text-xs">
+                  {e.repo && <span className="shrink-0">{e.repo}</span>}
+                  <span className="truncate">{e.workspace}</span>
+                </span>
               </button>
             ))
           )}

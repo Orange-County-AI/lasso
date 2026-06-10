@@ -344,9 +344,15 @@ export const api = {
   tabReady: (tab_id: string) =>
     postJSON<{ ready: boolean }>("/api/tab/term-ready", { tab_id }),
 
+  newTab: (workspace_id: string, title?: string) =>
+    postJSON<TreeTab>("/api/tab/new", { workspace_id, title }),
+  renameTab: (tab_id: string, title: string) =>
+    postJSON<{ ok: boolean }>("/api/tab/rename", { tab_id, title }),
+  closeTab: (tab_id: string) =>
+    postJSON<{ ok: boolean }>("/api/tab/close", { tab_id }),
   // Close an agent: closes its tab and, if that empties its workspace, closes the
   // workspace too (its worktree leaves the spaces pane; the on-disk worktree is
-  // kept). Use this for the agents-pane "Close agent".
+  // kept). Use this for the agents-pane "Close agent", not the bare closeTab.
   closeAgent: (tab_id: string) =>
     postJSON<{ ok: boolean }>("/api/agent/close", { tab_id }),
   // Create a bare scratch workspace (a shell, no agent).

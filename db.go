@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -648,6 +647,11 @@ func renameWorkspace(id, title string) error {
 	return err
 }
 
+func renameTab(id, title string) error {
+	_, err := db.Exec(`UPDATE tabs SET title=? WHERE id=?`, title, id)
+	return err
+}
+
 func setTabCwd(id, cwd string) error {
 	_, err := db.Exec(`UPDATE tabs SET cwd=? WHERE id=?`, cwd, id)
 	return err
@@ -668,6 +672,24 @@ func closeWorkspace(id string) error {
 	}
 	_, err := db.Exec(`UPDATE workspaces SET closed_at=? WHERE id=? AND closed_at=''`, now, id)
 	return err
+}
+
+// nextTabOrdinal returns the next ordinal for a new tab in a workspace.
+func nextTabOrdinal(workspaceID string) int {
+	var n sql.NullInt64
+	_ = db.QueryRow(`SELECT MAX(ordinal) FROM tabs WHERE workspace_id=?`, workspaceID).Scan(&n)
+	if n.Valid {
+		return int(n.Int64) + 1
+	}
+	return 0
+}
+
+// nextTabName is the default numeric tab title ("1", "2", "3", …).
+// It's the next ordinal + 1 (1-based). MAX(ordinal) spans closed tabs too (they
+// soft-close, rows stay), so the number is monotonic per workspace: closing a tab
+// never lets a later tab reuse its number.
+func nextTabName(workspaceID string) string {
+	return strconv.Itoa(nextTabOrdinal(workspaceID) + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -696,80 +718,6 @@ func migrateSchema() error {
 		}
 		if _, err := db.Exec(`PRAGMA user_version = 2`); err != nil {
 			return err
-		}
-	}
-	if v < 3 {
-		if err := migrateV3(); err != nil {
-			return err
-		}
-		if _, err := db.Exec(`PRAGMA user_version = 3`); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// migrateV3 dissolves multi-tab workspaces for the one-terminal-per-workspace
-// model: each workspace keeps its first live tab; every other live tab is
-// promoted to its own workspace carrying the tab's title and cwd. Only the tab
-// row's workspace_id changes — the tab id IS the tmux session name and what
-// agents reference, so running sessions survive untouched. Closed tabs stay
-// where they are (history).
-func migrateV3() error {
-	rows, err := db.Query(`SELECT ` + workspaceCols + ` FROM workspaces WHERE closed_at=''`)
-	if err != nil {
-		return err
-	}
-	var wss []Workspace
-	for rows.Next() {
-		ws, err := scanWorkspace(rows)
-		if err != nil {
-			rows.Close()
-			return err
-		}
-		wss = append(wss, ws)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, ws := range wss {
-		tabs, err := listTabs(ws.ID)
-		if err != nil {
-			return err
-		}
-		if len(tabs) < 2 {
-			continue
-		}
-		for _, t := range tabs[1:] {
-			// A bare numeric title is the old auto-name ("2", "3", …) — alone it
-			// means nothing, so qualify it with the parent workspace's title.
-			title := t.Title
-			if _, err := strconv.Atoi(title); err == nil || title == "" {
-				title = strings.TrimSpace(ws.Title + " · " + t.Title)
-			}
-			cwd := t.Cwd
-			if cwd == "" {
-				cwd = ws.WorkDir
-			}
-			wsID := "w" + t.ID // deterministic, so a re-run can't duplicate
-			if _, err := getWorkspace(wsID); err == nil {
-				continue
-			}
-			if err := insertWorkspace(Workspace{
-				ID: wsID, Host: ws.Host, Title: title, Repo: ws.Repo,
-				WorkDir: cwd, Kind: ws.Kind, CreatedAt: t.CreatedAt,
-			}); err != nil {
-				return err
-			}
-			if _, err := db.Exec(`UPDATE tabs SET workspace_id=?, ordinal=0 WHERE id=?`, wsID, t.ID); err != nil {
-				return err
-			}
-			if t.AgentID != "" {
-				if _, err := db.Exec(`UPDATE agents SET workspace_id=? WHERE id=?`, wsID, t.AgentID); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil

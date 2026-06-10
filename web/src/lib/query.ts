@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query"
-import type { TreePayload, TreeWorkspace } from "@/lib/api"
+import type { TreePayload, TreeTab, TreeWorkspace } from "@/lib/api"
 
 // One shared QueryClient for the app's server state. Exported (not just provided)
 // so non-component code — the SSE handler in app-store — can invalidate queries.
@@ -37,6 +37,26 @@ export const qk = {
 // Optimistic tree edits: a freshly-created tab/workspace is written into the
 // cached /api/tree immediately so the tab strip + sidebar render it without
 // waiting for the (slower) refetch. The next refetch reconciles authoritatively.
+
+// treeAddTab appends a tab to an existing workspace (the "+" new-tab flow).
+export function treeAddTab(workspaceId: string, tab: TreeTab) {
+  queryClient.setQueryData<TreePayload>(qk.tree, (old) => {
+    if (!old) return old
+    const add = (w: TreeWorkspace): TreeWorkspace =>
+      w.id === workspaceId ? { ...w, tabs: [...(w.tabs ?? []), tab] } : w
+    return {
+      ...old,
+      scratch: (old.scratch ?? []).map(add),
+      repos: (old.repos ?? []).map((r) => ({
+        ...r,
+        workspaces: (r.workspaces ?? []).map(add),
+        main_workspace: r.main_workspace
+          ? add(r.main_workspace)
+          : r.main_workspace,
+      })),
+    }
+  })
+}
 
 // Stable keys for the unified "spaces" order (kept in sync with the backend's
 // spacesKeyWorkspace/spacesKeyRepo in sidebar.go).

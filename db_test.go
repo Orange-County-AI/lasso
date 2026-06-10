@@ -158,16 +158,21 @@ func TestWorkspaceTabCRUD(t *testing.T) {
 	if tabs[0].Kind != "agent" {
 		t.Fatalf("t1 kind = %q, want agent", tabs[0].Kind)
 	}
+	if n := nextTabOrdinal("w1"); n != 2 {
+		t.Errorf("nextTabOrdinal = %d, want 2", n)
+	}
+
 	// rename + cwd
 	_ = renameWorkspace("w1", "renamed")
+	_ = renameTab("t1", "Bob")
 	_ = setTabCwd("t1", "/wt/sub")
 	got, _ = getWorkspace("w1")
 	if got.Title != "renamed" {
 		t.Errorf("after rename: %+v", got)
 	}
 	tb, _ := getTab("t1")
-	if tb.Cwd != "/wt/sub" {
-		t.Errorf("after tab cwd update: %+v", tb)
+	if tb.Title != "Bob" || tb.Cwd != "/wt/sub" {
+		t.Errorf("after tab rename/cwd: %+v", tb)
 	}
 
 	// close tab → drops from live lists
@@ -182,52 +187,6 @@ func TestWorkspaceTabCRUD(t *testing.T) {
 	}
 	if tabs, _ := listTabs("w1"); len(tabs) != 0 {
 		t.Errorf("after closeWorkspace, live tabs = %d, want 0", len(tabs))
-	}
-}
-
-// TestMigrateV3PromotesExtraTabs verifies the one-terminal-per-workspace
-// migration: a workspace's extra live tabs each become their own workspace
-// (named after the tab, numeric auto-names qualified by the parent's title),
-// the tab rows just move (ids — and thus tmux sessions — unchanged), and any
-// agent on a moved tab follows it.
-func TestMigrateV3PromotesExtraTabs(t *testing.T) {
-	openTestDB(t)
-	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "apps", WorkDir: "/s", Kind: "scratch"})
-	_ = insertTab(Tab{ID: "t1", WorkspaceID: "w1", Title: "1", Cwd: "/s", Kind: "shell"})
-	_ = insertTab(Tab{ID: "t2", WorkspaceID: "w1", Title: "btop", Cwd: "/s/btop", Kind: "shell", Ordinal: 1})
-	_ = insertTab(Tab{ID: "t3", WorkspaceID: "w1", Title: "2", Cwd: "", Kind: "agent", AgentID: "a1", Ordinal: 2})
-	_, _ = db.Exec(`INSERT INTO agents(id, host, workspace_id, tab_id, created_at) VALUES('a1','local','w1','t3','x')`)
-
-	if err := migrateV3(); err != nil {
-		t.Fatalf("migrateV3: %v", err)
-	}
-	// First tab stays put.
-	if tabs, _ := listTabs("w1"); len(tabs) != 1 || tabs[0].ID != "t1" {
-		t.Fatalf("w1 tabs after migrate = %+v, want just t1", tabs)
-	}
-	// Named tab keeps its name; numeric tab is qualified by the parent title.
-	ws2, err := getWorkspace("wt2")
-	if err != nil || ws2.Title != "btop" || ws2.WorkDir != "/s/btop" || ws2.Kind != "scratch" {
-		t.Fatalf("promoted ws for t2 = %+v err=%v", ws2, err)
-	}
-	ws3, err := getWorkspace("wt3")
-	if err != nil || ws3.Title != "apps · 2" || ws3.WorkDir != "/s" {
-		t.Fatalf("promoted ws for t3 = %+v err=%v", ws3, err)
-	}
-	if tb, _ := getTab("t3"); tb.WorkspaceID != "wt3" {
-		t.Fatalf("t3 workspace = %q, want wt3", tb.WorkspaceID)
-	}
-	var agentWs string
-	_ = db.QueryRow(`SELECT workspace_id FROM agents WHERE id='a1'`).Scan(&agentWs)
-	if agentWs != "wt3" {
-		t.Fatalf("agent a1 workspace = %q, want wt3", agentWs)
-	}
-	// Idempotent: a second run changes nothing.
-	if err := migrateV3(); err != nil {
-		t.Fatalf("migrateV3 rerun: %v", err)
-	}
-	if tabs, _ := listTabs("wt3"); len(tabs) != 1 {
-		t.Fatalf("wt3 tabs after rerun = %d, want 1", len(tabs))
 	}
 }
 

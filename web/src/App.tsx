@@ -22,6 +22,7 @@ import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { Sidebar } from "@/components/Sidebar"
+import { TabStrip } from "@/components/TabStrip"
 import { TabTerminal } from "@/components/TabTerminal"
 import {
   ResizableHandle,
@@ -394,6 +395,8 @@ function Shell() {
       else if (action === "grid") toggleGrid()
       else if (action === "new-workspace")
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
+      else if (action === "new-tab")
+        window.dispatchEvent(new CustomEvent("lasso:new-tab"))
     }
     document.addEventListener("keydown", onKey, true)
     return () => document.removeEventListener("keydown", onKey, true)
@@ -508,7 +511,7 @@ function Shell() {
 
         <ResizableHandle withHandle className={cn(leftCollapsed && "hidden")} />
 
-        {/* Center: the selected workspace's terminal (or the grid) */}
+        {/* Center: the selected workspace's tabs + terminal (or the grid) */}
         <ResizablePanel
           id="center"
           defaultSize={50}
@@ -516,6 +519,16 @@ function Shell() {
           className="min-h-0"
         >
           <div className="flex h-full min-h-0 flex-col">
+            {/* The active workspace's tab strip, its own row under the global
+                header (which holds the app-level controls). Hidden in grid
+                mode — the grid spans every workspace. */}
+            {!gridMode && (
+              <TabStrip
+                workspace={activeWorkspace}
+                selectedTabId={selectedTabId}
+                onSelectTab={selectTab}
+              />
+            )}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* One persistent viewport, mounted once and pointed at the
                   selected tab — never remounted per tab (see TabTerminal). Pass

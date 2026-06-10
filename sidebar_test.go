@@ -120,10 +120,7 @@ func equalStrs(a, b []string) bool {
 	return true
 }
 
-// TestWorkspaceTerminalLifecycle covers the one-terminal-per-workspace model:
-// creating a workspace brings up its tmux session; closing the workspace kills
-// it and retires the rows.
-func TestWorkspaceTerminalLifecycle(t *testing.T) {
+func TestServeNewTabAndClose(t *testing.T) {
 	requireTmux(t)
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
@@ -136,27 +133,34 @@ func TestWorkspaceTerminalLifecycle(t *testing.T) {
 	})
 	dir := t.TempDir()
 	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "ws", WorkDir: dir, Kind: "scratch"})
-	tabID := newID()
-	if err := startTabShellOn("local", tabID, dir); err != nil {
-		t.Fatalf("startTabShellOn: %v", err)
+
+	// New shell tab.
+	body := `{"workspace_id":"w1","title":"logs"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tab/new", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	serveNewTab(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("serveNewTab status %d: %s", rec.Code, rec.Body.String())
 	}
-	if err := insertTab(Tab{ID: tabID, WorkspaceID: "w1", Cwd: dir, Kind: "shell"}); err != nil {
-		t.Fatalf("insertTab: %v", err)
+	var tab Tab
+	_ = json.Unmarshal(rec.Body.Bytes(), &tab)
+	if tab.ID == "" || tab.Kind != "shell" || tab.Title != "logs" {
+		t.Fatalf("new tab = %+v", tab)
 	}
-	if !tmuxHasSession(tabSession(tabID)) {
-		t.Fatal("workspace terminal's tmux session should exist")
+	if !tmuxHasSession(tabSession(tab.ID)) {
+		t.Fatal("new tab's tmux session should exist")
 	}
 
-	// Close the workspace: session gone, rows retired.
-	body := `{"workspace_id":"w1"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/workspace/close", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	serveWorkspaceClose(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("serveWorkspaceClose status %d: %s", rec.Code, rec.Body.String())
+	// Close it: session gone, row retired.
+	close := `{"tab_id":"` + tab.ID + `"}`
+	creq := httptest.NewRequest(http.MethodPost, "/api/tab/close", strings.NewReader(close))
+	crec := httptest.NewRecorder()
+	serveTabClose(crec, creq)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("serveTabClose status %d", crec.Code)
 	}
-	if tmuxHasSession(tabSession(tabID)) {
-		t.Error("session should be killed on workspace close")
+	if tmuxHasSession(tabSession(tab.ID)) {
+		t.Error("session should be killed on tab close")
 	}
 	if tabs, _ := listTabs("w1"); len(tabs) != 0 {
 		t.Errorf("live tabs after close = %d, want 0", len(tabs))
