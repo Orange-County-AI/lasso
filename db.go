@@ -292,7 +292,7 @@ type hostState struct {
 func getHostState(host string) (hostState, error) {
 	var hs hostState
 	err := db.QueryRow(
-		`SELECT last_repo, last_agent, last_agent_type FROM host_state WHERE host=?`, host).
+		`SELECT last_repo, last_agent, last_agent_type FROM host_state WHERE host=?`, hostOrLocal(host)).
 		Scan(&hs.LastRepo, &hs.LastAgent, &hs.LastAgentType)
 	if err == sql.ErrNoRows {
 		return hostState{}, nil
@@ -324,7 +324,7 @@ func getRepoState(host, repo string) (RepoConfig, error) {
 	var pinned int
 	err := db.QueryRow(
 		`SELECT copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host=? AND repo_path=?`,
-		host, repo).Scan(&rc.CopyFiles, &rc.Setup, &rc.LastBaseBranch, &pinned, &rc.DisplayName)
+		hostOrLocal(host), repo).Scan(&rc.CopyFiles, &rc.Setup, &rc.LastBaseBranch, &pinned, &rc.DisplayName)
 	if err == sql.ErrNoRows {
 		return RepoConfig{}, nil
 	}
@@ -336,7 +336,7 @@ func getRepoState(host, repo string) (RepoConfig, error) {
 func listRepoState(host string) (map[string]*RepoConfig, error) {
 	out := map[string]*RepoConfig{}
 	rows, err := db.Query(
-		`SELECT repo_path, copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host=?`, host)
+		`SELECT repo_path, copy_files, setup, last_base_branch, pinned, display_name FROM repo_state WHERE host=?`, hostOrLocal(host))
 	if err != nil {
 		return out, err
 	}
@@ -400,7 +400,7 @@ func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
 		`SELECT id, host, title, type, repo, base_branch, branch, agent, description, notes,
 			attachments, plan_mode, work_dir, workspace_id, root_pane, tab_id, created_at
-		 FROM agents WHERE host=? ORDER BY created_at`, host)
+		 FROM agents WHERE host=? ORDER BY created_at`, hostOrLocal(host))
 	if err != nil {
 		return nil, err
 	}
@@ -557,9 +557,10 @@ func getWorkspace(id string) (Workspace, error) {
 }
 
 // listWorkspaces returns a host's live workspaces (closed_at=”) oldest first.
+// host "" means local (rows store 'local').
 func listWorkspaces(host string) ([]Workspace, error) {
 	rows, err := db.Query(
-		`SELECT `+workspaceCols+` FROM workspaces WHERE host=? AND closed_at='' ORDER BY created_at`, host)
+		`SELECT `+workspaceCols+` FROM workspaces WHERE host=? AND closed_at='' ORDER BY created_at`, hostOrLocal(host))
 	if err != nil {
 		return nil, err
 	}
