@@ -12,6 +12,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘K", label: "Find a pane…" },
   { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘U", label: "New tab…" },
+  { keys: "⌘G", label: "Toggle the grid view" },
   { keys: "⌘[", label: "Toggle the left sidebar" },
   { keys: "⌘]", label: "Toggle the right panel" },
   { keys: "⌘?", label: "Keyboard shortcuts" },
@@ -21,6 +22,7 @@ export type ShortcutAction =
   | "palette"
   | "new-workspace"
   | "new-tab"
+  | "grid"
   | "shortcuts"
 
 // Match a keydown to one of the app's keydown-driven Cmd-shortcuts. Cmd-only
@@ -57,6 +59,8 @@ export function matchShortcut(e: {
       return "new-workspace"
     case "KeyU":
       return "new-tab"
+    case "KeyG":
+      return "grid"
   }
   switch (e.key.toLowerCase()) {
     case "k":
@@ -65,6 +69,8 @@ export function matchShortcut(e: {
       return "new-workspace"
     case "u":
       return "new-tab"
+    case "g":
+      return "grid"
   }
   return null
 }

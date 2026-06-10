@@ -29,6 +29,9 @@ export default defineConfig({
       // page + WebSocket). Without this, Vite's SPA fallback would serve
       // index.html and the terminal would render a nested lasso (infinite UI).
       "/tab-term": { target: backend, changeOrigin: true, ws: true },
+      // Grid per-pane terminals (same ttyd shape, same nested-lasso failure
+      // mode when unproxied).
+      "/grid-term": { target: backend, changeOrigin: true, ws: true },
     },
   },
 })

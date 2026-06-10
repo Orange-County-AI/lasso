@@ -39,7 +39,7 @@ import { qk } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
-type RightView = "files" | "scratch" | "browser" | "grid" | "settings"
+type RightView = "files" | "scratch" | "browser" | "settings"
 
 // Persist each side panel's collapsed state and width (% of the group) so both
 // survive reloads/restarts.
@@ -47,6 +47,7 @@ const LEFT_COLLAPSED_KEY = "lasso-left-collapsed"
 const RIGHT_COLLAPSED_KEY = "lasso-right-collapsed"
 const LEFT_WIDTH_KEY = "lasso-left-width"
 const RIGHT_WIDTH_KEY = "lasso-right-width"
+const GRID_MODE_KEY = "lasso-grid-mode"
 
 // Read a persisted panel width (percentage), falling back to a default when
 // it's missing or unparseable.
@@ -213,6 +214,9 @@ function Shell() {
   )
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+  const [gridMode, setGridMode] = React.useState(
+    () => lsGet(GRID_MODE_KEY) === "true"
+  )
   const [selectedTabId, setSelectedTabId] = React.useState<string | null>(() =>
     lsGet("lasso-selected-tab")
   )
@@ -337,24 +341,43 @@ function Shell() {
     else p.collapse()
   }, [])
 
-  // The Grid wants more room than the 32% default right panel (its cells have a
-  // ~360px min). When the Grid tab is opened, widen the panel; restore the prior
-  // size on leave. The width before opening Grid is remembered in a ref.
-  const preGridSize = React.useRef<number | null>(null)
+  // The Grid is a full main view: it replaces the spaces sidebar AND the center
+  // terminal (the wall of live terminals IS the workspace overview). Entering it
+  // collapses the left panel so the grid spans both; leaving restores the
+  // sidebar unless the user had collapsed it themselves before entering. The
+  // terminal viewport underneath stays mounted (just hidden) so flipping back
+  // is instant — no xterm re-handshake.
+  const preGridLeftCollapsed = React.useRef(false)
+  const wasGridMode = React.useRef(false)
+  const toggleGrid = React.useCallback(() => {
+    setGridMode((on) => {
+      lsSet(GRID_MODE_KEY, String(!on))
+      return !on
+    })
+  }, [])
   React.useEffect(() => {
-    const p = rightPanel.current
+    const p = leftPanel.current
     if (!p) return
-    if (rightView === "grid") {
-      const cur = p.getSize().asPercentage * 100
-      if (cur < 55) {
-        preGridSize.current = cur
-        p.resize("62%")
-      }
-    } else if (preGridSize.current != null) {
-      p.resize(`${preGridSize.current}%`)
-      preGridSize.current = null
+    if (gridMode) {
+      // Entering (or loading straight into) grid mode: remember whether the
+      // user had the sidebar collapsed themselves, then take its space.
+      if (!wasGridMode.current) preGridLeftCollapsed.current = p.isCollapsed()
+      p.collapse()
+    } else if (wasGridMode.current && !preGridLeftCollapsed.current) {
+      p.resize(`${leftWidth.current}%`)
     }
-  }, [rightView])
+    wasGridMode.current = gridMode
+  }, [gridMode])
+
+  // Focusing a grid pane drops back to the normal view on that pane (the grid
+  // is the overview; focus means "take me to this terminal").
+  const selectTabFromGrid = React.useCallback(
+    (tabId: string) => {
+      if (gridMode) toggleGrid()
+      selectTab(tabId)
+    },
+    [gridMode, toggleGrid, selectTab]
+  )
 
   // ⌘K opens the switcher, ⌘I the new-workspace modal. Cmd-only so terminal
   // control keys (Ctrl-*) are never clobbered; the terminal iframes re-dispatch
@@ -369,6 +392,7 @@ function Shell() {
       e.stopPropagation()
       if (action === "palette") setPaletteOpen(true)
       else if (action === "shortcuts") setShortcutsOpen(true)
+      else if (action === "grid") toggleGrid()
       else if (action === "new-workspace")
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
       else if (action === "new-tab")
@@ -376,7 +400,7 @@ function Shell() {
     }
     document.addEventListener("keydown", onKey, true)
     return () => document.removeEventListener("keydown", onKey, true)
-  }, [])
+  }, [toggleGrid])
 
   // ⌘[ / ⌘] (and the Back/Forward buttons / swipe) toggle the side panels via a
   // history trap, since macOS browsers won't deliver those keys to the page.
@@ -425,7 +449,7 @@ function Shell() {
         >
           <div className="flex h-full min-h-0 flex-col">
             <div className="flex items-center">
-              {leftCollapsed && (
+              {leftCollapsed && !gridMode && (
                 <button
                   type="button"
                   title="show sidebar (⌘[)"
@@ -436,12 +460,32 @@ function Shell() {
                 </button>
               )}
               <HostSwitcher />
+              <button
+                type="button"
+                aria-pressed={gridMode}
+                title={gridMode ? "back to terminal (⌘G)" : "grid view (⌘G)"}
+                className={cn(
+                  "ml-1 flex size-6 shrink-0 items-center justify-center self-center rounded border",
+                  gridMode
+                    ? "border-primary/50 bg-accent text-primary"
+                    : "border-border text-muted-foreground hover:border-primary hover:text-primary"
+                )}
+                onClick={toggleGrid}
+              >
+                <LayoutGrid className="size-3.5" />
+              </button>
               <div className="min-w-0 flex-1">
-                <TabStrip
-                  workspace={activeWorkspace}
-                  selectedTabId={selectedTabId}
-                  onSelectTab={selectTab}
-                />
+                {gridMode ? (
+                  <span className="block px-2 py-1.5 text-[13px] text-muted-foreground">
+                    all terminals · every host
+                  </span>
+                ) : (
+                  <TabStrip
+                    workspace={activeWorkspace}
+                    selectedTabId={selectedTabId}
+                    onSelectTab={selectTab}
+                  />
+                )}
               </div>
               {/* New Agent at the far right; when the file viewer is collapsed the
                   git status + an expand control follow it (mirrors main, so git
@@ -472,8 +516,27 @@ function Shell() {
                   selected tab — never remounted per tab (see TabTerminal). Pass
                   null when the selection doesn't resolve to a workspace (matches
                   the strip's "no workspace selected") so TabTerminal hides the
-                  iframe and shows the empty state instead of a stray session. */}
-              <TabTerminal tabId={activeWorkspace ? selectedTabId : null} />
+                  iframe and shows the empty state instead of a stray session.
+                  In grid mode it stays mounted underneath (hidden) so leaving
+                  the grid doesn't re-handshake xterm. */}
+              <div
+                className={cn(
+                  "flex min-h-0 flex-1 flex-col",
+                  gridMode && "hidden"
+                )}
+              >
+                <TabTerminal tabId={activeWorkspace ? selectedTabId : null} />
+              </div>
+              {/* The grid view — the cross-host wall of live terminals that
+                  replaces the sidebar + terminal while active. */}
+              <div
+                className={cn(
+                  "absolute inset-0 flex-col",
+                  gridMode ? "flex" : "hidden"
+                )}
+              >
+                <GridTab active={gridMode} selectTab={selectTabFromGrid} />
+              </div>
             </div>
           </div>
         </ResizablePanel>
@@ -524,7 +587,6 @@ function Shell() {
                 },
                 { value: "scratch", label: "Scratch", icon: NotebookPen },
                 { value: "browser", label: "Browser", icon: Globe },
-                { value: "grid", label: "Grid", icon: LayoutGrid },
                 { value: "settings", label: "Settings", icon: Settings },
               ]}
               trailing={
@@ -552,9 +614,6 @@ function Shell() {
               </Pane>
               <Pane show={rightView === "browser"}>
                 <BrowserTab />
-              </Pane>
-              <Pane show={rightView === "grid"}>
-                <GridTab active={rightView === "grid"} selectTab={selectTab} />
               </Pane>
               <Pane show={rightView === "settings"}>
                 <SettingsTab active={rightView === "settings"} />
