@@ -120,6 +120,43 @@ func equalStrs(a, b []string) bool {
 	return true
 }
 
+// Renames write through between an agent's tab and its workspace (they're
+// created 1:1 and the sidebar shows one name for both), while plain shell tabs
+// are left alone in both directions.
+func TestRenameSyncedAgentAndWorkspace(t *testing.T) {
+	openTestDB(t)
+	_ = insertWorkspace(Workspace{ID: "w1", Host: "local", Title: "fix auth", WorkDir: "/tmp/x", Kind: "scratch"})
+	_ = insertTab(Tab{ID: "t1", WorkspaceID: "w1", Title: "fix auth", Kind: "agent", AgentID: "a1"})
+	_ = insertTab(Tab{ID: "t2", WorkspaceID: "w1", Title: "logs", Kind: "shell"})
+
+	// Renaming the agent's tab renames the workspace too.
+	if err := renameTabSynced("t1", "auth overhaul"); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := getWorkspace("w1"); ws.Title != "auth overhaul" {
+		t.Errorf("workspace title = %q, want agent rename to follow", ws.Title)
+	}
+
+	// Renaming the workspace renames the agent tab but not the shell tab.
+	if err := renameWorkspaceSynced("w1", "rework auth"); err != nil {
+		t.Fatal(err)
+	}
+	if tb, _ := getTab("t1"); tb.Title != "rework auth" {
+		t.Errorf("agent tab title = %q, want workspace rename to follow", tb.Title)
+	}
+	if tb, _ := getTab("t2"); tb.Title != "logs" {
+		t.Errorf("shell tab title = %q, want untouched", tb.Title)
+	}
+
+	// Renaming a plain shell tab leaves the workspace alone.
+	if err := renameTabSynced("t2", "build"); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := getWorkspace("w1"); ws.Title != "rework auth" {
+		t.Errorf("workspace title = %q, want untouched by shell tab rename", ws.Title)
+	}
+}
+
 func TestServeNewTabAndClose(t *testing.T) {
 	requireTmux(t)
 	if err := openDB(); err != nil {

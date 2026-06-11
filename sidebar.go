@@ -368,7 +368,15 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		rec := agentByID[t.AgentID]
+		ws, _ := getWorkspace(t.WorkspaceID)
+		// A lasso-created agent and its workspace are 1:1 with one name, so the
+		// workspace title is authoritative — the agent row and the spaces tree
+		// can't drift apart. Ad-hoc agents (claude run by hand in a shell tab, no
+		// AgentID) keep their tab title: their workspace may hold other tabs.
 		title := t.Title
+		if t.AgentID != "" && ws.Title != "" {
+			title = ws.Title
+		}
 		if title == "" {
 			title = rec.Title
 		}
@@ -376,7 +384,6 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 		if status == "" {
 			status = string(StatusIdle)
 		}
-		ws, _ := getWorkspace(t.WorkspaceID)
 		out = append(out, agentRow{
 			TabID: tabID, AgentID: t.AgentID, Title: title, Agent: kind, Status: status,
 			WorkspaceID: t.WorkspaceID, WorkspaceTitle: ws.Title, Repo: ws.Repo,
@@ -410,8 +417,45 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// An agent and its workspace are created 1:1 with the same name, and the
+// sidebar treats those names as synonymous. Renames therefore write through in
+// both directions (renameTabSynced / renameWorkspaceSynced) so the agent list,
+// spaces tree, and tab strip always agree. AgentRecord.Title is left alone —
+// it's the historical first line of the prompt, not a display name.
+
+// renameTabSynced renames a tab; when it's an agent's tab, the new title also
+// becomes its workspace's title.
+func renameTabSynced(tabID, title string) error {
+	if err := renameTab(tabID, title); err != nil {
+		return err
+	}
+	if t, err := getTab(tabID); err == nil && t.AgentID != "" && t.WorkspaceID != "" {
+		return renameWorkspace(t.WorkspaceID, title)
+	}
+	return nil
+}
+
+// renameWorkspaceSynced renames a workspace; any agent tabs in it follow.
+func renameWorkspaceSynced(wsID, title string) error {
+	if err := renameWorkspace(wsID, title); err != nil {
+		return err
+	}
+	tabs, err := listTabs(wsID)
+	if err != nil {
+		return err
+	}
+	for _, t := range tabs {
+		if t.AgentID != "" {
+			if err := renameTab(t.ID, title); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // serveTabRename renames a tab (covers renaming an agent: its tab title drives
-// both the sidebar render and ⌘K search).
+// both the sidebar render and ⌘K search, and syncs to its workspace).
 func serveTabRename(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TabID string `json:"tab_id"`
@@ -424,7 +468,7 @@ func serveTabRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab_id and non-empty title required", http.StatusBadRequest)
 		return
 	}
-	if err := renameTab(req.TabID, strings.TrimSpace(req.Title)); err != nil {
+	if err := renameTabSynced(req.TabID, strings.TrimSpace(req.Title)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -432,7 +476,7 @@ func serveTabRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// serveWorkspaceRenameDB renames a workspace in the DB.
+// serveWorkspaceRenameDB renames a workspace in the DB (agent tabs follow).
 func serveWorkspaceRenameDB(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		WorkspaceID string `json:"workspace_id"`
@@ -445,7 +489,7 @@ func serveWorkspaceRenameDB(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace_id and non-empty title required", http.StatusBadRequest)
 		return
 	}
-	if err := renameWorkspace(req.WorkspaceID, strings.TrimSpace(req.Title)); err != nil {
+	if err := renameWorkspaceSynced(req.WorkspaceID, strings.TrimSpace(req.Title)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -227,7 +227,7 @@ func serveGridRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace_id and label required", http.StatusBadRequest)
 		return
 	}
-	if err := renameWorkspace(req.WorkspaceID, strings.TrimSpace(req.Label)); err != nil {
+	if err := renameWorkspaceSynced(req.WorkspaceID, strings.TrimSpace(req.Label)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
