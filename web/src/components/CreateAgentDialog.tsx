@@ -506,28 +506,6 @@ export function CreateAgentDialog({
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
         >
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-            {/* Host picker — only when reachable remote hosts exist. The new
-                agent's worktree/session is created on the chosen host. */}
-            {remoteHosts.length > 0 && (
-              <Field label="Host" htmlFor="agent-host">
-                <select
-                  id="agent-host"
-                  className={fieldClass}
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
-                >
-                  <option value="local">
-                    {hostsQuery.data?.hostname ?? "local"}
-                  </option>
-                  {remoteHosts.map((h) => (
-                    <option key={h.alias} value={h.alias}>
-                      {h.alias}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-
             {/* Type toggle */}
             <div className="flex gap-2">
               {(["git", "scratch"] as const).map((t) => (
@@ -614,6 +592,26 @@ export function CreateAgentDialog({
               >
                 Start in plan mode
               </label>
+              {/* Host picker — only when reachable remote hosts exist. The new
+                  agent's worktree/session is created on the chosen host. */}
+              {remoteHosts.length > 0 && (
+                <select
+                  id="agent-host"
+                  aria-label="Host"
+                  className={cn(fieldClass, "ml-auto w-auto py-1")}
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                >
+                  <option value="local">
+                    {hostsQuery.data?.hostname ?? "local"}
+                  </option>
+                  {remoteHosts.map((h) => (
+                    <option key={h.alias} value={h.alias}>
+                      {h.alias}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {type === "git" && (
