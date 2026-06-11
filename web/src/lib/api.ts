@@ -9,6 +9,9 @@ export interface ActiveState {
   // The local host label and a counter that bumps when terminals must reload.
   host?: string
   term_rev?: number
+  // A counter that bumps when /api/ui-state is written, so other clients
+  // re-pull and apply the new layout.
+  ui_rev?: number
   // tab id → agent status (idle|working|blocked), pushed by the status poller.
   agent_statuses?: Record<string, string>
 }
@@ -67,12 +70,18 @@ export interface GridPayload {
   errors?: Record<string, string> // host → why it couldn't be reached
 }
 
-// Server-persisted, global UI preferences (the grid's filters + sidebar state).
+// Server-persisted, global UI preferences (the grid's filters, sidebar state,
+// and the side panels' last-open widths as % of the panel group — zero/absent
+// width means "never saved"). One blob shared across browsers/tabs, last write
+// wins; write through patchUIState (lib/ui-state.ts) so partial updates never
+// clobber the other fields.
 export interface UIState {
   grid_agents_only: boolean
   grid_hidden_hosts: string[]
   grid_selected: string[] // "host|tab_id" keys of multi-selected cells
   sidebar_collapsed: boolean
+  left_width?: number
+  right_width?: number
 }
 
 export interface FileEntry {

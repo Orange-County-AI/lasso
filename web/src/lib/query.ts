@@ -26,7 +26,6 @@ export const qk = {
   tree: ["tree"] as const,
   agents: ["agents"] as const,
   diff: (host: string, path: string) => ["diff", host, path] as const,
-  sidebarPct: ["sidebar-pct"] as const,
   version: ["version"] as const,
   // Multi-host: the host list, the cross-host grid, and persisted UI prefs.
   hosts: ["hosts"] as const,

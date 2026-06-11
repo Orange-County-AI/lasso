@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -853,6 +854,16 @@ func kickHub() {
 // GET/POST /api/ui-state — persisted browser UI prefs (sidebar layout)
 // ---------------------------------------------------------------------------
 
+// clampPanelPct sanitizes a stored panel width (% of the panel group). Zero
+// means "never saved" and passes through; anything else is clamped to a usable
+// open range so a garbage write can't wedge a panel invisible or full-bleed.
+func clampPanelPct(p float64) float64 {
+	if p == 0 {
+		return 0
+	}
+	return math.Min(95, math.Max(5, p))
+}
+
 func serveUIState(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -874,9 +885,15 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if us.GridSelected == nil {
 			us.GridSelected = []string{}
 		}
+		us.LeftWidth = clampPanelPct(us.LeftWidth)
+		us.RightWidth = clampPanelPct(us.RightWidth)
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Push the change to every other connected client (last write wins).
+		if srvHub != nil {
+			srvHub.bumpUI()
 		}
 		writeJSON(w, us)
 	default:

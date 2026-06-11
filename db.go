@@ -198,14 +198,19 @@ func setSetting(key, value string) error {
 }
 
 // uiState is the browser's persisted, global (host-agnostic) UI preferences:
-// the Grid tab's filters and whether the right sidebar is collapsed. It's kept
-// server-side (one JSON blob in settings) rather than in localStorage so the UI
-// looks the same across browsers/devices reaching the same lasso.
+// the Grid tab's filters, whether the right sidebar is collapsed, and the side
+// panels' last-open widths (% of the panel group). It's kept server-side (one
+// JSON blob in settings) rather than only in localStorage so the UI looks the
+// same across browsers/devices reaching the same lasso: last write wins, and
+// every save bumps the SSE ui_rev so other connected clients re-pull and apply
+// it live. A zero width means "never saved" (clients keep their own default).
 type uiState struct {
 	GridAgentsOnly   bool     `json:"grid_agents_only"`
 	GridHiddenHosts  []string `json:"grid_hidden_hosts"`
 	GridSelected     []string `json:"grid_selected"`
 	SidebarCollapsed bool     `json:"sidebar_collapsed"`
+	LeftWidth        float64  `json:"left_width,omitempty"`
+	RightWidth       float64  `json:"right_width,omitempty"`
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
