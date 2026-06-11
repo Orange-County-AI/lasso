@@ -37,6 +37,7 @@ import { useDiff } from "@/lib/git"
 import { installHistoryToggle } from "@/lib/history-toggle"
 import { qk } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
+import { kickTerminalSize, VIEWPORT_TERM_ID } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type RightView = "files" | "scratch" | "browser" | "settings"
@@ -363,8 +364,17 @@ function Shell() {
       // user had the sidebar collapsed themselves, then take its space.
       if (!wasGridMode.current) preGridLeftCollapsed.current = p.isCollapsed()
       p.collapse()
-    } else if (wasGridMode.current && !preGridLeftCollapsed.current) {
-      p.resize(`${leftWidth.current}%`)
+    } else if (wasGridMode.current) {
+      if (!preGridLeftCollapsed.current) p.resize(`${leftWidth.current}%`)
+      // The grid's per-cell tmux clients shrank the shared windows (tmux sizes
+      // to the latest active client). Their release alone may not restore the
+      // viewport's width — tmux falls back to whichever remaining client was
+      // active last, which can be a stale co-viewer. Assert the visible
+      // viewport as the latest client so the window snaps back now, not on the
+      // user's next keystroke. Delayed a beat so the iframe is unhidden first.
+      const t = setTimeout(() => kickTerminalSize(VIEWPORT_TERM_ID), 150)
+      wasGridMode.current = gridMode
+      return () => clearTimeout(t)
     }
     wasGridMode.current = gridMode
   }, [gridMode])

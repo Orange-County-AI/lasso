@@ -26,16 +26,39 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
   // Warm the viewport once on mount (POST with no tab → attach to park). This
   // overlaps the attach handshake with app load so the first selected tab is
   // already warm.
+  //
+  // But NOT while the page has never been visible: a browser session-restore
+  // can load lasso in a background tab that's never looked at, and its iframe
+  // would still connect — holding a tmux client stuck at ttyd's default 80x24
+  // forever (xterm never gets layout, so it never fits). Under `window-size
+  // latest` that ghost client can win the window size whenever the active
+  // client detaches (e.g. leaving grid mode), shrinking the terminal everyone
+  // else sees. Defer the attach until the tab is first shown.
   React.useEffect(() => {
     let cancelled = false
-    api
-      .tabTerm("")
-      .then((r) => {
-        if (!cancelled) setBase(r.base)
-      })
-      .catch(() => {})
+    const warm = () => {
+      api
+        .tabTerm("")
+        .then((r) => {
+          if (!cancelled) setBase(r.base)
+        })
+        .catch(() => {})
+    }
+    if (document.visibilityState !== "hidden") {
+      warm()
+      return () => {
+        cancelled = true
+      }
+    }
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") return
+      document.removeEventListener("visibilitychange", onVisible)
+      warm()
+    }
+    document.addEventListener("visibilitychange", onVisible)
     return () => {
       cancelled = true
+      document.removeEventListener("visibilitychange", onVisible)
     }
   }, [])
 
@@ -88,8 +111,11 @@ export function TabTerminal({ tabId }: { tabId: string | null }) {
 
   // Keepalive: if the viewport ttyd died (crash), respawn it and pick up the new
   // base (which remounts the iframe — the only time we pay the handshake again).
+  // Skipped while the page is hidden (same ghost-client concern as the warm-up);
+  // a visible page recovers on its next tick.
   React.useEffect(() => {
     const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return
       api
         .tabTermTouch()
         .then((r) => {

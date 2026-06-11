@@ -27,6 +27,8 @@ interface XTerm {
   paste?: (text: string) => void
   input?: (data: string) => void
   focus?: () => void
+  resize?: (cols: number, rows: number) => void
+  cols?: number
   rows?: number
   buffer?: XTermBuffer
   options?: Record<string, unknown>
@@ -363,6 +365,28 @@ export function whenTerminalReady(id: string, onReady: () => void): () => void {
     done = true
     if (tick) clearTimeout(tick)
     clearTimeout(deadline)
+  }
+}
+
+// kickTerminalSize forces a real resize round-trip to the tmux client behind a
+// terminal iframe. tmux sizes windows to the most-recently-ACTIVE client
+// (`window-size latest`), and activity means input or a resize — so after grid
+// mode (whose per-cell clients shrank the window) the window can stay stuck at
+// a stale co-viewer's size (e.g. a background browser tab's never-fit 80x24
+// client) until the user types. A refit alone can't fix it: xterm only reports
+// a resize when its dims actually change. Resize down a row and back — two real
+// SIGWINCHes (the same trick the backend's nudgeRedraw plays) — which promotes
+// THIS client to latest and snaps the window to it immediately.
+export function kickTerminalSize(id: string) {
+  try {
+    const term = frameWindow(id)?.term
+    if (!term || typeof term.resize !== "function") return
+    const { cols, rows } = term
+    if (!cols || !rows || rows < 2) return
+    term.resize(cols, rows - 1)
+    term.resize(cols, rows)
+  } catch {
+    /* same-origin; ignore */
   }
 }
 

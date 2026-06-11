@@ -274,8 +274,11 @@ func serveGridClose(w http.ResponseWriter, r *http.Request) {
 // Each grid cell embeds a real terminal: a dedicated ttyd that attaches the
 // pane's tmux session (locally, or via `ssh -tt` for a remote host), proxied under
 // /grid-term/<token>/. Spawned on first view (IntersectionObserver in the UI),
-// idle-reaped. Because tmux uses `window-size largest`, a thin grid cell does NOT
-// clamp the wide main viewport, so there's no per-cell release dance — just reap.
+// released when hidden, idle-reaped as a backstop. Because tmux uses
+// `window-size latest`, a grid cell's small client DOES clamp the shared
+// window while attached — that's fine in grid mode (the main viewport is
+// hidden), and on grid exit the UI both releases the cells' clients and kicks
+// the viewport's size (kickTerminalSize) so the window snaps back to it.
 
 const gridTermIdle = 60 * time.Second
 
