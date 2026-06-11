@@ -732,15 +732,13 @@ function WorkspaceNode({
   // Open the agent tab if there is one, else the first tab.
   const primary = tabs.find((t) => agentStatuses[t.id]) ?? tabs[0]
   // A scratch workspace expands (like a repo over its worktrees) to list its
-  // *named* tabs as nested rows. Numbered tabs stay in the TabStrip only. A
-  // single-tab workspace never expands — its one nested row would just
-  // duplicate the workspace row itself.
+  // *named* tabs as nested rows. Numbered tabs stay in the TabStrip only. It
+  // takes two or more named tabs to expand — with just one, the single nested
+  // row would only duplicate the workspace row itself (even if numbered tabs
+  // also exist alongside it).
   const namedTabs = tabs.filter(isNamedTab)
   const expandable =
-    ws.kind === "scratch" &&
-    depth === 1 &&
-    namedTabs.length > 0 &&
-    tabs.length > 1
+    ws.kind === "scratch" && depth === 1 && namedTabs.length > 1
   // When the active tab is one of the visible nested rows, let that row carry the
   // highlight; otherwise (selected tab is a hidden numbered tab) keep it on the row.
   const rowSelected =
