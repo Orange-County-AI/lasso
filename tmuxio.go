@@ -193,9 +193,28 @@ func tmuxListSessions() []string { return tmuxListSessionsOn("") }
 // tmuxListSessionsOn returns the names of all sessions on host's server (empty
 // when the server isn't running / has none / the host is unreachable).
 func tmuxListSessionsOn(host string) []string {
+	names, _ := tmuxListSessionsOnChecked(host)
+	return names
+}
+
+// tmuxListSessionsOnChecked also reports whether the (possibly empty) list is
+// AUTHORITATIVE. tmux answering "no server running" is a real answer — the last
+// session exited and the server went away with it. Any other failure (the SSH
+// hop down, a dead control master) means we couldn't ask, and an empty list
+// must NOT be read as "every session exited" — the exit watcher would close
+// every tab on a host over a network blip.
+func tmuxListSessionsOnChecked(host string) ([]string, bool) {
 	out, err := tmuxOutH(host, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
-		return nil
+		// tmux's "server isn't up" messages (current and older phrasing) — the
+		// host answered, there are no sessions. Anything else is a transport
+		// failure and the answer is unknown.
+		msg := err.Error()
+		if strings.Contains(msg, "no server running") ||
+			strings.Contains(msg, "error connecting to") {
+			return nil, true
+		}
+		return nil, false
 	}
 	var names []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -203,7 +222,7 @@ func tmuxListSessionsOn(host string) []string {
 			names = append(names, line)
 		}
 	}
-	return names
+	return names, true
 }
 
 // tmuxKillSession terminates a session (and the processes inside it). Used when

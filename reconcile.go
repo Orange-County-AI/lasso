@@ -169,6 +169,14 @@ func tabHost(tabID string) string {
 // gone because of a reboot were never seen alive, so they're left for
 // ensureTabSession to restore instead. (Manual UI close routes through
 // closeOneTab, which unsees the tab so this watcher ignores it.)
+//
+// REMOTE tabs are watched the same way, through their host's session listing
+// (one mux'd ssh per host per tick), with two safeguards: only an AUTHORITATIVE
+// answer counts (an SSH failure is not evidence the shell exited — see
+// tmuxListSessionsOnChecked), and only hosts with an already-pooled connection
+// are asked, so this loop never re-dials a down host once a second. A host
+// whose connection was reaped gets its stale tabs swept once the next contact
+// (host switch / grid poll) re-pools it.
 func tabExitWatcher(ctx context.Context, h *hub) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -177,20 +185,42 @@ func tabExitWatcher(ctx context.Context, h *hub) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			live := map[string]bool{}
-			for _, s := range tmuxListSessions() {
-				live[s] = true
-			}
 			tabs, err := allLiveTabs()
 			if err != nil {
 				continue
 			}
+			// One session listing per host per tick, fetched lazily so hosts
+			// with no live tabs are never contacted.
+			type hostLive struct {
+				live map[string]bool
+				ok   bool // authoritative — false means "couldn't ask"
+			}
+			byHost := map[string]*hostLive{}
+			sessionsOn := func(host string) *hostLive {
+				if hl, done := byHost[host]; done {
+					return hl
+				}
+				hl := &hostLive{live: map[string]bool{}}
+				var names []string
+				switch {
+				case host == "":
+					names, hl.ok = tmuxListSessions(), true
+				case hostPooled(host):
+					names, hl.ok = tmuxListSessionsOnChecked(host)
+				}
+				for _, s := range names {
+					hl.live[s] = true
+				}
+				byHost[host] = hl
+				return hl
+			}
 			changed := false
 			for _, tab := range tabs {
-				if tabHost(tab.ID) != "" {
-					continue // remote tab — not on the local server we just listed
+				hl := sessionsOn(tabHost(tab.ID))
+				if !hl.ok {
+					continue // host unreachable — not evidence the shell exited
 				}
-				if live[tabSession(tab.ID)] {
+				if hl.live[tabSession(tab.ID)] {
 					markSeen(tab.ID)
 					continue
 				}

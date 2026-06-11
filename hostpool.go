@@ -75,6 +75,17 @@ func hostBackend(host string) (Backend, error) {
 	return be, nil
 }
 
+// hostPooled reports whether host already has a live pooled connection, without
+// dialing one. The exit watcher polls remote hosts every tick and must never be
+// the thing that re-dials a down host — hostBackend dials under the pool lock
+// with a multi-second timeout, which a once-a-second loop would hammer.
+func hostPooled(host string) bool {
+	hostPool.mu.Lock()
+	defer hostPool.mu.Unlock()
+	e := hostPool.entries[host]
+	return e != nil && e.backend != nil
+}
+
 // dropHostBackend tears down and forgets a host's pooled connection (e.g. after a
 // connection error so the next use reconnects fresh).
 func dropHostBackend(host string) {
