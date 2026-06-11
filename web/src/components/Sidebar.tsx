@@ -537,13 +537,25 @@ function RepoNode({
       toast.error(String(e))
     }
   }
-  const rename = async () => {
-    const name = window.prompt("Repo display name:", repo.name)
-    if (name == null) return
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const submitRename = async (name: string) => {
     await api
-      .renameRepo(repo.path, name.trim())
+      .renameRepo(repo.path, name)
       .catch((e) => toast.error(String(e)))
     refreshTree()
+  }
+  const [newWorktreeOpen, setNewWorktreeOpen] = React.useState(false)
+  const submitNewWorktree = async (title: string) => {
+    try {
+      await api.createWorktree({
+        repo: repo.path,
+        base_branch: repo.primary_branch,
+        title,
+      })
+      refreshTree()
+    } catch (e) {
+      toast.error(String(e))
+    }
   }
   const [confirmClose, setConfirmClose] = React.useState(false)
   const doClose = async () => {
@@ -611,26 +623,13 @@ function RepoNode({
           >
             New agent…
           </ContextMenuItem>
-          <ContextMenuItem
-            onSelect={async () => {
-              const title = window.prompt("Worktree / branch name:")
-              if (!title || !title.trim()) return
-              try {
-                await api.createWorktree({
-                  repo: repo.path,
-                  base_branch: repo.primary_branch,
-                  title: title.trim(),
-                })
-                refreshTree()
-              } catch (e) {
-                toast.error(String(e))
-              }
-            }}
-          >
+          <ContextMenuItem onSelect={() => setNewWorktreeOpen(true)}>
             New worktree (shell)…
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={rename}>Rename…</ContextMenuItem>
+          <ContextMenuItem onSelect={() => setRenameOpen(true)}>
+            Rename…
+          </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
             onSelect={() => setConfirmClose(true)}
@@ -639,6 +638,25 @@ function RepoNode({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      <PromptDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        title="Rename repo"
+        placeholder="Repo display name"
+        defaultValue={repo.name}
+        submitLabel="Rename"
+        onSubmit={submitRename}
+      />
+
+      <PromptDialog
+        open={newWorktreeOpen}
+        onOpenChange={setNewWorktreeOpen}
+        title="New worktree"
+        placeholder="Worktree / branch name"
+        submitLabel="Create"
+        onSubmit={submitNewWorktree}
+      />
 
       <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
         <AlertDialogContent>
@@ -1000,48 +1018,61 @@ function AgentRowItem({
   status: string
   onSelect: () => void
 }) {
-  const rename = async () => {
-    const title = window.prompt("Rename agent:", agent.title)
-    if (title == null || !title.trim()) return
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const submitRename = async (title: string) => {
     await api
-      .renameTab(agent.tab_id, title.trim())
+      .renameTab(agent.tab_id, title)
       .catch((e) => toast.error(String(e)))
     refreshTree()
   }
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          type="button"
-          onClick={onSelect}
-          className={cn(
-            "flex w-full items-center gap-1.5 px-3 py-1 text-left hover:bg-accent/40",
-            selected && "bg-accent/60"
-          )}
-        >
-          <span
-            className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
-          />
-          <span className="truncate">{agent.title}</span>
-          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-            {status} · {agent.agent}
-          </span>
-        </button>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={rename}>Rename…</ContextMenuItem>
-        <ContextMenuItem
-          variant="destructive"
-          onSelect={async () => {
-            await api
-              .closeAgent(agent.tab_id)
-              .catch((e) => toast.error(String(e)))
-            refreshTree()
-          }}
-        >
-          Close agent
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={onSelect}
+            className={cn(
+              "flex w-full items-center gap-1.5 px-3 py-1 text-left hover:bg-accent/40",
+              selected && "bg-accent/60"
+            )}
+          >
+            <span
+              className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
+            />
+            <span className="truncate">{agent.title}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+              {status} · {agent.agent}
+            </span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => setRenameOpen(true)}>
+            Rename…
+          </ContextMenuItem>
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={async () => {
+              await api
+                .closeAgent(agent.tab_id)
+                .catch((e) => toast.error(String(e)))
+              refreshTree()
+            }}
+          >
+            Close agent
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <PromptDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        title="Rename agent"
+        placeholder="Agent name"
+        defaultValue={agent.title}
+        submitLabel="Rename"
+        onSubmit={submitRename}
+      />
+    </>
   )
 }
