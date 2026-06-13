@@ -24,7 +24,7 @@ import (
 //   - a plain release binary (curl-installed elsewhere): compare to the latest
 //     GitHub release and self-replace the binary, then restart the daemon.
 
-const githubRepo = "knowsuchagency/lasso"
+const githubRepo = "52labs/lasso"
 
 // release is the slice of the GitHub releases API we use.
 type release struct {

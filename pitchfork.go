@@ -17,7 +17,7 @@ import (
 
 // miseLassoTool is the mise backend spec lasso is installed under (see install.sh),
 // used by `lasso update` to defer to `mise upgrade`.
-const miseLassoTool = "ubi:knowsuchagency/lasso"
+const miseLassoTool = "ubi:52labs/lasso"
 
 // lassoDaemon is the pitchfork daemon name lasso registers + controls (override
 // via LASSO_PITCHFORK_DAEMON for side-by-side installs).

@@ -27,7 +27,7 @@ export PATH="$MISE_DATA/shims:$HOME/.local/bin:$PATH"
 # --- install lasso + runtime as global mise tools --------------------------
 note "installing lasso + runtime via mise (lasso, pitchfork, ttyd) …"
 "$MISE" use -g \
-  "ubi:knowsuchagency/lasso" \
+  "ubi:52labs/lasso" \
   "pitchfork" \
   "aqua:tsl0922/ttyd"
 
