@@ -144,7 +144,7 @@ export function PaneSwitcher({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="top-[15%] translate-y-0 gap-0 p-0 sm:max-w-lg"
+        className="top-2 translate-y-0 gap-0 p-0 max-md:max-w-[calc(100%-1rem)] sm:top-[15%] sm:max-w-lg"
         onOpenAutoFocus={(e) => {
           e.preventDefault()
           ;(e.currentTarget as HTMLElement | null)
@@ -160,9 +160,14 @@ export function PaneSwitcher({
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Search tabs/agents by name, workspace, repo, agent, or prompt…"
-          className="w-full border-border border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
+          // text-base on mobile keeps iOS from zooming the viewport on focus;
+          // shrink to text-sm once there's room.
+          className="w-full border-border border-b bg-transparent px-4 py-3 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
         />
-        <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
+        <div
+          ref={listRef}
+          className="max-h-[70dvh] overflow-y-auto overscroll-contain p-1 sm:max-h-80"
+        >
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
               {treeQ.isLoading ? "Loading…" : "No matches."}

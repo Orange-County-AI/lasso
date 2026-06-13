@@ -73,7 +73,9 @@ export function HostSwitcher() {
           ) : (
             <Laptop className="size-3.5" />
           )}
-          <span className="max-w-[10ch] truncate">{activeLabel}</span>
+          <span className="max-w-[10ch] truncate max-md:hidden">
+            {activeLabel}
+          </span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-52">

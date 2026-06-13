@@ -1,13 +1,17 @@
 import { useQuery } from "@tanstack/react-query"
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronLeft,
   ChevronRight,
+  CornerDownLeft,
   Files,
   Globe,
   LayoutGrid,
   type LucideIcon,
   NotebookPen,
   PanelLeft,
+  Search,
   Settings,
 } from "lucide-react"
 import * as React from "react"
@@ -37,8 +41,14 @@ import { useDiff } from "@/lib/git"
 import { installHistoryToggle } from "@/lib/history-toggle"
 import { qk, queryClient } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
-import { kickTerminalSize, VIEWPORT_TERM_ID } from "@/lib/terminal"
+import {
+  kickTerminalSize,
+  sendKeyToTerminal,
+  TERM_KEY,
+  VIEWPORT_TERM_ID,
+} from "@/lib/terminal"
 import { patchUIState } from "@/lib/ui-state"
+import { useIsMobile } from "@/lib/use-mobile"
 import { cn } from "@/lib/utils"
 
 type RightView = "files" | "scratch" | "browser" | "settings"
@@ -161,6 +171,48 @@ function Pane({
   )
 }
 
+// MobileKeyBar: the row of keys the on-screen keyboard lacks (Esc, ↑/↓, Enter),
+// shown under the terminal on mobile. Each taps a raw sequence straight to the
+// active tab's terminal. onPointerDown + preventDefault keeps xterm's hidden
+// textarea focused, so the soft keyboard doesn't dismiss on tap.
+function MobileKeyBar() {
+  const press = (seq: string) => (e: React.PointerEvent) => {
+    e.preventDefault()
+    sendKeyToTerminal(seq)
+  }
+  const cell =
+    "flex flex-1 items-center justify-center gap-1.5 py-3 text-muted-foreground text-sm active:bg-accent active:text-accent-foreground"
+  return (
+    <div className="flex shrink-0 divide-x divide-border border-border border-t bg-card">
+      <button
+        type="button"
+        className={cell}
+        onPointerDown={press(TERM_KEY.escape)}
+      >
+        Esc
+      </button>
+      <button type="button" className={cell} onPointerDown={press(TERM_KEY.up)}>
+        <ArrowUp className="size-4" aria-label="up" />
+      </button>
+      <button
+        type="button"
+        className={cell}
+        onPointerDown={press(TERM_KEY.down)}
+      >
+        <ArrowDown className="size-4" aria-label="down" />
+      </button>
+      <button
+        type="button"
+        className={cell}
+        onPointerDown={press(TERM_KEY.enter)}
+      >
+        Enter
+        <CornerDownLeft className="size-4" />
+      </button>
+    </div>
+  )
+}
+
 export function App() {
   return (
     <AppProvider>
@@ -207,6 +259,9 @@ function findWorkspace(
 }
 
 function Shell() {
+  // On mobile the left sidebar doesn't exist (not even its toggle) and the
+  // right panel becomes a full-screen overlay instead of a resizable panel.
+  const isMobile = useIsMobile()
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [rightCollapsed, setRightCollapsed] = React.useState(
     () => lsGet(RIGHT_COLLAPSED_KEY) === "true"
@@ -406,9 +461,17 @@ function Shell() {
   }, [])
   const toggleRight = React.useCallback(() => {
     const p = rightPanel.current
-    if (!p) return
-    if (p.isCollapsed()) p.resize(`${rightWidth.current}%`)
-    else p.collapse()
+    if (p) {
+      if (p.isCollapsed()) p.resize(`${rightWidth.current}%`)
+      else p.collapse()
+      return
+    }
+    // No panel mounted (mobile: the right side is a full-screen overlay, not a
+    // resizable panel) — flip the collapsed state directly.
+    setRightCollapsed((c) => {
+      lsSet(RIGHT_COLLAPSED_KEY, String(!c))
+      return !c
+    })
   }, [])
 
   // The Grid is a full main view: it replaces the spaces sidebar AND the center
@@ -488,52 +551,131 @@ function Shell() {
     [toggleLeft, toggleRight]
   )
 
+  // The right panel's content (files / scratch / browser / settings), shared by
+  // the desktop resizable panel and the mobile full-screen overlay.
+  const rightContent = (
+    <Tabs
+      value={rightView}
+      onValueChange={(v) => setRightView(v as RightView)}
+      className="flex h-full flex-col gap-0"
+    >
+      <FitTabs
+        tabs={[
+          {
+            value: "files",
+            label: "Files",
+            icon: Files,
+            badge: (
+              <GitStatusBadge
+                dirty={diffDirty}
+                ready={gitReady}
+                className="ml-1.5"
+                textClassName="text-[13px]"
+              />
+            ),
+          },
+          { value: "scratch", label: "Scratch", icon: NotebookPen },
+          { value: "browser", label: "Browser", icon: Globe },
+          { value: "settings", label: "Settings", icon: Settings },
+        ]}
+        trailing={
+          // Styled like the tab icons (same box model) rather than a
+          // bordered box, so it sits on the same baseline as them.
+          <button
+            type="button"
+            className={cn(tabClass, "flex items-center hover:text-primary")}
+            title="collapse panel (⌘])"
+            onClick={toggleRight}
+          >
+            <ChevronRight className="size-4" />
+          </button>
+        }
+      />
+      <div className="relative min-h-0 flex-1">
+        <Pane show={rightView === "files"}>
+          <FilesPanel />
+        </Pane>
+        <Pane show={rightView === "scratch"}>
+          <ScratchTab />
+        </Pane>
+        <Pane show={rightView === "browser"}>
+          <BrowserTab />
+        </Pane>
+        <Pane show={rightView === "settings"}>
+          <SettingsTab active={rightView === "settings"} />
+        </Pane>
+      </div>
+    </Tabs>
+  )
+
   return (
     <div className="relative flex h-full w-full flex-col">
       {/* Full-width header: the app-level controls live here — never inside a
           panel — so their placement is identical whether the sidebar is open,
           collapsed, or replaced by the grid. */}
       <div className="flex shrink-0 items-center border-border border-b">
-        <button
-          type="button"
-          title={
-            gridMode
-              ? "exit grid to the sidebar"
-              : leftCollapsed
-                ? "show sidebar (⌘[)"
-                : "hide sidebar (⌘[)"
-          }
-          aria-pressed={!gridMode && !leftCollapsed}
-          className="px-2 py-1.5 text-muted-foreground hover:text-primary"
-          onClick={() => {
-            // In grid mode the sidebar's space belongs to the grid; asking for
-            // the sidebar means leaving the grid (and restoring it expanded).
-            if (gridMode) {
-              preGridLeftCollapsed.current = false
-              toggleGrid()
-              return
+        {!isMobile && (
+          <button
+            type="button"
+            title={
+              gridMode
+                ? "exit grid to the sidebar"
+                : leftCollapsed
+                  ? "show sidebar (⌘[)"
+                  : "hide sidebar (⌘[)"
             }
-            toggleLeft()
-          }}
-        >
-          <PanelLeft className="size-4" />
-        </button>
-        <button
-          type="button"
-          aria-pressed={gridMode}
-          title={gridMode ? "back to terminal (⌘G)" : "grid view (⌘G)"}
-          className={cn(
-            "mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border",
-            gridMode
-              ? "border-primary/50 bg-accent text-primary"
-              : "border-border text-muted-foreground hover:border-primary hover:text-primary"
-          )}
-          onClick={toggleGrid}
-        >
-          <LayoutGrid className="size-3.5" />
-        </button>
+            aria-pressed={!gridMode && !leftCollapsed}
+            className="px-2 py-1.5 text-muted-foreground hover:text-primary"
+            onClick={() => {
+              // In grid mode the sidebar's space belongs to the grid; asking for
+              // the sidebar means leaving the grid (and restoring it expanded).
+              if (gridMode) {
+                preGridLeftCollapsed.current = false
+                toggleGrid()
+                return
+              }
+              toggleLeft()
+            }}
+          >
+            <PanelLeft className="size-4" />
+          </button>
+        )}
+        {!isMobile && (
+          <button
+            type="button"
+            aria-pressed={gridMode}
+            title={gridMode ? "back to terminal (⌘G)" : "grid view (⌘G)"}
+            className={cn(
+              "mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border",
+              gridMode
+                ? "border-primary/50 bg-accent text-primary"
+                : "border-border text-muted-foreground hover:border-primary hover:text-primary"
+            )}
+            onClick={toggleGrid}
+          >
+            <LayoutGrid className="size-3.5" />
+          </button>
+        )}
         <HostSwitcher />
-        <div className="min-w-0 flex-1" />
+        {/* ⌘K as a visible control: styled like a search input but really a
+            button that opens the pane switcher (the palette owns the real
+            input + filtering). */}
+        <div className="flex min-w-0 flex-1 justify-center px-2">
+          <button
+            type="button"
+            title="find a tab or agent (⌘K)"
+            onClick={() => setPaletteOpen(true)}
+            className="flex w-full min-w-0 max-w-sm items-center gap-1.5 rounded border border-border px-2 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary"
+          >
+            <Search className="size-3.5 shrink-0" />
+            <span className="truncate">Search…</span>
+            {!isMobile && (
+              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/70">
+                ⌘K
+              </span>
+            )}
+          </button>
+        </div>
         <div className="ml-2 flex shrink-0 items-center gap-1.5">
           <CreateAgentDialog variant="header" />
           {rightCollapsed && (
@@ -560,34 +702,42 @@ function Shell() {
         orientation="horizontal"
         className="min-h-0 w-full flex-1"
       >
-        {/* Left: spaces tree + agents pane */}
-        <ResizablePanel
-          id="sidebar"
-          panelRef={leftPanel}
-          defaultSize={leftCollapsed ? 0 : leftWidth.current}
-          minSize={12}
-          collapsible
-          collapsedSize={0}
-          onResize={(s) => {
-            const collapsed = s.asPercentage < 0.05
-            setLeftCollapsed(collapsed)
-            lsSet(LEFT_COLLAPSED_KEY, String(collapsed))
-            if (!collapsed) {
-              leftWidth.current = s.asPercentage
-              lsSet(LEFT_WIDTH_KEY, String(s.asPercentage))
-              schedulePush()
-            }
-          }}
-          className="min-h-0"
-        >
-          <Sidebar
-            selectedTabId={selectedTabId}
-            onSelectTab={selectTab}
-            onCollapse={toggleLeft}
-          />
-        </ResizablePanel>
+        {/* Left: spaces tree + agents pane. On mobile it isn't rendered at all
+            (no panel, no handle — the header doesn't show its toggle either). */}
+        {!isMobile && (
+          <>
+            <ResizablePanel
+              id="sidebar"
+              panelRef={leftPanel}
+              defaultSize={leftCollapsed ? 0 : leftWidth.current}
+              minSize={12}
+              collapsible
+              collapsedSize={0}
+              onResize={(s) => {
+                const collapsed = s.asPercentage < 0.05
+                setLeftCollapsed(collapsed)
+                lsSet(LEFT_COLLAPSED_KEY, String(collapsed))
+                if (!collapsed) {
+                  leftWidth.current = s.asPercentage
+                  lsSet(LEFT_WIDTH_KEY, String(s.asPercentage))
+                  schedulePush()
+                }
+              }}
+              className="min-h-0"
+            >
+              <Sidebar
+                selectedTabId={selectedTabId}
+                onSelectTab={selectTab}
+                onCollapse={toggleLeft}
+              />
+            </ResizablePanel>
 
-        <ResizableHandle withHandle className={cn(leftCollapsed && "hidden")} />
+            <ResizableHandle
+              withHandle
+              className={cn(leftCollapsed && "hidden")}
+            />
+          </>
+        )}
 
         {/* Center: the selected workspace's tabs + terminal (or the grid) */}
         <ResizablePanel
@@ -634,91 +784,60 @@ function Shell() {
                 <GridTab active={gridMode} selectTab={selectTabFromGrid} />
               </div>
             </div>
+            {/* The on-screen keys the soft keyboard lacks — mobile only, and
+                only with a live terminal (not the grid / empty state). */}
+            {isMobile && !gridMode && activeWorkspace && selectedTabId && (
+              <MobileKeyBar />
+            )}
           </div>
         </ResizablePanel>
 
-        <ResizableHandle
-          withHandle
-          className={cn(rightCollapsed && "hidden", "max-md:hidden")}
-        />
-
-        {/* Right: files / scratch / browser / settings */}
-        <ResizablePanel
-          id="right"
-          panelRef={rightPanel}
-          defaultSize={rightCollapsed ? 0 : rightWidth.current}
-          minSize={15}
-          collapsible
-          collapsedSize={0}
-          onResize={(s) => {
-            const collapsed = s.asPercentage < 0.05
-            setRightCollapsed(collapsed)
-            lsSet(RIGHT_COLLAPSED_KEY, String(collapsed))
-            if (!collapsed) {
-              rightWidth.current = s.asPercentage
-              lsSet(RIGHT_WIDTH_KEY, String(s.asPercentage))
-              schedulePush()
-            }
-          }}
-          className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
-        >
-          <Tabs
-            value={rightView}
-            onValueChange={(v) => setRightView(v as RightView)}
-            className="flex h-full flex-col gap-0"
-          >
-            <FitTabs
-              tabs={[
-                {
-                  value: "files",
-                  label: "Files",
-                  icon: Files,
-                  badge: (
-                    <GitStatusBadge
-                      dirty={diffDirty}
-                      ready={gitReady}
-                      className="ml-1.5"
-                      textClassName="text-[13px]"
-                    />
-                  ),
-                },
-                { value: "scratch", label: "Scratch", icon: NotebookPen },
-                { value: "browser", label: "Browser", icon: Globe },
-                { value: "settings", label: "Settings", icon: Settings },
-              ]}
-              trailing={
-                // Styled like the tab icons (same box model) rather than a
-                // bordered box, so it sits on the same baseline as them.
-                <button
-                  type="button"
-                  className={cn(
-                    tabClass,
-                    "flex items-center hover:text-primary"
-                  )}
-                  title="collapse panel (⌘])"
-                  onClick={toggleRight}
-                >
-                  <ChevronRight className="size-4" />
-                </button>
-              }
+        {/* Right: files / scratch / browser / settings — a resizable side panel
+            on desktop only; the mobile overlay below takes over otherwise. */}
+        {!isMobile && (
+          <>
+            <ResizableHandle
+              withHandle
+              className={cn(rightCollapsed && "hidden")}
             />
-            <div className="relative min-h-0 flex-1">
-              <Pane show={rightView === "files"}>
-                <FilesPanel />
-              </Pane>
-              <Pane show={rightView === "scratch"}>
-                <ScratchTab />
-              </Pane>
-              <Pane show={rightView === "browser"}>
-                <BrowserTab />
-              </Pane>
-              <Pane show={rightView === "settings"}>
-                <SettingsTab active={rightView === "settings"} />
-              </Pane>
-            </div>
-          </Tabs>
-        </ResizablePanel>
+            <ResizablePanel
+              id="right"
+              panelRef={rightPanel}
+              defaultSize={rightCollapsed ? 0 : rightWidth.current}
+              minSize={15}
+              collapsible
+              collapsedSize={0}
+              onResize={(s) => {
+                const collapsed = s.asPercentage < 0.05
+                setRightCollapsed(collapsed)
+                lsSet(RIGHT_COLLAPSED_KEY, String(collapsed))
+                if (!collapsed) {
+                  rightWidth.current = s.asPercentage
+                  lsSet(RIGHT_WIDTH_KEY, String(s.asPercentage))
+                  schedulePush()
+                }
+              }}
+              className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
+            >
+              {rightContent}
+            </ResizablePanel>
+          </>
+        )}
       </ResizablePanelGroup>
+
+      {/* On mobile the right panel covers the whole screen while expanded.
+          Kept mounted (hidden) while collapsed so the panes' state — e.g. the
+          browser iframe — survives toggling, same as the desktop panel. */}
+      {isMobile && (
+        <div
+          className={cn(
+            "fixed inset-0 z-40 flex-col bg-card",
+            rightCollapsed ? "hidden" : "flex"
+          )}
+        >
+          {rightContent}
+        </div>
+      )}
 
       {/* ⌘K switcher — searches workspaces/tabs/agents by display name. */}
       <PaneSwitcher

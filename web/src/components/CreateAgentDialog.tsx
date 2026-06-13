@@ -450,7 +450,7 @@ export function CreateAgentDialog({
             title="create a new agent (⌘O)"
           >
             <Plus className="size-3.5" />
-            <span>New Agent</span>
+            <span className="max-md:hidden">New Agent</span>
           </button>
         ) : variant === "floating" ? (
           // Footer pill (see App.tsx, bottom-left).

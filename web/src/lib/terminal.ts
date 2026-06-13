@@ -77,6 +77,39 @@ function sendNewline(term: XTerm) {
   }
 }
 
+// sendKeyToTerminal feeds a raw key sequence to the active tab's terminal —
+// used by the mobile key bar, whose soft keyboard lacks Esc/arrows/Enter. Writes
+// straight to the PTY (same path as sendNewline), so it needs no focus and won't
+// dismiss the soft keyboard. Arrows are the normal-mode (DECCKM off) CSI forms,
+// correct for the shell + agents; app-cursor-mode TUIs (vim/less) won't see them.
+export const TERM_KEY = {
+  escape: "\x1b",
+  up: "\x1b[A",
+  down: "\x1b[B",
+  enter: "\r",
+} as const
+
+export function sendKeyToTerminal(seq: string) {
+  let term: XTerm | undefined
+  try {
+    term = frameWindow(VIEWPORT_TERM_ID)?.term
+  } catch {
+    return
+  }
+  if (!term) return
+  if (typeof term.input === "function") {
+    term.input(seq)
+    return
+  }
+  try {
+    const cs = term._core?.coreService
+    if (cs && typeof cs.triggerDataEvent === "function")
+      cs.triggerDataEvent(seq, true)
+  } catch {
+    /* private API moved: no-op rather than throw */
+  }
+}
+
 function wireShiftEnter(id: string, tries: number) {
   let term: XTerm | undefined
   try {
