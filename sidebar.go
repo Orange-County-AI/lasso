@@ -27,12 +27,9 @@ func sbHost() string {
 	return "local"
 }
 
-// startTabShellOn creates the tmux session for a new shell tab on host: the local
-// warm-pool path locally, or a cold remote session over SSH for a remote host.
+// startTabShellOn creates the tmux session backing a new shell tab on host (local
+// or a remote host over SSH), rooted at workDir and tagged with LASSO_TAB_ID.
 func startTabShellOn(host, tabID, workDir string) error {
-	if isLocalHost(host) {
-		return startTabShell(tabID, workDir)
-	}
 	return tmuxNewSessionOn(host, tabSession(tabID), workDir, []string{"LASSO_TAB_ID=" + tabID})
 }
 
@@ -843,8 +840,8 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	wsID := "w" + newID()
 	tabID := newID()
 	session := tabSession(tabID)
-	// Claim a pre-booted shell (instant) when possible, else cold-start — or a
-	// remote session over SSH when a remote host is active. Like serveNewTab.
+	// Create the tab's shell session on the active host (local, or remote over
+	// SSH). Like serveNewTab.
 	if err := startTabShellOn(sbHost(), tabID, workDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -861,26 +858,17 @@ func serveCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Run the configured scratch setup in the shell (no agent). Best-effort and
-	// backgrounded so create returns immediately. Wait until the shell has settled
-	// into the workspace dir before sending — a warm-pool claim cd's there
-	// asynchronously (a cold session already starts there), so this keeps setup
-	// from running in $HOME — then wait for the rc so leading chars aren't eaten.
+	// backgrounded so create returns immediately. The session starts in workDir, so
+	// just wait for the rc to settle (so leading chars aren't eaten) before sending.
 	if defaults, derr := hostDefaults(be.Name()); derr == nil {
 		if s := strings.TrimSpace(defaults.ScratchSetup); s != "" {
-			go func(sess, dir, setup string) {
-				deadline := time.Now().Add(15 * time.Second)
-				for time.Now().Before(deadline) {
-					if !tmuxHasSession(sess) {
-						return
-					}
-					if cur, _ := tmuxCurrentPath(sess); cur == dir {
-						break
-					}
-					time.Sleep(150 * time.Millisecond)
+			go func(sess, setup string) {
+				if !tmuxHasSession(sess) {
+					return
 				}
 				tmuxWaitReady(sess)
 				_ = tmuxSendLine(sess, setup)
-			}(session, workDir, s)
+			}(session, s)
 		}
 	}
 	kickHub()

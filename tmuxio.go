@@ -92,7 +92,7 @@ func tmuxRun(host, in string, args ...string) (string, error) {
 }
 
 // Host-targeted runners. The bare tmux/tmuxOut/tmuxIn wrappers target the LOCAL
-// host (host="") — used by the no-session local helpers (server setup, warm pool,
+// host (host="") — used by the no-session local helpers (server setup,
 // reconcile). Session helpers call the …H variants with hostForSession(session).
 func tmuxH(host string, args ...string) error              { _, err := tmuxRun(host, "", args...); return err }
 func tmuxOutH(host string, args ...string) (string, error) { return tmuxRun(host, "", args...) }
@@ -260,27 +260,6 @@ func tmuxCaptureAll(session string) (string, error) {
 func tmuxCurrentPath(session string) (string, error) {
 	out, err := tmuxOutH(hostForSession(session), "display-message", "-p", "-t", session, "#{pane_current_path}")
 	return strings.TrimSpace(out), err
-}
-
-// tmuxPaneCurrentCommand returns the command name of a session's foreground
-// process (#{pane_current_command}). For an idle shell this is the shell name
-// (bash/zsh/…); while it's running a child (e.g. an rc step like mise/fnox, or a
-// user program) it's that child. Used to tell whether a pre-warmed shell has
-// finished sourcing its rc (foregroundIsShell). NB: unreliable for distinguishing
-// AGENT binaries (their comm names are odd) — only used here for plain shells.
-func tmuxPaneCurrentCommand(session string) string {
-	out, _ := tmuxOutH(hostForSession(session), "display-message", "-p", "-t", session, "#{pane_current_command}")
-	return strings.TrimSpace(out)
-}
-
-// foregroundIsShell reports whether a session's foreground process is an idle
-// shell (no child program running) — i.e. it's sitting at its prompt.
-func foregroundIsShell(session string) bool {
-	switch strings.TrimPrefix(tmuxPaneCurrentCommand(session), "-") { // login shells show "-bash"
-	case "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh":
-		return true
-	}
-	return false
 }
 
 // nudgeRedraw forces whatever is running in a session to repaint. A session is
@@ -539,6 +518,11 @@ func tmuxSendText(session, text string) error {
 		return err
 	}
 	return tmuxH(host, "paste-buffer", "-p", "-d", "-b", buf, "-t", session)
+}
+
+// shellSingleQuote wraps s in single quotes safe for a POSIX shell command line.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // tmuxWaitReady blocks until a fresh session's shell stops changing its visible

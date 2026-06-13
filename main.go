@@ -109,10 +109,6 @@ func runServer() {
 	// browser xterm⇄ttyd attach handshake overlaps app load instead of stalling
 	// the first tab the user opens. Best-effort.
 	go func() { _, _ = ensureViewport() }()
-	// Keep a few pre-booted shells ready so creating a terminal is instant instead
-	// of paying the ~5s shell rc boot on the click (reconcileTabs above already
-	// reaped any warm shells left by a prior run).
-	startWarmPool()
 	go cwdSaver(ctx)
 	go tabExitWatcher(ctx, hub) // backstop for the FIFO listener above
 
@@ -332,8 +328,8 @@ func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string,
 }
 
 // srvHub and srvCtx are set in runServer so background subsystems (the viewport
-// watcher, the status poller, the sidebar handlers, prewarm) can reach the SSE
-// hub and the server's root context (the lifetime of spawned ttyds).
+// watcher, the status poller, the sidebar handlers) can reach the SSE hub and the
+// server's root context (the lifetime of spawned ttyds).
 var (
 	srvHub *hub
 	srvCtx context.Context
