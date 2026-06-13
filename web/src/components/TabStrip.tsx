@@ -58,17 +58,6 @@ export function TabStrip({
     queryClient.invalidateQueries({ queryKey: qk.agents })
   }
 
-  // ⌘U opens the new-tab prompt for the active workspace (App dispatches the
-  // event globally so it fires with focus inside a terminal).
-  React.useEffect(() => {
-    const open = () => {
-      if (!workspace) return
-      setPrompt({ mode: "new", initial: nextTabNumber(workspace.tabs ?? []) })
-    }
-    window.addEventListener("lasso:new-tab", open)
-    return () => window.removeEventListener("lasso:new-tab", open)
-  }, [workspace])
-
   const createTab = async (title: string) => {
     if (!workspace) return
     try {
@@ -81,6 +70,35 @@ export function TabStrip({
       toast.error(String(e))
     }
   }
+
+  const closeTab = async (tabId: string) => {
+    await api.closeTab(tabId).catch((e) => toast.error(String(e)))
+    refresh()
+  }
+
+  // ⌘U creates a tab immediately (auto-named) and ⌘⇧U closes the active tab.
+  // App dispatches these events globally so they fire with focus inside a
+  // terminal. Kept in refs so the listeners can stay mounted across renders
+  // while always seeing the current workspace/selection.
+  const createTabRef = React.useRef(createTab)
+  createTabRef.current = createTab
+  const closeTabRef = React.useRef(closeTab)
+  closeTabRef.current = closeTab
+  React.useEffect(() => {
+    const onNew = () => {
+      if (!workspace) return
+      createTabRef.current(nextTabNumber(workspace.tabs ?? []))
+    }
+    const onClose = () => {
+      if (selectedTabId) closeTabRef.current(selectedTabId)
+    }
+    window.addEventListener("lasso:new-tab", onNew)
+    window.addEventListener("lasso:close-tab", onClose)
+    return () => {
+      window.removeEventListener("lasso:new-tab", onNew)
+      window.removeEventListener("lasso:close-tab", onClose)
+    }
+  }, [workspace, selectedTabId])
 
   const renameTab = async (tabId: string, title: string) => {
     await api.renameTab(tabId, title).catch((e) => toast.error(String(e)))
@@ -132,12 +150,7 @@ export function TabStrip({
                     type="button"
                     title="close tab"
                     className="opacity-0 hover:text-[var(--h-bad)] group-hover:opacity-100"
-                    onClick={async () => {
-                      await api
-                        .closeTab(tab.id)
-                        .catch((e) => toast.error(String(e)))
-                      refresh()
-                    }}
+                    onClick={() => closeTab(tab.id)}
                   >
                     <X className="size-3" />
                   </button>
@@ -158,12 +171,7 @@ export function TabStrip({
                 <ContextMenuSeparator />
                 <ContextMenuItem
                   variant="destructive"
-                  onSelect={async () => {
-                    await api
-                      .closeTab(tab.id)
-                      .catch((e) => toast.error(String(e)))
-                    refresh()
-                  }}
+                  onSelect={() => closeTab(tab.id)}
                 >
                   Close tab
                 </ContextMenuItem>

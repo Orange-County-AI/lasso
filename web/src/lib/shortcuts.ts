@@ -11,7 +11,8 @@ export interface Shortcut {
 export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘K", label: "Find a pane…" },
   { keys: "⌘I", label: "New terminal…" },
-  { keys: "⌘U", label: "New tab…" },
+  { keys: "⌘U", label: "New tab" },
+  { keys: "⌘⇧U", label: "Close tab" },
   { keys: "⌘G", label: "Toggle the grid view" },
   { keys: "⌘[", label: "Toggle the left sidebar" },
   { keys: "⌘]", label: "Toggle the right panel" },
@@ -22,6 +23,7 @@ export type ShortcutAction =
   | "palette"
   | "new-workspace"
   | "new-tab"
+  | "close-tab"
   | "grid"
   | "shortcuts"
 
@@ -45,11 +47,13 @@ export function matchShortcut(e: {
   code: string
 }): ShortcutAction | null {
   if (!e.metaKey || e.ctrlKey || e.altKey) return null
-  // ⌘? (Cmd-Shift-/) opens the shortcuts reference — the only binding that uses
-  // Shift. Match the physical Slash key (code) first since `?` is its shifted
-  // form; fall back to the `?` character for layouts that place it elsewhere.
+  // Shift-bearing bindings: ⌘? (Cmd-Shift-/) opens the shortcuts reference and
+  // ⌘⇧U closes the active tab. For ⌘?, match the physical Slash key (code) first
+  // since `?` is its shifted form; fall back to the `?` character for layouts
+  // that place it elsewhere.
   if (e.shiftKey) {
     if (e.code === "Slash" || e.key === "?") return "shortcuts"
+    if (e.code === "KeyU" || e.key.toLowerCase() === "u") return "close-tab"
     return null
   }
   switch (e.code) {

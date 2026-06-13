@@ -476,6 +476,8 @@ function Shell() {
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
       else if (action === "new-tab")
         window.dispatchEvent(new CustomEvent("lasso:new-tab"))
+      else if (action === "close-tab")
+        window.dispatchEvent(new CustomEvent("lasso:close-tab"))
     }
     document.addEventListener("keydown", onKey, true)
     return () => document.removeEventListener("keydown", onKey, true)
