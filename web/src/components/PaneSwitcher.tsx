@@ -181,8 +181,15 @@ export function PaneSwitcher({
                 onClick={() => choose(e)}
                 onMouseMove={() => setActive(i)}
                 className={cn(
-                  "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
-                  i === active && "bg-accent text-accent-foreground"
+                  "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors",
+                  // The keyboard/pointer cursor uses the primary tint so the
+                  // highlighted row reads clearly — `bg-accent` resolves to the
+                  // near-white hover gray (--h-hover) and is imperceptible
+                  // against the popover. Non-selected rows pick up that subtle
+                  // accent on hover for feedback before they become active.
+                  i === active
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent hover:text-accent-foreground"
                 )}
               >
                 <span className="flex w-full items-center gap-2">
@@ -196,13 +203,33 @@ export function PaneSwitcher({
                   )}
                   <span className="truncate font-bold text-sm">{e.title}</span>
                   {e.agent && (
-                    <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-[11px] text-primary">
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                        // On the selected row the badge sits on `bg-primary`, so
+                        // its usual primary tint has no contrast — flip it to the
+                        // foreground color (works in both light and dark mode).
+                        i === active
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-primary/15 text-primary"
+                      )}
+                    >
                       {e.agent}
                       {e.status ? ` · ${e.status}` : ""}
                     </span>
                   )}
                 </span>
-                <span className="flex w-full items-center gap-2 truncate text-muted-foreground text-xs">
+                <span
+                  className={cn(
+                    "flex w-full items-center gap-2 truncate text-xs",
+                    // Keep the secondary line readable on the selected row — a
+                    // dimmed foreground reads on `bg-primary` where
+                    // `text-muted-foreground` washes out (esp. in dark mode).
+                    i === active
+                      ? "text-primary-foreground/75"
+                      : "text-muted-foreground"
+                  )}
+                >
                   {e.repo && <span className="shrink-0">{e.repo}</span>}
                   <span className="truncate">{e.workspace}</span>
                 </span>
