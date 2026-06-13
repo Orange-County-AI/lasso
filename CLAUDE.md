@@ -20,6 +20,14 @@ Frontend (`web/`, package manager is **bun**):
 - `bun run format` — `biome format --write .`
 - `bun run check` — `biome check --write .` (format + lint fixes + import/class sorting)
 
+## Running the server (mise + pitchfork)
+
+- The shipped install (`install.sh`) is **mise-based**: it installs lasso and its runtime (lasso via `ubi:knowsuchagency/lasso`, plus `pitchfork`, `ttyd`, `tmux`) as global mise tools. `lasso update` defers to `mise upgrade` when the running binary lives under mise's installs dir, else self-replaces the release binary; either way it then `pitchfork restart`s the daemon.
+- **pitchfork is the required supervisor.** `lasso start/up`, `stop/down`, `restart`, `status` delegate to pitchfork (there is no self-daemon fallback — the old Setsid/PID-file path was removed). `lasso start` idempotently writes a marker-delimited `[daemons.<name>]` block into `~/.config/pitchfork/config.toml` (see `pitchfork.go`: `ensureLassoDaemon`/`upsertDaemonBlock`), then `pitchfork start <name> -f`. The block pins `env.PATH` (snapshot of the invoking PATH + mise shims) so the daemon can find tmux/ttyd/tailscale under a scrubbed supervisor env. Daemon name overridable via `LASSO_PITCHFORK_DAEMON`.
+- **`--tailscale`** (on `serve`/`start`/`restart`) keeps lasso on loopback and publishes it on the tailnet via **`tailscale serve --bg`** (registered on start, explicitly torn down on shutdown — see `tailscale.go`). It needs the one-time `sudo tailscale set --operator=$USER`. Flags passed to `start`/`restart` persist into the daemon's run line. (portless was evaluated and rejected — its proxy needs sudo/:443 + trust-store writes and can't expose a persistent loopback server headlessly.)
+- Tailscale Serve terminates HTTPS on `:443` by default (clean `https://<node>.ts.net` URL). **On citadel `:443` is owned by `dokploy-traefik` (Docker)**, which shadows it — so use `-tailscale-https-port 8443` there (`https://citadel.tail9dd8e.ts.net:8443`). The serve port is configurable via that flag.
+- `mise run dev` is unchanged and deliberately self-daemon-free (multiple concurrent dev instances on bumped ports); it does not touch pitchfork.
+
 ## Frontend workflow
 
 - Run `bun run typecheck` and `bun run lint` before considering frontend work done.
@@ -31,7 +39,7 @@ Tooling is **Biome** (`web/biome.json`) — it replaced Prettier + ESLint. Style
 
 ## Security gotchas
 
-- Never bind to `0.0.0.0`. Use loopback or the tailscale IP. For non-loopback access set `UI_AUTH=user:pass`.
+- Never bind to `0.0.0.0`. Stay on loopback; reach it off-box via `--tailscale` (Tailscale Serve, HTTPS) or a Cloudflare tunnel. A bare non-loopback `-listen` still requires `UI_AUTH=user:pass` or `-insecure-no-auth`.
 - `/api/file` reads arbitrary absolute paths as the running user — safe only on a private tailnet.
 - Terminals run on a **dedicated tmux server socket** (`~/.lasso/tmux.sock`, `-f /dev/null`), isolated from your default tmux and surviving lasso restarts. Every tmux call must carry `-S ~/.lasso/tmux.sock -f /dev/null` — a missing `-S` would hit your real tmux server.
 - The `/mcp` MCP server is **unauthenticated** (exempt from `UI_AUTH` via `withAuthExcept`) — it lets any client that can reach lasso spawn and drive agents. Same trust model as `/api/file`: safe only on loopback / a private tailnet, or behind an edge auth gate (e.g. Cloudflare Access). It introduces no new binding.

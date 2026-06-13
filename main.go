@@ -47,11 +47,13 @@ import (
 var distFS embed.FS
 
 var (
-	listenAddr  = flag.String("listen", defaultListenAddr, "address for the web server (loopback by default — the terminal is a writable shell)")
-	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for the SSE refresh")
-	statusEvery = flag.Duration("status-poll", 750*time.Millisecond, "interval the agent-status poller scrapes tmux panes (paused when no browser is connected)")
-	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
-	devMode     = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
+	listenAddr    = flag.String("listen", defaultListenAddr, "address for the web server (loopback by default — the terminal is a writable shell)")
+	pollEvery     = flag.Duration("poll", 2*time.Second, "fallback poll interval for the SSE refresh")
+	statusEvery   = flag.Duration("status-poll", 750*time.Millisecond, "interval the agent-status poller scrapes tmux panes (paused when no browser is connected)")
+	allowNoAuth   = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
+	devMode       = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
+	tailscaleUp   = flag.Bool("tailscale", false, "also expose the loopback server on the tailnet via `tailscale serve` (HTTPS at https://<node>.<tailnet>.ts.net)")
+	tailscalePort = flag.Int("tailscale-https-port", 443, "HTTPS port for --tailscale's `tailscale serve` (use another, e.g. 8443, when 443 is already taken on this host)")
 )
 
 // runServer is the foreground HTTP server — the historical `./lasso` behavior.
@@ -209,9 +211,29 @@ func runServer() {
 	// Terminals are per-tab ttyds attached to tmux sessions (see tabterm.go),
 	// spawned on demand when the browser opens a tab — nothing to spawn at boot.
 
+	// Optionally publish the loopback server on the tailnet via `tailscale serve`
+	// (lasso itself stays loopback). Non-fatal: if it can't come up (e.g. the
+	// operator bit isn't set) we log loudly and keep serving locally rather than
+	// crash-looping under a supervisor.
+	var tsStop func()
+	if *tailscaleUp {
+		_, portStr, _ := net.SplitHostPort(*listenAddr)
+		port, _ := strconv.Atoi(portStr)
+		if stopFn, tsURL, err := exposeOverTailnet(port, *tailscalePort); err != nil {
+			log.Printf("tailnet:  FAILED to expose over tailscale — continuing loopback-only:\n%v", err)
+		} else {
+			tsStop = stopFn
+			defer tsStop()
+			log.Printf("tailnet:  %s (via tailscale serve)", tsURL)
+		}
+	}
+
 	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
+		if tsStop != nil {
+			tsStop() // drop the tailnet route before the listener goes away
+		}
 		sh, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sh)
@@ -373,23 +395,18 @@ type versionInfo struct {
 	// UpdateState says whether the running build is behind: "available" (a newer
 	// commit/release is waiting), "current" (already up to date), or "unknown".
 	UpdateState string `json:"update_state,omitempty"`
-	// LatestVersion is the newest published GitHub release tag, set only for a
-	// release-binary install (not the supervised/pitchfork checkout, which tracks
-	// main by commit instead).
+	// LatestVersion is the newest published GitHub release tag.
 	LatestVersion string `json:"latest_version,omitempty"`
 	Err           string `json:"err,omitempty"`
 }
 
-// serveVersion reports lasso's own version and whether an update is available.
+// serveVersion reports lasso's own version and whether an update is available,
+// comparing this build's version to the latest GitHub release. The check is
+// non-blocking — the tag is "" until the background fetch lands, then the next
+// poll picks it up. Dev/worktree runs skip it (they update by rebuild).
 func serveVersion(w http.ResponseWriter, r *http.Request) {
 	vi := versionInfo{LassoVersion: lassoVersion()}
-	if selfUpdateAvailable() {
-		// Supervised checkout: compare the build commit to main's tip (local git).
-		vi.UpdateState, _ = selfUpdateStatus()
-	} else if !*devMode {
-		// Release binary: compare this build's version to the latest GitHub release
-		// (non-blocking — the tag is "" until the background fetch lands, then the
-		// next poll picks it up). Dev/worktree runs skip this; they update by rebuild.
+	if !*devMode {
 		if latest, ok := cachedLatestTag(); ok {
 			vi.LatestVersion = latest
 			if semverNewer(lassoSemver, latest) {

@@ -38,35 +38,45 @@ palette follows the same mode.
 curl -fsSL https://go.52labs.us/install-lasso | sh
 ```
 
-This drops a prebuilt binary at `~/.local/bin/lasso` (override with
-`LASSO_INSTALL_DIR`). lasso needs **tmux** and **ttyd** on `PATH` — install them
-with your package manager (`brew install tmux ttyd`, `apt install tmux`, etc.).
-Run `lasso doctor` to check.
-
-Then:
+The installer uses [**mise**](https://mise.jdx.dev) to install lasso and its whole
+runtime — lasso itself, **pitchfork** (the supervisor), **ttyd**, and **tmux** —
+as global mise tools, then registers a pitchfork daemon and starts it. Run
+`lasso doctor` to confirm. To also expose lasso on your tailnet, install with
+tailscale support:
 
 ```bash
-lasso start          # run it in the background
+LASSO_WITH_TAILSCALE=1 curl -fsSL https://go.52labs.us/install-lasso | sh
+```
+
+That installs tailscale, grants this user `tailscale serve` permission, and starts
+lasso with `--tailscale`. Then:
+
+```bash
+lasso status                 # the pitchfork daemon's status
 open http://127.0.0.1:8090
 ```
 
 ## Using the CLI
 
-The binary is both the server and its own control surface:
+The binary is both the server and its own control surface. lasso is supervised by
+**pitchfork**, so `start`/`stop`/`restart`/`status` drive a pitchfork daemon:
 
 | command | what it does |
 | --- | --- |
-| `lasso start` (alias `up`) | start the server in the background (PID + log under `~/.lasso/`) |
-| `lasso stop` (alias `down`) | stop the background server |
-| `lasso restart` | stop (if running) then start |
-| `lasso status` | report whether it's running, and its URL |
+| `lasso start` (alias `up`) | register + start the pitchfork-supervised server |
+| `lasso stop` (alias `down`) | stop the supervised server |
+| `lasso restart` | restart it (re-applying any flags) |
+| `lasso status` | show the pitchfork daemon's status |
 | `lasso update` | update to the latest release (see [Updating](#updating)) |
-| `lasso doctor` | check tmux, ttyd, the port, and whether an update is available |
+| `lasso doctor` | check tmux, ttyd, pitchfork, the port, and whether an update is available |
 | `lasso version` | print the version |
-| `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
+| `lasso serve` | run in the **foreground** (what a bare `lasso`, and the daemon, does) |
 
-`start`/`restart`/`serve` accept the server flags (`-listen`,
-`-insecure-no-auth`, …); `lasso serve -h` lists them.
+`start`/`restart`/`serve` accept the server flags (`--tailscale`, `-listen`,
+`-insecure-no-auth`, …); `lasso serve -h` lists them. Flags passed to
+`start`/`restart` are persisted into the daemon's run line, so `lasso start
+--tailscale` keeps exposing the tailnet across restarts and reboots until you
+`lasso start` without it.
 
 ## Run from source
 
@@ -119,16 +129,18 @@ file.
 
 ## Updating
 
-`lasso update` brings the binary up to date. It auto-detects the install:
+`lasso update` brings lasso up to date, then restarts the pitchfork daemon onto
+the new version. It auto-detects the install:
 
-- A **release binary** (the curl install) downloads the latest GitHub release for
-  your platform, verifies its checksum, atomically replaces itself, and restarts
-  the background server if one is running.
-- A **pitchfork-supervised source checkout** (the maintainer's prod) keeps the
-  historical behavior: `git pull --ff-only` then `pitchfork restart`, which
-  rebuilds from source.
+- A **mise-managed install** (the standard `install.sh` path) defers to
+  `mise upgrade`, which pulls the latest release.
+- A **plain release binary** (a curl-installed copy elsewhere) downloads the
+  latest GitHub release for your platform, verifies its checksum, and atomically
+  replaces itself.
 
-The Settings tab surfaces "update available → vX.Y.Z" when a newer release exists.
+Either way, if a pitchfork `lasso` daemon is registered it's restarted onto the
+new binary. The Settings tab surfaces "update available → vX.Y.Z" when a newer
+release exists.
 
 ## Exposing it
 
@@ -158,23 +170,29 @@ implements no OAuth of its own.
 
 ### Over your tailnet
 
-Bind to your tailscale interface; only your tailnet can reach it, and WireGuard
-already encrypts and authenticates it:
+Pass `--tailscale`: lasso stays bound to loopback and publishes itself on your
+tailnet through [**Tailscale Serve**](https://tailscale.com/kb/1242/tailscale-serve),
+which terminates **HTTPS** with real certs at `https://<node>.<tailnet>.ts.net`.
 
 ```bash
-lasso start -listen "$(tailscale ip -4):8090" -insecure-no-auth
+lasso start --tailscale
 ```
 
-For a login on top, set `UI_AUTH=user:pass` in the environment (never argv) and
-drop `-insecure-no-auth`. The server **refuses** a non-loopback bind unless one of
-those is set, so it can't accidentally expose a bare shell. Then reach it from any
-tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
+This needs the one-time `sudo tailscale set --operator=$USER` so the (non-root)
+daemon can write the serve config — the `LASSO_WITH_TAILSCALE=1` installer does
+that for you. Only your tailnet can reach the URL, and WireGuard already encrypts
+and authenticates it; lasso never binds a non-loopback port, so no
+`-insecure-no-auth` is involved. The route is held only while lasso runs and is
+torn down on stop. Because it's served over HTTPS, the browser runs in a secure
+context, so Files-tab downloads work.
 
-> **Downloads need a secure context.** The Files tab downloads via a synthetic
-> `<a download>`, which browsers only honor on **localhost** or over **HTTPS**.
-> Over plain-HTTP tailnet access (`http://citadel:8090`) a download silently
-> won't fire — use the Cloudflare tunnel (HTTPS) if you need to pull files off
-> the box. (Viewing files still works; only the download action is gated.)
+If `:443` is already taken on the host (e.g. a Docker/Traefik publish owns it),
+Tailscale Serve on 443 is shadowed — serve on another HTTPS port instead:
+
+```bash
+lasso start --tailscale -tailscale-https-port 8443
+# → https://<node>.<tailnet>.ts.net:8443
+```
 
 Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
 fine on a private tailnet or behind Access, but confine it before widening access.

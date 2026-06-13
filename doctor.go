@@ -42,8 +42,9 @@ func cliDoctor() {
 	var d doctorReport
 	fmt.Printf("lasso %s\n", lassoVersion())
 
-	// Terminal backend binaries — lasso drives tmux sessions through ttyd.
-	for _, bin := range []string{"tmux", "ttyd"} {
+	// Required binaries — lasso drives tmux through ttyd and is supervised by
+	// pitchfork.
+	for _, bin := range []string{"tmux", "ttyd", "pitchfork"} {
 		if path, err := exec.LookPath(bin); err == nil {
 			d.line(checkPass, bin+" binary", path)
 		} else {
@@ -63,17 +64,17 @@ func cliDoctor() {
 		d.line(checkPass, "state dir", dir)
 	}
 
-	// Server status / port.
-	if pid, alive := readPid(); alive {
-		url := serverURLFromLog()
-		if url == "" {
-			url = "http://" + defaultListenAddr
-		}
-		d.line(checkPass, "lasso server", fmt.Sprintf("running (pid %d) → %s", pid, url))
-	} else if portInUse(defaultListenAddr) {
-		d.line(checkWarn, "lasso server", defaultListenAddr+" is in use by another process")
+	// Server status: is something serving on the default port, and is the
+	// pitchfork daemon registered?
+	if portInUse(defaultListenAddr) {
+		d.line(checkPass, "lasso server", "running on "+defaultListenAddr)
 	} else {
 		d.line(checkPass, "lasso server", "stopped (run `lasso start`)")
+	}
+	if pitchforkRegistered(lassoDaemon()) {
+		d.line(checkPass, "pitchfork daemon", lassoDaemon()+" registered (see `pitchfork status`)")
+	} else {
+		d.line(checkWarn, "pitchfork daemon", lassoDaemon()+" not registered — run `lasso start`")
 	}
 
 	// Binary discoverable on PATH.

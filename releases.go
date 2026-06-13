@@ -19,10 +19,10 @@ import (
 
 // GitHub-release plumbing: how lasso learns about, and updates to, newer
 // versions. Two install shapes are supported (see cliUpdate):
-//   - a release binary (curl-installed): compare to the latest GitHub release and
-//     self-replace the binary.
-//   - a pitchfork-supervised source checkout (the maintainer's prod): keep the
-//     existing git-pull + `pitchfork restart` path (selfupdate.go).
+//   - a mise-managed install (the standard install.sh path): defer to
+//     `mise upgrade`, then restart the pitchfork daemon.
+//   - a plain release binary (curl-installed elsewhere): compare to the latest
+//     GitHub release and self-replace the binary, then restart the daemon.
 
 const githubRepo = "knowsuchagency/lasso"
 
@@ -185,30 +185,43 @@ func parseSemver(s string) ([3]int, bool) {
 // lasso update
 // ---------------------------------------------------------------------------
 
-// cliUpdate updates lasso in place. A pitchfork-supervised source checkout keeps
-// the historical git-pull + restart behavior; otherwise (a release binary) it
-// downloads the latest release for this platform and atomically replaces itself,
-// restarting the background daemon if one is running.
+// cliUpdate updates lasso in place. A mise-managed install defers to
+// `mise upgrade`; otherwise it downloads the latest release for this platform and
+// atomically replaces itself. Either way it then restarts the pitchfork daemon if
+// one is supervising lasso.
 func cliUpdate() {
-	if selfUpdateAvailable() {
-		updateViaPitchfork()
+	if miseManaged() {
+		updateViaMise()
 		return
 	}
 	updateViaRelease()
 }
 
-// updateViaPitchfork runs the supervised-install update synchronously (unlike
-// serveSelfUpdate, the CLI isn't the process being restarted, so it can wait).
-func updateViaPitchfork() {
-	src, daemon := lassoSrcDir(), lassoDaemon()
-	fmt.Printf("updating supervised checkout at %s …\n", src)
-	if out, err := exec.Command("git", "-C", src, "pull", "--ff-only").CombinedOutput(); err != nil {
-		fatal("git pull: %v\n%s", err, out)
+// updateViaMise upgrades the mise-installed lasso tool, then restarts the daemon.
+func updateViaMise() {
+	fmt.Println("updating lasso via mise …")
+	if !miseUpgrade(miseLassoTool) && !miseUpgrade("lasso") {
+		fatal("mise upgrade failed for %q — try `mise upgrade` manually", miseLassoTool)
 	}
-	if out, err := exec.Command("pitchfork", "restart", daemon).CombinedOutput(); err != nil {
-		fatal("pitchfork restart %s: %v\n%s", daemon, err, out)
+	restartIfSupervised(lassoDaemon())
+}
+
+// miseUpgrade runs `mise upgrade <tool>` and reports whether it succeeded.
+func miseUpgrade(tool string) bool {
+	return exec.Command("mise", "upgrade", tool).Run() == nil
+}
+
+// restartIfSupervised restarts the pitchfork daemon when one is registered, so an
+// update lands on the running server; otherwise it just prints how to restart.
+func restartIfSupervised(daemon string) {
+	if !pitchforkRegistered(daemon) {
+		fmt.Println("run `lasso restart` to bring the server onto the new version")
+		return
 	}
-	fmt.Printf("updated; %s restarted (rebuilds from source)\n", daemon)
+	fmt.Println("restarting the lasso daemon …")
+	if err := pitchforkRestart(daemon); err != nil {
+		fatal("pitchfork restart %s: %v", daemon, err)
+	}
 }
 
 // updateViaRelease downloads the latest release binary for this platform, checks
@@ -254,14 +267,7 @@ func updateViaRelease() {
 		fatal("replace binary: %v", err)
 	}
 	fmt.Printf("lasso updated to %s\n", rel.TagName)
-
-	// If a background daemon is running, restart it onto the new binary.
-	if _, alive := readPid(); alive {
-		fmt.Println("restarting the running lasso daemon …")
-		cliRestart(nil)
-	} else {
-		fmt.Println("run `lasso restart` if a lasso server is running")
-	}
+	restartIfSupervised(lassoDaemon())
 }
 
 // replaceSelf atomically swaps the running executable with new bytes: write to a
