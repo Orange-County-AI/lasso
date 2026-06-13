@@ -3,6 +3,13 @@
 #   mise run build  — build the frontend (web/dist) then the binary
 #   mise run test   — run the Go tests
 
+# Runtime tools lasso is supervised by / shells out to, pinned for dev parity
+# with the mise-based install (install.sh). tmux is intentionally omitted here —
+# it compiles from source under mise; install it from your package manager.
+[tools]
+pitchfork = "latest"
+"aqua:tsl0922/ttyd" = "latest"
+
 [tasks."build:web"]
 description = "Build the React/shadcn frontend into web/dist (embedded by Go)"
 dir = "web"
