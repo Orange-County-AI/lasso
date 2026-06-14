@@ -411,14 +411,21 @@ function Shell() {
 
   // The UI agent creator focuses its new agent by asking us to select its tab.
   // (Agents created via MCP never dispatch this, so they don't steal focus.)
+  // While the grid is up we stay in it (no navigating away) and instead open the
+  // new agent fullscreen in the grid — the grid expands that cell on this event.
   React.useEffect(() => {
     const onSelect = (e: Event) => {
       const tabId = (e as CustomEvent).detail as string
-      if (tabId) selectTab(tabId)
+      if (!tabId) return
+      selectTab(tabId)
+      if (gridMode)
+        window.dispatchEvent(
+          new CustomEvent("lasso:grid-expand-tab", { detail: tabId })
+        )
     }
     window.addEventListener("lasso:select-tab", onSelect)
     return () => window.removeEventListener("lasso:select-tab", onSelect)
-  }, [selectTab])
+  }, [selectTab, gridMode])
 
   // Feed the selected tab's cwd to the Files/Diff panel (which follows
   // useApp().activeCwd). The workspace's work_dir is only the tab's *launch*
@@ -539,12 +546,17 @@ function Shell() {
         window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
       else if (action === "new-tab")
         window.dispatchEvent(new CustomEvent("lasso:new-tab"))
-      else if (action === "close-tab")
-        window.dispatchEvent(new CustomEvent("lasso:close-tab"))
+      else if (action === "close-tab") {
+        // In the grid, ⌘⇧U expands/restores the focused cell instead of closing
+        // a tab (the grid has no single "active tab"); the grid owns the toggle.
+        if (gridMode)
+          window.dispatchEvent(new CustomEvent("lasso:grid-expand-toggle"))
+        else window.dispatchEvent(new CustomEvent("lasso:close-tab"))
+      }
     }
     document.addEventListener("keydown", onKey, true)
     return () => document.removeEventListener("keydown", onKey, true)
-  }, [toggleGrid])
+  }, [toggleGrid, gridMode])
 
   // ⌘[ / ⌘] (and the Back/Forward buttons / swipe) toggle the side panels via a
   // history trap, since macOS browsers won't deliver those keys to the page.

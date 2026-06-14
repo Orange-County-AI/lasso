@@ -12,7 +12,11 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘K", label: "Find a pane…" },
   { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘U", label: "New tab" },
-  { keys: "⌘⇧U", label: "Close tab (agent: kill it & close its workspace)" },
+  {
+    keys: "⌘⇧U",
+    label:
+      "Close tab (agent: kill it & close its workspace) — in the grid, expand/restore the focused cell",
+  },
   { keys: "⌘G", label: "Toggle the grid view" },
   { keys: "⌘[", label: "Toggle the left sidebar" },
   { keys: "⌘]", label: "Toggle the right panel" },

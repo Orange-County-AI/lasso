@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { Maximize2, Minimize2, X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -109,6 +110,13 @@ export function GridTab({
   const [closeTargets, setCloseTargets] = React.useState<GridPane[] | null>(
     null
   )
+  // Which pane (by tab id — globally unique) is expanded to fill the whole grid,
+  // and which cell's terminal the user last focused (the ⌘⇧U expand target).
+  // Keyed by tab id rather than host|tab so a freshly-created agent can be
+  // expanded from its select-tab event (which carries only the tab id) before
+  // the grid poll has even listed it.
+  const [expandedTab, setExpandedTab] = React.useState<string | null>(null)
+  const [focusedTab, setFocusedTab] = React.useState<string | null>(null)
 
   const gridQuery = useQuery({
     queryKey: qk.grid,
@@ -222,6 +230,92 @@ export function GridTab({
     }
   }
 
+  // Expand a cell to fill the whole grid (a header button or ⌘⇧U toggles it).
+  const toggleExpand = (tabId: string) =>
+    setExpandedTab((cur) => (cur === tabId ? null : tabId))
+
+  // The cell the main viewport is pointed at — the visually-focused (.focused)
+  // cell — used as the ⌘⇧U target when the user hasn't clicked into a grid
+  // terminal yet.
+  const activeMatchTab = React.useMemo(
+    () =>
+      (panes ?? []).find(
+        (p) => p.host === activeHost && p.tab_id === activePaneID
+      )?.tab_id ?? null,
+    [panes, activeHost, activePaneID]
+  )
+
+  // ⌘⇧U in grid mode toggles expand/restore: collapse if a cell is expanded,
+  // else expand the focused cell (the terminal the user last clicked into, or
+  // the .focused cell). App routes the key here as this event while in grid.
+  React.useEffect(() => {
+    if (!active) return
+    const onToggle = () => {
+      // Target the focused cell (the terminal the user last clicked into), else
+      // the .focused cell the main viewport points at, else the first pane — so
+      // the key always does something even before any cell has been focused.
+      const target = focusedTab ?? activeMatchTab ?? panes?.[0]?.tab_id ?? null
+      setExpandedTab((cur) => (cur ? null : target))
+    }
+    window.addEventListener("lasso:grid-expand-toggle", onToggle)
+    return () =>
+      window.removeEventListener("lasso:grid-expand-toggle", onToggle)
+  }, [active, focusedTab, activeMatchTab, panes])
+
+  // A new agent created while the grid is up opens fullscreen in the grid (App
+  // forwards its tab id here instead of leaving the grid). Reload so the just
+  // -created pane lands in the wall as promptly as the backend can list it.
+  React.useEffect(() => {
+    if (!active) return
+    const onExpandTab = (e: Event) => {
+      const tabId = (e as CustomEvent).detail as string
+      if (!tabId) return
+      setExpandedTab(tabId)
+      reload()
+    }
+    window.addEventListener("lasso:grid-expand-tab", onExpandTab)
+    return () =>
+      window.removeEventListener("lasso:grid-expand-tab", onExpandTab)
+  }, [active, reload])
+
+  // Track which cell's terminal holds focus: when the window blurs to one of the
+  // grid iframes, record its pane as the focused cell.
+  React.useEffect(() => {
+    if (!active) return
+    const onBlur = () => {
+      const el = document.activeElement
+      if (!(el instanceof HTMLIFrameElement) || !el.id.startsWith("gridterm-"))
+        return
+      const hit = (panes ?? []).find((p) => frameId(p.host, p.tab_id) === el.id)
+      if (hit) setFocusedTab(hit.tab_id)
+    }
+    window.addEventListener("blur", onBlur)
+    return () => window.removeEventListener("blur", onBlur)
+  }, [active, panes])
+
+  // Tab ids we've actually seen in the wall, so the cleanup below can tell a
+  // pane that's *gone* (was listed, now closed → drop the expand) from one that
+  // merely *hasn't arrived yet* (a freshly-created agent the poll hasn't listed
+  // → keep it expanded so it lands fullscreen once it appears).
+  const seenTabs = React.useRef<Set<string>>(new Set())
+  React.useEffect(() => {
+    if (!panes) return
+    const live = new Set(panes.map((p) => p.tab_id))
+    for (const id of live) seenTabs.current.add(id)
+    if (
+      expandedTab &&
+      seenTabs.current.has(expandedTab) &&
+      !live.has(expandedTab)
+    )
+      setExpandedTab(null)
+    if (focusedTab && !live.has(focusedTab)) setFocusedTab(null)
+  }, [panes, expandedTab, focusedTab])
+
+  const expandedPane = expandedTab
+    ? (panes?.find((p) => p.tab_id === expandedTab) ?? null)
+    : null
+  const expanding = expandedTab != null && expandedPane == null
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-border border-b px-2 py-1.5">
@@ -326,7 +420,7 @@ export function GridTab({
 
       <div
         ref={gridRef}
-        className="termgrid"
+        className={cn("termgrid", expandedTab && "termgrid-expanded")}
         style={{ "--termcell-h": `${cellH}px` } as React.CSSProperties}
       >
         {error ? (
@@ -344,32 +438,47 @@ export function GridTab({
               : "no panes"}
           </div>
         ) : (
-          panes.map((p, i) => {
-            const remainder = cols > 0 ? panes.length % cols : 0
-            const breakHere =
-              remainder > 0 && remainder < panes.length && i === remainder - 1
-            return (
-              <React.Fragment key={cellKey(p)}>
-                <GridCell
-                  pane={p}
-                  active={active}
-                  selected={selected.has(cellKey(p))}
-                  selectionCount={selected.size}
-                  focused={p.host === activeHost && p.tab_id === activePaneID}
-                  onClick={(e) => onCellClick(e, p)}
-                  onRename={() => requestRename(p)}
-                  onClose={() => requestClose(p)}
-                />
-                {breakHere && <div className="termbreak" aria-hidden="true" />}
-              </React.Fragment>
-            )
-          })
+          <>
+            {panes.map((p, i) => {
+              const remainder = cols > 0 ? panes.length % cols : 0
+              const breakHere =
+                remainder > 0 && remainder < panes.length && i === remainder - 1
+              return (
+                <React.Fragment key={cellKey(p)}>
+                  <GridCell
+                    pane={p}
+                    active={active}
+                    selected={selected.has(cellKey(p))}
+                    selectionCount={selected.size}
+                    focused={p.host === activeHost && p.tab_id === activePaneID}
+                    expanded={p.tab_id === expandedTab}
+                    onClick={(e) => onCellClick(e, p)}
+                    onToggleExpand={() => toggleExpand(p.tab_id)}
+                    onRename={() => requestRename(p)}
+                    onClose={() => requestClose(p)}
+                  />
+                  {breakHere && (
+                    <div className="termbreak" aria-hidden="true" />
+                  )}
+                </React.Fragment>
+              )
+            })}
+            {/* The expand target isn't in the wall yet (a just-created agent the
+                poll hasn't listed) — hold the fullscreen space rather than
+                flashing the whole grid blank. */}
+            {expanding && (
+              <div className="termcell termcell-expanded">
+                <div className="termcell-placeholder">opening terminal…</div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
       <div className="hint">
-        click a header to focus in the main terminal · ⌘/Ctrl-click to select ·
-        right-click for rename / close
+        {expandedTab
+          ? "⤢ or ⌘⇧U restores the cell to the grid · click a header to focus in the main terminal"
+          : "click a header to focus in the main terminal · ⌘/Ctrl-click to select · ⤢ expands a cell (⌘⇧U)"}
       </div>
 
       <Dialog
@@ -452,7 +561,9 @@ function GridCell({
   selected,
   selectionCount,
   focused,
+  expanded,
   onClick,
+  onToggleExpand,
   onRename,
   onClose,
 }: {
@@ -461,7 +572,9 @@ function GridCell({
   selected: boolean
   selectionCount: number
   focused: boolean
+  expanded: boolean
   onClick: (e: React.MouseEvent) => void
+  onToggleExpand: () => void
   onRename: () => void
   onClose: () => void
 }) {
@@ -552,37 +665,68 @@ function GridCell({
 
   return (
     <div
-      className={cn("termcell", focused && "focused", selected && "selected")}
+      className={cn(
+        "termcell",
+        focused && "focused",
+        selected && "selected",
+        expanded && "termcell-expanded"
+      )}
     >
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <button
-            type="button"
-            className="termcell-head"
-            title={`${tip}\n\nclick to focus · ⌘/Ctrl-click to select`}
-            onClick={onClick}
-          >
-            <span className="termcell-host">{p.host_label}</span>
-            <span className="termcell-title">
-              {title}
-              {tabLabel ? ` · ${tabLabel}` : ""}
-            </span>
-            {p.has_agent && (
-              <span className={cn("termcell-agent", p.agent_status)}>
-                ● {p.agent || "agent"}
+      <div className="termcell-head">
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <button
+              type="button"
+              className="termcell-head-main"
+              title={`${tip}\n\nclick to focus · ⌘/Ctrl-click to select`}
+              onClick={onClick}
+            >
+              <span className="termcell-host">{p.host_label}</span>
+              <span className="termcell-title">
+                {title}
+                {tabLabel ? ` · ${tabLabel}` : ""}
               </span>
-            )}
-          </button>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={onRename}>
-            Rename workspace…
-          </ContextMenuItem>
-          <ContextMenuItem variant="destructive" onSelect={onClose}>
-            {closeLabel}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+              {p.has_agent && (
+                <span className={cn("termcell-agent", p.agent_status)}>
+                  ● {p.agent || "agent"}
+                </span>
+              )}
+            </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={onRename}>
+              Rename workspace…
+            </ContextMenuItem>
+            <ContextMenuItem variant="destructive" onSelect={onClose}>
+              {closeLabel}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        <button
+          type="button"
+          className="termcell-btn"
+          title={
+            expanded ? "Restore to grid (⌘⇧U)" : "Expand to fill grid (⌘⇧U)"
+          }
+          aria-label={expanded ? "restore to grid" : "expand to fill grid"}
+          onClick={onToggleExpand}
+        >
+          {expanded ? (
+            <Minimize2 className="size-3.5" />
+          ) : (
+            <Maximize2 className="size-3.5" />
+          )}
+        </button>
+        <button
+          type="button"
+          className="termcell-btn termcell-btn-close"
+          title={closeLabel}
+          aria-label={closeLabel}
+          onClick={onClose}
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
       <div ref={bodyRef} className="termcell-body">
         {src && (
           <iframe
