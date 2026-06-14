@@ -427,11 +427,11 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	rec.WorkspaceID = "w" + rec.ID
 	session := tabSession(rec.TabID)
 	// Create the tmux session backing the agent's tab, rooted at the work dir and
-	// tagged with LASSO_TAB_ID. tmuxNewSessionOn records the session→host mapping so
-	// every later tmux op for it routes to the right host (local or remote over SSH).
-	// The agent command is launched once the shell's rc settles (see
-	// launchAgentInSession).
-	if err := tmuxNewSessionOn(host, session, rec.WorkDir, []string{"LASSO_TAB_ID=" + rec.TabID}); err != nil {
+	// tagged with the agent's LASSO_* identity. tmuxNewSessionOn records the
+	// session→host mapping so every later tmux op for it routes to the right host
+	// (local or remote over SSH). The agent command is launched once the shell's rc
+	// settles (see launchAgentInSession).
+	if err := tmuxNewSessionOn(host, session, rec.WorkDir, agentIdentityEnv(rec)); err != nil {
 		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("start agent shell: %w", err)}
 	}
 	if err := insertWorkspace(Workspace{
@@ -620,10 +620,31 @@ func copyOnBackend(cur Backend, src, dst string) {
 	_, _ = io.Copy(out, in)
 }
 
+// agentIdentityEnv is the set of LASSO_* variables exported into an agent's tmux
+// session so the agent can discover its OWN lasso identity for free — without
+// enumerating repos/agents to find itself. LASSO_TAB_ID doubles as the agent id:
+// it's the value whoami/get_agent take. The rest are conveniences for shell use
+// (e.g. `echo $LASSO_REPO`). Empty fields are omitted so an unset var reads as
+// "not applicable" rather than an empty string.
+func agentIdentityEnv(rec AgentRecord) []string {
+	env := []string{"LASSO_TAB_ID=" + rec.TabID}
+	if rec.WorkspaceID != "" {
+		env = append(env, "LASSO_WORKSPACE_ID="+rec.WorkspaceID)
+	}
+	if rec.Repo != "" {
+		env = append(env, "LASSO_REPO="+rec.Repo)
+	}
+	if rec.Branch != "" {
+		env = append(env, "LASSO_BRANCH="+rec.Branch)
+	}
+	return env
+}
+
 // agentPrompt builds the prompt handed to the agent: the full prompt verbatim
 // (stored in Description; its first line is also the title), plus a pointer to
-// any notes/attachments that landed in the work dir. Falls back to the title
-// when no prompt body was stored (e.g. a title-only record).
+// any notes/attachments that landed in the work dir, and a short footer telling
+// the agent its own lasso identity. Falls back to the title when no prompt body
+// was stored (e.g. a title-only record).
 func agentPrompt(rec AgentRecord) string {
 	var b strings.Builder
 	body := rec.Description
@@ -636,6 +657,15 @@ func agentPrompt(rec AgentRecord) string {
 	}
 	if len(rec.Attachments) > 0 {
 		b.WriteString("\n\nAttachments: " + strings.Join(rec.Attachments, ", "))
+	}
+	// Tell the agent who it is up front. lasso knows the id at spawn time, so the
+	// agent never has to spend tokens enumerating repos/agents to find itself.
+	// Gated on TabID so bare/title-only records (and unit tests) get no footer.
+	if rec.TabID != "" {
+		b.WriteString("\n\n---\nlasso: you are agent `" + rec.TabID +
+			"` (also exported as $LASSO_TAB_ID). To act on yourself via the lasso MCP tools" +
+			" — e.g. close_agent once your work is done, or whoami to fetch your own record —" +
+			" pass that id; you don't need list_repos/list_agents to find yourself.")
 	}
 	return b.String()
 }

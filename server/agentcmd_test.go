@@ -46,6 +46,57 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 	}
 }
 
+// A real (spawned) record carries a TabID, so the prompt gains an identity
+// footer telling the agent its own id — but the title still leads (first line)
+// and the verbatim body is preserved ahead of the footer.
+func TestAgentPromptIdentityFooter(t *testing.T) {
+	rec := AgentRecord{
+		ID:          "dj8hus0qiduh",
+		TabID:       "dj8hus0qiduh",
+		Title:       "Add dark mode",
+		Description: "Add dark mode\ntoggle in settings",
+	}
+	got := agentPrompt(rec)
+	if !strings.HasPrefix(got, "Add dark mode\ntoggle in settings") {
+		t.Errorf("prompt must lead with the verbatim body, got %q", got)
+	}
+	if !strings.Contains(got, "dj8hus0qiduh") {
+		t.Errorf("prompt must name the agent's own id, got %q", got)
+	}
+	if !strings.Contains(got, "$LASSO_TAB_ID") {
+		t.Errorf("prompt should point the agent at $LASSO_TAB_ID, got %q", got)
+	}
+}
+
+// agentIdentityEnv tags the session with the agent's id and (when set) its
+// workspace, repo, and branch — omitting empty fields entirely.
+func TestAgentIdentityEnv(t *testing.T) {
+	git := agentIdentityEnv(AgentRecord{
+		TabID: "abc", WorkspaceID: "wabc", Repo: "/srv/repo", Branch: "feat/x",
+	})
+	for _, want := range []string{"LASSO_TAB_ID=abc", "LASSO_WORKSPACE_ID=wabc", "LASSO_REPO=/srv/repo", "LASSO_BRANCH=feat/x"} {
+		if !contains(git, want) {
+			t.Errorf("env %v missing %q", git, want)
+		}
+	}
+	// A scratch agent has no repo/branch — those vars must be absent, not empty.
+	scratch := agentIdentityEnv(AgentRecord{TabID: "xyz", WorkspaceID: "wxyz"})
+	for _, kv := range scratch {
+		if strings.HasPrefix(kv, "LASSO_REPO=") || strings.HasPrefix(kv, "LASSO_BRANCH=") {
+			t.Errorf("scratch agent should not export %q", kv)
+		}
+	}
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // In plan mode claude must get --allow-dangerously-skip-permissions, NOT the
 // plain --dangerously-skip-permissions: the latter forces bypass mode and
 // silently overrides --permission-mode plan, so the agent never plans.

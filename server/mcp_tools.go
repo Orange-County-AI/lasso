@@ -29,7 +29,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_repos",
-		Description: "List the git repositories under the host's configured repo roots. Use a returned `path` as `repo` when creating a git agent. You may also pass any absolute repo path to create_agent directly — this only enumerates the configured roots.",
+		Description: "List the git repositories under the host's configured repo roots so you can pick one to spawn a git agent in. Each entry is just {name, path, last_base_branch}; pass `filter` to narrow by a name/path substring instead of pulling every repo. You usually do NOT need this to find your OWN repo — that is simply your shell's current working directory (and $LASSO_REPO when you are a lasso agent). You may also pass any absolute repo path to create_agent directly; this only enumerates the configured roots.",
 	}, listReposTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -234,7 +234,8 @@ func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (
 // ---------------------------------------------------------------------------
 
 type listReposIn struct {
-	Host string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Host   string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Filter string `json:"filter,omitempty" jsonschema:"Case-insensitive substring; only repos whose name or path contains it are returned. Omit to list every repo under the roots."`
 }
 
 type repoBrief struct {
@@ -258,7 +259,13 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 		return nil, listReposOut{}, err
 	}
 	out := listReposOut{Root: root}
+	filter := strings.ToLower(strings.TrimSpace(in.Filter))
 	for _, r := range repos {
+		if filter != "" &&
+			!strings.Contains(strings.ToLower(r.Name), filter) &&
+			!strings.Contains(strings.ToLower(r.Path), filter) {
+			continue
+		}
 		out.Repos = append(out.Repos, repoBrief{Path: r.Path, Name: r.Name, LastBaseBranch: r.LastBaseBranch})
 	}
 	return nil, out, nil
