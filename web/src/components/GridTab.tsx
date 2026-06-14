@@ -293,19 +293,22 @@ export function GridTab({
       window.removeEventListener("lasso:grid-expand-tab", onExpandTab)
   }, [active, reload])
 
-  // Track which cell's terminal holds focus: when the window blurs to one of the
-  // grid iframes, record its pane as the focused cell.
+  // Track which cell's terminal the user is in, so the sidebar (with "follow
+  // active pane" on) points at it. Each grid iframe reports its own
+  // pointerdown/focus up to us via this event (see wireGridFocus): a click
+  // *anywhere* in a terminal — including straight from one terminal to another —
+  // updates the focused cell, which a window-level blur can't catch (it only sees
+  // the first hop from the page into a terminal, never iframe→iframe).
   React.useEffect(() => {
     if (!active) return
-    const onBlur = () => {
-      const el = document.activeElement
-      if (!(el instanceof HTMLIFrameElement) || !el.id.startsWith("gridterm-"))
-        return
-      const hit = (panes ?? []).find((p) => frameId(p.host, p.tab_id) === el.id)
+    const onCellFocus = (e: Event) => {
+      const id = (e as CustomEvent).detail as string
+      const hit = (panes ?? []).find((p) => frameId(p.host, p.tab_id) === id)
       if (hit) setFocusedTab(hit.tab_id)
     }
-    window.addEventListener("blur", onBlur)
-    return () => window.removeEventListener("blur", onBlur)
+    window.addEventListener("lasso:grid-cell-focus", onCellFocus)
+    return () =>
+      window.removeEventListener("lasso:grid-cell-focus", onCellFocus)
   }, [active, panes])
 
   // Tab ids we've actually seen in the wall, so the cleanup below can tell a

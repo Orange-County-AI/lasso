@@ -53,6 +53,7 @@ interface TermWindow extends Window {
 interface WiredDoc extends Document {
   __terminalWired?: boolean
   __gridScrollWired?: boolean
+  __gridFocusWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -249,7 +250,9 @@ function wireGridScroll(doc: WiredDoc, win: Window) {
     "wheel",
     (e: WheelEvent) => {
       if (!e.shiftKey) return
-      const grid = win.frameElement?.closest?.(".termgrid") as HTMLElement | null
+      const grid = win.frameElement?.closest?.(
+        ".termgrid"
+      ) as HTMLElement | null
       if (!grid) return
       e.preventDefault()
       e.stopPropagation()
@@ -257,6 +260,27 @@ function wireGridScroll(doc: WiredDoc, win: Window) {
     },
     { capture: true, passive: false }
   )
+}
+
+// wireGridFocus tells the parent app which grid cell the user just interacted
+// with, so the sidebar can follow it ("follow active pane"). The grid otherwise
+// learns the focused cell from a window-level `blur`, but that only fires the
+// FIRST time focus leaves the top document for a terminal — clicking straight
+// from one terminal to another (iframe→iframe) never re-fires it. These iframes
+// are same-origin, so we hook the cell's own pointerdown/focusin and dispatch its
+// frame id up to the parent window. Idempotent per document.
+function wireGridFocus(doc: WiredDoc, win: Window) {
+  if (doc.__gridFocusWired) return
+  doc.__gridFocusWired = true
+  const notify = () => {
+    const id = win.frameElement?.id
+    if (!id) return
+    window.dispatchEvent(
+      new CustomEvent("lasso:grid-cell-focus", { detail: id })
+    )
+  }
+  doc.addEventListener("pointerdown", notify, { capture: true })
+  doc.addEventListener("focusin", notify, { capture: true })
 }
 
 // wireTerminalIframe: (1) optionally suppress the native context menu so
@@ -278,7 +302,10 @@ export function wireTerminalIframe(
     return
   }
   if (!doc) return
-  if (gridScroll && win) wireGridScroll(doc, win)
+  if (gridScroll && win) {
+    wireGridScroll(doc, win)
+    wireGridFocus(doc, win)
+  }
 
   if (doc.__terminalWired) return
   doc.__terminalWired = true
