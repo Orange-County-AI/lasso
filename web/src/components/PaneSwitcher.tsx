@@ -74,11 +74,22 @@ export function PaneSwitcher({
     const out: Entry[] = []
     const repoName = new Map<string, string>()
     const repos = tree.repos ?? []
-    for (const r of repos)
+    for (const r of repos) {
       for (const w of r.workspaces ?? []) repoName.set(w.id, r.name)
+      if (r.main_workspace) repoName.set(r.main_workspace.id, r.name)
+    }
     const wss = [
       ...(tree.scratch ?? []),
-      ...repos.flatMap((r) => r.workspaces ?? []),
+      // Each repo contributes its linked worktrees AND its main checkout
+      // (main_workspace, the repo-root workspace). The latter isn't in
+      // `workspaces` — it's the repo row itself — so an agent/tab on the
+      // primary branch would otherwise be invisible to ⌘K. (repoName is keyed
+      // by workspace id for both, so the repo label resolves either way.)
+      ...repos.flatMap((r) =>
+        r.main_workspace
+          ? [...(r.workspaces ?? []), r.main_workspace]
+          : (r.workspaces ?? [])
+      ),
     ]
     for (const w of wss) {
       for (const t of w.tabs ?? []) {
