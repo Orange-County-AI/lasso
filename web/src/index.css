@@ -687,42 +687,37 @@
 .termgrid {
   flex: 1 1 auto;
   overflow: auto;
-  /* No padding or gap between cells: the grid is a wall of terminals and every
-     pixel goes to terminal content; the cells' own 1px borders are the only
-     seams. The one exception is a thin strip on the right (matching GRID_PAD_RIGHT
-     in GridTab.tsx) — a place to park the cursor where the wheel scrolls the
-     grid itself rather than a terminal's scrollback. */
+  /* No gap between cells: the grid is a wall of terminals and every pixel goes
+     to terminal content; the cells' own 1px borders are the only seams. The one
+     exception is a thin strip on the right (matching GRID_PAD_RIGHT in
+     GridTab.tsx) — a place to park the cursor where the wheel scrolls the grid
+     itself rather than a terminal's scrollback. */
   padding: 0 16px 0 0;
-  /* Flex wrap (not CSS grid) so the cells in each row grow to fill the row's
-     full width — a CSS grid leaves empty tracks, stranding a lone last-row cell
-     at its min width. align-content: start packs rows to the top. */
-  display: flex;
-  flex-wrap: wrap;
+  /* CSS grid: --grid-cols equal-width columns (so every cell is the same width)
+     and uniform --termcell-h rows. A cell can span two rows (.termcell-tall) to
+     fill the empty slot a partial last row would otherwise leave blank. */
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols, 1), minmax(0, 1fr));
+  grid-auto-rows: var(--termcell-h, 260px);
   gap: 0;
-  align-content: start;
-}
-/* A zero-height, full-width flex item that forces a row break, so the top row
-   can hold just the remainder cells (which then grow to fill the width). */
-.termbreak {
-  flex-basis: 100%;
-  width: 100%;
-  height: 0;
-  margin: 0;
 }
 .termcell {
-  /* grow to share the row's width, wrapping when a cell can't keep ~360px */
-  flex: 1 1 360px;
   display: flex;
   flex-direction: column;
-  /* Height is driven by GridTab: rows grow to fill the grid's vertical space,
-     floored at 260px (then the grid scrolls). Falls back if the var is unset. */
-  height: var(--termcell-h, 260px);
+  /* One grid row tall by default; .termcell-tall spans two (see below). The row
+     height itself (grid-auto-rows) is driven by GridTab: rows grow to fill the
+     vertical space, floored at 260px (then the grid scrolls). */
+  min-height: 0;
   /* Blend the (subtle) border toward muted so each cell reads as a distinct
      tile rather than dissolving into the background. */
   border: 1px solid
     color-mix(in srgb, var(--color-border) 45%, var(--color-muted-foreground));
   overflow: hidden;
   background: var(--color-background);
+}
+/* Grow to fill the empty slot below: span the second-to-last and last rows. */
+.termcell-tall {
+  grid-row: span 2;
 }
 .termcell.focused {
   border-color: var(--color-primary);
@@ -732,9 +727,11 @@
   outline-offset: -2px;
   border-color: var(--color-primary);
 }
-/* A cell expanded to fill the whole grid: the grid hides every other cell and
-   the row breaks, and this one grows to span the full width and height. */
+/* A cell expanded to fill the whole grid: collapse to a single full-size track,
+   hide every other cell, and let this one span it. */
 .termgrid-expanded {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
   overflow: hidden;
   /* reclaim the right scroll strip — nothing scrolls while one cell fills */
   padding: 0;
@@ -742,13 +739,10 @@
 .termgrid-expanded .termcell {
   display: none;
 }
-.termgrid-expanded .termbreak {
-  display: none;
-}
 .termgrid-expanded .termcell-expanded {
   display: flex;
-  flex-basis: 100%;
-  height: 100%;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
 }
 .termcell-head {
   flex: 0 0 auto;

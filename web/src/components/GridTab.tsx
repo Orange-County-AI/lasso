@@ -46,10 +46,13 @@ const POLL_MS = 2500
 // alive (reaped after ~60s idle). Comfortably under that.
 const KEEPALIVE_MS = 18_000
 
-// Grid layout constants — must match .termgrid (gap + right padding) and
-// .termcell (flex-basis).
-const GRID_GAP = 0
+// Grid layout constants — must match .termgrid (right padding) and .termcell
+// (the width is driven by --termcell-basis, computed below).
 const GRID_PAD_RIGHT = 16
+// Min cell width: the column count is "as many of these as fit". Every cell is
+// then the SAME width (the row's full width split evenly) — a partial last row
+// keeps that width and leaves the trailing space empty rather than stretching
+// its cells wider than the rest.
 const GRID_MIN_CELL = 360
 // Floor for a cell's height. Rows grow to fill the grid's vertical space; once
 // there are enough rows that they'd shrink past this, the grid scrolls instead.
@@ -85,19 +88,13 @@ export function GridTab({
   )
 
   const gridRef = React.useRef<HTMLDivElement>(null)
-  const [cols, setCols] = React.useState(1)
+  const [gridW, setGridW] = React.useState(0)
   const [gridH, setGridH] = React.useState(0)
   React.useLayoutEffect(() => {
     const el = gridRef.current
     if (!el) return
     const measure = () => {
-      const content = el.clientWidth - GRID_PAD_RIGHT
-      setCols(
-        Math.max(
-          1,
-          Math.floor((content + GRID_GAP) / (GRID_MIN_CELL + GRID_GAP))
-        )
-      )
+      setGridW(el.clientWidth - GRID_PAD_RIGHT)
       setGridH(el.clientHeight)
     }
     measure()
@@ -150,14 +147,28 @@ export function GridTab({
     [all, agentsOnly, hidden]
   )
 
+  // Column count: as many min-width cells as fit across the measured width. The
+  // grid's 1fr columns then make every cell the same width.
+  const n = panes?.length ?? 0
+  const cols = gridW > 0 ? Math.max(1, Math.floor(gridW / GRID_MIN_CELL)) : 1
+
   // Grow rows to fill the grid's vertical space: divide the measured height by
   // the row count, but never shrink a cell below GRID_MIN_CELL_H (past that the
-  // grid scrolls). Falls back to the floor until the first measure lands.
-  const rows = panes && panes.length ? Math.ceil(panes.length / cols) : 1
+  // grid scrolls). Falls back to the floor until the first measure lands. Spare
+  // vertical space becomes cell *height*; cells never grow wider than a column.
+  const rows = n ? Math.ceil(n / cols) : 1
   const cellH =
     gridH > 0
       ? Math.max(GRID_MIN_CELL_H, Math.floor(gridH / rows))
       : GRID_MIN_CELL_H
+
+  // When the last row is partial it leaves empty slots at the bottom of the
+  // right-most columns. Rather than leave that vertical space blank, the cell
+  // directly above each empty slot (a second-to-last-row cell with no cell
+  // below it) grows to span two rows. (Only the last row is ever partial, so a
+  // single extra row is all that's ever needed.)
+  const tallIndex = (i: number) =>
+    rows >= 2 && Math.floor(i / cols) === rows - 2 && i + cols >= n
 
   const toggleAgentsOnly = () => patchUIState({ grid_agents_only: !agentsOnly })
 
@@ -453,7 +464,12 @@ export function GridTab({
       <div
         ref={gridRef}
         className={cn("termgrid", expandedTab && "termgrid-expanded")}
-        style={{ "--termcell-h": `${cellH}px` } as React.CSSProperties}
+        style={
+          {
+            "--termcell-h": `${cellH}px`,
+            "--grid-cols": cols,
+          } as React.CSSProperties
+        }
       >
         {error ? (
           <div className="empty">
@@ -471,30 +487,22 @@ export function GridTab({
           </div>
         ) : (
           <>
-            {panes.map((p, i) => {
-              const remainder = cols > 0 ? panes.length % cols : 0
-              const breakHere =
-                remainder > 0 && remainder < panes.length && i === remainder - 1
-              return (
-                <React.Fragment key={cellKey(p)}>
-                  <GridCell
-                    pane={p}
-                    active={active}
-                    selected={selected.has(cellKey(p))}
-                    selectionCount={selected.size}
-                    focused={p.host === activeHost && p.tab_id === activePaneID}
-                    expanded={p.tab_id === expandedTab}
-                    onClick={(e) => onCellClick(e, p)}
-                    onToggleExpand={() => toggleExpand(p.tab_id)}
-                    onRename={() => requestRename(p)}
-                    onClose={() => requestClose(p)}
-                  />
-                  {breakHere && (
-                    <div className="termbreak" aria-hidden="true" />
-                  )}
-                </React.Fragment>
-              )
-            })}
+            {panes.map((p, i) => (
+              <GridCell
+                key={cellKey(p)}
+                pane={p}
+                active={active}
+                selected={selected.has(cellKey(p))}
+                selectionCount={selected.size}
+                focused={p.host === activeHost && p.tab_id === activePaneID}
+                expanded={p.tab_id === expandedTab}
+                tall={tallIndex(i)}
+                onClick={(e) => onCellClick(e, p)}
+                onToggleExpand={() => toggleExpand(p.tab_id)}
+                onRename={() => requestRename(p)}
+                onClose={() => requestClose(p)}
+              />
+            ))}
             {/* The expand target isn't in the wall yet (a just-created agent the
                 poll hasn't listed) — hold the fullscreen space rather than
                 flashing the whole grid blank. */}
@@ -594,6 +602,7 @@ function GridCell({
   selectionCount,
   focused,
   expanded,
+  tall,
   onClick,
   onToggleExpand,
   onRename,
@@ -605,6 +614,8 @@ function GridCell({
   selectionCount: number
   focused: boolean
   expanded: boolean
+  // Span two grid rows to fill the empty slot a partial last row would leave.
+  tall: boolean
   onClick: (e: React.MouseEvent) => void
   onToggleExpand: () => void
   onRename: () => void
@@ -701,7 +712,8 @@ function GridCell({
         "termcell",
         focused && "focused",
         selected && "selected",
-        expanded && "termcell-expanded"
+        expanded && "termcell-expanded",
+        tall && "termcell-tall"
       )}
     >
       <div className="termcell-head">
