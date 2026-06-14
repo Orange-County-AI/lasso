@@ -7,7 +7,7 @@ import (
 
 // block renders the daemon block the way ensureLassoDaemon does, for a given name.
 func testBlock(name string) string {
-	return daemonBlock(name, "/x/lasso serve --tailscale", "/home/u", "http://127.0.0.1:8090/", "/shims:/usr/bin")
+	return daemonBlock(name, "/x/lasso -listen 127.0.0.1:8090 --tailscale", "/home/u", "http://127.0.0.1:8090/", "/shims:/usr/bin")
 }
 
 func TestUpsertDaemonBlock_AppendAndIdempotent(t *testing.T) {
@@ -43,16 +43,16 @@ func TestUpsertDaemonBlock_PreservesOthers(t *testing.T) {
 
 func TestUpsertDaemonBlock_ReplacesMarked(t *testing.T) {
 	name := "lasso"
-	first := upsertDaemonBlock("[daemons.other]\nrun=\"x\"\n", name, daemonBlock(name, "/x/lasso serve", "/h", "http://127.0.0.1:8090/", "/shims:/usr/bin"))
+	first := upsertDaemonBlock("[daemons.other]\nrun=\"x\"\n", name, daemonBlock(name, "/x/lasso -listen 127.0.0.1:8090", "/h", "http://127.0.0.1:8090/", "/shims:/usr/bin"))
 	// Re-run with --tailscale in the run line → the marked block is replaced.
 	second := upsertDaemonBlock(first, name, testBlock(name))
 	if strings.Count(second, "[daemons."+name+"]") != 1 {
 		t.Fatalf("want one [daemons.%s] after replace:\n%s", name, second)
 	}
-	if !strings.Contains(second, "serve --tailscale") {
+	if !strings.Contains(second, "--tailscale") {
 		t.Errorf("replacement didn't take:\n%s", second)
 	}
-	if strings.Contains(second, "run = \"/x/lasso serve\"\n") {
+	if strings.Contains(second, "run = \"/x/lasso -listen 127.0.0.1:8090\"\n") {
 		t.Errorf("old run line lingered:\n%s", second)
 	}
 }

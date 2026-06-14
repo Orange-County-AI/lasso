@@ -10,8 +10,7 @@ import (
 
 // The lasso CLI. The binary is both the server and its own control surface:
 //
-//	lasso                 run the server in the foreground (historical behavior)
-//	lasso serve [flags]   same, explicitly (flags are the server flags)
+//	lasso                 print help (a bare invocation does NOT start the server)
 //	lasso start|up        start the server, supervised by pitchfork
 //	lasso stop|down       stop the supervised server
 //	lasso restart         restart the supervised server
@@ -21,9 +20,10 @@ import (
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
-// don't have to coexist with subcommand names. A bare invocation, or anything
-// whose first arg looks like a flag, falls through to the foreground server —
-// keeping `lasso serve` (what the pitchfork daemon execs) working unchanged.
+// don't have to coexist with subcommand names. The foreground server is run by
+// passing server flags (e.g. `lasso -listen … --tailscale`) — which is how the
+// pitchfork daemon execs it; bare `lasso` prints help instead. (`serve` is kept
+// as an undocumented back-compat alias for pre-existing daemon run lines.)
 
 // defaultListenAddr is the server's default bind address, shared by the -listen
 // flag (main.go) and the CLI (status/doctor/URL display) so they never drift.
@@ -33,7 +33,8 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "serve":
-			// Drop the subcommand so the server's flag.Parse sees only its flags.
+			// Undocumented back-compat alias: pre-existing pitchfork daemon run
+			// lines may still say `lasso serve …`. Strip it and run the server.
 			os.Args = append(os.Args[:1], os.Args[2:]...)
 			runServer()
 			return
@@ -62,24 +63,27 @@ func main() {
 			printUsage(os.Stdout)
 			return
 		}
-		// An unknown FIRST token that isn't a flag is a mistyped subcommand — the
-		// server takes only flags, never a positional arg. Flags (leading "-")
-		// fall through to the foreground server.
-		if !strings.HasPrefix(os.Args[1], "-") {
-			fmt.Fprintf(os.Stderr, "lasso: unknown command %q\n\n", os.Args[1])
-			printUsage(os.Stderr)
-			os.Exit(2)
+		// A leading-flag invocation (e.g. `lasso -listen … --tailscale`) runs the
+		// foreground server — that's how the pitchfork daemon execs it. Any other
+		// first token is a mistyped subcommand.
+		if strings.HasPrefix(os.Args[1], "-") {
+			runServer()
+			return
 		}
+		fmt.Fprintf(os.Stderr, "lasso: unknown command %q\n\n", os.Args[1])
+		printUsage(os.Stderr)
+		os.Exit(2)
 	}
-	runServer()
+	// Bare `lasso` prints help — it does NOT start the server (use `lasso start`,
+	// or pass server flags for a foreground run).
+	printUsage(os.Stdout)
 }
 
 func printUsage(w *os.File) {
 	fmt.Fprint(w, `lasso — a web UI for launching and managing agents
 
 usage:
-  lasso [flags]            run the server in the foreground
-  lasso serve [flags]      run the server in the foreground (explicit)
+  lasso                    print this help
   lasso start|up [flags]   start the server, supervised by pitchfork
   lasso stop|down          stop the supervised server
   lasso restart [flags]    restart the supervised server
@@ -88,8 +92,8 @@ usage:
   lasso doctor             check the local install
   lasso version            print the version
 
-pass server flags (e.g. --tailscale, -listen) after start/restart/serve;
-"lasso serve -h" lists them. lasso is supervised by pitchfork — see the README.
+start/restart take server flags (--tailscale, -listen, …) and persist them into
+the daemon's run line. lasso is supervised by pitchfork — see the README.
 `)
 }
 

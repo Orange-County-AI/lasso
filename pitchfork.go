@@ -168,7 +168,13 @@ func ensureLassoDaemon(args []string) (readyURL string, err error) {
 	if err != nil {
 		home = "."
 	}
-	runArgs := append([]string{"serve"}, args...)
+	// The daemon runs the foreground server by passing server flags to the binary
+	// (no `serve` subcommand). Ensure at least `-listen` so the run line is never a
+	// bare `lasso`, which prints help instead of serving.
+	runArgs := args
+	if len(runArgs) == 0 {
+		runArgs = []string{"-listen", defaultListenAddr}
+	}
 	runLine := lassoRunCommand() + " " + strings.Join(runArgs, " ")
 	readyURL = "http://" + listenFromArgs(args) + "/"
 	block := daemonBlock(name, runLine, home, readyURL, daemonPATH())

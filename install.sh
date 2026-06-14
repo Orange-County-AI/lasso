@@ -5,8 +5,8 @@
 #   curl -fsSL https://go.52labs.us/install-lasso | sh
 #
 # Everything (lasso, pitchfork, ttyd, tmux) is installed as a global mise tool, so
-# `mise upgrade` / `lasso update` keep them current. Honored env vars:
-#   LASSO_WITH_TAILSCALE=1   also install tailscale and expose lasso on the tailnet
+# `mise upgrade` / `lasso update` keep them current. tailscale is installed by
+# default and lasso is exposed on the tailnet. Honored env vars:
 #   LASSO_NO_START=1         install only; don't register/start the pitchfork daemon
 set -eu
 
@@ -43,36 +43,30 @@ if ! command -v tmux >/dev/null 2>&1; then
   echo "      macOS:          brew install tmux"
 fi
 
-# --- optional: tailscale + tailnet exposure --------------------------------
-if [ "${LASSO_WITH_TAILSCALE:-0}" = "1" ]; then
-  if ! command -v tailscale >/dev/null 2>&1; then
-    note "installing tailscale (official installer) …"
-    curl -fsSL https://tailscale.com/install.sh | sh || \
-      note "tailscale install failed — see https://tailscale.com/download"
-  fi
-  # `tailscale serve` writes need operator permission once; otherwise the lasso
-  # daemon (non-root) can't publish the tailnet route.
-  if command -v tailscale >/dev/null 2>&1; then
-    note "granting this user 'tailscale serve' permission (sudo) …"
-    sudo tailscale set --operator="$USER" 2>/dev/null || \
-      note "couldn't set the operator — run once:  sudo tailscale set --operator=\$USER"
-  fi
+# --- tailscale + tailnet exposure (installed by default) -------------------
+if ! command -v tailscale >/dev/null 2>&1; then
+  note "installing tailscale (official installer) …"
+  curl -fsSL https://tailscale.com/install.sh | sh || \
+    note "tailscale install failed — see https://tailscale.com/download"
+fi
+# `tailscale serve` writes need operator permission once; otherwise the lasso
+# daemon (non-root) can't publish the tailnet route.
+if command -v tailscale >/dev/null 2>&1; then
+  note "granting this user 'tailscale serve' permission (sudo) …"
+  sudo tailscale set --operator="$USER" 2>/dev/null || \
+    note "couldn't set the operator — run once:  sudo tailscale set --operator=\$USER"
 fi
 
 note "installed → $("$MISE" which lasso 2>/dev/null || echo lasso) ($(lasso version 2>/dev/null || echo unknown))"
 
 # --- supervise with pitchfork ----------------------------------------------
 if [ "${LASSO_NO_START:-0}" = "1" ]; then
-  note "skipping daemon start (LASSO_NO_START=1) — run 'lasso start' when ready"
+  note "skipping daemon start (LASSO_NO_START=1) — run 'lasso start --tailscale' when ready"
 else
   note "enabling the pitchfork supervisor + starting lasso …"
   pitchfork boot enable 2>/dev/null || true
   pitchfork supervisor start 2>/dev/null || true
-  if [ "${LASSO_WITH_TAILSCALE:-0}" = "1" ]; then
-    lasso start --tailscale
-  else
-    lasso start
-  fi
+  lasso start --tailscale
 fi
 
 # --- PATH hint -------------------------------------------------------------
