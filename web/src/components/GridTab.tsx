@@ -50,6 +50,9 @@ const KEEPALIVE_MS = 18_000
 const GRID_GAP = 0
 const GRID_PAD_RIGHT = 16
 const GRID_MIN_CELL = 360
+// Floor for a cell's height. Rows grow to fill the grid's vertical space; once
+// there are enough rows that they'd shrink past this, the grid scrolls instead.
+const GRID_MIN_CELL_H = 260
 
 // cellKey uniquely identifies a pane across hosts (tab ids are globally unique,
 // but key by host too to match the server's grid_selected convention).
@@ -77,6 +80,7 @@ export function GridTab({
 
   const gridRef = React.useRef<HTMLDivElement>(null)
   const [cols, setCols] = React.useState(1)
+  const [gridH, setGridH] = React.useState(0)
   React.useLayoutEffect(() => {
     const el = gridRef.current
     if (!el) return
@@ -88,6 +92,7 @@ export function GridTab({
           Math.floor((content + GRID_GAP) / (GRID_MIN_CELL + GRID_GAP))
         )
       )
+      setGridH(el.clientHeight)
     }
     measure()
     const ro = new ResizeObserver(measure)
@@ -131,6 +136,15 @@ export function GridTab({
         : null,
     [all, agentsOnly, hidden]
   )
+
+  // Grow rows to fill the grid's vertical space: divide the measured height by
+  // the row count, but never shrink a cell below GRID_MIN_CELL_H (past that the
+  // grid scrolls). Falls back to the floor until the first measure lands.
+  const rows = panes && panes.length ? Math.ceil(panes.length / cols) : 1
+  const cellH =
+    gridH > 0
+      ? Math.max(GRID_MIN_CELL_H, Math.floor(gridH / rows))
+      : GRID_MIN_CELL_H
 
   const toggleAgentsOnly = () => patchUIState({ grid_agents_only: !agentsOnly })
 
@@ -310,7 +324,11 @@ export function GridTab({
         </div>
       )}
 
-      <div ref={gridRef} className="termgrid">
+      <div
+        ref={gridRef}
+        className="termgrid"
+        style={{ "--termcell-h": `${cellH}px` } as React.CSSProperties}
+      >
         {error ? (
           <div className="empty">
             cannot list panes

@@ -714,7 +714,9 @@
   flex: 1 1 360px;
   display: flex;
   flex-direction: column;
-  height: 260px;
+  /* Height is driven by GridTab: rows grow to fill the grid's vertical space,
+     floored at 260px (then the grid scrolls). Falls back if the var is unset. */
+  height: var(--termcell-h, 260px);
   /* Blend the (subtle) border toward muted so each cell reads as a distinct
      tile rather than dissolving into the background. */
   border: 1px solid
