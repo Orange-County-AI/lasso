@@ -183,12 +183,7 @@ export function TabStrip({
           type="button"
           title="new tab"
           className="shrink-0 px-2 py-1.5 text-muted-foreground hover:text-primary"
-          onClick={() =>
-            setPrompt({
-              mode: "new",
-              initial: nextTabNumber(workspace.tabs ?? []),
-            })
-          }
+          onClick={() => createTab(nextTabNumber(workspace.tabs ?? []))}
         >
           <Plus className="size-4" />
         </button>
