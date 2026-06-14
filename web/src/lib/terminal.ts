@@ -52,6 +52,7 @@ interface TermWindow extends Window {
 }
 interface WiredDoc extends Document {
   __terminalWired?: boolean
+  __gridScrollWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -235,11 +236,39 @@ function wireOsc52(id: string, tries: number) {
   if (tries < 20) setTimeout(() => wireOsc52(id, tries + 1), 150)
 }
 
+// wireGridScroll lets the grid wall scroll while the cursor sits over a terminal:
+// holding Shift turns the wheel into a grid scroll instead of the terminal's
+// scrollback. The iframe is same-origin, so we read its frameElement, walk up to
+// the enclosing .termgrid, and drive its scrollTop ourselves — capturing the
+// event first (and stopping it) so xterm never sees it. (deltaX covers platforms
+// where Shift+wheel arrives as a horizontal delta.) Idempotent per document.
+function wireGridScroll(doc: WiredDoc, win: Window) {
+  if (doc.__gridScrollWired) return
+  doc.__gridScrollWired = true
+  doc.addEventListener(
+    "wheel",
+    (e: WheelEvent) => {
+      if (!e.shiftKey) return
+      const grid = win.frameElement?.closest?.(".termgrid") as HTMLElement | null
+      if (!grid) return
+      e.preventDefault()
+      e.stopPropagation()
+      grid.scrollTop += e.deltaY || e.deltaX
+    },
+    { capture: true, passive: false }
+  )
+}
+
 // wireTerminalIframe: (1) optionally suppress the native context menu so
 // right-click only triggers the terminal's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
-// text). Re-run on each iframe (re)load; __terminalWired guards double-attaching.
-export function wireTerminalIframe(id: string, suppressContext: boolean) {
+// text); (3) in the grid, forward Shift+wheel to the grid (gridScroll). Re-run on
+// each iframe (re)load; __terminalWired guards double-attaching.
+export function wireTerminalIframe(
+  id: string,
+  suppressContext: boolean,
+  gridScroll = false
+) {
   let win: TermWindow | null
   let doc: WiredDoc | null
   try {
@@ -248,7 +277,10 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
   } catch {
     return
   }
-  if (!doc || doc.__terminalWired) return
+  if (!doc) return
+  if (gridScroll && win) wireGridScroll(doc, win)
+
+  if (doc.__terminalWired) return
   doc.__terminalWired = true
 
   if (suppressContext)
@@ -320,13 +352,17 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
 
 // bootTermFrame wires the iframe now and re-wires (and re-applies the latest
 // theme) on every reload, since ttyd reconnects yield a fresh xterm.
-export function bootTermFrame(id: string, suppressContext: boolean) {
+export function bootTermFrame(
+  id: string,
+  suppressContext: boolean,
+  gridScroll = false
+) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
-    wireTerminalIframe(id, suppressContext)
+    wireTerminalIframe(id, suppressContext, gridScroll)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -334,7 +370,7 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
-  wireTerminalIframe(id, suppressContext) // in case it already loaded
+  wireTerminalIframe(id, suppressContext, gridScroll) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 

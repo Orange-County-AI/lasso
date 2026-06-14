@@ -46,13 +46,10 @@ const POLL_MS = 2500
 // alive (reaped after ~60s idle). Comfortably under that.
 const KEEPALIVE_MS = 18_000
 
-// Grid layout constants — must match .termgrid (right padding) and .termcell
-// (the width is driven by --termcell-basis, computed below).
-const GRID_PAD_RIGHT = 16
-// Min cell width: the column count is "as many of these as fit". Every cell is
-// then the SAME width (the row's full width split evenly) — a partial last row
-// keeps that width and leaves the trailing space empty rather than stretching
-// its cells wider than the rest.
+// Grid layout constants — must match .termgrid. The wall spans the full width
+// (no right strip: hold Shift to scroll the grid past a terminal). Every cell is
+// the same width via 1fr grid columns; the column count is "as many
+// GRID_MIN_CELL-wide cells as fit across the measured width".
 const GRID_MIN_CELL = 360
 // Floor for a cell's height. Rows grow to fill the grid's vertical space; once
 // there are enough rows that they'd shrink past this, the grid scrolls instead.
@@ -94,7 +91,7 @@ export function GridTab({
     const el = gridRef.current
     if (!el) return
     const measure = () => {
-      setGridW(el.clientWidth - GRID_PAD_RIGHT)
+      setGridW(el.clientWidth)
       setGridH(el.clientHeight)
     }
     measure()
@@ -676,7 +673,7 @@ function GridCell({
   React.useEffect(() => {
     if (!src) return
     setReady(false)
-    const cleanup = bootTermFrame(id, true)
+    const cleanup = bootTermFrame(id, true, true)
     const cancelReady = whenTerminalReady(id, () => setReady(true))
     const ka = setInterval(() => {
       void api.gridTermTouch(p.host, p.tab_id).catch(() => {})
