@@ -12,7 +12,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘K", label: "Find a pane…" },
   { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘U", label: "New tab" },
-  { keys: "⌘⇧U", label: "Close tab" },
+  { keys: "⌘⇧U", label: "Close tab (agent: kill it & close its workspace)" },
   { keys: "⌘G", label: "Toggle the grid view" },
   { keys: "⌘[", label: "Toggle the left sidebar" },
   { keys: "⌘]", label: "Toggle the right panel" },
@@ -48,7 +48,8 @@ export function matchShortcut(e: {
 }): ShortcutAction | null {
   if (!e.metaKey || e.ctrlKey || e.altKey) return null
   // Shift-bearing bindings: ⌘? (Cmd-Shift-/) opens the shortcuts reference and
-  // ⌘⇧U closes the active tab. For ⌘?, match the physical Slash key (code) first
+  // ⌘⇧U closes the active tab (or, for an agent tab, kills the agent and closes
+  // its whole workspace). For ⌘?, match the physical Slash key (code) first
   // since `?` is its shifted form; fall back to the `?` character for layouts
   // that place it elsewhere.
   if (e.shiftKey) {

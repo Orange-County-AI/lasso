@@ -76,21 +76,35 @@ export function TabStrip({
     refresh()
   }
 
+  // ⌘⇧U on the active tab. A plain shell tab just closes; but an agent tab
+  // closes its whole workspace — killing the agent and dropping the worktree
+  // from the sidebar (the on-disk worktree is kept) — so we don't leave an
+  // empty worktree behind for every agent we dismiss.
+  const closeActiveTab = async (tabId: string) => {
+    const tab = (workspace?.tabs ?? []).find((t) => t.id === tabId)
+    if (workspace && tab?.kind === "agent") {
+      await api.closeWorkspace(workspace.id).catch((e) => toast.error(String(e)))
+    } else {
+      await api.closeTab(tabId).catch((e) => toast.error(String(e)))
+    }
+    refresh()
+  }
+
   // ⌘U creates a tab immediately (auto-named) and ⌘⇧U closes the active tab.
   // App dispatches these events globally so they fire with focus inside a
   // terminal. Kept in refs so the listeners can stay mounted across renders
   // while always seeing the current workspace/selection.
   const createTabRef = React.useRef(createTab)
   createTabRef.current = createTab
-  const closeTabRef = React.useRef(closeTab)
-  closeTabRef.current = closeTab
+  const closeActiveTabRef = React.useRef(closeActiveTab)
+  closeActiveTabRef.current = closeActiveTab
   React.useEffect(() => {
     const onNew = () => {
       if (!workspace) return
       createTabRef.current(nextTabNumber(workspace.tabs ?? []))
     }
     const onClose = () => {
-      if (selectedTabId) closeTabRef.current(selectedTabId)
+      if (selectedTabId) closeActiveTabRef.current(selectedTabId)
     }
     window.addEventListener("lasso:new-tab", onNew)
     window.addEventListener("lasso:close-tab", onClose)
