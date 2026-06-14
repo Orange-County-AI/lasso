@@ -63,6 +63,8 @@ export interface GridPane {
   agent_status?: AgentStatus
   has_agent: boolean
   prompt?: string
+  git: boolean // pane lives in a git checkout (else no status dot)
+  dirty?: number // working-tree changes (git status lines); absent/0 = clean
 }
 
 export interface GridPayload {

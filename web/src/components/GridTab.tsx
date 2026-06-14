@@ -730,6 +730,20 @@ function GridCell({
                 {title}
                 {tabLabel ? ` · ${tabLabel}` : ""}
               </span>
+              {p.git && (
+                <span
+                  className={cn("termcell-git", p.dirty ? "dirty" : "clean")}
+                  title={
+                    p.dirty
+                      ? `${p.dirty} uncommitted change${
+                          p.dirty === 1 ? "" : "s"
+                        }`
+                      : "clean working tree"
+                  }
+                >
+                  ● {p.dirty || ""}
+                </span>
+              )}
               {p.has_agent && (
                 <span className={cn("termcell-agent", p.agent_status)}>
                   ● {p.agent || "agent"}

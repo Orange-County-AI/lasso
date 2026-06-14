@@ -816,6 +816,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Git working-tree status dot: green when clean, amber (with a change count)
+   when dirty. Only rendered for panes in a git checkout. */
+.termcell-git {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.termcell-git.clean {
+  color: var(--color-good);
+}
+.termcell-git.dirty {
+  color: var(--color-warn);
+}
 .termcell-agent {
   flex: 0 0 auto;
   color: var(--color-muted-foreground);

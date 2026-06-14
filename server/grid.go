@@ -38,6 +38,8 @@ type gridPane struct {
 	AgentStatus    string `json:"agent_status,omitempty"` // idle|working|blocked|unknown
 	HasAgent       bool   `json:"has_agent"`
 	Prompt         string `json:"prompt,omitempty"` // the agent's initial prompt (⌘K/grid search)
+	Git            bool   `json:"git"`              // pane lives in a git checkout (else no status dot)
+	Dirty          int    `json:"dirty,omitempty"`  // working-tree changes (git status lines); 0 = clean
 }
 
 type gridPayload struct {
@@ -153,10 +155,9 @@ func fetchGridPanes() gridPayload {
 // tmux session. A remote host that's unreachable returns an error (surfaced in the
 // payload's Errors) rather than silently contributing nothing.
 func gridHostPanes(host, label string) ([]gridPane, error) {
-	if !isLocalHost(host) {
-		if _, err := hostBackend(host); err != nil {
-			return nil, err
-		}
+	be, err := hostBackend(host)
+	if err != nil {
+		return nil, err
 	}
 	wss, err := listWorkspaces(host)
 	if err != nil {
@@ -177,6 +178,9 @@ func gridHostPanes(host, label string) ([]gridPane, error) {
 
 	var panes []gridPane
 	for _, ws := range wss {
+		// One `git status` per git workspace (not per tab), shared across its
+		// tabs' cells. Cached behind gridCacheTTL so the UI's poll doesn't re-shell.
+		dirty, isGit := workspaceGitStatus(be, ws)
 		tabs, _ := listTabs(ws.ID)
 		for _, t := range tabs {
 			session := tabSession(t.ID)
@@ -187,6 +191,7 @@ func gridHostPanes(host, label string) ([]gridPane, error) {
 			p := gridPane{
 				Host: hostOrLocal(host), HostLabel: label, TabID: t.ID,
 				WorkspaceID: ws.ID, WorkspaceLabel: ws.Title, TabLabel: t.Title, Cwd: t.Cwd,
+				Git: isGit, Dirty: dirty,
 			}
 			if k := kinds[t.ID]; k != "" {
 				p.HasAgent = true
@@ -203,6 +208,26 @@ func gridHostPanes(host, label string) ([]gridPane, error) {
 		}
 	}
 	return panes, nil
+}
+
+// workspaceGitStatus reports whether a workspace is a git checkout and, if so,
+// how many entries its working tree shows dirty (count of `git status --porcelain`
+// lines; 0 = clean). A non-git (scratch) workspace returns isGit=false so the UI
+// shows no status dot. A git workspace whose status errors is reported as git +
+// clean rather than dropped, so a transient git hiccup doesn't blink the dot off.
+func workspaceGitStatus(be Backend, ws Workspace) (dirty int, isGit bool) {
+	if ws.Kind != "git" || ws.WorkDir == "" {
+		return 0, false
+	}
+	out, err := be.GitOut(ws.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return 0, true
+	}
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return 0, true
+	}
+	return strings.Count(out, "\n") + 1, true
 }
 
 // --- grid mutations ------------------------------------------------------------
