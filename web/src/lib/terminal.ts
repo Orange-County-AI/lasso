@@ -377,6 +377,88 @@ export function wireTerminalIframe(
   wireOsc52(id, 0)
 }
 
+// --- auto-reconnect ----------------------------------------------------------
+//
+// When the ttyd backend process exits cleanly (e.g. its `tmux attach` ends
+// because the park/agent session was torn down and recreated a tick later by
+// the reconcile loop), the WebSocket closes with code 1000. ttyd 1.7.7 only
+// auto-reconnects on ABnormal closes (code != 1000, and only when its
+// `reconnect` client option is set); on a clean exit it parks on a manual
+// "Press ⏎ to Reconnect" overlay and waits for the user to hit Enter. That
+// Enter just refreshes the token and reconnects — almost always succeeding,
+// since the session is back by then. So we press it for the user a couple of
+// times before leaving the manual prompt for a disconnect that won't recover.
+//
+// ttyd's overlay is a class-less <div> appended to the xterm element, carrying
+// a distinctive inline `border-radius: 15px`. We read it same-origin: the exact
+// prompt text means "parked, waiting for Enter"; "Reconnecting…" means an
+// attempt is in flight (wait); opacity "0" (faded out) or no overlay means
+// connected — reset the attempt counter for the next disconnect episode.
+const RECONNECT_PROMPT = "Press ⏎ to Reconnect"
+const MAX_AUTO_RECONNECTS = 3
+
+function ttydOverlay(win: TermWindow): HTMLElement | null {
+  const xterm = win.document?.querySelector?.(".xterm")
+  return (
+    (xterm?.querySelector(
+      ':scope > div[style*="border-radius"]'
+    ) as HTMLElement | null) ?? null
+  )
+}
+
+// pressTerminalEnter synthesizes the Enter keydown ttyd's reconnect listener
+// waits on. xterm binds keydown on its `.xterm-helper-textarea`, maps keyCode 13
+// to CR, and fires onKey({domEvent}) — which ttyd checks for `key === "Enter"`.
+// keyCode must be set (xterm's evaluateKeyboardEvent switches on it); the
+// re-dispatched CR goes nowhere since the socket's data listeners are disposed.
+function pressTerminalEnter(win: TermWindow) {
+  const ta = win.document?.querySelector?.(
+    ".xterm-helper-textarea"
+  ) as HTMLTextAreaElement | null
+  if (!ta) return
+  // Constructed in the parent realm but dispatched on the same-origin iframe's
+  // textarea — xterm reads key/keyCode off the event, not its prototype.
+  ta.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    } as KeyboardEventInit)
+  )
+}
+
+// startAutoReconnect polls the ttyd overlay and presses Enter on the manual
+// reconnect prompt up to MAX_AUTO_RECONNECTS times per disconnect episode.
+// Returns a canceller. The interval outlives ttyd WS reconnects (which don't
+// reload the iframe), so frameWindow(id) is re-resolved every tick.
+function startAutoReconnect(id: string): () => void {
+  let attempts = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const tick = () => {
+    try {
+      const win = frameWindow(id)
+      const ov = win ? ttydOverlay(win) : null
+      if (!ov || ov.style.opacity === "0") {
+        attempts = 0 // connected (or overlay faded) — ready for the next episode
+      } else if (ov.textContent === RECONNECT_PROMPT && attempts < MAX_AUTO_RECONNECTS) {
+        attempts++
+        pressTerminalEnter(win as TermWindow)
+      }
+      // "Reconnecting…" / hit the cap: leave it be
+    } catch {
+      /* same-origin; ignore */
+    }
+    timer = setTimeout(tick, 600)
+  }
+  timer = setTimeout(tick, 600)
+  return () => {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 // bootTermFrame wires the iframe now and re-wires (and re-applies the latest
 // theme) on every reload, since ttyd reconnects yield a fresh xterm.
 export function bootTermFrame(
@@ -398,7 +480,11 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, gridScroll) // in case it already loaded
-  return () => el.removeEventListener("load", onLoad)
+  const stopReconnect = startAutoReconnect(id)
+  return () => {
+    el.removeEventListener("load", onLoad)
+    stopReconnect()
+  }
 }
 
 // termHasRendered reports whether the same-origin xterm has painted real pane
