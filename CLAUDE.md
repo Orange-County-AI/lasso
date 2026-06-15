@@ -48,8 +48,9 @@ Tooling is **Biome** (`web/biome.json`) — it replaced Prettier + ESLint. Style
 
 ## Agent self-identity
 
-A spawned agent's own lasso identity is **free to discover** — it never needs to enumerate repos/agents to find itself. The MCP server runs in lasso's process (not the agent's shell), so it can't read the agent's environment; the agent supplies its id. Three channels, all wired in `agents_create.go`:
+A spawned agent's own lasso identity is **free to discover** — it never needs to enumerate repos/agents to find itself. The MCP server runs in lasso's process (not the agent's shell), so it can't read the agent's environment; the agent supplies its id. The identity is **never injected into the agent's prompt** (that polluted the user-visible turn-1 message) — it lives in env vars and a skill instead:
 
-- **Env vars** on the agent's tmux session (`agentIdentityEnv`): `LASSO_TAB_ID` (the agent id — the value `whoami`/`get_agent` take), plus `LASSO_WORKSPACE_ID`, and for git agents `LASSO_REPO`/`LASSO_BRANCH`. The repo is also just the process cwd.
-- **Initial prompt footer** (`agentPrompt`): lasso knows the id at spawn time, so it tells the agent its id (and `$LASSO_TAB_ID`) up front — guaranteed in context on turn 1.
+- **Env vars** on the agent's tmux session (`agentIdentityEnv`): `LASSO_TAB_ID` (the agent id — the value `whoami`/`get_agent`/`close_agent` take), plus `LASSO_WORKSPACE_ID`, and for git agents `LASSO_REPO`/`LASSO_BRANCH`. The repo is also just the process cwd. These are the source of truth.
+- **`SKILL.md`** at the repo root: a self-contained Agent Skill documenting the `LASSO_*` env vars and how to act on yourself (`whoami`/`get_agent`/`close_agent` with `$LASSO_TAB_ID`). Install it into your agents' skills dir so they learn to read their identity from the env on demand — no prompt injection required.
 - **`whoami` MCP tool**: pass `$LASSO_TAB_ID` as `tab_id`; it maps the tab back to the agent's record (or `get_agent($LASSO_TAB_ID)` directly). `list_repos` takes a `filter` and its description steers agents away from pulling every repo just to locate their own (cwd).
+- **`lasso closeme` subcommand** (`cliCloseMe`/`postAgentClose` in `cli.go`): the one-liner an agent runs to close *itself* — it reads `$LASSO_TAB_ID` and POSTs it to the local server's `/api/agent/close` (the soft-close shared with the UI and the `close_agent` MCP tool). Targets `defaultListenAddr`, overridable via `LASSO_LISTEN`; honors `UI_AUTH`.

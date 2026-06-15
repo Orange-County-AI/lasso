@@ -46,10 +46,10 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 	}
 }
 
-// A real (spawned) record carries a TabID, so the prompt gains an identity
-// footer telling the agent its own id — but the title still leads (first line)
-// and the verbatim body is preserved ahead of the footer.
-func TestAgentPromptIdentityFooter(t *testing.T) {
+// The self-identity hint must NOT pollute the user-visible prompt: agentPrompt
+// returns the verbatim body only. The agent learns its id from the LASSO_* env
+// vars (agentIdentityEnv) surfaced by the bundled lasso skill instead.
+func TestAgentPromptOmitsIdentity(t *testing.T) {
 	rec := AgentRecord{
 		ID:          "dj8hus0qiduh",
 		TabID:       "dj8hus0qiduh",
@@ -57,14 +57,11 @@ func TestAgentPromptIdentityFooter(t *testing.T) {
 		Description: "Add dark mode\ntoggle in settings",
 	}
 	got := agentPrompt(rec)
-	if !strings.HasPrefix(got, "Add dark mode\ntoggle in settings") {
-		t.Errorf("prompt must lead with the verbatim body, got %q", got)
+	if got != "Add dark mode\ntoggle in settings" {
+		t.Errorf("prompt must be the verbatim body only, got %q", got)
 	}
-	if !strings.Contains(got, "dj8hus0qiduh") {
-		t.Errorf("prompt must name the agent's own id, got %q", got)
-	}
-	if !strings.Contains(got, "$LASSO_TAB_ID") {
-		t.Errorf("prompt should point the agent at $LASSO_TAB_ID, got %q", got)
+	if strings.Contains(got, "dj8hus0qiduh") || strings.Contains(got, "$LASSO_TAB_ID") {
+		t.Errorf("prompt must not carry the identity note, got %q", got)
 	}
 }
 

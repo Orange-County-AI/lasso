@@ -642,9 +642,11 @@ func agentIdentityEnv(rec AgentRecord) []string {
 
 // agentPrompt builds the prompt handed to the agent: the full prompt verbatim
 // (stored in Description; its first line is also the title), plus a pointer to
-// any notes/attachments that landed in the work dir, and a short footer telling
-// the agent its own lasso identity. Falls back to the title when no prompt body
-// was stored (e.g. a title-only record).
+// any notes/attachments that landed in the work dir. Falls back to the title
+// when no prompt body was stored (e.g. a title-only record). The agent's own
+// lasso identity is NOT folded in here — it's exported as LASSO_* env vars
+// (agentIdentityEnv) and surfaced to the agent by the bundled lasso skill
+// (SKILL.md), so it never pollutes the user-visible prompt.
 func agentPrompt(rec AgentRecord) string {
 	var b strings.Builder
 	body := rec.Description
@@ -657,15 +659,6 @@ func agentPrompt(rec AgentRecord) string {
 	}
 	if len(rec.Attachments) > 0 {
 		b.WriteString("\n\nAttachments: " + strings.Join(rec.Attachments, ", "))
-	}
-	// Tell the agent who it is up front. lasso knows the id at spawn time, so the
-	// agent never has to spend tokens enumerating repos/agents to find itself.
-	// Gated on TabID so bare/title-only records (and unit tests) get no footer.
-	if rec.TabID != "" {
-		b.WriteString("\n\n---\nlasso: you are agent `" + rec.TabID +
-			"` (also exported as $LASSO_TAB_ID). To act on yourself via the lasso MCP tools" +
-			" — e.g. close_agent once your work is done, or whoami to fetch your own record —" +
-			" pass that id; you don't need list_repos/list_agents to find yourself.")
 	}
 	return b.String()
 }
