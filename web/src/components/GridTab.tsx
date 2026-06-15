@@ -737,7 +737,7 @@ function GridCell({
   React.useEffect(() => {
     if (!src) return
     setReady(false)
-    const cleanup = bootTermFrame(id, true, true)
+    const cleanup = bootTermFrame(id, true, true, p.host)
     const cancelReady = whenTerminalReady(id, () => setReady(true))
     const ka = setInterval(() => {
       void api.gridTermTouch(p.host, p.tab_id).catch(() => {})

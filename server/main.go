@@ -451,8 +451,12 @@ func pasteImageDir() string {
 }
 
 // servePasteImage accepts a raw image body (Content-Type set to the image MIME
-// type), writes it to pasteImageDir() with a timestamped name, and returns the
-// absolute path. The browser then inserts that path at the terminal cursor.
+// type), writes it to the target host's PasteImageDir() with a timestamped name,
+// and returns the absolute path. The browser then inserts that path at the
+// terminal cursor. The image MUST be written on the same host the terminal runs
+// on — otherwise the path resolves on the wrong machine — so it routes through
+// the ?host= backend (reqHost), not curBackend(): the cross-host grid shows tabs
+// from several hosts at once while only one is "active".
 func servePasteImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -464,7 +468,11 @@ func servePasteImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported image content-type "+ct, http.StatusUnsupportedMediaType)
 		return
 	}
-	be := curBackend()
+	be, err := hostBackend(reqHost(r))
+	if err != nil {
+		http.Error(w, "host unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPasteImage))
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)

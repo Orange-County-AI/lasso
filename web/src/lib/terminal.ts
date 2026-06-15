@@ -367,7 +367,8 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
 export function wireTerminalIframe(
   id: string,
   suppressContext: boolean,
-  gridScroll = false
+  gridScroll = false,
+  host?: string
 ) {
   let win: TermWindow | null
   let doc: WiredDoc | null
@@ -440,7 +441,10 @@ export function wireTerminalIframe(
       e.preventDefault()
       e.stopPropagation()
       try {
-        const { path } = await api.pasteImage(file)
+        // Save the image on the SAME host this terminal runs on, so the path we
+        // type resolves there. The cross-host grid shows tabs from several hosts
+        // at once, so we can't rely on the server's single active host.
+        const { path } = await api.pasteImage(file, host)
         const term = win?.term
         if (term && typeof term.paste === "function") term.paste(`${path} `)
       } catch {
@@ -544,14 +548,15 @@ function startAutoReconnect(id: string): () => void {
 export function bootTermFrame(
   id: string,
   suppressContext: boolean,
-  gridScroll = false
+  gridScroll = false,
+  host?: string
 ) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
-    wireTerminalIframe(id, suppressContext, gridScroll)
+    wireTerminalIframe(id, suppressContext, gridScroll, host)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -559,7 +564,7 @@ export function bootTermFrame(
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
-  wireTerminalIframe(id, suppressContext, gridScroll) // in case it already loaded
+  wireTerminalIframe(id, suppressContext, gridScroll, host) // in case it already loaded
   const stopReconnect = startAutoReconnect(id)
   return () => {
     el.removeEventListener("load", onLoad)
