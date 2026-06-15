@@ -54,6 +54,7 @@ interface WiredDoc extends Document {
   __terminalWired?: boolean
   __gridScrollWired?: boolean
   __gridFocusWired?: boolean
+  __touchScrollWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -283,6 +284,48 @@ function wireGridFocus(doc: WiredDoc, win: Window) {
   doc.addEventListener("focusin", notify, { capture: true })
 }
 
+// wireTouchScroll restores drag-to-scroll on touch devices. xterm.js DOES
+// implement touch scrolling itself, but it gates it on the application NOT having
+// mouse tracking active — and Claude Code (like many TUIs) turns mouse mode on,
+// so xterm forwards the touch as a mouse drag to the app and the scrollback
+// becomes unreachable on mobile. We capture the touch first and drive the
+// `.xterm-viewport` scrollTop ourselves (xterm's own scroll listener then repaints
+// the buffer), which sidesteps the mouse-mode gate. We only swallow the gesture
+// while there's actually something to scroll (normal buffer with scrollback) — in
+// an alt-screen app the viewport isn't overflowing, so we leave the touch alone
+// and the app still receives it. A bare tap (no move) is never preventDefault'd,
+// so taps still reach the terminal as clicks. Idempotent per document.
+function wireTouchScroll(doc: WiredDoc) {
+  if (doc.__touchScrollWired) return
+  doc.__touchScrollWired = true
+  let lastY = 0
+  let tracking = false
+  doc.addEventListener(
+    "touchstart",
+    (e: TouchEvent) => {
+      tracking = e.touches.length === 1
+      if (tracking) lastY = e.touches[0].clientY
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchmove",
+    (e: TouchEvent) => {
+      if (!tracking || e.touches.length !== 1) return
+      const vp = doc.querySelector(".xterm-viewport") as HTMLElement | null
+      // Nothing to scroll (e.g. a full-screen alt-buffer TUI): don't hijack the
+      // touch — let it through so the app still gets its mouse events.
+      if (!vp || vp.scrollHeight <= vp.clientHeight) return
+      const y = e.touches[0].clientY
+      vp.scrollTop += lastY - y
+      lastY = y
+      e.preventDefault()
+      e.stopPropagation()
+    },
+    { capture: true, passive: false }
+  )
+}
+
 // wireTerminalIframe: (1) optionally suppress the native context menu so
 // right-click only triggers the terminal's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -302,6 +345,7 @@ export function wireTerminalIframe(
     return
   }
   if (!doc) return
+  wireTouchScroll(doc)
   if (gridScroll && win) {
     wireGridScroll(doc, win)
     wireGridFocus(doc, win)
