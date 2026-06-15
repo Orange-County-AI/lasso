@@ -312,9 +312,10 @@
 .entry .chg {
   flex: 0 0 auto;
   margin-left: 8px;
+  font-family: var(--font-label);
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 .entry.d .chg {
   margin-left: auto;
@@ -602,10 +603,11 @@
 }
 .dfhead .dfbadge {
   flex: 0 0 auto;
+  font-family: var(--font-label);
   font-size: 10px;
   line-height: 1;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   padding: 2px 5px;
   border-radius: 999px;
   border: 1px solid currentColor;
