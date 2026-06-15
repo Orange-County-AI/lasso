@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
-import { Check, Laptop, RefreshCw, Server } from "lucide-react"
+import { Check, Laptop, Layers, RefreshCw, Server } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -14,6 +15,7 @@ import {
 import { api } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk, queryClient } from "@/lib/query"
+import { setAllHosts, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // HostSwitcher picks which host lasso drives. The local box plus every reachable,
@@ -23,6 +25,7 @@ import { cn } from "@/lib/utils"
 // terminal viewport onto the new host (via the term_rev SSE bump).
 export function HostSwitcher() {
   const { host: liveHost } = useApp()
+  const allHosts = useUIState().sidebar_all_hosts ?? false
   const hostsQuery = useQuery({
     queryKey: qk.hosts,
     queryFn: () => api.hosts(),
@@ -60,21 +63,27 @@ export function HostSwitcher() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title={`active host: ${activeLabel} — click to switch`}
+          title={
+            allHosts
+              ? `showing all hosts · active host: ${activeLabel} — click to switch`
+              : `active host: ${activeLabel} — click to switch`
+          }
           className={cn(
             "ml-1 flex shrink-0 items-center gap-1.5 rounded border border-border px-2 py-1 text-[13px] hover:border-primary hover:text-primary",
-            isRemote ? "text-primary" : "text-muted-foreground"
+            isRemote || allHosts ? "text-primary" : "text-muted-foreground"
           )}
         >
           {switching ? (
             <RefreshCw className="size-3.5 animate-spin" />
+          ) : allHosts ? (
+            <Layers className="size-3.5" />
           ) : isRemote ? (
             <Server className="size-3.5" />
           ) : (
             <Laptop className="size-3.5" />
           )}
           <span className="max-w-[10ch] truncate max-md:hidden">
-            {activeLabel}
+            {allHosts ? "All hosts" : activeLabel}
           </span>
         </button>
       </DropdownMenuTrigger>
@@ -95,6 +104,16 @@ export function HostSwitcher() {
             <RefreshCw className="size-3" />
           </button>
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem
+          checked={allHosts}
+          onCheckedChange={(v) => setAllHosts(!!v)}
+          // Keep the menu open so the user can also pick an active host after.
+          onSelect={(e) => e.preventDefault()}
+        >
+          <Layers className="size-3.5" />
+          <span className="flex-1">Show all hosts</span>
+        </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => switchTo("local")}>
           <Laptop className="size-3.5" />

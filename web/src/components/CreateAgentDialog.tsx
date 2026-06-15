@@ -119,9 +119,11 @@ export function CreateAgentDialog({
 
   // A repo (+ base) the sidebar's "New agent…" wants the form prefilled with,
   // applied in the seed effect on the next open. Cleared once consumed.
-  const pendingPrefill = React.useRef<{ repo?: string; base?: string } | null>(
-    null
-  )
+  const pendingPrefill = React.useRef<{
+    repo?: string
+    base?: string
+    host?: string
+  } | null>(null)
 
   // Cmd/Ctrl+O opens the creator, and the "lasso:new-agent" event opens it
   // prefilled (from the sidebar's repo right-click). Bound to the non-"button"
@@ -136,7 +138,11 @@ export function CreateAgentDialog({
     }
     const onNew = (e: Event) => {
       pendingPrefill.current =
-        ((e as CustomEvent).detail as { repo?: string; base?: string }) ?? null
+        ((e as CustomEvent).detail as {
+          repo?: string
+          base?: string
+          host?: string
+        }) ?? null
       setOpen(true)
     }
     document.addEventListener("keydown", onKey)
@@ -159,7 +165,10 @@ export function CreateAgentDialog({
   const { host: activeHost } = useApp()
   const [host, setHost] = React.useState("local")
   React.useEffect(() => {
-    if (open) setHost(activeHost || "local")
+    // A sidebar "New agent…" on a remote repo prefills its host; otherwise seed
+    // from the active host.
+    if (open)
+      setHost(pendingPrefill.current?.host || activeHost || "local")
   }, [open, activeHost])
 
   const hostsQuery = useQuery({

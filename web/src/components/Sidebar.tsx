@@ -3,7 +3,9 @@ import {
   ChevronLeft,
   ChevronRight,
   GitBranch,
+  Laptop,
   Plus,
+  Server,
   Terminal,
 } from "lucide-react"
 import * as React from "react"
@@ -37,6 +39,8 @@ import {
 } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import {
+  fetchAgents,
+  fetchTree,
   qk,
   queryClient,
   spacesKeyRepo,
@@ -46,6 +50,7 @@ import {
   treeReorderSpaces,
   treeSetRepoMain,
 } from "@/lib/query"
+import { useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // The left sidebar: a "spaces" tree (git repos with their worktrees nested, plus
@@ -76,10 +81,13 @@ function isNamedTab(t: TreeTab): boolean {
 }
 
 // A single top-level row of the unified "spaces" list: either a standalone
-// scratch workspace or a repo (which expands to its nested worktrees).
-type SpaceItem =
-  | { key: string; kind: "ws"; ws: TreeWorkspace }
-  | { key: string; kind: "repo"; repo: TreeRepo }
+// scratch workspace or a repo (which expands to its nested worktrees). `host` /
+// `hostLabel` are the host the row lives on — used to group the list by host in
+// all-hosts mode (and to route host-scoped mutations to the right machine).
+type SpaceItem = { key: string; host?: string; hostLabel?: string } & (
+  | { kind: "ws"; ws: TreeWorkspace }
+  | { kind: "repo"; repo: TreeRepo }
+)
 
 // unifiedSpaces flattens the tree payload into one ordered list, following the
 // server's `order` (stable keys) and appending any rows not yet placed in it —
@@ -89,47 +97,73 @@ function unifiedSpaces(tree: TreePayload | undefined): SpaceItem[] {
   const scratch = tree.scratch ?? []
   const repos = tree.repos ?? []
   const wsById = new Map(scratch.map((w) => [w.id, w]))
-  const repoByPath = new Map(repos.map((r) => [r.path, r]))
+  // Workspace ids are globally unique, but a repo:<path> key can recur in the
+  // combined order — once per host that has that path (all-hosts mode). The repos
+  // array is grouped host-first (matching the concatenated order), so a per-path
+  // cursor consumes them in that order: the Nth repo:<path> in `order` is the Nth
+  // repo with that path.
+  const reposByPath = new Map<string, TreeRepo[]>()
+  for (const r of repos) {
+    const list = reposByPath.get(r.path)
+    if (list) list.push(r)
+    else reposByPath.set(r.path, [r])
+  }
+  const repoCursor = new Map<string, number>()
   const items: SpaceItem[] = []
-  const placed = new Set<string>()
+  const placedWs = new Set<string>()
+  const placedRepo = new Set<TreeRepo>()
+  const pushWs = (ws: TreeWorkspace) => {
+    if (placedWs.has(ws.id)) return
+    items.push({
+      key: spacesKeyWorkspace(ws.id),
+      kind: "ws",
+      ws,
+      host: ws.host,
+      hostLabel: ws.host_label,
+    })
+    placedWs.add(ws.id)
+  }
+  const pushRepo = (repo: TreeRepo) => {
+    if (placedRepo.has(repo)) return
+    items.push({
+      key: spacesKeyRepo(repo.path),
+      kind: "repo",
+      repo,
+      host: repo.host,
+      hostLabel: repo.host_label,
+    })
+    placedRepo.add(repo)
+  }
   for (const key of tree.order ?? []) {
-    if (placed.has(key)) continue
     if (key.startsWith("ws:")) {
       const ws = wsById.get(key.slice(3))
-      if (ws) {
-        items.push({ key, kind: "ws", ws })
-        placed.add(key)
-      }
+      if (ws) pushWs(ws)
     } else if (key.startsWith("repo:")) {
-      const repo = repoByPath.get(key.slice(5))
-      if (repo) {
-        items.push({ key, kind: "repo", repo })
-        placed.add(key)
+      const path = key.slice(5)
+      const list = reposByPath.get(path) ?? []
+      const i = repoCursor.get(path) ?? 0
+      if (i < list.length) {
+        pushRepo(list[i])
+        repoCursor.set(path, i + 1)
       }
     }
   }
-  for (const ws of scratch) {
-    const key = spacesKeyWorkspace(ws.id)
-    if (!placed.has(key)) {
-      items.push({ key, kind: "ws", ws })
-      placed.add(key)
-    }
-  }
-  for (const repo of repos) {
-    const key = spacesKeyRepo(repo.path)
-    if (!placed.has(key)) {
-      items.push({ key, kind: "repo", repo })
-      placed.add(key)
-    }
-  }
+  // Rows not present in `order` (freshly created/optimistic) render at the bottom.
+  for (const ws of scratch) pushWs(ws)
+  for (const repo of repos) pushRepo(repo)
   return items
 }
 
+// rowId is a row's drag identity: a repo:<path> key can recur across hosts
+// (all-hosts mode), so the host-qualified id is what we drag/drop by — the bare
+// key stays the per-host storage key.
+const rowId = (item: SpaceItem) => `${item.host ?? ""}::${item.key}`
+
 // openNewAgent asks the (always-mounted) CreateAgentDialog to open prefilled with
 // a repo + base, via a window event so the sidebar doesn't own the dialog.
-function openNewAgent(repo: string, base: string) {
+function openNewAgent(repo: string, base: string, host?: string) {
   window.dispatchEvent(
-    new CustomEvent("lasso:new-agent", { detail: { repo, base } })
+    new CustomEvent("lasso:new-agent", { detail: { repo, base, host } })
   )
 }
 
@@ -143,8 +177,19 @@ export function Sidebar({
   onCollapse?: () => void
 }) {
   const { panesRev, agentStatuses } = useApp()
-  const tree = useQuery({ queryKey: qk.tree, queryFn: api.tree })
-  const agents = useQuery({ queryKey: qk.agents, queryFn: api.agentsList })
+  const allHosts = useUIState().sidebar_all_hosts ?? false
+  // In all-hosts mode the SSE panesRev only tracks LOCAL tree changes, so poll on
+  // an interval to surface remote workspaces/agents appearing and disappearing.
+  const tree = useQuery({
+    queryKey: qk.tree,
+    queryFn: fetchTree,
+    refetchInterval: allHosts ? 4000 : false,
+  })
+  const agents = useQuery({
+    queryKey: qk.agents,
+    queryFn: fetchAgents,
+    refetchInterval: allHosts ? 4000 : false,
+  })
 
   // How many purely-numeric scratch agents ("1", "2"…) each workspace holds. A
   // lone one needs no number to disambiguate (just the workspace name); two or
@@ -158,7 +203,6 @@ export function Sidebar({
   }, [agents.data])
 
   // Refetch the tree + agents whenever the workspace/tab layout changes (SSE).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: panesRev is the refetch trigger
   React.useEffect(() => {
     if (panesRev >= 0) refreshTree()
   }, [panesRev])
@@ -268,74 +312,94 @@ export function Sidebar({
   // repos interleaved). Drag a row onto another to reorder; the full new key
   // order is persisted server-side.
   const items = React.useMemo(() => unifiedSpaces(tree.data), [tree.data])
-  const [dragKey, setDragKey] = React.useState<string | null>(null)
+  const [dragId, setDragId] = React.useState<string | null>(null)
   const [dropTarget, setDropTarget] = React.useState<{
-    key: string
+    id: string
     pos: "before" | "after"
   } | null>(null)
   const commitReorder = React.useCallback(
-    (from: string, to: string, pos: "before" | "after") => {
-      if (from === to) return
-      const keys = items.map((i) => i.key)
-      const without = keys.filter((k) => k !== from)
-      const idx = without.indexOf(to)
+    (fromId: string, toId: string, pos: "before" | "after") => {
+      if (fromId === toId) return
+      const from = items.find((i) => rowId(i) === fromId)
+      const to = items.find((i) => rowId(i) === toId)
+      // Only reorder within a single host group (the saved order is per-host).
+      if (!from || !to || (from.host ?? "") !== (to.host ?? "")) return
+      const without = items.filter((i) => rowId(i) !== fromId)
+      const idx = without.findIndex((i) => rowId(i) === toId)
       if (idx < 0) return
       without.splice(pos === "before" ? idx : idx + 1, 0, from)
-      if (without.join(" ") === keys.join(" ")) return
-      treeReorderSpaces(without)
-      api.reorderSpaces(without).catch((e) => {
+      const newOrder = without.map((i) => i.key)
+      if (newOrder.join("\n") === items.map((i) => i.key).join("\n")) return
+      treeReorderSpaces(newOrder)
+      // All-hosts mode persists just this host's slice under its own key; the
+      // single-host view persists the whole list to the active host (no host arg).
+      const host = from.host
+      const order = allHosts
+        ? without
+            .filter((i) => (i.host ?? "") === (host ?? ""))
+            .map((i) => i.key)
+        : newOrder
+      api.reorderSpaces(order, allHosts ? host : undefined).catch((e) => {
         toast.error(String(e))
         refreshTree()
       })
     },
-    [items]
+    [items, allHosts]
   )
   // Native HTML5 drag props for one top-level row. Grabbing anywhere in a repo's
   // block (header or its nested worktrees) drags the whole repo; rows still
   // open on a plain click. Returns props to spread plus an indicator className.
-  const dragFor = (key: string) => ({
-    props: {
-      draggable: true,
-      onDragStart: (e: React.DragEvent) => {
-        setDragKey(key)
-        e.dataTransfer.effectAllowed = "move"
-        e.dataTransfer.setData("text/plain", key)
+  const dragFor = (item: SpaceItem) => {
+    const id = rowId(item)
+    const dragItem = dragId
+      ? (items.find((i) => rowId(i) === dragId) ?? null)
+      : null
+    // Reject drops from another host group — the saved order is per-host.
+    const sameHost = dragItem && (dragItem.host ?? "") === (item.host ?? "")
+    return {
+      props: {
+        draggable: true,
+        onDragStart: (e: React.DragEvent) => {
+          setDragId(id)
+          e.dataTransfer.effectAllowed = "move"
+          e.dataTransfer.setData("text/plain", id)
+        },
+        onDragOver: (e: React.DragEvent) => {
+          if (!dragId || dragId === id || !sameHost) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = "move"
+          const rect = e.currentTarget.getBoundingClientRect()
+          const pos: "before" | "after" =
+            e.clientY < rect.top + rect.height / 2 ? "before" : "after"
+          if (dropTarget?.id !== id || dropTarget.pos !== pos) {
+            setDropTarget({ id, pos })
+          }
+        },
+        onDragLeave: (e: React.DragEvent) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setDropTarget((cur) => (cur?.id === id ? null : cur))
+          }
+        },
+        onDrop: (e: React.DragEvent) => {
+          e.preventDefault()
+          if (dragId) commitReorder(dragId, id, dropTarget?.pos ?? "before")
+          setDragId(null)
+          setDropTarget(null)
+        },
+        onDragEnd: () => {
+          setDragId(null)
+          setDropTarget(null)
+        },
       },
-      onDragOver: (e: React.DragEvent) => {
-        if (!dragKey || dragKey === key) return
-        e.preventDefault()
-        e.dataTransfer.dropEffect = "move"
-        const rect = e.currentTarget.getBoundingClientRect()
-        const pos: "before" | "after" =
-          e.clientY < rect.top + rect.height / 2 ? "before" : "after"
-        if (dropTarget?.key !== key || dropTarget.pos !== pos) {
-          setDropTarget({ key, pos })
-        }
-      },
-      onDragLeave: (e: React.DragEvent) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-          setDropTarget((cur) => (cur?.key === key ? null : cur))
-        }
-      },
-      onDrop: (e: React.DragEvent) => {
-        e.preventDefault()
-        if (dragKey) commitReorder(dragKey, key, dropTarget?.pos ?? "before")
-        setDragKey(null)
-        setDropTarget(null)
-      },
-      onDragEnd: () => {
-        setDragKey(null)
-        setDropTarget(null)
-      },
-    },
-    className: cn(
-      dragKey === key && "opacity-40",
-      dropTarget?.key === key &&
-        (dropTarget.pos === "before"
-          ? "border-[var(--h-accent)] border-t-2"
-          : "border-[var(--h-accent)] border-b-2")
-    ),
-  })
+      className: cn(
+        dragId === id && "opacity-40",
+        dropTarget?.id === id &&
+          (dropTarget.pos === "before"
+            ? "border-[var(--h-accent)] border-t-2"
+            : "border-[var(--h-accent)] border-b-2")
+      ),
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card text-[13px]">
@@ -363,35 +427,42 @@ export function Sidebar({
               >
                 spaces
               </SectionLabel>
-              {items.map((item) => {
-                const drag = dragFor(item.key)
+              {items.map((item, idx) => {
+                const drag = dragFor(item)
+                // In all-hosts mode start each host's spaces with a header (the
+                // host's first row is wherever its host differs from the prior).
+                const header =
+                  allHosts && item.host !== items[idx - 1]?.host ? (
+                    <HostHeader
+                      label={item.hostLabel ?? item.host ?? "local"}
+                    />
+                  ) : null
                 return (
-                  <div
-                    key={item.key}
-                    {...drag.props}
-                    className={drag.className}
-                  >
-                    {item.kind === "ws" ? (
-                      <WorkspaceNode
-                        ws={item.ws}
-                        selectedTabId={selectedTabId}
-                        onSelectTab={onSelectTab}
-                        depth={1}
-                        delSel={delSel}
-                        onToggleDel={toggleDel}
-                        onBulkDelete={openBulkDelete}
-                      />
-                    ) : (
-                      <RepoNode
-                        repo={item.repo}
-                        selectedTabId={selectedTabId}
-                        onSelectTab={onSelectTab}
-                        delSel={delSel}
-                        onToggleDel={toggleDel}
-                        onBulkDelete={openBulkDelete}
-                      />
-                    )}
-                  </div>
+                  <React.Fragment key={rowId(item)}>
+                    {header}
+                    <div {...drag.props} className={drag.className}>
+                      {item.kind === "ws" ? (
+                        <WorkspaceNode
+                          ws={item.ws}
+                          selectedTabId={selectedTabId}
+                          onSelectTab={onSelectTab}
+                          depth={1}
+                          delSel={delSel}
+                          onToggleDel={toggleDel}
+                          onBulkDelete={openBulkDelete}
+                        />
+                      ) : (
+                        <RepoNode
+                          repo={item.repo}
+                          selectedTabId={selectedTabId}
+                          onSelectTab={onSelectTab}
+                          delSel={delSel}
+                          onToggleDel={toggleDel}
+                          onBulkDelete={openBulkDelete}
+                        />
+                      )}
+                    </div>
+                  </React.Fragment>
                 )
               })}
             </div>
@@ -473,16 +544,27 @@ export function Sidebar({
 
       <div className="max-h-[40%] min-h-0 shrink-0 overflow-y-auto border-border border-t">
         <SectionLabel>agents</SectionLabel>
-        {(agents.data?.agents ?? []).map((a) => (
-          <AgentRowItem
-            key={a.tab_id}
-            agent={a}
-            selected={a.tab_id === selectedTabId}
-            status={agentStatuses[a.tab_id] ?? a.status}
-            siblingNumeric={numericByWorkspace.get(a.workspace_id) ?? 0}
-            onSelect={() => onSelectTab(a.tab_id)}
-          />
-        ))}
+        {(agents.data?.agents ?? []).map((a, idx) => {
+          const list = agents.data?.agents ?? []
+          // All-hosts mode: a header before each host's first agent (the list is
+          // already grouped by host, local first).
+          const header =
+            allHosts && a.host !== list[idx - 1]?.host ? (
+              <HostHeader label={a.host_label ?? a.host ?? "local"} />
+            ) : null
+          return (
+            <React.Fragment key={`${a.host ?? ""}:${a.tab_id}`}>
+              {header}
+              <AgentRowItem
+                agent={a}
+                selected={a.tab_id === selectedTabId}
+                status={agentStatuses[a.tab_id] ?? a.status}
+                siblingNumeric={numericByWorkspace.get(a.workspace_id) ?? 0}
+                onSelect={() => onSelectTab(a.tab_id)}
+              />
+            </React.Fragment>
+          )
+        })}
         {agents.data && (agents.data.agents ?? []).length === 0 && (
           <div className="px-3 py-2 text-muted-foreground">no agents</div>
         )}
@@ -502,6 +584,19 @@ function SectionLabel({
     <div className="flex items-center justify-between px-3 pt-3 pb-1 font-semibold text-[11px] text-muted-foreground uppercase tracking-wider">
       <span>{children}</span>
       {trailing}
+    </div>
+  )
+}
+
+// HostHeader labels a host's section in the all-hosts sidebar (spaces + agents
+// are grouped by host). The local box gets a laptop glyph; remotes a server one.
+function HostHeader({ label }: { label: string }) {
+  const local = label === "local"
+  return (
+    <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 font-semibold text-[10px] text-muted-foreground/80 uppercase tracking-wider">
+      {local ? <Laptop className="size-3" /> : <Server className="size-3" />}
+      <span className="truncate">{label}</span>
+      <span className="ml-1 h-px flex-1 bg-border" />
     </div>
   )
 }
@@ -536,7 +631,7 @@ function RepoNode({
       return
     }
     try {
-      const { tab_id, workspace_id } = await api.openRepo(repo.path)
+      const { tab_id, workspace_id } = await api.openRepo(repo.path, repo.host)
       // Surface the main checkout immediately so the tab strip resolves it.
       treeSetRepoMain(repo.path, {
         id: workspace_id,
@@ -545,6 +640,8 @@ function RepoNode({
         work_dir: repo.path,
         kind: "git",
         branch: repo.primary_branch,
+        host: repo.host,
+        host_label: repo.host_label,
         tabs: [{ id: tab_id, title: "1", kind: "shell" }],
       })
       onSelectTab(tab_id)
@@ -555,7 +652,9 @@ function RepoNode({
   }
   const [renameOpen, setRenameOpen] = React.useState(false)
   const submitRename = async (name: string) => {
-    await api.renameRepo(repo.path, name).catch((e) => toast.error(String(e)))
+    await api
+      .renameRepo(repo.path, name, repo.host)
+      .catch((e) => toast.error(String(e)))
     refreshTree()
   }
   const [newWorktreeOpen, setNewWorktreeOpen] = React.useState(false)
@@ -565,6 +664,7 @@ function RepoNode({
         repo: repo.path,
         base_branch: repo.primary_branch,
         title,
+        host: repo.host,
       })
       refreshTree()
     } catch (e) {
@@ -573,7 +673,9 @@ function RepoNode({
   }
   const [confirmClose, setConfirmClose] = React.useState(false)
   const doClose = async () => {
-    await api.closeRepo(repo.path).catch((e) => toast.error(String(e)))
+    await api
+      .closeRepo(repo.path, repo.host)
+      .catch((e) => toast.error(String(e)))
     refreshTree()
   }
   return (
@@ -633,7 +735,9 @@ function RepoNode({
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
-            onSelect={() => openNewAgent(repo.path, repo.primary_branch)}
+            onSelect={() =>
+              openNewAgent(repo.path, repo.primary_branch, repo.host)
+            }
           >
             New agent…
           </ContextMenuItem>

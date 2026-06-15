@@ -5,8 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// sidebarAllHosts mirrors the persisted uiState.SidebarAllHosts so the status
+// poller can scrape every usable host (not just the active one) while the
+// all-hosts sidebar is on. Set at startup from getUIState and on every UI-state
+// save (serveUIState).
+var sidebarAllHosts atomic.Bool
 
 // Agent status tracking. There's no event stream reporting agent
 // state, so a single goroutine (statusPoller) scrapes each live agent tab's tmux
@@ -199,10 +206,24 @@ func statusPoller(ctx context.Context, h *hub) {
 			}
 			tick++
 			changed := agentStatuses.pollOnce()
-			// Active remote host: poll every ~3rd tick (≈2s at the 750ms default).
-			if active := curBackend().Name(); !isLocalHost(active) && tick%3 == 0 {
-				if agentStatuses.pollHost(active) {
-					changed = true
+			// Remote hosts are polled every ~3rd tick (≈2s at the 750ms default) —
+			// each capture is an ssh round trip. In all-hosts mode every usable
+			// remote is scraped so the sidebar's cross-host dots stay live;
+			// otherwise only the active remote host is.
+			if tick%3 == 0 {
+				if sidebarAllHosts.Load() {
+					for _, t := range usableHostTargets() {
+						if isLocalHost(t.host) {
+							continue
+						}
+						if agentStatuses.pollHost(t.host) {
+							changed = true
+						}
+					}
+				} else if active := curBackend().Name(); !isLocalHost(active) {
+					if agentStatuses.pollHost(active) {
+						changed = true
+					}
 				}
 			}
 			if changed {

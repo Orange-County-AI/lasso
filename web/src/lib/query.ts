@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query"
-import type { TreePayload, TreeTab, TreeWorkspace } from "@/lib/api"
+import { api, type TreePayload, type TreeTab, type TreeWorkspace } from "@/lib/api"
 
 // One shared QueryClient for the app's server state. Exported (not just provided)
 // so non-component code — the SSE handler in app-store — can invalidate queries.
@@ -32,6 +32,29 @@ export const qk = {
   grid: ["grid"] as const,
   uiState: ["ui-state"] as const,
 }
+
+// ALL_HOSTS_KEY is the localStorage flag for the all-hosts sidebar. It's read
+// synchronously by the shared tree/agents fetchers (so they pick the right
+// endpoint without a React render), and mirrored into the server-persisted
+// uiState (sidebar_all_hosts) so the toggle survives reloads and the status
+// poller knows to scrape every host. The UI drives off uiState; this key is just
+// the fast seed the fetchers read.
+export const ALL_HOSTS_KEY = "lasso-all-hosts"
+
+export function allHostsNow(): boolean {
+  try {
+    return localStorage.getItem(ALL_HOSTS_KEY) === "true"
+  } catch {
+    return false
+  }
+}
+
+// fetchTree / fetchAgents are the shared query functions used everywhere the
+// tree/agent list is read (App, Sidebar, ⌘K). They read the current all-hosts
+// flag so a single invalidation of qk.tree/qk.agents re-fetches the right scope —
+// the queryKey stays stable, so the optimistic setQueryData helpers keep working.
+export const fetchTree = () => api.tree(allHostsNow())
+export const fetchAgents = () => api.agentsList(allHostsNow())
 
 // Optimistic tree edits: a freshly-created tab/workspace is written into the
 // cached /api/tree immediately so the tab strip + sidebar render it without

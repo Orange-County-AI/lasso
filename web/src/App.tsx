@@ -39,7 +39,7 @@ import { api, type TreeWorkspace } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { installHistoryToggle } from "@/lib/history-toggle"
-import { qk, queryClient } from "@/lib/query"
+import { fetchTree, qk, queryClient } from "@/lib/query"
 import { matchShortcut } from "@/lib/shortcuts"
 import {
   kickTerminalSize,
@@ -47,7 +47,7 @@ import {
   TERM_KEY,
   VIEWPORT_TERM_ID,
 } from "@/lib/terminal"
-import { patchUIState } from "@/lib/ui-state"
+import { patchUIState, syncAllHostsFromServer } from "@/lib/ui-state"
 import { useIsMobile } from "@/lib/use-mobile"
 import { cn } from "@/lib/utils"
 
@@ -334,6 +334,9 @@ function Shell() {
   React.useEffect(() => {
     const us = uiState.data
     if (!us) return
+    // Reconcile the all-hosts flag (its fast localStorage seed) with the server's
+    // value, re-fetching the tree/agents if another client toggled it.
+    syncAllHostsFromServer(us.sidebar_all_hosts ?? false)
     serverWidths.current = { left: us.left_width, right: us.right_width }
     pushable.current = true
     const apply = (
@@ -359,7 +362,7 @@ function Shell() {
   const diffDirty = diff.data?.dirty ?? 0
   const gitReady = diff.data != null
 
-  const tree = useQuery({ queryKey: qk.tree, queryFn: api.tree })
+  const tree = useQuery({ queryKey: qk.tree, queryFn: fetchTree })
 
   const activeWorkspace = React.useMemo(
     () => findWorkspace(tree.data, selectedTabId),

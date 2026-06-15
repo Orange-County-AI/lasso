@@ -211,6 +211,10 @@ type uiState struct {
 	SidebarCollapsed bool     `json:"sidebar_collapsed"`
 	LeftWidth        float64  `json:"left_width,omitempty"`
 	RightWidth       float64  `json:"right_width,omitempty"`
+	// SidebarAllHosts shows every usable host's spaces/agents in the sidebar
+	// (grouped by host) instead of only the active host's. Persisted so the status
+	// poller knows to scrape every host while it's on.
+	SidebarAllHosts bool `json:"sidebar_all_hosts"`
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar

@@ -58,6 +58,11 @@ type treeWorkspace struct {
 	Kind    string    `json:"kind"`
 	Branch  string    `json:"branch,omitempty"`
 	Tabs    []treeTab `json:"tabs"`
+	// Host this workspace lives on ("local" or an ssh alias) and its display
+	// label, populated so the all-hosts sidebar can group by host. In the normal
+	// single-host tree these just carry the active host.
+	Host      string `json:"host,omitempty"`
+	HostLabel string `json:"host_label,omitempty"`
 	// AgentStatus is the workspace's aggregate live-agent status for the sidebar
 	// dot (blocked > working > idle), or "" when no tab is running an agent.
 	AgentStatus string `json:"agent_status,omitempty"`
@@ -85,6 +90,10 @@ type treeRepo struct {
 	MainWorkspace   *treeWorkspace `json:"main_workspace,omitempty"`
 	AgentStatus     string         `json:"agent_status,omitempty"`
 	AgentKind       string         `json:"agent_kind,omitempty"`
+	// Host this repo lives on ("local" or an ssh alias) and its display label —
+	// for grouping the all-hosts sidebar by host.
+	Host      string `json:"host,omitempty"`
+	HostLabel string `json:"host_label,omitempty"`
 }
 
 type treePayload struct {
@@ -103,8 +112,47 @@ func spacesKeyWorkspace(id string) string { return "ws:" + id }
 func spacesKeyRepo(path string) string    { return "repo:" + path }
 
 func serveTree(w http.ResponseWriter, r *http.Request) {
-	be := curBackend()
+	// All-hosts mode: aggregate every usable host's tree, grouped by host (local
+	// first), each repo/workspace tagged with its host so the sidebar can render
+	// host sections. The order is the per-host order of each host concatenated —
+	// the frontend groups by host and orders within each group, so ordering stays
+	// per-host (no cross-host reordering).
+	if r.URL.Query().Get("all") == "1" {
+		var allRepos []treeRepo
+		var allScratch []treeWorkspace
+		var order []string
+		for _, t := range usableHostTargets() {
+			repos, scratch := buildHostTree(t.host, t.label)
+			order = append(order, spacesOrder(t.host, scratch, repos)...)
+			allRepos = append(allRepos, repos...)
+			allScratch = append(allScratch, scratch...)
+		}
+		writeJSON(w, treePayload{Repos: allRepos, Scratch: allScratch, Order: order})
+		return
+	}
 	host := sbHost()
+	repos, scratch := buildHostTree(host, hostLabelFor(host))
+	writeJSON(w, treePayload{Repos: repos, Scratch: scratch, Order: spacesOrder(host, scratch, repos)})
+}
+
+// hostLabelFor is a host's sidebar display label: the machine hostname for the
+// local host, else the ssh alias.
+func hostLabelFor(host string) string {
+	if isLocalHost(host) {
+		return localHostname()
+	}
+	return host
+}
+
+// buildHostTree builds one host's repos (sorted) and scratch workspaces for the
+// sidebar, each tagged with the host + label. Returns nil,nil if the host's
+// backend can't be reached.
+func buildHostTree(host, label string) ([]treeRepo, []treeWorkspace) {
+	be, err := hostBackend(host)
+	if err != nil {
+		return nil, nil
+	}
+	hk := hostOrLocal(host)
 	_, repos, _ := reposList(be, host)
 	repoState, _ := listRepoState(host)
 	wss, _ := listWorkspaces(host)
@@ -116,6 +164,8 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 	scratch := []treeWorkspace{}
 	for _, ws := range wss {
 		tw := buildTreeWorkspace(be, ws, statuses, kinds, host)
+		tw.Host = hk
+		tw.HostLabel = label
 		switch {
 		case ws.Kind == "git" && ws.Repo != "" && ws.WorkDir == ws.Repo:
 			// The main checkout (work_dir == repo root) IS the repo row, not a child.
@@ -170,6 +220,7 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 			Path: path, Name: name, PrimaryBranch: primary,
 			LastCommit: ct, Workspaces: repoWss,
 			Upstream: upstream, Ahead: ahead, Behind: behind,
+			Host: hk, HostLabel: label,
 		}
 		if main, ok := mainByRepo[path]; ok {
 			m := main
@@ -193,7 +244,7 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Name < out[j].Name
 	})
-	writeJSON(w, treePayload{Repos: out, Scratch: scratch, Order: spacesOrder(host, scratch, out)})
+	return out, scratch
 }
 
 // spacesOrder resolves the unified top-level order of the "spaces" list: the
@@ -346,10 +397,31 @@ type agentRow struct {
 	Repo           string `json:"repo,omitempty"`
 	Cwd            string `json:"cwd"`
 	Prompt         string `json:"prompt,omitempty"` // initial prompt, for ⌘K search
+	// Host this agent runs on ("local" or an ssh alias) + its display label, so
+	// the all-hosts agents pane can group by host.
+	Host      string `json:"host,omitempty"`
+	HostLabel string `json:"host_label,omitempty"`
 }
 
 func serveAgentsList(w http.ResponseWriter, r *http.Request) {
+	// All-hosts mode: concatenate every usable host's agents (local first), each
+	// tagged with its host so the agents pane can group by host.
+	if r.URL.Query().Get("all") == "1" {
+		out := []agentRow{}
+		for _, t := range usableHostTargets() {
+			out = append(out, buildHostAgents(t.host, t.label)...)
+		}
+		writeJSON(w, map[string]any{"agents": out})
+		return
+	}
 	host := sbHost()
+	writeJSON(w, map[string]any{"agents": buildHostAgents(host, hostLabelFor(host))})
+}
+
+// buildHostAgents returns one host's flat agent list (sorted by workspace then
+// tab title), each row tagged with the host + label.
+func buildHostAgents(host, label string) []agentRow {
+	hk := hostOrLocal(host)
 	statuses := agentStatuses.snapshot()
 	kinds := agentKindsForHost(host) // tabs running an agent (live local, DB remote)
 	agentByID := map[string]AgentRecord{}
@@ -384,7 +456,7 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, agentRow{
 			TabID: tabID, AgentID: t.AgentID, Title: title, Agent: kind, Status: status,
 			WorkspaceID: t.WorkspaceID, WorkspaceTitle: ws.Title, Repo: ws.Repo,
-			Cwd: t.Cwd, Prompt: rec.Description,
+			Cwd: t.Cwd, Prompt: rec.Description, Host: hk, HostLabel: label,
 		})
 	}
 	// Stable order: workspace title, then tab title.
@@ -394,12 +466,22 @@ func serveAgentsList(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Title < out[j].Title
 	})
-	writeJSON(w, map[string]any{"agents": out})
+	return out
 }
 
 // ---------------------------------------------------------------------------
 // mutations
 // ---------------------------------------------------------------------------
+
+// hostOrActive resolves a handler's optional `host` body field, defaulting to
+// the active host. In all-hosts mode the frontend sends the target row's host so
+// a mutation lands on the right machine; single-host callers omit it.
+func hostOrActive(host string) string {
+	if host == "" {
+		return sbHost()
+	}
+	return host
+}
 
 // decodeJSON decodes the request body into v, writing a 400 on failure.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -590,17 +672,23 @@ func serveWorkspaceClose(w http.ResponseWriter, r *http.Request) {
 func serveRepoClose(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Repo string `json:"repo"`
+		Host string `json:"host"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	be := curBackend()
+	host := hostOrActive(req.Host)
+	be, err := hostBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	repo := expandTildeOn(be, req.Repo)
 	if repo == "" {
 		http.Error(w, "repo required", http.StatusBadRequest)
 		return
 	}
-	wss, _ := listWorkspaces(sbHost())
+	wss, _ := listWorkspaces(host)
 	for _, ws := range wss {
 		if ws.Kind != "git" || ws.Repo != repo {
 			continue
@@ -661,18 +749,24 @@ func serveNewTab(w http.ResponseWriter, r *http.Request) {
 func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Repo string `json:"repo"`
+		Host string `json:"host"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	be := curBackend()
+	host := hostOrActive(req.Host)
+	be, err := hostBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	repo := expandTildeOn(be, req.Repo)
 	if repo == "" {
 		http.Error(w, "repo required", http.StatusBadRequest)
 		return
 	}
 	// Reuse the existing main-checkout workspace if there is one.
-	if wss, err := listWorkspaces(sbHost()); err == nil {
+	if wss, err := listWorkspaces(host); err == nil {
 		for _, ws := range wss {
 			if ws.Kind == "git" && ws.WorkDir == repo {
 				if tabs, _ := listTabs(ws.ID); len(tabs) > 0 {
@@ -695,16 +789,16 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 	// Create the main-checkout workspace + an initial shell tab at the repo root.
 	wsID := "w" + newID()
 	tabID := newID()
-	if err := startTabShellOn(sbHost(), tabID, repo); err != nil {
+	if err := startTabShellOn(host, tabID, repo); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
 	title := filepath.Base(repo)
-	if rc, err := getRepoState(sbHost(), repo); err == nil && rc.DisplayName != "" {
+	if rc, err := getRepoState(host, repo); err == nil && rc.DisplayName != "" {
 		title = rc.DisplayName
 	}
-	_ = insertWorkspace(Workspace{ID: wsID, Host: sbHost(), Title: title, Repo: repo, WorkDir: repo, Kind: "git", CreatedAt: now})
+	_ = insertWorkspace(Workspace{ID: wsID, Host: host, Title: title, Repo: repo, WorkDir: repo, Kind: "git", CreatedAt: now})
 	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: nextTabName(wsID), Cwd: repo, Kind: "shell", CreatedAt: now})
 	kickHub()
 	writeJSON(w, map[string]any{"tab_id": tabID, "workspace_id": wsID})
@@ -717,11 +811,12 @@ func serveOpenRepo(w http.ResponseWriter, r *http.Request) {
 func serveSpacesReorder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Order []string `json:"order"`
+		Host  string   `json:"host"` // the host group being reordered (all-hosts mode)
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := setSpacesOrder(sbHost(), req.Order); err != nil {
+	if err := setSpacesOrder(hostOrActive(req.Host), req.Order); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -734,6 +829,7 @@ func serveRepoRename(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Repo string `json:"repo"`
 		Name string `json:"name"`
+		Host string `json:"host"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -742,7 +838,7 @@ func serveRepoRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repo required", http.StatusBadRequest)
 		return
 	}
-	if err := setRepoDisplayName(sbHost(), req.Repo, strings.TrimSpace(req.Name)); err != nil {
+	if err := setRepoDisplayName(hostOrActive(req.Host), req.Repo, strings.TrimSpace(req.Name)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -760,11 +856,17 @@ func serveCreateWorktreeOnly(w http.ResponseWriter, r *http.Request) {
 		BranchPrefix string `json:"branch_prefix"`
 		BranchName   string `json:"branch_name"`
 		Title        string `json:"title"`
+		Host         string `json:"host"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	be := curBackend()
+	host := hostOrActive(req.Host)
+	be, err := hostBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	repo := expandTildeOn(be, req.Repo)
 	if repo == "" {
 		http.Error(w, "repo required", http.StatusBadRequest)
@@ -799,14 +901,14 @@ func serveCreateWorktreeOnly(w http.ResponseWriter, r *http.Request) {
 	}
 	wsID := "w" + newID()
 	tabID := newID()
-	if err := startTabShellOn(sbHost(), tabID, workDir); err != nil {
+	if err := startTabShellOn(host, tabID, workDir); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
-	_ = insertWorkspace(Workspace{ID: wsID, Host: sbHost(), Title: title, Repo: repo, WorkDir: workDir, Kind: "git", CreatedAt: now})
+	_ = insertWorkspace(Workspace{ID: wsID, Host: host, Title: title, Repo: repo, WorkDir: workDir, Kind: "git", CreatedAt: now})
 	_ = insertTab(Tab{ID: tabID, WorkspaceID: wsID, Title: nextTabName(wsID), Cwd: workDir, Kind: "shell", CreatedAt: now})
-	_ = setLastBaseBranch(sbHost(), repo, base)
+	_ = setLastBaseBranch(host, repo, base)
 	kickHub()
 	writeJSON(w, map[string]any{"workspace_id": wsID, "work_dir": workDir, "branch": branch})
 }
@@ -923,6 +1025,7 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		sidebarAllHosts.Store(us.SidebarAllHosts) // keep the poller's view in sync
 		// Push the change to every other connected client (last write wins).
 		if srvHub != nil {
 			srvHub.bumpUI()

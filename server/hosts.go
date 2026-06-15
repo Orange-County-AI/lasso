@@ -211,6 +211,26 @@ func discoveredHosts() []HostInfo {
 	return discoverHosts(context.Background(), false)
 }
 
+// hostTarget is one host to aggregate over: its routing name ("" = local) and a
+// display label.
+type hostTarget struct {
+	host  string
+	label string
+}
+
+// usableHostTargets is the local host plus every reachable, tmux-capable ssh
+// host — the set the cross-host grid and the all-hosts sidebar aggregate over.
+// Local is always first.
+func usableHostTargets() []hostTarget {
+	targets := []hostTarget{{"", localHostname()}}
+	for _, h := range discoveredHosts() {
+		if h.usable() {
+			targets = append(targets, hostTarget{h.Alias, h.Alias})
+		}
+	}
+	return targets
+}
+
 // findHost returns the cached HostInfo for alias, if present.
 func findHost(alias string) (HostInfo, bool) {
 	hostCache.mu.Lock()

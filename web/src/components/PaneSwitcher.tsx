@@ -7,8 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { api } from "@/lib/api"
-import { qk } from "@/lib/query"
+import { fetchAgents, fetchTree, qk } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
 // One searchable entry: a tab (shell or agent), enriched with its workspace +
@@ -56,12 +55,12 @@ export function PaneSwitcher({
 
   const treeQ = useQuery({
     queryKey: qk.tree,
-    queryFn: api.tree,
+    queryFn: fetchTree,
     enabled: open,
   })
   const agentsQ = useQuery({
     queryKey: qk.agents,
-    queryFn: api.agentsList,
+    queryFn: fetchAgents,
     enabled: open,
   })
 

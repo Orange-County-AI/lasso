@@ -99,6 +99,9 @@ func runServer() {
 	srvHub = hub
 	srvCtx = ctx
 	go hub.run(ctx)
+	if us, err := getUIState(); err == nil {
+		sidebarAllHosts.Store(us.SidebarAllHosts) // so the poller scrapes all hosts if it was on
+	}
 	go statusPoller(ctx, hub) // scrape agent tmux panes; push status changes via SSE
 
 	// tmux is the terminal backend now. Set the server's options before any

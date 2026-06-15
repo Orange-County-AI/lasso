@@ -108,13 +108,7 @@ func invalidateGridCache() {
 // fetchGridPanes aggregates panes from the local host plus every reachable,
 // tmux-capable ssh host, concurrently.
 func fetchGridPanes() gridPayload {
-	type target struct{ host, label string }
-	targets := []target{{"", localHostname()}}
-	for _, h := range discoveredHosts() {
-		if h.usable() {
-			targets = append(targets, target{h.Alias, h.Alias})
-		}
-	}
+	targets := usableHostTargets()
 
 	out := gridPayload{Errors: map[string]string{}}
 	var mu sync.Mutex
@@ -122,7 +116,7 @@ func fetchGridPanes() gridPayload {
 	sem := make(chan struct{}, 6)
 	for _, t := range targets {
 		wg.Add(1)
-		go func(t target) {
+		go func(t hostTarget) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()

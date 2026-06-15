@@ -84,6 +84,9 @@ export interface UIState {
   sidebar_collapsed: boolean
   left_width?: number
   right_width?: number
+  // Show every usable host's spaces/agents in the sidebar (grouped by host)
+  // instead of only the active host's.
+  sidebar_all_hosts?: boolean
 }
 
 export interface FileEntry {
@@ -159,6 +162,10 @@ export interface TreeWorkspace {
   kind: "git" | "scratch"
   branch?: string
   tabs: TreeTab[]
+  // Host this workspace lives on ("local" or an ssh alias) + its display label,
+  // for grouping the sidebar by host in all-hosts mode.
+  host?: string
+  host_label?: string
   // Aggregate live-agent status for the sidebar dot (blocked > working > idle),
   // or absent when no tab is running an agent.
   agent_status?: AgentStatus
@@ -185,6 +192,10 @@ export interface TreeRepo {
   main_workspace?: TreeWorkspace
   agent_status?: AgentStatus
   agent_kind?: string
+  // Host this repo lives on ("local" or an ssh alias) + its display label, for
+  // grouping the sidebar by host in all-hosts mode.
+  host?: string
+  host_label?: string
 }
 
 export interface TreePayload {
@@ -207,6 +218,10 @@ export interface AgentRow {
   repo?: string
   cwd: string
   prompt?: string
+  // Host this agent runs on ("local" or an ssh alias) + its display label, for
+  // grouping the agents pane by host in all-hosts mode.
+  host?: string
+  host_label?: string
 }
 
 // httpError builds a concise Error from a non-OK response. The backend returns
@@ -341,8 +356,12 @@ export const api = {
   version: () => getJSON<VersionInfo>("/api/version"),
 
   // --- sidebar tree + workspace/tab/repo mutations ---
-  tree: () => getJSON<TreePayload>("/api/tree"),
-  agentsList: () => getJSON<{ agents: AgentRow[] }>("/api/agents"),
+  // `all` aggregates every usable host's spaces/agents (grouped by host) instead
+  // of just the active host's.
+  tree: (all = false) =>
+    getJSON<TreePayload>(`/api/tree${all ? "?all=1" : ""}`),
+  agentsList: (all = false) =>
+    getJSON<{ agents: AgentRow[] }>(`/api/agents${all ? "?all=1" : ""}`),
 
   // Point the single persistent viewport ttyd at a tab's tmux session (an empty
   // tab_id just warms the viewport). Returns the stable iframe base path — the
@@ -377,22 +396,25 @@ export const api = {
   closeWorkspace: (workspace_id: string) =>
     postJSON<{ ok: boolean }>("/api/workspace/close", { workspace_id }),
   // Persist the user's drag-and-drop ordering of the unified "spaces" list (the
-  // full current key list in its new order).
-  reorderSpaces: (order: string[]) =>
-    postJSON<{ ok: boolean }>("/api/spaces/reorder", { order }),
+  // full current key list in its new order). `host` scopes the order to one host
+  // group in all-hosts mode (omitted = the active host).
+  reorderSpaces: (order: string[], host?: string) =>
+    postJSON<{ ok: boolean }>("/api/spaces/reorder", { order, host }),
   // Open (creating on first use) a terminal on a repo's primary branch — its
-  // main checkout at the repo root.
-  openRepo: (repo: string) =>
+  // main checkout at the repo root. `host` targets the repo's host in all-hosts
+  // mode (omitted = the active host).
+  openRepo: (repo: string, host?: string) =>
     postJSON<{ tab_id: string; workspace_id: string }>("/api/repo/open", {
       repo,
+      host,
     }),
-  renameRepo: (repo: string, name: string) =>
-    postJSON<{ ok: boolean }>("/api/repo/rename", { repo, name }),
+  renameRepo: (repo: string, name: string, host?: string) =>
+    postJSON<{ ok: boolean }>("/api/repo/rename", { repo, name, host }),
   // Close a whole repo: closes its main checkout and every linked worktree (and
   // their tabs/agents), dropping the repo from the spaces pane. The on-disk
   // checkout/worktrees are kept; reopen via New Agent / ⌘K.
-  closeRepo: (repo: string) =>
-    postJSON<{ ok: boolean }>("/api/repo/close", { repo }),
+  closeRepo: (repo: string, host?: string) =>
+    postJSON<{ ok: boolean }>("/api/repo/close", { repo, host }),
 
   // Make a git worktree + workspace with a shell tab but NO agent.
   createWorktree: (body: {
@@ -400,6 +422,7 @@ export const api = {
     base_branch?: string
     branch_name?: string
     title?: string
+    host?: string
   }) =>
     postJSON<{ workspace_id: string; work_dir: string; branch: string }>(
       "/api/create-worktree",
