@@ -4,6 +4,7 @@ import {
   ChevronRight,
   GitBranch,
   Laptop,
+  Loader2,
   Plus,
   Server,
   Terminal,
@@ -190,6 +191,35 @@ export function Sidebar({
     queryFn: fetchAgents,
     refetchInterval: allHosts ? 4000 : false,
   })
+  // The usable host set, only needed in all-hosts mode to know which hosts are
+  // still expected but haven't reported their tree yet (shared cache with the
+  // HostSwitcher's query).
+  const hostsQuery = useQuery({
+    queryKey: qk.hosts,
+    queryFn: () => api.hosts(),
+    staleTime: 20_000,
+    enabled: allHosts,
+  })
+
+  // Hosts the sidebar expects to show but whose tree hasn't loaded yet. In
+  // all-hosts mode the tree dials each remote serially, so a cold host yields
+  // nothing on early polls and fills in later. The backend reports the hosts it
+  // successfully queried (tree.data.hosts) — even empty ones — so a host that's
+  // usable (per /api/hosts) but not yet in that set is "still connecting", not
+  // "empty". We render a per-host loading row for those instead of nothing.
+  const pendingHosts = React.useMemo(() => {
+    if (!allHosts) return []
+    const hp = hostsQuery.data
+    if (!hp) return [] // host list not loaded yet — don't guess
+    const expected = [
+      { key: "local", label: hp.hostname || "local" },
+      ...hp.hosts
+        .filter((h) => h.reachable && h.has_tmux)
+        .map((h) => ({ key: h.alias, label: h.alias })),
+    ]
+    const loaded = new Set(tree.data?.hosts ?? [])
+    return expected.filter((e) => !loaded.has(e.key))
+  }, [allHosts, hostsQuery.data, tree.data?.hosts])
 
   // How many purely-numeric scratch agents ("1", "2"…) each workspace holds. A
   // lone one needs no number to disambiguate (just the workspace name); two or
@@ -465,6 +495,14 @@ export function Sidebar({
                   </React.Fragment>
                 )
               })}
+              {/* Hosts still connecting: a header + loading row so their spaces
+                  don't trickle in silently. Rendered after the loaded hosts. */}
+              {pendingHosts.map((h) => (
+                <React.Fragment key={`pending:${h.key}`}>
+                  <HostHeader label={h.label} />
+                  <HostLoadingRow />
+                </React.Fragment>
+              ))}
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
@@ -597,6 +635,18 @@ function HostHeader({ label }: { label: string }) {
       {local ? <Laptop className="size-3" /> : <Server className="size-3" />}
       <span className="truncate">{label}</span>
       <span className="ml-1 h-px flex-1 bg-border" />
+    </div>
+  )
+}
+
+// HostLoadingRow is the placeholder shown under a host header while that host's
+// spaces are still being fetched (all-hosts mode), so the section reads as
+// "loading" rather than empty.
+function HostLoadingRow() {
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-muted-foreground text-xs">
+      <Loader2 className="size-3 animate-spin" />
+      <span>loading…</span>
     </div>
   )
 }

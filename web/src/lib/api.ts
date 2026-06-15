@@ -205,6 +205,13 @@ export interface TreePayload {
   // keys ("ws:<id>" for scratch, "repo:<path>" for repos). Rows absent from it
   // (e.g. just-created) are rendered at the bottom by the sidebar.
   order: string[]
+  // Host keys ("local" or an ssh alias) whose tree was successfully queried this
+  // round (present even when the host has zero workspaces). In all-hosts mode the
+  // sidebar reconciles this against the usable host set to show a per-host loading
+  // state for hosts still connecting, instead of remote workspaces trickling in.
+  // errors maps a host key to why it couldn't be reached this round.
+  hosts?: string[]
+  errors?: Record<string, string>
 }
 
 export interface AgentRow {

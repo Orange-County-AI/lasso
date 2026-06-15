@@ -104,6 +104,16 @@ type treePayload struct {
 	// renders one unified list from it; items absent from Order (e.g. just-created)
 	// are appended at the bottom client-side. See serveTree + getSpacesOrder.
 	Order []string `json:"order"`
+	// Hosts are the host keys ("local" or an ssh alias) whose tree was SUCCESSFULLY
+	// queried this round — even if a host has zero workspaces. Errors are the hosts
+	// that couldn't be reached (host key → reason), mirroring grid's Errors. In
+	// all-hosts mode buildHostTree dials each remote serially and a cold/unreachable
+	// host yields nothing; reporting success here lets the sidebar tell "loaded &
+	// empty" apart from "still connecting" and show a per-host loading state until
+	// every usable host has reported, instead of remote workspaces trickling in over
+	// successive polls. (Single-host mode just reports the active host.)
+	Hosts  []string          `json:"hosts,omitempty"`
+	Errors map[string]string `json:"errors,omitempty"`
 }
 
 // spacesKeyWorkspace / spacesKeyRepo build the stable keys used to order the
@@ -121,18 +131,30 @@ func serveTree(w http.ResponseWriter, r *http.Request) {
 		var allRepos []treeRepo
 		var allScratch []treeWorkspace
 		var order []string
+		hosts := []string{}
+		errs := map[string]string{}
 		for _, t := range usableHostTargets() {
-			repos, scratch := buildHostTree(t.host, t.label)
+			repos, scratch, err := buildHostTree(t.host, t.label)
+			if err != nil {
+				// A cold/unreachable host contributes nothing this round; record why
+				// so the sidebar shows it as loading rather than as empty.
+				errs[hostOrLocal(t.host)] = err.Error()
+				continue
+			}
+			hosts = append(hosts, hostOrLocal(t.host))
 			order = append(order, spacesOrder(t.host, scratch, repos)...)
 			allRepos = append(allRepos, repos...)
 			allScratch = append(allScratch, scratch...)
 		}
-		writeJSON(w, treePayload{Repos: allRepos, Scratch: allScratch, Order: order})
+		if len(errs) == 0 {
+			errs = nil
+		}
+		writeJSON(w, treePayload{Repos: allRepos, Scratch: allScratch, Order: order, Hosts: hosts, Errors: errs})
 		return
 	}
 	host := sbHost()
-	repos, scratch := buildHostTree(host, hostLabelFor(host))
-	writeJSON(w, treePayload{Repos: repos, Scratch: scratch, Order: spacesOrder(host, scratch, repos)})
+	repos, scratch, _ := buildHostTree(host, hostLabelFor(host))
+	writeJSON(w, treePayload{Repos: repos, Scratch: scratch, Order: spacesOrder(host, scratch, repos), Hosts: []string{hostOrLocal(host)}})
 }
 
 // hostLabelFor is a host's sidebar display label: the machine hostname for the
@@ -145,12 +167,13 @@ func hostLabelFor(host string) string {
 }
 
 // buildHostTree builds one host's repos (sorted) and scratch workspaces for the
-// sidebar, each tagged with the host + label. Returns nil,nil if the host's
-// backend can't be reached.
-func buildHostTree(host, label string) ([]treeRepo, []treeWorkspace) {
+// sidebar, each tagged with the host + label. Returns the backend error if the
+// host can't be reached (so the all-hosts caller can report it as still-loading
+// rather than silently empty).
+func buildHostTree(host, label string) ([]treeRepo, []treeWorkspace, error) {
 	be, err := hostBackend(host)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	hk := hostOrLocal(host)
 	_, repos, _ := reposList(be, host)
@@ -244,7 +267,7 @@ func buildHostTree(host, label string) ([]treeRepo, []treeWorkspace) {
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out, scratch
+	return out, scratch, nil
 }
 
 // spacesOrder resolves the unified top-level order of the "spaces" list: the
