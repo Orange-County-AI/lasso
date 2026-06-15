@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 //	lasso status          report the pitchfork daemon's status
 //	lasso update          update to the latest release (mise upgrade, or self-replace)
 //	lasso doctor          check the local install (tmux, ttyd, port, version)
+//	lasso closeme         close the calling agent itself (uses $LASSO_TAB_ID)
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
@@ -56,6 +60,9 @@ func main() {
 		case "doctor":
 			cliDoctor()
 			return
+		case "closeme":
+			cliCloseMe()
+			return
 		case "version", "--version", "-v":
 			fmt.Println(lassoVersion())
 			return
@@ -90,11 +97,67 @@ usage:
   lasso status             show the pitchfork daemon's status
   lasso update             update lasso to the latest release
   lasso doctor             check the local install
+  lasso closeme            close the calling agent itself (uses $LASSO_TAB_ID)
   lasso version            print the version
 
 start/restart take server flags (--tailscale, -listen, …) and persist them into
 the daemon's run line. lasso is supervised by pitchfork — see the README.
 `)
+}
+
+// ---------------------------------------------------------------------------
+// closeme — an agent closes itself
+// ---------------------------------------------------------------------------
+
+// cliCloseMe lets a lasso-spawned agent shut itself down with a single command,
+// no MCP round-trip and no need to know its own id beyond the $LASSO_TAB_ID the
+// session already exports. It POSTs that tab id to the running server's
+// /api/agent/close (the same soft-close the UI and the close_agent MCP tool use),
+// so the server kills the agent process, closes the pane, and notifies the UI.
+//
+// The server is assumed to be the local default loopback bind; override the
+// address with LASSO_LISTEN (host:port) for a non-default port. UI_AUTH is
+// honored if set in the environment.
+func cliCloseMe() {
+	tabID := os.Getenv("LASSO_TAB_ID")
+	if tabID == "" {
+		fatal("closeme: $LASSO_TAB_ID is unset — you are not running inside a lasso-managed terminal")
+	}
+	addr := defaultListenAddr
+	if env := os.Getenv("LASSO_LISTEN"); env != "" {
+		addr = env
+	}
+	user, pass, hasAuth := parseAuth(os.Getenv("UI_AUTH"))
+	if err := postAgentClose(addr, tabID, user, pass, hasAuth); err != nil {
+		fatal("closeme: %v", err)
+	}
+	fmt.Printf("closeme: closing agent %s\n", tabID)
+}
+
+// postAgentClose POSTs a tab id to the server's /api/agent/close (the soft-close
+// shared with the UI and the close_agent MCP tool). Closing our own tab kills
+// the tmux session this process runs in, so the connection may drop before the
+// response arrives — that's success, not an error. Only a failure to *reach* the
+// server, or a non-200 status, is reported.
+func postAgentClose(addr, tabID, user, pass string, hasAuth bool) error {
+	body, _ := json.Marshal(map[string]string{"tab_id": tabID})
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/agent/close", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hasAuth {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("reach lasso at %s: %w (is the server running? set LASSO_LISTEN for a non-default port)", addr, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %s", resp.Status)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

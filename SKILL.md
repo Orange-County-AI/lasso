@@ -25,6 +25,19 @@ Check whether you're a lasso agent at all by testing `LASSO_TAB_ID`:
 echo "$LASSO_TAB_ID"   # empty/unset => you are NOT in a lasso-managed terminal
 ```
 
+## Closing yourself when you're done
+
+The easiest way to shut yourself down is the CLI — it reads `$LASSO_TAB_ID` for
+you, so there's nothing to pass:
+
+```bash
+lasso closeme
+```
+
+That tells the running lasso server to kill your agent process and close your
+tab (the same soft-close the UI and the `close_agent` MCP tool perform). If the
+server runs on a non-default port, set `LASSO_LISTEN=host:port`.
+
 ## Acting on yourself via the lasso MCP tools
 
 The lasso MCP server runs inside lasso's own process, **not your shell**, so it
@@ -32,14 +45,8 @@ cannot read your environment — you must pass `$LASSO_TAB_ID` yourself.
 
 - **`whoami`** — pass `$LASSO_TAB_ID` as `tab_id` to get your own agent record.
 - **`get_agent`** — equivalently, call with `$LASSO_TAB_ID` as the id.
-- **`close_agent`** — call with `$LASSO_TAB_ID` to shut yourself down once your
-  work is finished.
+- **`close_agent`** — call with `$LASSO_TAB_ID` to shut yourself down (the
+  long-hand of `lasso closeme`).
 
-Example: when you're done, close yourself by passing your own id:
-
-```
-close_agent(id = $LASSO_TAB_ID)
-```
-
-If `$LASSO_TAB_ID` is empty, you are not running under lasso and these tools
-don't apply to you.
+If `$LASSO_TAB_ID` is empty, you are not running under lasso and none of this
+applies to you.
