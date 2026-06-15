@@ -1,58 +1,62 @@
-// The xterm.js palettes for the terminal, derived from the Onyx design tokens
-// (onyx preset.json / colors_and_type.css). Both run indigo-forward to match
-// Onyx's cool, achromatic-plus-indigo look — the cool slots (blue+cyan+magenta)
-// collapse into the indigo accent family, while green/yellow/red stay as the
-// ok/warn/danger tokens so they remain functional status colors (git diff, ls).
-// Which one is live follows the app's appearance mode (see lib/mode.ts); the
-// browser re-pins it on mode change and across ttyd reconnects.
+// The xterm.js palettes for the terminal, tuned to the Nothing design system.
+// The base is monochrome — OLED black canvas, white text, a white (not colored)
+// cursor and a neutral selection — matching the achromatic chrome. The ANSI
+// hue slots stay functional (TUIs, git diff, ls --color rely on them) but are
+// mapped to Nothing's restrained status palette: red is the one true signal
+// (#d71921), green/yellow the data status hues, and the cool slots
+// (blue/cyan/magenta) are desaturated so the terminal reads calm rather than
+// neon. Which palette is live follows the app's appearance mode (see
+// lib/mode.ts); the browser re-pins it on mode change and across ttyd
+// reconnects. (Export names keep the ONYX_* identifier for back-compat with
+// importers — only the values changed.)
 export const ONYX_XTERM_DARK: Record<string, unknown> = {
-  background: "#06070c",
-  foreground: "#f4f5fa",
-  cursor: "#7b7fff",
-  cursorAccent: "#06070c",
-  selectionBackground: "rgba(123, 127, 255, 0.30)",
-  black: "#11131c",
-  red: "#f2545b",
-  green: "#4ade9a",
-  yellow: "#f2b144",
-  blue: "#7b7fff",
-  magenta: "#9498ff",
-  cyan: "#9498ff",
-  white: "#b7bbc8",
-  brightBlack: "#3b3f4e",
-  brightRed: "#f57b80",
-  brightGreen: "#74e6a8",
-  brightYellow: "#f6c674",
-  brightBlue: "#9498ff",
-  brightMagenta: "#b3a4ff",
-  brightCyan: "#b3a4ff",
-  brightWhite: "#f4f5fa",
+  background: "#000000",
+  foreground: "#ededed",
+  cursor: "#ffffff",
+  cursorAccent: "#000000",
+  selectionBackground: "rgba(255, 255, 255, 0.20)",
+  black: "#1a1a1a",
+  red: "#d71921",
+  green: "#4a9e5c",
+  yellow: "#d4a843",
+  blue: "#5b9bf6",
+  magenta: "#a78bda",
+  cyan: "#6fb7c4",
+  white: "#b8b8b8",
+  brightBlack: "#555555",
+  brightRed: "#ef5b61",
+  brightGreen: "#6cba7d",
+  brightYellow: "#e3c06a",
+  brightBlue: "#82b4ff",
+  brightMagenta: "#c0a9e6",
+  brightCyan: "#92cbd6",
+  brightWhite: "#ffffff",
 }
 
-// Light mode: dark text on Onyx's light canvas; the bright pastels are darkened
-// so they stay legible on a light background.
+// Light mode — "printed technical manual": black ink on warm off-white paper;
+// the bright hues are darkened so they stay legible on a light background.
 export const ONYX_XTERM_LIGHT: Record<string, unknown> = {
-  background: "#f4f5fa",
-  foreground: "#1a1c23",
-  cursor: "#5c61e6",
-  cursorAccent: "#f4f5fa",
-  selectionBackground: "rgba(92, 97, 230, 0.20)",
-  black: "#1a1c23",
-  red: "#c83a41",
-  green: "#1a9259",
-  yellow: "#a8780f",
-  blue: "#5c61e6",
-  magenta: "#5c61e6",
-  cyan: "#5c61e6",
-  white: "#8a8f9c",
-  brightBlack: "#6b7080",
-  brightRed: "#e0545b",
-  brightGreen: "#28a86a",
-  brightYellow: "#c9941f",
-  brightBlue: "#7b7fff",
-  brightMagenta: "#7b7fff",
-  brightCyan: "#7b7fff",
-  brightWhite: "#1a1c23",
+  background: "#f5f5f5",
+  foreground: "#1a1a1a",
+  cursor: "#000000",
+  cursorAccent: "#f5f5f5",
+  selectionBackground: "rgba(0, 0, 0, 0.14)",
+  black: "#1a1a1a",
+  red: "#c0141b",
+  green: "#2e7d46",
+  yellow: "#9a7b1f",
+  blue: "#007aff",
+  magenta: "#7a4fb0",
+  cyan: "#2f7e8c",
+  white: "#8a8a8a",
+  brightBlack: "#666666",
+  brightRed: "#d71921",
+  brightGreen: "#3a9457",
+  brightYellow: "#b48f24",
+  brightBlue: "#3392ff",
+  brightMagenta: "#9265c4",
+  brightCyan: "#3f97a6",
+  brightWhite: "#000000",
 }
 
 // Fixed terminal iframes (the standalone terminal + shell). The per-tab

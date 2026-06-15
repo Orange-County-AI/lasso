@@ -38,7 +38,10 @@ export function Pill({
         "rounded-md px-2 py-px font-normal text-[13px]",
         multiline
           ? "h-auto min-w-0 items-start overflow-visible whitespace-normal py-0.5 leading-snug [overflow-wrap:anywhere]"
-          : "whitespace-nowrap",
+          : // Single-line pills are the Nothing "instrument-panel" label: Space
+            // Mono, ALL CAPS, tracked out. Multiline pills (repo paths, version
+            // strings) keep the normal sans/case so they stay readable.
+            "whitespace-nowrap font-label text-[11px] uppercase tracking-wider",
         toneClass[tone],
         clickable && "cursor-pointer hover:bg-primary/15",
         className

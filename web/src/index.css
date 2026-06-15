@@ -2,18 +2,25 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Onyx design-system fonts, self-hosted via @fontsource (Vite bundles the woff2
- * into the embedded build — no Google Fonts CDN on this loopback tool). Geist is
- * the UI sans, Space Grotesk the display/heading face, JetBrains Mono the code
- * face. The *terminal* keeps its own vendored JetBrainsMono Nerd Font (injected
- * into the ttyd iframe by lib/theme.ts) for the Nerd glyphs TUIs draw with. */
-@import "@fontsource/geist-sans/400.css";
-@import "@fontsource/geist-sans/500.css";
-@import "@fontsource/geist-sans/600.css";
-@import "@fontsource/geist-sans/700.css";
+/* Nothing-design font stack, self-hosted via @fontsource (Vite bundles the woff2
+ * into the embedded build — no Google Fonts CDN on this loopback tool). The trio:
+ * Space Grotesk = UI/body sans; Space Mono = instrument-panel labels & data
+ * (ALL CAPS); Doto = variable dot-matrix display for hero moments. JetBrains Mono
+ * is kept for code/diff (a true coding face), and the *terminal* keeps its own
+ * vendored JetBrainsMono Nerd Font (injected into ttyd by lib/theme.ts) for the
+ * Nerd glyphs TUIs draw with. Geist stays as a sans fallback. */
+@import "@fontsource/space-grotesk/300.css";
+@import "@fontsource/space-grotesk/400.css";
 @import "@fontsource/space-grotesk/500.css";
 @import "@fontsource/space-grotesk/600.css";
 @import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/space-mono/400.css";
+@import "@fontsource/space-mono/700.css";
+@import "@fontsource/doto/400.css";
+@import "@fontsource/doto/500.css";
+@import "@fontsource/doto/700.css";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 @import "@fontsource/jetbrains-mono/600.css";
@@ -21,40 +28,46 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  /* Onyx type stacks: Geist (UI sans), Space Grotesk (display), JetBrains Mono
-   * (code). font-display is exposed as a Tailwind utility for headings. */
-  --font-sans: "Geist", system-ui, sans-serif;
-  --font-display: "Space Grotesk", "Geist", system-ui, sans-serif;
+  /* Nothing type stacks. font-sans (Space Grotesk) is the UI/body voice;
+   * font-display (Doto, variable dot-matrix) is for hero moments only;
+   * font-label (Space Mono) is the ALL-CAPS instrument-panel label face;
+   * font-mono (JetBrains Mono) stays for code/diff. All exposed as Tailwind
+   * utilities: font-display, font-label, font-mono. */
+  --font-sans: "Space Grotesk", "Geist", system-ui, sans-serif;
+  --font-display: "Doto", "Space Grotesk", system-ui, sans-serif;
+  --font-label: "Space Mono", "JetBrains Mono", ui-monospace, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  /* Onyx color + radius + motion utilities (from onyx preset.json), available as
-   * bg-onyx-bg / text-onyx-accent / rounded-onyx-md / ease-onyx for new work. */
-  --color-onyx-bg: #06070c;
-  --color-onyx-bg-1: #0a0b12;
-  --color-onyx-bg-2: #11131c;
-  --color-onyx-bg-vis: #08091a;
-  --color-onyx-fg: #f4f5fa;
-  --color-onyx-fg-1: #b7bbc8;
-  --color-onyx-fg-2: #6b7080;
-  --color-onyx-fg-3: #3b3f4e;
-  --color-onyx-line: #1f2230;
-  --color-onyx-line-1: #2a2d3d;
-  --color-onyx-line-active: #3b3f5a;
-  --color-onyx-line-dash: #2a2d3d;
-  --color-onyx-accent: #7b7fff;
-  --color-onyx-accent-1: #9498ff;
-  --color-onyx-accent-2: #5c61e6;
-  --color-onyx-accent-fade: rgba(123, 127, 255, 0.18);
-  --color-onyx-accent-grid: rgba(123, 127, 255, 0.45);
-  --color-onyx-warn: #f2b144;
-  --color-onyx-warn-fade: rgba(242, 177, 68, 0.16);
-  --color-onyx-danger: #f2545b;
-  --color-onyx-danger-fade: rgba(242, 84, 91, 0.16);
-  --color-onyx-ok: #4ade9a;
-  --color-onyx-ok-fade: rgba(74, 222, 154, 0.16);
+  /* Theme-utility aliases, available as bg-onyx-bg / text-onyx-accent /
+   * rounded-onyx-md / ease-onyx for new work. Repointed onto the live --h-*
+   * Nothing seam so they track the active light/dark mode (no longer the old
+   * Onyx indigo). ease-onyx is the Nothing "percussive" ease-out. */
+  --color-onyx-bg: var(--h-bg);
+  --color-onyx-bg-1: var(--h-panel);
+  --color-onyx-bg-2: var(--h-hover);
+  --color-onyx-bg-vis: var(--h-hover);
+  --color-onyx-fg: var(--h-fg);
+  --color-onyx-fg-1: var(--h-fg);
+  --color-onyx-fg-2: var(--h-muted);
+  --color-onyx-fg-3: var(--h-muted);
+  --color-onyx-line: var(--h-border);
+  --color-onyx-line-1: var(--h-border);
+  --color-onyx-line-active: var(--h-muted);
+  --color-onyx-line-dash: var(--h-border);
+  --color-onyx-accent: var(--h-accent);
+  --color-onyx-accent-1: var(--h-accent);
+  --color-onyx-accent-2: var(--h-accent);
+  --color-onyx-accent-fade: var(--h-accent-dim);
+  --color-onyx-accent-grid: var(--h-accent-dim);
+  --color-onyx-warn: var(--h-warn);
+  --color-onyx-warn-fade: rgba(212, 168, 67, 0.16);
+  --color-onyx-danger: var(--h-bad);
+  --color-onyx-danger-fade: rgba(215, 25, 33, 0.16);
+  --color-onyx-ok: var(--h-good);
+  --color-onyx-ok-fade: rgba(74, 158, 92, 0.16);
   --radius-onyx-sm: 2px;
   --radius-onyx-md: 4px;
   --radius-onyx-lg: 6px;
-  --ease-onyx: cubic-bezier(0.2, 0.7, 0.1, 1);
+  --ease-onyx: cubic-bezier(0.25, 0.1, 0.25, 1);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -91,52 +104,50 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
 
-  /* Elevation. The palette is deliberately flat; these give surfaces
-   * physical depth without fighting it — drop shadows in plain black (read on
-   * any theme), a faint top "edge" highlight (white, low alpha) faking a light
-   * source from above, and an inset "well" that sinks inputs/recessed controls.
-   * Exposed as shadow-elev-* / shadow-well utilities; Tailwind v4 composes them
-   * with ring-* into one box-shadow, so focus rings survive. */
-  --shadow-elev-sm:
-    0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  --shadow-elev-md:
-    0 4px 10px -3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.13);
-  --shadow-elev-pop:
-    0 12px 28px -10px rgba(0, 0, 0, 0.55), 0 3px 8px -3px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --shadow-elev-modal:
-    0 28px 64px -18px rgba(0, 0, 0, 0.7), 0 10px 24px -10px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  /* Nothing is flat: no shadows, no blur. Surfaces separate by border and
+   * background contrast, never elevation. These shadow-* utilities are kept as
+   * names (button/dialog/input still reference them) but neutralized to `none`,
+   * so the whole UI reads as crisp instrument panels rather than floating cards.
+   * Tailwind v4 still composes ring-* on top, so focus rings survive. */
+  --shadow-elev-sm: none;
+  --shadow-elev-md: none;
+  --shadow-elev-pop: none;
+  --shadow-elev-modal: none;
+  --shadow-well: none;
 }
 
 /*
- * The Onyx palette. These --h-* variables are the single source of truth for
+ * The Nothing palette. These --h-* variables are the single source of truth for
  * lasso's colors: every bespoke view below, the CodeMirror theme, highlight.js,
  * and shadcn's design tokens (mapped onto them) all cascade from here. :root holds
- * the canonical Onyx *dark* tokens (onyx preset.json); the `:root.light` block
- * below overrides only the --h-* values for light mode, so every shadcn token and
- * bespoke view flips automatically. The active mode is set as a dark/light class
- * on <html> (see lib/mode.ts + the inline script in index.html). The --h-* names
- * are kept as a stable seam so consumers didn't need rewriting when the theme
- * moved onto Onyx.
+ * the *dark* tokens (OLED-black "instrument panel in a dark room"); the
+ * `:root.light` block below overrides only the --h-* values for light mode
+ * ("printed technical manual" — off-white paper, black ink), so every shadcn
+ * token and bespoke view flips automatically. The active mode is set as a
+ * dark/light class on <html> (see lib/mode.ts + the inline script in index.html).
+ *
+ * Nothing rule: color is not the hierarchy — brightness is. --h-accent is
+ * monochrome (white on dark, black on light): the high-contrast "primary/active"
+ * signal for chrome (buttons, active tabs, focus, selection). Red (#D71921) is an
+ * INTERRUPT, never decorative — it lives only in --h-bad (destructive/error). The
+ * status hues (good/warn) are reserved for encoding data (git state, diffs).
  */
 :root {
-  --h-bg: #06070c; /* onyx --bg (base, matches terminal bg) */
-  --h-panel: #0a0b12; /* onyx --bg-1 (cards/panels) */
-  --h-border: #1f2230; /* onyx --line */
-  --h-hover: #11131c; /* onyx --bg-2 (hover/elevated surface) */
-  --h-fg: #f4f5fa; /* onyx --fg */
-  --h-muted: #6b7080; /* onyx --fg-2 */
-  --h-accent: #7b7fff; /* onyx --accent (indigo) */
-  --h-accent-dim: rgba(123, 127, 255, 0.18); /* onyx --accent-fade */
-  --h-dir: #9498ff; /* onyx --accent-1 */
-  --h-good: #4ade9a; /* onyx --ok */
-  --h-warn: #f2b144; /* onyx --warn */
-  --h-bad: #f2545b; /* onyx --danger */
+  --h-bg: #000000; /* OLED black — base canvas */
+  --h-panel: #111111; /* surface — cards/panels */
+  --h-border: #262626; /* visible seam (no shadows → borders separate) */
+  --h-hover: #1a1a1a; /* surface-raised — hover/elevated */
+  --h-fg: #ededed; /* text-primary */
+  --h-muted: #8a8a8a; /* text-secondary — labels, metadata */
+  --h-accent: #ffffff; /* monochrome active/primary signal (text-display) */
+  --h-accent-dim: rgba(255, 255, 255, 0.1); /* selection / active tint */
+  --h-dir: #ffffff; /* directories read brightest (brightness = hierarchy) */
+  --h-good: #4a9e5c; /* Nothing success — confirmed/connected */
+  --h-warn: #d4a843; /* Nothing warning — pending/degraded */
+  --h-bad: #d71921; /* Nothing accent red — destructive/error ONLY */
+  --h-link: #5b9bf6; /* interactive blue — links & code keywords only */
 
-  --radius: 0.25rem; /* onyx — near-flat */
+  --radius: 0.25rem; /* technical 4px — instrument, not pill */
 
   /* shadcn tokens → --h-* palette */
   --background: var(--h-bg);
@@ -167,23 +178,26 @@
   --sidebar-ring: var(--h-accent);
 }
 
-/* Light mode — override only the --h-* seam with Onyx's light tokens (onyx
- * preset.json light block); the shadcn-token mapping in :root re-resolves to
- * these automatically. Semantic colors (good/warn/bad) are darkened from Onyx's
- * bright pastels so they stay legible as text on the light canvas. */
+/* Light mode — "printed technical manual": warm off-white paper, black ink.
+ * Override only the --h-* seam; the shadcn-token mapping in :root re-resolves to
+ * these automatically. Cards (#fff) on the off-white page (#f5f5f5) read as
+ * subtle elevation without any shadow. Accent is black (monochrome primary);
+ * status hues are darkened from the dark-mode values so they stay legible as
+ * ink on paper. */
 :root.light {
-  --h-bg: #f4f5fa; /* onyx light background */
-  --h-panel: #ffffff; /* onyx light card */
-  --h-border: #d6d9e6; /* onyx light border */
-  --h-hover: #e5e7f0; /* onyx light secondary/muted */
-  --h-fg: #06070c; /* onyx light foreground */
-  --h-muted: #6b7080; /* onyx --fg-2 */
-  --h-accent: #5c61e6; /* onyx light primary (deeper indigo) */
-  --h-accent-dim: rgba(92, 97, 230, 0.14);
-  --h-dir: #5c61e6;
-  --h-good: #15935f; /* darkened ok for light-bg legibility */
-  --h-warn: #a8780f; /* darkened warn */
-  --h-bad: #d63d44; /* darkened danger */
+  --h-bg: #f5f5f5; /* warm off-white paper */
+  --h-panel: #ffffff; /* card = white on off-white = elevation w/o shadow */
+  --h-border: #d4d4d4; /* visible seam */
+  --h-hover: #ececec; /* surface-raised — hover/elevated */
+  --h-fg: #1a1a1a; /* text-primary (black ink) */
+  --h-muted: #666666; /* text-secondary */
+  --h-accent: #000000; /* monochrome active/primary signal (black ink) */
+  --h-accent-dim: rgba(0, 0, 0, 0.08); /* selection / active tint */
+  --h-dir: #000000; /* directories read darkest (brightness = hierarchy) */
+  --h-good: #2e7d46; /* darkened success for light-bg legibility */
+  --h-warn: #9a7b1f; /* darkened warning */
+  --h-bad: #c0141b; /* darkened Nothing red — destructive/error ONLY */
+  --h-link: #007aff; /* interactive blue */
 }
 
 @layer base {
@@ -298,9 +312,10 @@
 .entry .chg {
   flex: 0 0 auto;
   margin-left: 8px;
+  font-family: var(--font-label);
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 .entry.d .chg {
   margin-left: auto;
@@ -318,7 +333,7 @@
   color: var(--h-warn);
 }
 .entry.chg-renamed .chg {
-  color: var(--h-accent);
+  color: var(--h-link);
 }
 .entry.chg-deleted .chg {
   color: var(--h-bad);
@@ -331,7 +346,7 @@
   color: var(--h-warn);
 }
 .entry.chg-renamed .nm {
-  color: var(--h-accent);
+  color: var(--h-link);
 }
 
 /* file viewer */
@@ -386,7 +401,7 @@
 .hljs-name,
 .hljs-tag,
 .hljs-meta-keyword {
-  color: var(--h-accent);
+  color: var(--h-link);
 }
 .hljs-string,
 .hljs-regexp,
@@ -431,7 +446,7 @@
   font-weight: 700;
 }
 .hljs-link {
-  color: var(--h-accent);
+  color: var(--h-link);
   text-decoration: underline;
 }
 
@@ -443,8 +458,7 @@
   color: var(--h-fg);
   line-height: 1.65;
   font-size: 14px;
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
 }
 .md-body :first-child {
   margin-top: 0;
@@ -475,14 +489,14 @@
   margin: 0.7em 0;
 }
 .md-body a {
-  color: var(--h-accent);
+  color: var(--h-link);
   text-decoration: none;
 }
 .md-body a:hover {
   text-decoration: underline;
 }
 .md-body code {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.88em;
   background: var(--h-panel);
   border: 1px solid var(--h-border);
@@ -517,7 +531,7 @@
 .md-body blockquote {
   margin: 0.8em 0;
   padding: 0.2em 1em;
-  border-left: 3px solid var(--h-accent);
+  border-left: 3px solid var(--h-muted);
   color: var(--h-muted);
   background: var(--h-accent-dim);
 }
@@ -589,10 +603,11 @@
 }
 .dfhead .dfbadge {
   flex: 0 0 auto;
+  font-family: var(--font-label);
   font-size: 10px;
   line-height: 1;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   padding: 2px 5px;
   border-radius: 999px;
   border: 1px solid currentColor;
@@ -656,7 +671,7 @@
   color: var(--h-muted);
 }
 .dline.hunk {
-  color: var(--h-accent);
+  color: var(--h-link);
   background: var(--h-accent-dim);
 }
 .dline.hunk .txt {

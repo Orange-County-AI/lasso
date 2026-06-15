@@ -117,7 +117,7 @@ const highlightStyle = HighlightStyle.define([
       t.standard(t.tagName),
       t.standard(t.name),
     ],
-    color: "var(--h-accent)",
+    color: "var(--h-link)",
   },
   {
     tag: [t.string, t.special(t.string), t.regexp, t.inserted],
@@ -130,7 +130,7 @@ const highlightStyle = HighlightStyle.define([
       t.function(t.propertyName),
       t.definition(t.function(t.variableName)),
     ],
-    color: "var(--h-dir)",
+    color: "var(--h-fg)",
   },
   {
     tag: [t.typeName, t.className, t.propertyName, t.attributeValue],
@@ -139,12 +139,12 @@ const highlightStyle = HighlightStyle.define([
   { tag: [t.variableName, t.attributeName], color: "var(--h-fg)" },
   { tag: [t.meta, t.processingInstruction], color: "var(--h-muted)" },
   { tag: t.deleted, color: "var(--h-bad)" },
-  { tag: t.heading, color: "var(--h-dir)", fontWeight: "700" },
+  { tag: t.heading, color: "var(--h-fg)", fontWeight: "700" },
   { tag: t.emphasis, fontStyle: "italic" },
   { tag: t.strong, fontWeight: "700" },
   {
     tag: [t.link, t.url],
-    color: "var(--h-accent)",
+    color: "var(--h-link)",
     textDecoration: "underline",
   },
 ])
