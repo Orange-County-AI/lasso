@@ -146,6 +146,17 @@ export function Sidebar({
   const tree = useQuery({ queryKey: qk.tree, queryFn: api.tree })
   const agents = useQuery({ queryKey: qk.agents, queryFn: api.agentsList })
 
+  // How many purely-numeric scratch agents ("1", "2"…) each workspace holds. A
+  // lone one needs no number to disambiguate (just the workspace name); two or
+  // more do ("52 Labs 1" / "52 Labs 2"). Keyed by workspace id. See AgentRowItem.
+  const numericByWorkspace = React.useMemo(() => {
+    const m = new Map<string, number>()
+    for (const a of agents.data?.agents ?? [])
+      if (!a.repo && /^\d+$/.test(a.title))
+        m.set(a.workspace_id, (m.get(a.workspace_id) ?? 0) + 1)
+    return m
+  }, [agents.data])
+
   // Refetch the tree + agents whenever the workspace/tab layout changes (SSE).
   // biome-ignore lint/correctness/useExhaustiveDependencies: panesRev is the refetch trigger
   React.useEffect(() => {
@@ -355,7 +366,11 @@ export function Sidebar({
               {items.map((item) => {
                 const drag = dragFor(item.key)
                 return (
-                  <div key={item.key} {...drag.props} className={drag.className}>
+                  <div
+                    key={item.key}
+                    {...drag.props}
+                    className={drag.className}
+                  >
                     {item.kind === "ws" ? (
                       <WorkspaceNode
                         ws={item.ws}
@@ -464,6 +479,7 @@ export function Sidebar({
             agent={a}
             selected={a.tab_id === selectedTabId}
             status={agentStatuses[a.tab_id] ?? a.status}
+            siblingNumeric={numericByWorkspace.get(a.workspace_id) ?? 0}
             onSelect={() => onSelectTab(a.tab_id)}
           />
         ))}
@@ -539,9 +555,7 @@ function RepoNode({
   }
   const [renameOpen, setRenameOpen] = React.useState(false)
   const submitRename = async (name: string) => {
-    await api
-      .renameRepo(repo.path, name)
-      .catch((e) => toast.error(String(e)))
+    await api.renameRepo(repo.path, name).catch((e) => toast.error(String(e)))
     refreshTree()
   }
   const [newWorktreeOpen, setNewWorktreeOpen] = React.useState(false)
@@ -669,8 +683,8 @@ function RepoNode({
                     worktrees.length === 1 ? "" : "s"
                   }`
                 : ""}
-              , including any running agents. The checkout on disk is kept — this
-              just removes it from the sidebar.
+              , including any running agents. The checkout on disk is kept —
+              this just removes it from the sidebar.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -960,7 +974,10 @@ function TabNode({
           >
             {tab.kind === "agent" && status ? (
               <span
-                className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  STATUS_DOT[status]
+                )}
               />
             ) : (
               <Terminal className="size-3 shrink-0 text-muted-foreground" />
@@ -1009,11 +1026,13 @@ function AgentRowItem({
   agent,
   selected,
   status,
+  siblingNumeric,
   onSelect,
 }: {
   agent: AgentRow
   selected: boolean
   status: string
+  siblingNumeric: number
   onSelect: () => void
 }) {
   const [renameOpen, setRenameOpen] = React.useState(false)
@@ -1023,6 +1042,20 @@ function AgentRowItem({
       .catch((e) => toast.error(String(e)))
     refreshTree()
   }
+  // Scratch-task agents live in a numbered tab ("1", "2"…) whose title alone is
+  // meaningless out of context, so surface the workspace name. With a single
+  // numeric tab in the workspace the number adds nothing — just show "52 Labs";
+  // with two or more, keep the number to disambiguate ("52 Labs 1" / "52 Labs
+  // 2"). Repo agents and lasso-created scratch agents (whose title already IS the
+  // workspace name) are left as-is — no doubled "52 Labs 52 Labs".
+  const displayTitle =
+    !agent.repo &&
+    agent.workspace_title &&
+    agent.title !== agent.workspace_title
+      ? siblingNumeric === 1 && /^\d+$/.test(agent.title)
+        ? agent.workspace_title
+        : `${agent.workspace_title} ${agent.title}`
+      : agent.title
   return (
     <>
       <ContextMenu>
@@ -1038,7 +1071,7 @@ function AgentRowItem({
             <span
               className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[status])}
             />
-            <span className="truncate">{agent.title}</span>
+            <span className="truncate">{displayTitle}</span>
             <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
               {status} · {agent.agent}
             </span>
