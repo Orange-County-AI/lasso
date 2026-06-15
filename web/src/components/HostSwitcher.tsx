@@ -42,6 +42,10 @@ export function HostSwitcher() {
     active === "local" ? (payload?.hostname ?? "local") : active
 
   const switchTo = async (host: string) => {
+    // Picking a single host always collapses out of all-hosts mode — even when
+    // that host is already active (otherwise the early-return below would leave
+    // the toggle stuck on with no way to switch back to a single host).
+    setAllHosts(false)
     if (host === active) return
     setSwitching(true)
     try {
@@ -106,6 +110,7 @@ export function HostSwitcher() {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuCheckboxItem
+          className="focus:bg-foreground/10"
           checked={allHosts}
           onCheckedChange={(v) => setAllHosts(!!v)}
           // Keep the menu open so the user can also pick an active host after.
@@ -115,10 +120,13 @@ export function HostSwitcher() {
           <span className="flex-1">Show all hosts</span>
         </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => switchTo("local")}>
+        <DropdownMenuItem
+          className="focus:bg-foreground/10"
+          onSelect={() => switchTo("local")}
+        >
           <Laptop className="size-3.5" />
           <span className="flex-1">{payload?.hostname ?? "local"}</span>
-          {active === "local" && <Check className="size-3.5" />}
+          {!allHosts && active === "local" && <Check className="size-3.5" />}
         </DropdownMenuItem>
         {remoteHosts.length > 0 && <DropdownMenuSeparator />}
         {remoteHosts.map((h) => {
@@ -126,13 +134,14 @@ export function HostSwitcher() {
           return (
             <DropdownMenuItem
               key={h.alias}
+              className="focus:bg-foreground/10"
               disabled={!usable}
               onSelect={() => usable && switchTo(h.alias)}
               title={h.err || h.tmux_version || ""}
             >
               <Server className="size-3.5" />
               <span className="flex-1 truncate">{h.alias}</span>
-              {active === h.alias ? (
+              {!allHosts && active === h.alias ? (
                 <Check className="size-3.5" />
               ) : (
                 !usable && (
