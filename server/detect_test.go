@@ -49,6 +49,24 @@ const claudeBlocked = `
  tab to amend · ctrl+e to explain
 `
 
+// An at-rest agent (e.g. the 52 Labs Orchestrator) whose last assistant turn
+// happened to ask a question. The transcript scrollback contains "Do you want…"
+// prose, and the live empty composer renders a bare "❯" caret below it. The old
+// whole-screen heuristic matched "do you want" + a trailing "❯" (the empty
+// caret) and mis-reported this idle agent as "blocked". A live empty prompt box
+// means the agent is at rest waiting for input — never blocked.
+const claudeIdleAskedQuestion = `
+  I've finished wiring up the webhook handler and it's green.
+  Do you want me to also add a retry on the channel publish?
+
+※ recap: handler done; offered to add a publish retry next.
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  ? for shortcuts
+`
+
 func TestDetectClaude(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -59,6 +77,7 @@ func TestDetectClaude(t *testing.T) {
 		{"working-spinner", claudeWorking, StatusWorking},
 		{"working-interrupt", claudeWorkingInterrupt, StatusWorking},
 		{"blocked", claudeBlocked, StatusBlocked},
+		{"idle-asked-question", claudeIdleAskedQuestion, StatusIdle},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
