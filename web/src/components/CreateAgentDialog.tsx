@@ -167,8 +167,7 @@ export function CreateAgentDialog({
   React.useEffect(() => {
     // A sidebar "New agent…" on a remote repo prefills its host; otherwise seed
     // from the active host.
-    if (open)
-      setHost(pendingPrefill.current?.host || activeHost || "local")
+    if (open) setHost(pendingPrefill.current?.host || activeHost || "local")
   }, [open, activeHost])
 
   const hostsQuery = useQuery({
@@ -370,14 +369,20 @@ export function CreateAgentDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      // If the agent was created on a different host than the active one, switch
-      // to it so the sidebar tree re-scopes and the new tab resolves (the focus
-      // dispatch below then lands on it once the re-scoped tree arrives).
       const created = rec.host || host
-      if (created !== (activeHost || "local")) {
-        void api.switchHost(created)
-      } else if (rec.workspace_id && rec.tab_id) {
-        // Same host: surface the new workspace optimistically before the refetch.
+      // Surface the new workspace optimistically so the selection (dispatched
+      // below) has something to land on before the refetch — the viewport attaches
+      // to the right host on its own (TabTerminal re-points via /api/tab/term), so
+      // navigation only needs the tab present in the tree cache.
+      //
+      // In all-hosts mode the sidebar polls the tree every few seconds (each poll
+      // dials every remote, so it's slow); a poll that started before this create
+      // resolves with a pre-create snapshot and would overwrite the cache — dropping
+      // the workspace we add and bouncing the just-made selection off a tab that
+      // vanished. Cancel any in-flight tree fetch first so the optimistic add (and,
+      // for a cross-host create, the post-switch refetch) is what wins.
+      if (rec.workspace_id && rec.tab_id) {
+        void queryClient.cancelQueries({ queryKey: qk.tree })
         const tab = {
           id: rec.tab_id,
           title: rec.title,
@@ -392,6 +397,7 @@ export function CreateAgentDialog({
             repo: rec.repo,
             work_dir: rec.work_dir,
             branch: rec.branch,
+            host: rec.host,
             tabs: [tab],
           })
         } else {
@@ -399,9 +405,16 @@ export function CreateAgentDialog({
             id: rec.workspace_id,
             title: rec.title,
             work_dir: rec.work_dir,
+            host: rec.host,
             tabs: [tab],
           })
         }
+      }
+      // If the agent landed on a different host than the active one, switch to it
+      // so the viewport attaches to that host's terminal and (in single-host mode,
+      // where the tree is scoped to one host) the tree re-scopes to include it.
+      if (created !== (activeHost || "local")) {
+        void api.switchHost(created)
       }
       // Focus the new agent in the UI — select its tab (and show its terminal).
       // Only the UI creator does this; agents created via MCP must NOT steal the

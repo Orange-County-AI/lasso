@@ -772,8 +772,16 @@ function RepoNode({
               <span className="ml-auto flex shrink-0 items-center gap-1 pl-1 text-[11px] text-muted-foreground">
                 {repo.upstream && (repo.ahead || repo.behind) ? (
                   <span className="flex items-center gap-0.5 tabular-nums">
-                    {repo.ahead ? <span>↑{repo.ahead}</span> : null}
-                    {repo.behind ? <span>↓{repo.behind}</span> : null}
+                    {repo.ahead ? (
+                      <span className="text-[var(--h-good)]">
+                        ↑{repo.ahead}
+                      </span>
+                    ) : null}
+                    {repo.behind ? (
+                      <span className="text-[var(--h-warn)]">
+                        ↓{repo.behind}
+                      </span>
+                    ) : null}
                   </span>
                 ) : null}
                 <span>{repo.primary_branch}</span>

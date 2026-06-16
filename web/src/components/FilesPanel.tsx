@@ -105,7 +105,11 @@ export function FilesPanel() {
 
         {viewerPath && (
           <React.Suspense fallback={null}>
-            <FileViewer path={viewerPath} onClose={() => setViewerPath(null)} />
+            <FileViewer
+              path={viewerPath}
+              onClose={() => setViewerPath(null)}
+              onOpen={setViewerPath}
+            />
           </React.Suspense>
         )}
       </div>

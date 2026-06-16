@@ -1348,6 +1348,14 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 	// stale content from its cache after an edit — reopening a just-saved file
 	// showed the old version. File content must always be fetched fresh.
 	w.Header().Set("Cache-Control", "no-store")
+	// Pin the Content-Type for audio/video so the inline <audio>/<video>
+	// players get a playable type. ServeContent would otherwise rely on the
+	// host's mime table (often missing .m4a/.mov/.mkv) or sniff the first 512
+	// bytes — both yield types browsers refuse to play. ServeContent still
+	// handles Range requests (seeking) regardless of this header.
+	if ct := avContentType(path); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
 	// `download=1` forces a browser save (Content-Disposition: attachment) and
 	// bypasses the preview cap — the viewer's text fetch omits it, so previews
 	// still stay bounded.
@@ -1367,14 +1375,46 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // isPreviewMedia reports whether path is a binary media type the viewer renders
-// directly (images, PDFs) rather than fetching as text — these bypass the text
-// preview size cap.
+// directly (images, PDFs, audio/video) rather than fetching as text — these
+// bypass the text preview size cap (a 27-minute audio file or a video is far
+// larger than the text cap but must still stream whole so it plays/seeks).
 func isPreviewMedia(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif":
 		return true
 	}
-	return false
+	return avContentType(path) != ""
+}
+
+// avContentType maps an audio/video file extension to its MIME type, or ""
+// for non-AV paths. Kept explicit (rather than relying on mime.TypeByExtension)
+// because the host mime table commonly lacks .m4a/.mov/.mkv entries.
+func avContentType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".m4a", ".m4b":
+		return "audio/mp4"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".aac":
+		return "audio/aac"
+	case ".flac":
+		return "audio/flac"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	case ".opus":
+		return "audio/ogg; codecs=opus"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".webm":
+		return "video/webm"
+	case ".mkv":
+		return "video/x-matroska"
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

@@ -108,13 +108,35 @@ func detectClaudeRaw(content string) AgentStatus {
 	if strings.Contains(lower, "ctrl+r to toggle") {
 		return StatusIdle
 	}
-	if hasClaudeBlockedPrompt(content, lower) {
+	// A live, empty composer (a bare "❯" caret line) means the agent is at rest
+	// waiting for input — idle, or working if there's working chrome above, but
+	// never blocked. A genuine permission/selection prompt replaces the empty
+	// composer with a choice menu ("❯ 1. Yes …"), so it has no bare caret. This
+	// guard mirrors herdr (which suppresses its loose whole-screen blocker rules
+	// when `^\s*❯\s*$` is present): without it, ordinary transcript scrollback —
+	// e.g. an at-rest orchestrator whose last turn asked "Do you want me to…" —
+	// satisfies the whole-screen "do you want" + trailing "❯" heuristic and an
+	// idle agent is mis-reported as blocked.
+	if !hasEmptyClaudePromptBox(content) && hasClaudeBlockedPrompt(content, lower) {
 		return StatusBlocked
 	}
 	if hasClaudeWorkingChrome(content) {
 		return StatusWorking
 	}
 	return StatusIdle
+}
+
+// hasEmptyClaudePromptBox reports a live, ready-for-input composer: a line that
+// is just Claude's "❯" caret (optionally surrounded by whitespace). Present when
+// the agent is idle or working; absent when a permission/selection dialog has
+// taken over the input area.
+func hasEmptyClaudePromptBox(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == "❯" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClaudeBlockedPrompt(content, lower string) bool {
