@@ -393,6 +393,42 @@
   max-width: 100%;
   max-height: 100%;
 }
+/* Directory listing shown when a folder (or symlink to one) is opened in the
+   viewer — a column of clickable rows, mirroring the file tree's affordances. */
+.vdir {
+  padding: 4px 0;
+  font-size: 13px;
+}
+.vdir-empty {
+  color: var(--h-muted);
+  padding: 16px;
+}
+.vdir-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 3px 16px;
+  text-align: left;
+  color: var(--h-fg);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.vdir-row:hover {
+  background: var(--h-accent, #80808022);
+}
+.vdir-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vdir-size {
+  flex: 0 0 auto;
+  color: var(--h-muted);
+  font-variant-numeric: tabular-nums;
+}
 /* CodeMirror 6 host: fill the scrollable .vbody (the editor itself is themed in
    lib/codemirror.ts; the .cm-scroller does the scrolling). */
 .cm-host {

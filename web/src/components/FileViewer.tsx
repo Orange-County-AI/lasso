@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown"
 import rehypeHighlight from "rehype-highlight"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
-import { api } from "@/lib/api"
+import { api, type DirListing } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import {
   changedLinesHighlight,
@@ -14,7 +14,7 @@ import {
   languageExtension,
 } from "@/lib/codemirror"
 import { changedNewLines } from "@/lib/diff"
-import { isAudio, isImage, isMarkdown, isPdf, isVideo } from "@/lib/format"
+import { fmtSize, isAudio, isImage, isMarkdown, isPdf, isVideo } from "@/lib/format"
 import { useDiff } from "@/lib/git"
 
 // Above this size we skip the language extension (and its parsing cost) but
@@ -29,9 +29,13 @@ const HILITE_CAP = 400 * 1024
 export function FileViewer({
   path,
   onClose,
+  onOpen,
 }: {
   path: string
   onClose: () => void
+  // Navigate the viewer to another path (used by the directory listing to open
+  // an entry / step up to the parent without leaving the overlay).
+  onOpen?: (path: string) => void
 }) {
   const image = isImage(path)
   const pdf = isPdf(path)
@@ -47,6 +51,9 @@ export function FileViewer({
   const [text, setText] = React.useState<string | null>(null)
   const [draft, setDraft] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  // Set when the opened path turns out to be a directory (or a symlink to one):
+  // we render a browsable listing instead of the raw "not a file" error.
+  const [dir, setDir] = React.useState<DirListing | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [saveError, setSaveError] = React.useState<string | null>(null)
   // Markdown opens rendered; toggle into the raw editor to make changes.
@@ -67,6 +74,8 @@ export function FileViewer({
   textRef.current = text
   const dirtyRef = React.useRef(dirty)
   dirtyRef.current = dirty
+  const dirRef = React.useRef(dir)
+  dirRef.current = dir
 
   // Is this file dirty in the working tree? Derive its repo-relative path the
   // same way FilesPanel does and look it up in the shared (already-polled) diff
@@ -95,6 +104,7 @@ export function FileViewer({
   React.useEffect(() => {
     setPreview(isMarkdown(path))
     setBust(0)
+    setDir(null)
     if (binary) {
       setText(null)
       setDraft(null)
@@ -113,7 +123,21 @@ export function FileViewer({
         setText(t)
         setDraft(t)
       })
-      .catch((e: Error) => !cancelled && setError(e.message))
+      .catch(async (e: Error) => {
+        if (cancelled) return
+        // A directory (or a symlink to one) isn't a file — instead of dumping
+        // the backend's "not a file" error, fall back to a browsable listing.
+        if (/not a file/i.test(e.message)) {
+          try {
+            const listing = await api.files(path)
+            if (!cancelled) setDir(listing)
+            return
+          } catch {
+            /* not a directory either — show the original error below */
+          }
+        }
+        if (!cancelled) setError(e.message)
+      })
     return () => {
       cancelled = true
     }
@@ -147,7 +171,7 @@ export function FileViewer({
   React.useEffect(() => {
     if (binary) return
     const id = setInterval(() => {
-      if (document.hidden || dirtyRef.current) return
+      if (document.hidden || dirtyRef.current || dirRef.current) return
       api
         .fileText(path)
         .then((t) => {
@@ -274,7 +298,7 @@ export function FileViewer({
               {preview ? <Pencil /> : <Eye />}
             </Button>
           )}
-          {!binary && (
+          {!binary && !dir && (
             <Button
               variant="outline"
               size="sm"
@@ -320,6 +344,8 @@ export function FileViewer({
               <a href={mediaURL}>download video</a>
             </video>
           </div>
+        ) : dir ? (
+          <DirListingView listing={dir} onOpen={onOpen} />
         ) : error ? (
           <div className="vloading">error: {error}</div>
         ) : draft == null ? (
@@ -342,6 +368,52 @@ export function FileViewer({
           />
         )}
       </div>
+    </div>
+  )
+}
+
+// A read-only directory browser shown when the opened path is a directory (or
+// a symlink to one) rather than a file. Each row navigates the viewer: folders
+// open into their listing, files open in the editor/preview — both via onOpen,
+// which re-points the viewer's path (see FilesPanel). A leading ".." steps up.
+function DirListingView({
+  listing,
+  onOpen,
+}: {
+  listing: DirListing
+  onOpen?: (path: string) => void
+}) {
+  const root = listing.path.replace(/\/$/, "")
+  const join = (name: string) => `${root}/${name}`
+  return (
+    <div className="vdir">
+      {listing.parent && listing.parent !== listing.path && (
+        <button
+          type="button"
+          className="vdir-row"
+          onClick={() => onOpen?.(listing.parent as string)}
+        >
+          <span className="vdir-name">../</span>
+        </button>
+      )}
+      {listing.entries.length === 0 ? (
+        <div className="vdir-empty">(empty directory)</div>
+      ) : (
+        listing.entries.map((e) => (
+          <button
+            key={e.name}
+            type="button"
+            className="vdir-row"
+            onClick={() => onOpen?.(join(e.name))}
+          >
+            <span className="vdir-name">
+              {e.name}
+              {e.dir ? "/" : ""}
+            </span>
+            {!e.dir && <span className="vdir-size">{fmtSize(e.size)}</span>}
+          </button>
+        ))
+      )}
     </div>
   )
 }
