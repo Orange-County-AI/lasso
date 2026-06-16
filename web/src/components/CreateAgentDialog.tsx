@@ -377,6 +377,13 @@ export function CreateAgentDialog({
         void api.switchHost(created)
       } else if (rec.workspace_id && rec.tab_id) {
         // Same host: surface the new workspace optimistically before the refetch.
+        // In all-hosts mode the sidebar polls the tree every few seconds (each
+        // poll dials every remote, so it's slow); a poll that started before this
+        // create would, on resolving, overwrite the cache and drop the workspace
+        // we add below — bouncing the just-made selection off a tab that vanished.
+        // Cancel any in-flight tree fetch first so our optimistic add survives
+        // until the next (post-create, authoritative) refetch reconciles it.
+        void queryClient.cancelQueries({ queryKey: qk.tree })
         const tab = {
           id: rec.tab_id,
           title: rec.title,
@@ -392,6 +399,7 @@ export function CreateAgentDialog({
             work_dir: rec.work_dir,
             kind: "git",
             branch: rec.branch,
+            host: rec.host,
             tabs: [tab],
           })
         } else {
@@ -400,6 +408,7 @@ export function CreateAgentDialog({
             title: rec.title,
             work_dir: rec.work_dir,
             kind: "scratch",
+            host: rec.host,
             tabs: [tab],
           })
         }
