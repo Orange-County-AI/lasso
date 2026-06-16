@@ -246,11 +246,63 @@ func tmuxListSessionsOnChecked(host string) ([]string, bool) {
 
 // tmuxKillSession terminates a session (and the processes inside it). Used when
 // a tab/workspace is closed. Clears the session→host mapping.
+//
+// kill-session on its own only delivers SIGHUP to each pane's foreground process
+// group, so an agent (claude/codex) that traps SIGHUP — or anything it spawned
+// into a different process group — survives the close as an orphan. So we first
+// kill the process tree rooted at the panes' PIDs (see killSessionProcs), then
+// tear the session down.
 func tmuxKillSession(session string) error {
 	host := hostForSession(session)
+	killSessionProcs(host, session)
 	err := tmuxH(host, "kill-session", "-t", session)
+	// killSessionProcs may have already taken the session down — and, if it was
+	// the last one, the whole tmux server with it — so kill-session can fail with
+	// "no server running" / "session not found". The session being gone IS the
+	// goal, so treat an after-the-fact absence as success rather than an error.
+	if err != nil && tmuxH(host, "has-session", "-t", session) != nil {
+		err = nil
+	}
 	clearSessionHost(session)
 	return err
+}
+
+// killSessionProcs terminates every process running in a tmux session — the
+// agent (claude/codex) and anything it launched — before the session is torn
+// down, so closing a tab actually closes the app inside it rather than leaving
+// it orphaned (tmux's own kill-session only SIGHUPs each pane's foreground
+// group). Best-effort: any failure just falls through to kill-session.
+//
+// We run the kill host-side via `tmux run-shell` so it routes through the same
+// local/remote backend as every other tmux call (no separate SSH plumbing). The
+// script is POSIX sh, portable across the Linux + macOS fleet: it BFS-walks the
+// PPID tree from each pane PID, collects the process groups of every node, then
+// signals both the groups and the individual PIDs — SIGTERM, a brief grace
+// period, then SIGKILL. Process-group coverage catches children that reparented
+// to init but stayed in the agent's group (e.g. `cmd &` in a subshell); only a
+// child that deliberately setsid'd into a fresh session escapes, which is its
+// own detachment, not the tab's to undo.
+func killSessionProcs(host, session string) {
+	out, err := tmuxOutH(host, "list-panes", "-s", "-t", session, "-F", "#{pane_pid}")
+	if err != nil {
+		return
+	}
+	var pids []string
+	for _, line := range strings.Split(out, "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			pids = append(pids, p)
+		}
+	}
+	if len(pids) == 0 {
+		return
+	}
+	script := `roots="` + strings.Join(pids, " ") + `"; queue="$roots"; tree=""; ` +
+		`while [ -n "$queue" ]; do next=""; for p in $queue; do tree="$tree $p"; next="$next $(pgrep -P "$p" 2>/dev/null)"; done; queue="$next"; done; ` +
+		`pgids=""; for p in $tree; do g=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d " "); [ -n "$g" ] && pgids="$pgids $g"; done; ` +
+		`for g in $pgids; do kill -TERM -"$g" 2>/dev/null; done; kill -TERM $tree 2>/dev/null; ` +
+		`sleep 0.3; ` +
+		`for g in $pgids; do kill -KILL -"$g" 2>/dev/null; done; kill -KILL $tree 2>/dev/null; :`
+	_ = tmuxH(host, "run-shell", script)
 }
 
 // tmuxCapture returns the visible screen of a session's active pane, the input
