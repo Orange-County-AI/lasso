@@ -5,6 +5,17 @@ import { api, type DiffFileMeta, type DiffPayload } from "@/lib/api"
 import { type DiffLine, parseDiff } from "@/lib/diff"
 import { cn } from "@/lib/utils"
 
+// Reduce the shared (absolute) path input to a repo-relative prefix used to
+// filter the diff. Diff file paths are relative to repoPath, so a path that is
+// repoPath itself (or empty, or outside the repo) means "no filter".
+function relFilter(pathValue: string, repoPath: string | null): string {
+  if (!pathValue || !repoPath) return ""
+  const root = repoPath.replace(/\/$/, "")
+  if (pathValue === root) return ""
+  if (!pathValue.startsWith(`${root}/`)) return ""
+  return pathValue.slice(root.length + 1).replace(/\/$/, "")
+}
+
 // The Diff view (a subtab of Files). The changed-file metadata is fetched and
 // polled by the parent FilesPanel — which shares it with the file tree's
 // change hints — and handed down here as `data`. This component owns only the
@@ -15,17 +26,30 @@ export function DiffTab({
   repoPath,
   data,
   error,
+  pathValue,
 }: {
   repoPath: string | null
   data: DiffPayload | null
   error: string | null
+  // The path the file viewer is focused on (owned by FilesPanel, set from the
+  // Files subtab's input). The diff is read-only here: it just filters to this
+  // path — the diff view has no input of its own.
+  pathValue: string
 }) {
   const activeCwd = repoPath
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set())
   const [allCollapsed, setAllCollapsed] = React.useState(true)
   const seenRef = React.useRef<Set<string>>(new Set())
 
-  const files = data?.files ?? []
+  const allFiles = data?.files ?? []
+  // Restrict to the focused path when one is set: an exact file match, or any
+  // file beneath a directory prefix. An empty/repo-root path shows everything.
+  const filter = relFilter(pathValue, repoPath)
+  const files = filter
+    ? allFiles.filter(
+        (f) => f.path === filter || f.path.startsWith(`${filter}/`)
+      )
+    : allFiles
   const fileSig = files.map((f) => f.path).join("\n")
 
   // Reset collapse tracking when the repo changes.
@@ -77,7 +101,7 @@ export function DiffTab({
       <header className="border-border border-b bg-background px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <Pill tone="accent" multiline>
-            {activeCwd || "—"}
+            {pathValue || activeCwd || "—"}
           </Pill>
           {data && (
             <Pill tone={data.dirty ? "warn" : "good"}>
@@ -118,11 +142,13 @@ export function DiffTab({
           <div className="empty">loading diff…</div>
         ) : files.length === 0 ? (
           <div className="empty">
-            {data.isBranchDiff
-              ? data.baseBranch
-                ? `no changes vs ${data.baseBranch}`
-                : "no base branch to compare against"
-              : `no changes${data.branch ? ` on ${data.branch}` : ""}`}
+            {filter && allFiles.length > 0
+              ? `no changes under “${filter}”`
+              : data.isBranchDiff
+                ? data.baseBranch
+                  ? `no changes vs ${data.baseBranch}`
+                  : "no base branch to compare against"
+                : `no changes${data.branch ? ` on ${data.branch}` : ""}`}
           </div>
         ) : (
           files.map((f) => (

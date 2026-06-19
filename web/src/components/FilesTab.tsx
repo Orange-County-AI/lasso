@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { PathInput } from "@/components/PathInput"
 import { Input } from "@/components/ui/input"
 import {
   Tooltip,
@@ -78,17 +79,29 @@ export function FilesTab({
   viewerPath,
   onOpenFile,
   changes,
+  pathValue,
+  onPathChange,
+  setPathValue,
+  follow,
+  setFollow,
 }: {
   viewerPath: string | null
   onOpenFile: (path: string) => void
   // Absolute-path → git change status, used to hint changed rows. A directory
   // is hinted when any changed file lives beneath it.
   changes: Map<string, FileChange>
+  // The shared "go to path" input, owned by FilesPanel so the Diff subtab can
+  // use the same value. `onPathChange` flips off "follow" (the user is
+  // steering); `setPathValue` is the raw setter used to sync the canonical
+  // path after a directory loads.
+  pathValue: string
+  onPathChange: (value: string) => void
+  setPathValue: (value: string) => void
+  follow: boolean
+  setFollow: (follow: boolean) => void
 }) {
   const { activeCwd } = useApp()
   const [curPath, setCurPath] = React.useState<string | null>(null)
-  const [follow, setFollow] = React.useState(true)
-  const [pathValue, setPathValue] = React.useState("")
   // The canonical root path (as the server cleaned it) and its parent, for the
   // ".." re-root row.
   const [rootPath, setRootPath] = React.useState<string | null>(null)
@@ -108,24 +121,6 @@ export function FilesTab({
   const [dropTarget, setDropTarget] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
-
-  // Keep the path input scrolled to its end — the tail of the path is the
-  // useful part — whenever the value changes or the input gets (re)laid out
-  // (e.g. the Files tab becomes visible, having had zero width while hidden),
-  // unless the user is actively editing it. pathValue is the trigger even
-  // though the effect reads the DOM rather than the value directly.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pathValue is the intended trigger
-  React.useEffect(() => {
-    const el = inputRef.current
-    if (!el) return
-    const showTail = () => {
-      if (document.activeElement !== el) el.scrollLeft = el.scrollWidth
-    }
-    showTail()
-    const ro = new ResizeObserver(showTail)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [pathValue])
 
   // Follow the active pane's cwd while "follow" is on.
   React.useEffect(() => {
@@ -175,7 +170,7 @@ export function FilesTab({
     return () => {
       cancelled = true
     }
-  }, [curPath])
+  }, [curPath, setPathValue])
 
   // Keep a ref of the expanded set so the poll below can read the current
   // expansion without re-arming its interval every time a directory toggles.
@@ -268,11 +263,6 @@ export function FilesTab({
       if (/not a directory/i.test((e as Error).message)) onOpenFile(path)
       else setCurPath(path) // re-root so the tree surfaces the error
     }
-  }
-
-  const onPathKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    const v = e.currentTarget.value.trim()
-    if (e.key === "Enter" && v) void submitPath(v)
   }
 
   // Drop a path and any of its descendants from the expanded set (after the
@@ -406,21 +396,11 @@ export function FilesTab({
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-border border-b bg-background px-3 py-2">
-        <Input
-          ref={inputRef}
+        <PathInput
+          inputRef={inputRef}
           value={pathValue}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder="go to path…  (Enter)"
-          className="h-7 flex-1 text-[13px]"
-          onChange={(e) => {
-            setPathValue(e.target.value)
-            setFollow(false) // editing the path means the user is steering
-          }}
-          onKeyDown={onPathKeyDown}
-          onBlur={(e) => {
-            e.currentTarget.scrollLeft = e.currentTarget.scrollWidth
-          }}
+          onChange={onPathChange}
+          onSubmit={(v) => void submitPath(v)}
         />
         <TooltipProvider>
           <Tooltip>
