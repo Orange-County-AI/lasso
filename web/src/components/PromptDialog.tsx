@@ -66,6 +66,10 @@ export function PromptDialog({
             autoFocus
             value={value}
             placeholder={placeholder}
+            // Select the seeded text on focus so a prefilled name (e.g. the
+            // random workspace name) can be accepted with Enter or replaced by
+            // just typing, no manual clearing.
+            onFocus={(e) => e.target.select()}
             onChange={(e) => setValue(e.target.value)}
           />
           <DialogFooter className="mt-4">

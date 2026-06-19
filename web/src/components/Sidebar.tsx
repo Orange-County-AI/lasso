@@ -53,6 +53,7 @@ import {
 } from "@/lib/query"
 import { useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
+import { randomWorkspaceName } from "@/lib/words"
 
 // The left sidebar: a "spaces" tree (git repos with their worktrees nested, plus
 // standalone scratch workspaces) over an "agents" pane that shows every agent's
@@ -241,8 +242,23 @@ export function Sidebar({
   // right-click, and ⌘I). Submitting creates a bare scratch workspace (a shell,
   // no agent) and focuses it. PromptDialog autofocuses its input on open.
   const [newWsOpen, setNewWsOpen] = React.useState(false)
+  // Pre-fill the name with a random dictionary word so you can just hit Enter to
+  // land in a fresh workspace. It must be unique, so we seed it from the words
+  // not already used by an existing workspace (read via a ref so the event
+  // handler sees the current tree, not a stale closure).
+  const [newWsName, setNewWsName] = React.useState("")
+  const treeDataRef = React.useRef(tree.data)
+  treeDataRef.current = tree.data
   React.useEffect(() => {
-    const open = () => setNewWsOpen(true)
+    const open = () => {
+      const taken = new Set<string>()
+      const t = treeDataRef.current
+      for (const ws of t?.scratch ?? []) taken.add(ws.title)
+      for (const repo of t?.repos ?? [])
+        for (const ws of repo.workspaces ?? []) taken.add(ws.title)
+      setNewWsName(randomWorkspaceName(taken))
+      setNewWsOpen(true)
+    }
     window.addEventListener("lasso:new-workspace", open)
     return () => window.removeEventListener("lasso:new-workspace", open)
   }, [])
@@ -552,6 +568,7 @@ export function Sidebar({
           onOpenChange={setNewWsOpen}
           title="New workspace"
           placeholder="Workspace name"
+          defaultValue={newWsName}
           submitLabel="Create"
           onSubmit={submitNewWorkspace}
         />
