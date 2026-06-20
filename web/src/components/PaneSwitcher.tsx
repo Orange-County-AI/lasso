@@ -213,7 +213,12 @@ export function PaneSwitcher({
                 onMouseMove={() => setActive(i)}
                 className={cn(
                   "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
-                  i === active && "bg-accent text-accent-foreground"
+                  // The keyboard/hover highlight uses the primary tint so the
+                  // active row reads clearly — `bg-accent` resolves to --h-hover,
+                  // the same color as the dialog surface (DialogContent is
+                  // bg-popover, also --h-hover), so the highlight was
+                  // imperceptible and ↑/↓ navigation looked like it did nothing.
+                  i === active && "bg-primary text-primary-foreground"
                 )}
               >
                 <span className="flex w-full items-center gap-2">
