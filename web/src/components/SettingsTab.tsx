@@ -50,8 +50,13 @@ function Field({
 // defaults (where to scan for repos, the default agent, the scratch setup
 // script) are global; each repo's files-to-copy + setup commands are scoped to
 // the active host. All of it persists in ~/.lasso/lasso.db.
-export function SettingsTab({ active }: { active: boolean }) {
-  const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+export function SettingsTab({
+  active,
+  onOpenShortcuts,
+}: {
+  active: boolean
+  onOpenShortcuts: () => void
+}) {
   const versionQuery = useQuery({
     queryKey: qk.version,
     queryFn: () => api.version(),
@@ -144,7 +149,7 @@ export function SettingsTab({ active }: { active: boolean }) {
             size="icon"
             className="ml-auto size-7"
             title="Keyboard shortcuts"
-            onClick={() => setShortcutsOpen(true)}
+            onClick={onOpenShortcuts}
           >
             <Keyboard />
           </Button>
@@ -190,8 +195,6 @@ export function SettingsTab({ active }: { active: boolean }) {
         </div>
         <AgentCreatorSettings active={active} host={host} />
       </div>
-
-      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   )
 }
@@ -242,7 +245,9 @@ function AppearanceToggle() {
 
 // ShortcutsDialog shows the app's keyboard shortcuts (the SHORTCUTS the App key
 // handler implements) in a modal. Reference only — nothing to configure.
-function ShortcutsDialog({
+// Rendered by App (so ⌘? can open it from any tab); the Settings tab's keyboard
+// button just toggles the same App-owned state.
+export function ShortcutsDialog({
   open,
   onOpenChange,
 }: {

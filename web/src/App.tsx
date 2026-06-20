@@ -22,7 +22,7 @@ import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewTerminalDialog } from "@/components/NewTerminalDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
-import { SettingsTab } from "@/components/SettingsTab"
+import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import {
   ResizableHandle,
@@ -171,6 +171,7 @@ function Shell() {
   const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newTermOpen, setNewTermOpen] = React.useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   // Whether the herdr terminal held focus when ⌘K opened the palette, captured
   // at keypress (before Radix moves focus into the dialog) so a cancel-close can
   // restore the keyboard to its xterm. activeElement is the iframe element when
@@ -289,8 +290,8 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘I → new terminal, ⌘] → toggle
-  // the sidebar. Bound to the Cmd key only
+  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘I → new terminal, ⌘\ → toggle
+  // the sidebar, ⌘/ → keyboard-shortcuts reference. Bound to the Cmd key only
   // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
   // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
   // this document, so these work even while a terminal holds focus. (See
@@ -305,7 +306,7 @@ function Shell() {
       } else if (k === "h") {
         e.preventDefault()
         switchLeft("herdr")
-      } else if (k === "]") {
+      } else if (k === "\\") {
         e.preventDefault()
         toggleSidebar()
       } else if (k === "k") {
@@ -315,6 +316,9 @@ function Shell() {
       } else if (k === "i") {
         e.preventDefault()
         setNewTermOpen(true)
+      } else if (k === "/") {
+        e.preventDefault()
+        setShortcutsOpen(true)
       }
     }
     document.addEventListener("keydown", onKey)
@@ -503,7 +507,10 @@ function Shell() {
                 />
               </Pane>
               <Pane show={rightView === "settings"}>
-                <SettingsTab active={rightView === "settings"} />
+                <SettingsTab
+                  active={rightView === "settings"}
+                  onOpenShortcuts={() => setShortcutsOpen(true)}
+                />
               </Pane>
             </div>
           </Tabs>
@@ -526,6 +533,9 @@ function Shell() {
         onOpenChange={setNewTermOpen}
         surfaceHerdr={() => switchLeft("herdr")}
       />
+      {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
+          keyboard button. Lives here so ⌘? works from any tab. */}
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   )
 }
