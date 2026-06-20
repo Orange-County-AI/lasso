@@ -10,30 +10,92 @@ function normalize(raw: string): string {
   return /^https?:\/\//i.test(u) ? u : `http://${u}`
 }
 
-// The Browser tab: a URL bar + preview iframe. For local/tailnet access (plain
-// http) it defaults to the same host's dev server on port 3000 — a co-located
-// server the browser can actually reach. Behind a TLS terminator (e.g. lasso
-// served over https through a Cloudflare tunnel on a public domain) there's no
-// co-located :3000, and guessing one yields a cross-origin iframe error, so we
-// start blank and let the user type a URL. Either way the URL persists.
-export function BrowserTab() {
-  const [url, setUrl] = React.useState(() => {
-    const saved = lsGet("browserUrl")
-    if (saved) return saved
-    if (location.protocol === "https:") return ""
-    return `http://${location.hostname}:3000`
-  })
-  const [src, setSrc] = React.useState(() => normalize(url) || "about:blank")
-  const [reloadKey, setReloadKey] = React.useState(0)
-
-  const nav = (raw: string) => {
-    const u = normalize(raw)
-    if (!u) return
-    setUrl(u)
-    setSrc(u)
-    setReloadKey((k) => k + 1)
-    lsSet("browserUrl", u)
+// parseLocalPort extracts a local dev-server port from user input. It matches a
+// bare port ("5173"), a ":PORT" shorthand, or a full URL whose host is
+// loopback-ish. Anything else (a real remote URL) returns null so it's left
+// alone.
+function parseLocalPort(raw: string): number | null {
+  const s = raw.trim()
+  if (!s) return null
+  if (/^\d{2,5}$/.test(s)) return clampPort(Number(s))
+  const colon = s.match(/^:(\d{2,5})$/)
+  if (colon) return clampPort(Number(colon[1]))
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`)
+    const loopback = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]
+    if (loopback.includes(u.hostname) && u.port) {
+      return clampPort(Number(u.port))
+    }
+  } catch {
+    return null
   }
+  return null
+}
+
+function clampPort(n: number): number | null {
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null
+}
+
+// resolve maps user input to an iframe-able src. A local port is turned into a
+// trusted HTTPS preview URL via /api/preview when lasso itself is served over
+// HTTPS (otherwise an http:// iframe would be blocked as mixed content); over
+// plain http it just points at the same host's port. Full URLs pass through.
+async function resolve(raw: string): Promise<string> {
+  const port = parseLocalPort(raw)
+  if (port != null) {
+    if (location.protocol === "https:") {
+      const res = await fetch("/api/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port }),
+      })
+      if (!res.ok) {
+        throw new Error((await res.text()).trim() || `preview failed (${res.status})`)
+      }
+      const data = (await res.json()) as { url: string }
+      return data.url
+    }
+    return `http://${location.hostname}:${port}`
+  }
+  return normalize(raw)
+}
+
+// The Browser tab: a URL bar + preview iframe. Entering a local dev-server port
+// (e.g. "5173") gets it a trusted HTTPS origin via tailscale serve when lasso
+// is served over HTTPS — see /api/preview. We persist the RAW input so a stale
+// HTTPS port self-heals (re-resolves) on reload.
+export function BrowserTab() {
+  const [url, setUrl] = React.useState(() => lsGet("browserUrl") ?? "")
+  const [src, setSrc] = React.useState("about:blank")
+  const [reloadKey, setReloadKey] = React.useState(0)
+  const [status, setStatus] = React.useState<"idle" | "loading" | "error">("idle")
+  const [err, setErr] = React.useState("")
+
+  const nav = React.useCallback(async (raw: string) => {
+    const input = raw.trim()
+    if (!input) return
+    setUrl(input)
+    lsSet("browserUrl", input)
+    setStatus("loading")
+    setErr("")
+    try {
+      const resolved = await resolve(input)
+      setSrc(resolved)
+      setReloadKey((k) => k + 1)
+      setStatus("idle")
+    } catch (e) {
+      setSrc("about:blank")
+      setErr(e instanceof Error ? e.message : String(e))
+      setStatus("error")
+    }
+  }, [])
+
+  // Resolve any saved value on mount (e.g. a previously-previewed port whose
+  // HTTPS forward may need re-creating).
+  React.useEffect(() => {
+    const saved = lsGet("browserUrl")
+    if (saved) void nav(saved)
+  }, [nav])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -43,7 +105,7 @@ export function BrowserTab() {
           size="icon"
           className="size-7"
           title="reload"
-          onClick={() => setReloadKey((k) => k + 1)}
+          onClick={() => nav(url)}
         >
           <RotateCw />
         </Button>
@@ -51,7 +113,7 @@ export function BrowserTab() {
           value={url}
           spellCheck={false}
           autoComplete="off"
-          placeholder="http://host:3000"
+          placeholder="5173 or http://host:port"
           className="h-7 flex-1 text-[13px]"
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => {
@@ -62,6 +124,7 @@ export function BrowserTab() {
           variant="outline"
           size="sm"
           className="h-7"
+          disabled={status === "loading"}
           onClick={() => nav(url)}
         >
           go
@@ -72,13 +135,22 @@ export function BrowserTab() {
           className="size-7"
           title="open in new tab"
           onClick={() => {
-            const u = normalize(url)
-            if (u) window.open(u, "_blank")
+            if (src && src !== "about:blank") window.open(src, "_blank")
           }}
         >
           <ExternalLink />
         </Button>
       </div>
+      {status === "loading" && (
+        <div className="flex-shrink-0 border-border border-b bg-background px-2 py-1 text-[12px] text-muted-foreground">
+          resolving…
+        </div>
+      )}
+      {status === "error" && (
+        <div className="flex-shrink-0 border-border border-b bg-background px-2 py-1 text-[12px] text-destructive">
+          {err}
+        </div>
+      )}
       <iframe
         key={reloadKey}
         src={src || "about:blank"}
