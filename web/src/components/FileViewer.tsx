@@ -14,7 +14,7 @@ import {
   languageExtension,
 } from "@/lib/codemirror"
 import { changedNewLines } from "@/lib/diff"
-import { isImage, isMarkdown, isPdf } from "@/lib/format"
+import { isImage, isMarkdown, isPdf, isVideo } from "@/lib/format"
 import { useDiff } from "@/lib/git"
 
 // Above this size we skip the language extension (and its parsing cost) but
@@ -35,10 +35,13 @@ export function FileViewer({
 }) {
   const image = isImage(path)
   const pdf = isPdf(path)
+  const video = isVideo(path)
   const markdown = isMarkdown(path)
-  // Binary previews (images, PDFs) render straight from the file URL — no text
-  // is fetched and there's nothing to edit or save.
-  const binary = image || pdf
+  // Binary previews (images, PDFs, videos) render straight from the file URL —
+  // no text is fetched and there's nothing to edit or save. The Go handler
+  // serves these via http.ServeContent, which honors Range requests so the
+  // browser can seek/stream video.
+  const binary = image || pdf || video
 
   // `text` is the last-saved content; `draft` is what's in the editor. They
   // diverge exactly when there are unsaved edits.
@@ -304,6 +307,12 @@ export function FileViewer({
           </div>
         ) : pdf ? (
           <iframe className="vpdf" src={mediaURL} title={path} />
+        ) : video ? (
+          <div className="vvideo">
+            <video src={mediaURL} controls>
+              <track kind="captions" />
+            </video>
+          </div>
         ) : error ? (
           <div className="vloading">error: {error}</div>
         ) : draft == null ? (

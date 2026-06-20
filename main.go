@@ -2187,11 +2187,13 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // isPreviewMedia reports whether path is a binary media type the viewer renders
-// directly (images, PDFs) rather than fetching as text — these bypass the text
-// preview size cap.
+// directly (images, PDFs, videos) rather than fetching as text — these bypass
+// the text preview size cap. Videos rely on http.ServeContent's Range support
+// for in-browser seeking/streaming.
 func isPreviewMedia(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif":
+	case ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
+		".mp4", ".webm", ".ogv", ".mov", ".m4v", ".mkv":
 		return true
 	}
 	return false

@@ -19,10 +19,12 @@ export function fmtSize(n: number | undefined): string {
 const IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i
 const MD_RE = /\.(md|markdown|mdown|mkd|mkdn|mdwn)$/i
 const PDF_RE = /\.pdf$/i
+const VIDEO_RE = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i
 
 export const isImage = (p: string) => IMG_RE.test(p)
 export const isMarkdown = (p: string) => MD_RE.test(p)
 export const isPdf = (p: string) => PDF_RE.test(p)
+export const isVideo = (p: string) => VIDEO_RE.test(p)
 
 // file extension -> highlight.js language id (falls back to auto-detect)
 const LANGS: Record<string, string> = {

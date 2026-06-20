@@ -574,6 +574,17 @@
   border: 0;
   background: #fff;
 }
+.vvideo {
+  padding: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+.vvideo video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
 /* CodeMirror 6 host: fill the scrollable .vbody (the editor itself is themed in
    lib/codemirror.ts; the .cm-scroller does the scrolling). */
 .cm-host {
