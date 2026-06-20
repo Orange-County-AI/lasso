@@ -198,6 +198,7 @@ func runServer() {
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/workspace-rename", serveWorkspaceRename)
 	mux.HandleFunc("/api/close", serveClose)
+	mux.HandleFunc("/api/agent/close", serveAgentClose)
 	mux.HandleFunc("/api/paste-image", servePasteImage)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
@@ -956,6 +957,67 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
+}
+
+// serveAgentClose soft-closes a single agent: it kills the agent process and
+// closes its pane (the same teardown the close_agent MCP tool performs), so a
+// lasso-spawned agent can shut *itself* down with `lasso closeme` — no MCP
+// round-trip and nothing to pass but the $HERDR_PANE_ID the pane already exports.
+// The caller identifies the agent by pane_id (its own $HERDR_PANE_ID, resolved
+// to the owning agent) or, equivalently, by agent_id. remove_worktree (git only)
+// also discards the worktree.
+func serveAgentClose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		PaneID         string `json:"pane_id"`
+		AgentID        string `json:"agent_id"`
+		RemoveWorktree bool   `json:"remove_worktree"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	paneID := strings.TrimSpace(req.PaneID)
+	if agentID == "" && paneID == "" {
+		http.Error(w, "pane_id or agent_id required", http.StatusBadRequest)
+		return
+	}
+	const host = "local"
+	b, err := resolveBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Resolve to an agent record: prefer an explicit agent_id, else map the
+	// caller's own pane id to the agent that owns it (same logic as whoami).
+	if agentID == "" {
+		recs, lerr := listAgents(host)
+		if lerr != nil {
+			http.Error(w, lerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		who := resolveWhoami(b, host, recs, paneID)
+		if !who.Found {
+			http.Error(w, who.Detail, http.StatusNotFound)
+			return
+		}
+		agentID = who.Agent.ID
+	}
+	rec, err := findAgentRecord("", agentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	out, err := closeAgentRecord(b, rec, true, req.RemoveWorktree)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -2174,16 +2236,16 @@ func serveSPAIndex(w http.ResponseWriter, dist fs.FS) {
 		http.Error(w, "frontend build missing (run `bun run build` in web/)", http.StatusInternalServerError)
 		return
 	}
-	// Inject the server-resolved herdr theme into <head> so the first paint
-	// matches config.toml instead of flashing index.css's fallback palette
-	// before the SPA boots and fetches /api/theme. index.html is served
-	// no-store (below), so each reload re-injects the current resolved theme.
-	// A missing </head> (shouldn't happen with the Vite build) leaves the HTML
-	// untouched — graceful fallback.
-	if srvHub != nil {
-		style := `<style id="lasso-theme-boot">` + srvHub.themeSnapshot().cssVarsRoot() + `</style>`
-		b = []byte(strings.Replace(string(b), "</head>", style+"</head>", 1))
-	}
+	// Serve index.html verbatim. The chrome is the static Nothing design palette
+	// (web/src/index.css --h-* vars; dark/light only, chosen by the inline mode
+	// script). herdr's theme deliberately no longer paints the chrome — it
+	// dictates the *terminal* (xterm) palette only, applied client-side after
+	// boot (web/src/lib/theme.ts).
+	//
+	// We used to inject a <style id="lasso-theme-boot"> here that mapped herdr's
+	// resolved theme onto --h-*; placed at the end of <head> it overrode
+	// index.css's :root and made the whole chrome track config.toml (e.g. the
+	// rose-pine purple), defeating the Nothing palette. Removed.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(b)

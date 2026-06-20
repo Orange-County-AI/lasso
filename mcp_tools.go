@@ -659,38 +659,46 @@ func closeAgentTool(_ context.Context, _ *mcp.CallToolRequest, in closeAgentIn) 
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}
+	closePane := in.ClosePane == nil || *in.ClosePane
+	out, err := closeAgentRecord(b, rec, closePane, in.RemoveWorktree)
+	return nil, out, err
+}
 
+// closeAgentRecord runs the actual shutdown for an already-resolved agent: kill
+// the agent process, then — unless closePane is false — close its herdr pane, or
+// (when removeWorktree is set for a git agent) tear down the whole worktree,
+// which also closes the pane. Shared by the close_agent MCP tool and the
+// /api/agent/close endpoint that backs `lasso closeme`.
+func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool) (closeAgentOut, error) {
 	// 1. Always kill the agent process first, so it dies even if the pane is kept.
-	killed := killPaneAgent(b, rec.RootPane)
-	out := closeAgentOut{AgentKilled: killed}
+	out := closeAgentOut{AgentKilled: killPaneAgent(b, rec.RootPane)}
 
 	// 2. remove_worktree (git only) tears down the worktree, which also closes
 	//    the pane — so it supersedes the close_pane choice.
-	if in.RemoveWorktree && rec.Type == "git" {
+	if removeWorktree && rec.Type == "git" {
 		if rec.WorkspaceID == "" {
-			return nil, out, fmt.Errorf("agent %q has no workspace to remove", in.AgentID)
+			return out, fmt.Errorf("agent %q has no workspace to remove", rec.ID)
 		}
 		if _, err := b.HerdrCall("worktree.remove", map[string]any{
 			"workspace_id": rec.WorkspaceID,
 			"force":        true,
 		}); err != nil {
-			return nil, out, fmt.Errorf("worktree.remove: %w", err)
+			return out, fmt.Errorf("worktree.remove: %w", err)
 		}
 		out.PaneClosed, out.RemovedWorktree = true, true
-		return nil, out, nil
+		return out, nil
 	}
 
 	// 3. Close the pane unless the caller opted to keep it (default: close).
-	closePane := in.ClosePane == nil || *in.ClosePane
 	if !closePane {
-		return nil, out, nil
+		return out, nil
 	}
 	if rec.RootPane == "" {
-		return nil, out, fmt.Errorf("agent %q has no pane to close", in.AgentID)
+		return out, fmt.Errorf("agent %q has no pane to close", rec.ID)
 	}
 	if _, err := b.HerdrCall("pane.close", map[string]any{"pane_id": rec.RootPane}); err != nil {
-		return nil, out, fmt.Errorf("pane.close: %w", err)
+		return out, fmt.Errorf("pane.close: %w", err)
 	}
 	out.PaneClosed = true
-	return nil, out, nil
+	return out, nil
 }

@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +26,7 @@ import (
 //	lasso status          report whether the background server is running
 //	lasso update          update to the latest release (or git-pull a supervised checkout)
 //	lasso doctor          check the local install (herdr, socket, port, version)
+//	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
@@ -60,6 +64,9 @@ func main() {
 		case "doctor":
 			cliDoctor()
 			return
+		case "closeme":
+			cliCloseMe()
+			return
 		case "version", "--version", "-v":
 			fmt.Println(lassoVersion())
 			return
@@ -91,10 +98,67 @@ usage:
   lasso status             show whether the background server is running
   lasso update             update lasso to the latest release
   lasso doctor             check the local install
+  lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
   lasso version            print the version
 
 run "lasso -h" style flags after serve/start/restart; see the README for details.
 `)
+}
+
+// ---------------------------------------------------------------------------
+// closeme — an agent closes itself
+// ---------------------------------------------------------------------------
+
+// cliCloseMe lets a lasso-spawned agent shut itself down with a single command —
+// no MCP round-trip, and nothing to pass beyond the $HERDR_PANE_ID herdr already
+// exports into every pane. It POSTs that pane id to the running server's
+// /api/agent/close, which maps the pane to the agent that owns it and runs the
+// same soft-close the UI and the close_agent MCP tool perform (kill the agent
+// process, close the pane).
+//
+// The server is assumed to be the local default loopback bind; override the
+// address with LASSO_LISTEN (host:port) for a non-default port. UI_AUTH is
+// honored if set in the environment.
+func cliCloseMe() {
+	pane := os.Getenv("HERDR_PANE_ID")
+	if pane == "" {
+		fatal("closeme: $HERDR_PANE_ID is unset — you are not running inside a lasso-managed herdr pane")
+	}
+	addr := defaultListenAddr
+	if env := os.Getenv("LASSO_LISTEN"); env != "" {
+		addr = env
+	}
+	user, pass, hasAuth := parseAuth(os.Getenv("UI_AUTH"))
+	if err := postAgentClose(addr, pane, user, pass, hasAuth); err != nil {
+		fatal("closeme: %v", err)
+	}
+	fmt.Println("closeme: closing this agent")
+}
+
+// postAgentClose POSTs a pane id to the server's /api/agent/close (the soft-close
+// shared with the UI and the close_agent MCP tool). Closing our own pane kills
+// the process this command runs in, so the connection may drop before the
+// response arrives — only a failure to *reach* the server, or a non-200 status,
+// is reported.
+func postAgentClose(addr, paneID, user, pass string, hasAuth bool) error {
+	body, _ := json.Marshal(map[string]string{"pane_id": paneID})
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/agent/close", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hasAuth {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("reach lasso at %s: %w (is the server running? set LASSO_LISTEN for a non-default port)", addr, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %s", resp.Status)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
