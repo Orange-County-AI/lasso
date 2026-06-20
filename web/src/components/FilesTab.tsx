@@ -25,7 +25,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { PathInput } from "@/components/PathInput"
 import { Input } from "@/components/ui/input"
 import {
   Tooltip,
@@ -71,37 +70,25 @@ const hasChangesUnder = (changes: Map<string, FileChange>, dir: string) => {
   return false
 }
 
-// The Files tab: an inline, lazily-loaded directory tree rooted at the active
-// pane (by default). Clicking a directory expands/collapses it in place;
+// The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
+// active pane (by default). Clicking a directory expands/collapses it in place;
 // clicking a file opens it in the full-column viewer (owned by the parent so
 // its highlight clears on close). Right-clicking an entry offers rename/delete.
 export function FilesTab({
   viewerPath,
   onOpenFile,
   changes,
-  pathValue,
-  onPathChange,
-  setPathValue,
-  follow,
-  setFollow,
 }: {
   viewerPath: string | null
   onOpenFile: (path: string) => void
   // Absolute-path → git change status, used to hint changed rows. A directory
   // is hinted when any changed file lives beneath it.
   changes: Map<string, FileChange>
-  // The shared "go to path" input, owned by FilesPanel so the Diff subtab can
-  // use the same value. `onPathChange` flips off "follow" (the user is
-  // steering); `setPathValue` is the raw setter used to sync the canonical
-  // path after a directory loads.
-  pathValue: string
-  onPathChange: (value: string) => void
-  setPathValue: (value: string) => void
-  follow: boolean
-  setFollow: (follow: boolean) => void
 }) {
   const { activeCwd } = useApp()
   const [curPath, setCurPath] = React.useState<string | null>(null)
+  const [follow, setFollow] = React.useState(true)
+  const [pathValue, setPathValue] = React.useState("")
   // The canonical root path (as the server cleaned it) and its parent, for the
   // ".." re-root row.
   const [rootPath, setRootPath] = React.useState<string | null>(null)
@@ -121,6 +108,24 @@ export function FilesTab({
   const [dropTarget, setDropTarget] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
+
+  // Keep the path input scrolled to its end — the tail of the path is the
+  // useful part — whenever the value changes or the input gets (re)laid out
+  // (e.g. the Files tab becomes visible, having had zero width while hidden),
+  // unless the user is actively editing it. pathValue is the trigger even
+  // though the effect reads the DOM rather than the value directly.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathValue is the intended trigger
+  React.useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    const showTail = () => {
+      if (document.activeElement !== el) el.scrollLeft = el.scrollWidth
+    }
+    showTail()
+    const ro = new ResizeObserver(showTail)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [pathValue])
 
   // Follow the active pane's cwd while "follow" is on.
   React.useEffect(() => {
@@ -170,18 +175,13 @@ export function FilesTab({
     return () => {
       cancelled = true
     }
-  }, [curPath, setPathValue])
+  }, [curPath])
 
-  // Keep a ref of the expanded set so the poll below can read the current
-  // expansion without re-arming its interval every time a directory toggles.
-  const expandedRef = React.useRef(expanded)
-  expandedRef.current = expanded
-
-  // Poll the visible directories every 5s so files that land after the tree
-  // first loaded show up on their own — e.g. an attachment copied into a fresh
-  // agent's work dir a moment after creation, or files an agent writes/renames
-  // under an expanded subtree. The root plus every currently-expanded directory
-  // is refetched; the cache is updated only when a directory's entries actually
+  // Poll the root directory every 5s so files that land after the tree first
+  // loaded show up on their own — e.g. an attachment copied into a fresh agent's
+  // work dir a moment after creation, which the viewer otherwise misses because
+  // it listed the dir before the copy. Only the root is polled (where new files
+  // almost always appear); the cache is updated only when its entries actually
   // changed, so an idle tree never re-renders. Skipped while the tree isn't
   // visible (Diff subtab, collapsed sidebar → zero width; backgrounded tab) to
   // avoid needless ReadDir calls (SFTP round-trips on a remote host).
@@ -193,23 +193,20 @@ export function FilesTab({
         (e, i) =>
           e.name === b[i].name && e.dir === b[i].dir && e.size === b[i].size
       )
-    const refresh = (dir: string) =>
+    const tick = () => {
+      if (document.hidden || !rootRef.current?.clientWidth) return
       api
-        .files(dir)
+        .files(rootPath)
         .then((data) => {
           setChildrenByPath((prev) => {
-            const cur = prev[dir]
+            const cur = prev[rootPath]
             if (cur && sameEntries(cur, data.entries)) return prev
-            return { ...prev, [dir]: data.entries }
+            return { ...prev, [rootPath]: data.entries }
           })
         })
         .catch(() => {
           /* transient (dir gone / host blip); keep the last good listing */
         })
-    const tick = () => {
-      if (document.hidden || !rootRef.current?.clientWidth) return
-      const dirs = new Set([rootPath, ...expandedRef.current])
-      for (const dir of dirs) void refresh(dir)
     }
     const id = setInterval(tick, 5000)
     return () => clearInterval(id)
@@ -263,6 +260,11 @@ export function FilesTab({
       if (/not a directory/i.test((e as Error).message)) onOpenFile(path)
       else setCurPath(path) // re-root so the tree surfaces the error
     }
+  }
+
+  const onPathKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const v = e.currentTarget.value.trim()
+    if (e.key === "Enter" && v) void submitPath(v)
   }
 
   // Drop a path and any of its descendants from the expanded set (after the
@@ -329,15 +331,6 @@ export function FilesTab({
     a.remove()
   }
 
-  const copyPath = async (full: string) => {
-    try {
-      await navigator.clipboard.writeText(full)
-      toast.success("Copied path to clipboard")
-    } catch {
-      toast.error("Failed to copy path")
-    }
-  }
-
   // Recursively render a directory's entries. `dir` is absolute; `depth` drives
   // indentation. Children render only for expanded directories.
   const renderDir = (dir: string, depth: number): React.ReactNode => {
@@ -369,7 +362,6 @@ export function FilesTab({
             dirChanged={dirChanged}
             dropActive={dropTarget === target}
             onClick={() => (e.dir ? toggleDir(full) : onOpenFile(full))}
-            onCopyPath={() => copyPath(full)}
             onRename={() => {
               setRenameTarget({ name: e.name, full, dir: e.dir, parent: dir })
               setRenameValue(e.name)
@@ -396,11 +388,21 @@ export function FilesTab({
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-border border-b bg-background px-3 py-2">
-        <PathInput
-          inputRef={inputRef}
+        <Input
+          ref={inputRef}
           value={pathValue}
-          onChange={onPathChange}
-          onSubmit={(v) => void submitPath(v)}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder="go to path…  (Enter)"
+          className="h-7 flex-1 text-[13px]"
+          onChange={(e) => {
+            setPathValue(e.target.value)
+            setFollow(false) // editing the path means the user is steering
+          }}
+          onKeyDown={onPathKeyDown}
+          onBlur={(e) => {
+            e.currentTarget.scrollLeft = e.currentTarget.scrollWidth
+          }}
         />
         <TooltipProvider>
           <Tooltip>
@@ -445,7 +447,7 @@ export function FilesTab({
         }}
       >
         {!curPath ? (
-          <div className="empty">waiting for terminal…</div>
+          <div className="empty">waiting for herdr…</div>
         ) : !rootPath ? (
           <div className="empty">loading…</div>
         ) : (
@@ -555,7 +557,6 @@ function FileRow({
   dirChanged,
   dropActive,
   onClick,
-  onCopyPath,
   onRename,
   onDelete,
   onDownload,
@@ -574,7 +575,6 @@ function FileRow({
   dirChanged?: boolean
   dropActive?: boolean
   onClick: () => void
-  onCopyPath?: () => void
   onRename?: () => void
   onDelete?: () => void
   onDownload?: () => void
@@ -631,15 +631,12 @@ function FileRow({
   )
 
   // The parent ("..") row gets no menu — there's nothing to act on.
-  if (!onCopyPath && !onRename && !onDelete && !onDownload) return row
+  if (!onRename && !onDelete && !onDownload) return row
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        {onCopyPath && (
-          <ContextMenuItem onSelect={onCopyPath}>Copy path</ContextMenuItem>
-        )}
         {onDownload && (
           <ContextMenuItem onSelect={onDownload}>Download</ContextMenuItem>
         )}

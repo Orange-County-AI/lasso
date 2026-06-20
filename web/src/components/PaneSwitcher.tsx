@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
+import { toast } from "sonner"
 
 import {
   Dialog,
@@ -7,132 +8,123 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { fetchAgents, fetchTree, qk } from "@/lib/query"
-import { useUIState } from "@/lib/ui-state"
+import { api, type GridPane } from "@/lib/api"
+import { useApp } from "@/lib/app-store"
+import { tilde } from "@/lib/format"
+import { focusPaneInHerdr } from "@/lib/pane-focus"
+import { qk } from "@/lib/query"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
-// One searchable entry: a tab (shell or agent), enriched with its workspace +
-// repo context and (for agents) the initial prompt, so ⌘K matches renamed
-// titles, the workspace, the repo, and the prompt text. In all-hosts mode the
-// host label rides along too, so the search spans every host and each result
-// shows where it lives.
-interface Entry {
-  tabId: string
-  title: string
-  workspace: string
-  repo: string
-  kind: string
-  agent: string
-  status: string
-  prompt: string
-  hostLabel: string
+// cellKey uniquely identifies a pane across hosts (pane ids are only unique
+// within a host) — also the Grid's identity formula.
+const cellKey = (p: GridPane) => `${p.host}|${p.pane_id}`
+
+// The descriptive pane title shown bold at the top of each row. Prefer the
+// workspace label (e.g. "accessibility") over the bare herdr tab number.
+const primaryLabel = (p: GridPane) =>
+  p.workspace_label || p.tab_label || p.pane_id
+
+// The most specific name *below* the workspace, shown as a badge to tell
+// sibling panes apart. Prefer the pane's own label (herdr's per-pane title);
+// fall back to the tab label — which, for an unnamed pane, is the name herdr
+// shows on its tab. "" when neither adds anything over the primary label.
+const detailLabel = (p: GridPane) => {
+  const detail = p.pane_label || p.tab_label
+  return detail && detail !== primaryLabel(p) ? detail : ""
 }
 
-const STATUS_DOT: Record<string, string> = {
-  working: "bg-[var(--h-warn)]",
-  blocked: "bg-[var(--h-bad)]",
-  idle: "bg-[var(--h-good)]",
-  unknown: "bg-muted-foreground/40",
-}
-
-// The searchable text for one entry. In all-hosts mode the host label is folded
-// in so typing a host name narrows the (now cross-host) results; in single-host
-// mode it's left out — every entry shares the one host, so it'd just be noise.
-const haystack = (e: Entry, allHosts: boolean) =>
-  [e.title, e.workspace, e.repo, e.agent, e.prompt, allHosts && e.hostLabel]
+// Everything worth matching against, lowercased and joined. A query token is a
+// hit if it's a substring anywhere in here.
+const haystack = (p: GridPane) =>
+  [
+    p.tab_label,
+    p.pane_label,
+    p.workspace_label,
+    p.host_label,
+    p.host,
+    p.agent,
+    p.cwd,
+    p.pane_id,
+    p.prompt, // full initial prompt — searchable but not shown in the list
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase()
 
-// PaneSwitcher: a ⌘K command palette over every workspace tab + agent. Type to
-// filter (by title — including renames —, workspace, repo, agent, or prompt);
-// ↑/↓ to move; Enter to select the tab (shows its terminal in the center).
+// PaneSwitcher: a Cmd+U command-palette over every herdr pane on every host.
+// Type to filter; ↑/↓ to move; Enter to open + focus the pane in the Herdr tab
+// (handing the keyboard straight to its terminal). Unlike the Grid's display
+// filters, this always searches the full pane set across all hosts.
 export function PaneSwitcher({
   open,
   onOpenChange,
-  onSelectTab,
+  onFocusInHerdr,
+  termWasFocused = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSelectTab: (tabId: string) => void
+  onFocusInHerdr: () => void
+  // Whether the herdr terminal held keyboard focus when the palette opened. On a
+  // cancel-close we re-focus its xterm so Esc'ing out of ⌘K leaves the keyboard
+  // where it was, rather than stranding it on the (unfocusable-for-typing) iframe.
+  termWasFocused?: boolean
 }) {
+  const { host: activeHost } = useApp()
   const [query, setQuery] = React.useState("")
   const [active, setActive] = React.useState(0)
   const listRef = React.useRef<HTMLDivElement>(null)
-  // When the sidebar is in all-hosts mode the shared tree/agents queries already
-  // span every host, so ⌘K searches across hosts — surface the host on each row
-  // (and fold it into the search) so cross-host matches are disambiguated.
-  const allHosts = useUIState().sidebar_all_hosts ?? false
+  // Set when a pane is chosen so the close handler can tell a pick (choose()
+  // already hands focus to the pane's terminal) from a cancel.
+  const chosenRef = React.useRef(false)
 
-  const treeQ = useQuery({
-    queryKey: qk.tree,
-    queryFn: fetchTree,
+  // Shares the Grid tab's query cache (same key), so opening right after viewing
+  // the Grid is instant; otherwise it fetches on open.
+  const q = useQuery({
+    queryKey: qk.grid,
+    queryFn: () => api.gridPanes(),
     enabled: open,
   })
-  const agentsQ = useQuery({
-    queryKey: qk.agents,
-    queryFn: fetchAgents,
-    enabled: open,
-  })
+  const panes = q.data?.panes ?? [] // backend order = newest first (mirrors Grid)
 
-  const entries = React.useMemo<Entry[]>(() => {
-    const tree = treeQ.data
-    if (!tree) return []
-    const promptByTab = new Map<string, string>()
-    for (const a of agentsQ.data?.agents ?? [])
-      promptByTab.set(a.tab_id, a.prompt ?? "")
-    const out: Entry[] = []
-    const repoName = new Map<string, string>()
-    const repos = tree.repos ?? []
-    for (const r of repos) {
-      for (const w of r.workspaces ?? []) repoName.set(w.id, r.name)
-      if (r.main_workspace) repoName.set(r.main_workspace.id, r.name)
+  // Workspaces holding more than one pane — the only ones where the shared
+  // workspace label is ambiguous and each row needs its more-specific name
+  // (its tab or pane label) to tell siblings apart. This covers both split
+  // panes in one tab and panes spread across several tabs. Computed off the
+  // full set (not the filtered view) so the search query never flips a badge
+  // on or off.
+  const multiPaneWorkspaces = React.useMemo(() => {
+    const countByWs = new Map<string, number>()
+    for (const p of panes) {
+      if (!p.workspace_id) continue
+      countByWs.set(p.workspace_id, (countByWs.get(p.workspace_id) ?? 0) + 1)
     }
-    const wss = [
-      ...(tree.scratch ?? []),
-      // Each repo contributes its linked worktrees AND its main checkout
-      // (main_workspace, the repo-root workspace). The latter isn't in
-      // `workspaces` — it's the repo row itself — so an agent/tab on the
-      // primary branch would otherwise be invisible to ⌘K. (repoName is keyed
-      // by workspace id for both, so the repo label resolves either way.)
-      ...repos.flatMap((r) =>
-        r.main_workspace
-          ? [...(r.workspaces ?? []), r.main_workspace]
-          : (r.workspaces ?? [])
-      ),
-    ]
-    for (const w of wss) {
-      for (const t of w.tabs ?? []) {
-        out.push({
-          tabId: t.id,
-          title: t.title || t.kind,
-          workspace: w.title,
-          repo: w.repo ? (repoName.get(w.id) ?? "") : "",
-          kind: t.kind,
-          agent: t.agent ?? "",
-          status: t.status ?? "",
-          prompt: promptByTab.get(t.id) ?? "",
-          hostLabel: w.host_label ?? "",
-        })
-      }
-    }
-    return out
-  }, [treeQ.data, agentsQ.data])
+    const multi = new Set<string>()
+    for (const [ws, n] of countByWs) if (n > 1) multi.add(ws)
+    return multi
+  }, [panes])
 
   const filtered = React.useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
-    if (tokens.length === 0) return entries
-    return entries.filter((e) => {
-      const h = haystack(e, allHosts)
+    if (tokens.length === 0) return panes
+    return panes.filter((p) => {
+      const h = haystack(p)
       return tokens.every((t) => h.includes(t))
     })
-  }, [entries, query, allHosts])
+  }, [panes, query])
 
+  // Reset the highlight to the top whenever the query changes.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on query change
-  React.useEffect(() => setActive(0), [query])
+  React.useEffect(() => {
+    setActive(0)
+  }, [query])
+
+  // Clear the query each time the modal opens so it starts fresh.
   React.useEffect(() => {
     if (open) setQuery("")
   }, [open])
+
+  // Keep the highlighted row scrolled into view.
   React.useEffect(() => {
     if (!open) return
     listRef.current
@@ -140,9 +132,14 @@ export function PaneSwitcher({
       ?.scrollIntoView({ block: "nearest" })
   }, [active, open])
 
-  const choose = (e: Entry) => {
+  const choose = (p: GridPane) => {
+    chosenRef.current = true
     onOpenChange(false)
-    onSelectTab(e.tabId)
+    // Close first so the Dialog doesn't re-grab focus on unmount — then hand the
+    // keyboard to the pane's terminal.
+    focusPaneInHerdr(p, activeHost, onFocusInHerdr).catch((e) =>
+      toast.error(`focus failed: ${(e as Error).message}`)
+    )
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -157,8 +154,8 @@ export function PaneSwitcher({
       setActive((a) => Math.max(a - 1, 0))
     } else if (e.key === "Enter") {
       e.preventDefault()
-      const sel = filtered[active]
-      if (sel) choose(sel)
+      const p = filtered[active]
+      if (p) choose(p)
     }
   }
 
@@ -166,112 +163,86 @@ export function PaneSwitcher({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        // flex column + bounded height + overflow-hidden so the results list
-        // below is the real scroll area: without a height cap on the content
-        // itself, a long list on mobile chained its scroll to the page instead
-        // of staying inside the modal. (Same pattern as CreateAgentDialog.)
-        className="top-2 flex max-h-[85dvh] translate-y-0 flex-col gap-0 overflow-hidden p-0 max-md:max-w-[calc(100%-1rem)] sm:top-[15%] sm:max-w-lg"
+        className="top-[15%] translate-y-0 gap-0 p-0 sm:max-w-lg"
         onOpenAutoFocus={(e) => {
+          // Focus the search input rather than the first row.
           e.preventDefault()
           ;(e.currentTarget as HTMLElement | null)
             ?.querySelector("input")
             ?.focus()
         }}
+        onCloseAutoFocus={(e) => {
+          // A chosen pane already had focus handed to its terminal by choose();
+          // leave it. On a cancel (Esc / click-away), Radix restores focus to
+          // whatever held it before the palette opened — but when that was the
+          // herdr terminal iframe, focusing the <iframe> element doesn't reach
+          // the xterm inside, so the user would have to click the pane to type
+          // again. Re-focus its xterm directly instead.
+          if (chosenRef.current) {
+            chosenRef.current = false
+            return
+          }
+          if (termWasFocused) {
+            e.preventDefault()
+            focusHerdrTerminal()
+          }
+        }}
       >
         <DialogHeader className="sr-only">
-          <DialogTitle>Find a tab or agent</DialogTitle>
+          <DialogTitle>Find a pane</DialogTitle>
         </DialogHeader>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Search tabs/agents by name, workspace, repo, agent, or prompt…"
-          // text-base on mobile keeps iOS from zooming the viewport on focus;
-          // shrink to text-sm once there's room.
-          className="w-full shrink-0 border-border border-b bg-transparent px-4 py-3 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
+          placeholder="Search panes by tab, workspace, host, agent, path, or prompt…"
+          className="w-full border-border border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
         />
-        <div
-          ref={listRef}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 sm:max-h-80 sm:flex-none"
-        >
+        <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
-              {treeQ.isLoading ? "Loading…" : "No matches."}
+              {q.isLoading ? "Loading panes…" : "No matching panes."}
             </div>
           ) : (
-            filtered.map((e, i) => (
+            filtered.map((p, i) => (
               <button
-                key={e.tabId}
+                key={cellKey(p)}
                 type="button"
                 data-index={i}
-                onClick={() => choose(e)}
+                onClick={() => choose(p)}
                 onMouseMove={() => setActive(i)}
                 className={cn(
-                  "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors",
-                  // The keyboard/pointer cursor uses the primary tint so the
-                  // highlighted row reads clearly — `bg-accent` resolves to the
-                  // near-white hover gray (--h-hover) and is imperceptible
-                  // against the popover. Non-selected rows pick up that subtle
-                  // accent on hover for feedback before they become active.
-                  i === active
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-accent hover:text-accent-foreground"
+                  "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
+                  i === active && "bg-accent text-accent-foreground"
                 )}
               >
                 <span className="flex w-full items-center gap-2">
-                  {e.kind === "agent" && (
-                    <span
-                      className={cn(
-                        "size-2 shrink-0 rounded-full",
-                        STATUS_DOT[e.status] ?? STATUS_DOT.unknown
-                      )}
-                    />
-                  )}
-                  <span className="truncate font-bold text-sm">{e.title}</span>
-                  {e.agent && (
-                    <span
-                      className={cn(
-                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                        // On the selected row the badge sits on `bg-primary`, so
-                        // its usual primary tint has no contrast — flip it to the
-                        // foreground color (works in both light and dark mode).
-                        i === active
-                          ? "bg-primary-foreground/20 text-primary-foreground"
-                          : "bg-primary/15 text-primary"
-                      )}
-                    >
-                      {e.agent}
-                      {e.status ? ` · ${e.status}` : ""}
+                  <span className="truncate font-bold text-sm">
+                    {primaryLabel(p)}
+                  </span>
+                  {/* When a workspace holds several panes, the bold workspace
+                      label is shared, so each row surfaces its more-specific
+                      name (pane label, else tab label) to tell siblings apart —
+                      the same name herdr shows on the pane/tab. */}
+                  {p.workspace_id &&
+                    multiPaneWorkspaces.has(p.workspace_id) &&
+                    detailLabel(p) && (
+                      <span className="shrink-0 rounded bg-foreground/10 px-1.5 py-0.5 font-medium text-[11px] text-foreground/70">
+                        {detailLabel(p)}
+                      </span>
+                    )}
+                  {p.has_agent && p.agent && (
+                    <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-[11px] text-primary">
+                      {p.agent}
+                      {p.agent_status ? ` · ${p.agent_status}` : ""}
                     </span>
                   )}
                 </span>
-                <span
-                  className={cn(
-                    "flex w-full items-center gap-2 truncate text-xs",
-                    // Keep the secondary line readable on the selected row — a
-                    // dimmed foreground reads on `bg-primary` where
-                    // `text-muted-foreground` washes out (esp. in dark mode).
-                    i === active
-                      ? "text-primary-foreground/75"
-                      : "text-muted-foreground"
+                <span className="flex w-full items-center gap-2 truncate text-muted-foreground text-xs">
+                  <span className="shrink-0">{p.host_label}</span>
+                  {p.cwd && (
+                    <span className="truncate font-mono">{tilde(p.cwd)}</span>
                   )}
-                >
-                  {allHosts && e.hostLabel && (
-                    <span
-                      className={cn(
-                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                        // Mirror the agent badge's selected-row contrast flip so
-                        // the host chip stays legible on `bg-primary`.
-                        i === active
-                          ? "bg-primary-foreground/20 text-primary-foreground"
-                          : "bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {e.hostLabel}
-                    </span>
-                  )}
-                  {e.repo && <span className="shrink-0">{e.repo}</span>}
-                  <span className="truncate">{e.workspace}</span>
                 </span>
               </button>
             ))

@@ -6,14 +6,30 @@ export interface ActiveState {
   cwd?: string
   pane_id?: string
   panes_rev?: number
-  // The local host label and a counter that bumps when terminals must reload.
+  theme_rev?: number
+  // Active host ("local" or an ssh-config alias) and a counter that bumps on
+  // every host switch so the browser can reload the terminal iframes.
   host?: string
   term_rev?: number
-  // A counter that bumps when /api/ui-state is written, so other clients
-  // re-pull and apply the new layout.
-  ui_rev?: number
-  // tab id → agent status (idle|working|blocked), pushed by the status poller.
-  agent_statuses?: Record<string, string>
+}
+
+// One ssh-config host as a herdr target. Selectable in the footer switcher only
+// when reachable && running && compatible; otherwise greyed out with `err`.
+export interface HostInfo {
+  alias: string
+  reachable: boolean
+  running: boolean
+  version: string
+  protocol: number
+  socket: string
+  compatible: boolean
+  err?: string
+}
+
+export interface HostsPayload {
+  active: string
+  local: { version: string; protocol: number; hostname: string }
+  hosts: HostInfo[]
 }
 
 export interface Pane {
@@ -28,65 +44,49 @@ export interface Pane {
   agent_status?: string
 }
 
-// ---------------------------------------------------------------------------
-// Multi-host: ssh-config hosts lasso can drive, and the cross-host grid.
-// ---------------------------------------------------------------------------
-
-// One ssh-config host. Usable (selectable, a valid agent/grid target) when
-// reachable && has_tmux; otherwise the UI greys it out and shows `err`.
-export interface HostInfo {
-  alias: string
-  reachable: boolean
-  has_tmux: boolean
-  tmux_version?: string
-  home?: string
-  err?: string
-}
-
-export interface HostsPayload {
-  active: string // the host lasso currently drives ("local" or an alias)
-  hostname: string // local machine label, shown for the local host
-  hosts: HostInfo[]
-}
-
-// One live tab on one host, as rendered by the grid. A "pane" maps 1:1 to a tab
-// (lasso's terminal granularity is the tab's tmux session).
+// One pane in the Grid tab: a herdr pane on a specific host, enriched with
+// workspace/tab labels and whether herdr detects an agent in it. `host` is
+// "local" or an ssh-config alias and is the key for both attaching its terminal
+// and focusing it (switching the active host first when it isn't already active).
+// `terminal_id` is herdr's handle for a direct `terminal attach`.
 export interface GridPane {
   host: string
   host_label: string
-  tab_id: string
-  workspace_id: string
-  workspace_label: string
-  tab_label: string
-  cwd: string
+  pane_id: string
+  terminal_id: string
+  workspace_id?: string
+  workspace_label?: string
+  tab_id?: string
+  tab_label?: string
+  pane_label?: string
+  cwd?: string
   agent?: string
-  agent_status?: AgentStatus
-  has_agent: boolean
+  agent_status?: string
+  has_agent?: boolean
+  focused?: boolean
+  // The agent's initial prompt (creation description). Carried for search only —
+  // the pane switcher matches against it but doesn't display the full text.
   prompt?: string
-  git: boolean // pane lives in a git checkout (else no status dot)
-  dirty?: number // working-tree changes (git status lines); absent/0 = clean
 }
 
 export interface GridPayload {
   panes: GridPane[]
-  errors?: Record<string, string> // host → why it couldn't be reached
+  // host → why its panes couldn't be listed (unreachable, protocol drift, …).
+  // The rest of the grid still renders; the UI shows these as per-host chips.
+  errors?: Record<string, string>
 }
 
-// Server-persisted, global UI preferences (the grid's filters, sidebar state,
-// and the side panels' last-open widths as % of the panel group — zero/absent
-// width means "never saved"). One blob shared across browsers/tabs, last write
-// wins; write through patchUIState (lib/ui-state.ts) so partial updates never
-// clobber the other fields.
+// Persisted, global browser UI preferences (SQLite-backed): Grid tab filters +
+// sidebar collapse. The client reads the whole object and writes the whole
+// object back (merge happens client-side), so navigating away and back — or
+// opening lasso elsewhere — restores the same view.
 export interface UIState {
   grid_agents_only: boolean
   grid_hidden_hosts: string[]
-  grid_selected: string[] // "host|tab_id" keys of multi-selected cells
+  // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
+  // survives navigating away and back (or reloading).
+  grid_selected: string[]
   sidebar_collapsed: boolean
-  left_width?: number
-  right_width?: number
-  // Show every usable host's spaces/agents in the sidebar (grouped by host)
-  // instead of only the active host's.
-  sidebar_all_hosts?: boolean
 }
 
 export interface FileEntry {
@@ -124,120 +124,49 @@ export interface FileDiff {
   truncated: boolean
 }
 
-// Version + update status for the Settings tab.
+// Protocol-compatibility check for the Settings tab: the herdr socket protocol
+// this lasso build targets vs. the protocol the installed herdr daemon reports
+// over its socket. `err` is set (and herdr_protocol is 0) when the daemon can't
+// be reached, so the tab shows "herdr unreachable" instead of a false mismatch.
 export interface VersionInfo {
+  lasso_protocol: number
   // This lasso build's own version (git revision from the Go VCS stamp, or
-  // "dev"). Shown in Settings so a stale install is visible.
+  // "dev"). Shown in the host switcher so a stale install is visible.
   lasso_version: string
-  // The newest published GitHub release tag. When newer than lasso_version, the
+  herdr_protocol: number
+  herdr_version?: string
+  compatible: boolean
+  // Whether this install can self-update (a pitchfork-supervised git checkout).
+  // False for dev/worktree runs, where the "Update lasso" action is hidden.
+  updatable: boolean
+  // Only meaningful when `updatable`: whether the running build is behind main.
+  // "available" — a newer commit is waiting to be built (see commits_behind);
+  // "current" — already on main's tip; "unknown" — can't tell, so the UI still
+  // offers the button. Absent on non-updatable installs.
+  update_state?: "available" | "current" | "unknown"
+  commits_behind?: number
+  // The newest published GitHub release tag — set only for a release-binary
+  // install (not the supervised checkout). When newer than lasso_version, the
   // Settings tab shows an "update available" hint pointing at `lasso update`.
   latest_version?: string
-  // Whether the running build is behind the latest release.
-  // "available" — a newer release is out; "current" — already up to date;
-  // "unknown" — can't tell.
-  update_state?: "available" | "current" | "unknown"
   err?: string
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar tree: repos → worktrees, plus a flat agent list.
-// ---------------------------------------------------------------------------
-
-export type AgentStatus = "idle" | "working" | "blocked" | "unknown"
-
-export interface TreeTab {
-  id: string
-  title: string
-  kind: "shell" | "agent"
-  agent_id?: string
-  agent?: string // claude | codex
-  status?: AgentStatus
-}
-
-export interface TreeWorkspace {
-  id: string
-  title: string
-  // Git-backed iff repo is set (no separate kind flag); repo-less workspaces
-  // (formerly "scratch") have repo undefined and arrive in `TreePayload.scratch`.
-  repo?: string
-  work_dir: string
-  branch?: string
-  tabs: TreeTab[]
-  // Host this workspace lives on ("local" or an ssh alias) + its display label,
-  // for grouping the sidebar by host in all-hosts mode.
-  host?: string
-  host_label?: string
-  // Aggregate live-agent status for the sidebar dot (blocked > working > idle),
-  // or absent when no tab is running an agent.
-  agent_status?: AgentStatus
-  agent_kind?: string
-}
-
-export interface TreeRepo {
-  path: string
+export interface ThemePayload {
   name: string
-  primary_branch: string
-  last_commit: number
-  // Primary branch's status vs its configured upstream. upstream is absent for
-  // local-only repos; ahead/behind are commit counts (absent when zero).
-  upstream?: string
-  ahead?: number
-  behind?: number
-  workspaces: TreeWorkspace[] // linked worktrees only
-  // The repo row is itself the main checkout (primary branch). main_tab_id is
-  // its tab if one exists; otherwise click calls openRepo to create one.
-  // main_workspace carries that checkout's full workspace (with tabs) so the tab
-  // strip can resolve it — it is not rendered as a child in the tree.
-  main_workspace_id?: string
-  main_tab_id?: string
-  main_workspace?: TreeWorkspace
-  agent_status?: AgentStatus
-  agent_kind?: string
-  // Host this repo lives on ("local" or an ssh alias) + its display label, for
-  // grouping the sidebar by host in all-hosts mode.
-  host?: string
-  host_label?: string
+  resolved: string
+  customized: boolean
+  css: string
+  // xterm.js ITheme — shape is opaque to us; we hand it straight to the iframe.
+  xterm: Record<string, unknown>
 }
 
-export interface TreePayload {
-  repos: TreeRepo[]
-  scratch: TreeWorkspace[]
-  // Authoritative top-level display order of the unified "spaces" list as stable
-  // keys ("ws:<id>" for scratch, "repo:<path>" for repos). Rows absent from it
-  // (e.g. just-created) are rendered at the bottom by the sidebar.
-  order: string[]
-  // Host keys ("local" or an ssh alias) whose tree was successfully queried this
-  // round (present even when the host has zero workspaces). In all-hosts mode the
-  // sidebar reconciles this against the usable host set to show a per-host loading
-  // state for hosts still connecting, instead of remote workspaces trickling in.
-  // errors maps a host key to why it couldn't be reached this round.
-  hosts?: string[]
-  errors?: Record<string, string>
-}
-
-export interface AgentRow {
-  tab_id: string
-  agent_id: string
-  title: string
-  agent: string
-  status: AgentStatus
-  workspace_id: string
-  workspace_title: string
-  repo?: string
-  cwd: string
-  prompt?: string
-  // Host this agent runs on ("local" or an ssh alias) + its display label, for
-  // grouping the agents pane by host in all-hosts mode.
-  host?: string
-  host_label?: string
-}
-
-// httpError builds a concise Error from a non-OK response. The backend returns
+// httpError builds a concise Error from a non-OK response. lasso/herdr return
 // short text or JSON errors, but a proxy in front of the app (e.g. the Cloudflare
 // tunnel exposing lasso.knowsuchagency.ai) answers with a full HTML error page
-// when the origin is down or briefly unreachable — during a redeploy, etc.
-// Dumping that raw HTML into the UI (the Diff tab, toasts) is just noise, so
-// collapse HTML bodies (and empty ones) to the status line.
+// when the origin is down or briefly unreachable — during a host switch, a
+// redeploy, etc. Dumping that raw HTML into the UI (the Diff tab, toasts) is just
+// noise, so collapse HTML bodies (and empty ones) to the status line.
 async function httpError(r: Response): Promise<Error> {
   const body = (await r.text().catch(() => "")).trim()
   const isHTML =
@@ -255,8 +184,8 @@ async function httpError(r: Response): Promise<Error> {
 // Agent creation ("New Agent")
 // ---------------------------------------------------------------------------
 
-// Per-repo remembered creator state (lives in ~/.lasso/lasso.db, keyed by repo
-// path).
+// Per-repo remembered creator state (lives in ~/.lasso/lasso.db, keyed by the
+// active host + repo path).
 export interface RepoConfig {
   last_base_branch?: string
   copy_files?: string
@@ -266,9 +195,8 @@ export interface RepoConfig {
 // One agent lasso has spawned.
 export interface AgentRecord {
   id: string
-  host?: string
   title: string
-  // Git-backed iff repo is set (no separate type flag).
+  type: "git" | "scratch"
   repo?: string
   base_branch?: string
   branch?: string
@@ -279,20 +207,22 @@ export interface AgentRecord {
   plan_mode: boolean
   work_dir: string
   workspace_id?: string
-  tab_id?: string
   root_pane?: string
   created_at: string
 }
 
-// The creator's settings + remembered selections + agent log (GET/POST
-// /api/agent-config). `default_agent` may be "" — no preset default, in which
-// case the creator falls back to `last_agent`.
+// The creator's settings + the active host's remembered selections + agent log
+// (GET/POST /api/agent-config). `default_agent` may be "" — no preset default,
+// in which case the creator falls back to `last_agent`. `last_repo`,
+// `last_agent`, `last_agent_type`, `repos`, and `agents` are scoped to the
+// active host.
 export interface AgentConfig {
   repos_root: string
   branch_prefix: string
   default_agent: string
   last_repo?: string
   last_agent?: string
+  last_agent_type?: "git" | "scratch"
   scratch_setup?: string
   repos?: Record<string, RepoConfig>
   agents?: AgentRecord[]
@@ -315,13 +245,10 @@ export interface RepoBranches {
 
 // The body POSTed to /api/create-agent.
 export interface CreateAgentPayload {
-  // Target host ("" / "local" = the local box, else an ssh alias).
-  host?: string
+  type: "git" | "scratch"
   // The agent's instruction; its first line becomes the title (branch/dir name,
   // workspace label, list/toast headline).
   prompt: string
-  // Provide repo for a git worktree; omit it for a repo-less workspace. The
-  // creation mode is derived from this — there is no separate type field.
   repo?: string
   base_branch?: string
   branch_prefix?: string
@@ -349,8 +276,8 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await r.json()) as T
 }
 
-// withHost appends ?host=/&host= to a config endpoint. The backend is
-// local-only now, so callers pass "local"; omitted = the backend default.
+// withHost appends ?host=/&host= to a config endpoint so it targets a specific
+// host's own settings (its lasso.db). Omitted = the backend's active host.
 function withHost(url: string, host?: string): string {
   if (!host) return url
   return `${url}${url.includes("?") ? "&" : "?"}host=${encodeURIComponent(host)}`
@@ -358,93 +285,116 @@ function withHost(url: string, host?: string): string {
 
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
+  theme: () => getJSON<ThemePayload>("/api/theme"),
+
+  // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
+  // the server-side cache (the footer's manual refresh).
+  hosts: (refresh = false) =>
+    getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
+
+  // Switch the active host ("local" or an alias). The backend re-points herdr
+  // RPC, file/diff ops, and respawns the terminals at the new host.
+  switchHost: (host: string) =>
+    postJSON<{ active: string; version: string; protocol: number }>(
+      "/api/host",
+      { host }
+    ),
+
+  // Run `herdr update` on a remote host that's behind this lasso's protocol,
+  // auto-answering its interactive prompts (stop the old server = yes, which
+  // exits that host's pane processes; decline the star prompt = no). Slow — it
+  // downloads a release binary on the far side — and returns the captured output.
+  updateHost: (host: string) =>
+    postJSON<{ ok: boolean; output: string; error?: string }>(
+      "/api/host-update",
+      { host }
+    ),
+
+  // Install herdr on a remote host (if missing) and bring it up supervised by
+  // pitchfork (installing pitchfork via mise if needed). For hosts where herdr
+  // is missing or its server isn't running. Slow — downloads binaries — and
+  // returns a provisioning log.
+  provisionHost: (host: string) =>
+    postJSON<{ ok: boolean; output: string; error?: string }>(
+      "/api/host-provision",
+      { host }
+    ),
+
+  // Update lasso itself: pull the latest source and let the supervisor rebuild +
+  // restart it. Only works on the pitchfork-supervised prod install (see
+  // VersionInfo.updatable); the server bounces a moment after this returns.
+  selfUpdate: () =>
+    postJSON<{ started: boolean; src: string; daemon: string }>(
+      "/api/self-update",
+      {}
+    ),
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
 
-  version: () => getJSON<VersionInfo>("/api/version"),
+  // Every herdr pane across every reachable, protocol-compatible host (local +
+  // remotes), for the Grid tab. Aggregated server-side; per-host failures come
+  // back in `errors` rather than failing the whole request.
+  gridPanes: () => getJSON<GridPayload>("/api/grid"),
 
-  // --- sidebar tree + workspace/tab/repo mutations ---
-  // `all` aggregates every usable host's spaces/agents (grouped by host) instead
-  // of just the active host's.
-  tree: (all = false) =>
-    getJSON<TreePayload>(`/api/tree${all ? "?all=1" : ""}`),
-  agentsList: (all = false) =>
-    getJSON<{ agents: AgentRow[] }>(`/api/agents${all ? "?all=1" : ""}`),
+  // Ensure a ttyd is attached to one pane's terminal and return its proxy base
+  // path (the iframe src). Used to first-attach a visible cell; creates the ttyd
+  // if needed. Keepalives use gridTermTouch instead (see below).
+  gridTerm: (host: string, terminal_id: string) =>
+    postJSON<{ base: string }>("/api/grid/term", { host, terminal_id }),
 
-  // Point the single persistent viewport ttyd at a tab's tmux session (an empty
-  // tab_id just warms the viewport). Returns the stable iframe base path — the
-  // frontend keeps one iframe on it and re-POSTs to switch tabs.
-  tabTerm: (tab_id: string) =>
-    postJSON<{ base: string }>("/api/tab/term", { tab_id }),
-  // Whether the viewport ttyd is still alive (respawn + reload base if not).
-  tabTermTouch: () => postJSON<{ alive: boolean }>("/api/tab/term-touch", {}),
-  // Whether a tab's session has painted content yet (drives the loading overlay).
-  tabReady: (tab_id: string) =>
-    postJSON<{ ready: boolean }>("/api/tab/term-ready", { tab_id }),
+  // Bump a live grid terminal's idle timer WITHOUT creating one — the keepalive a
+  // mounted cell fires every KEEPALIVE_MS. Unlike gridTerm it can't resurrect an
+  // attach the cell just released, which is what kept a thin grid attach clamping
+  // the focused pane's width in the wide Herdr terminal. `alive` is false if the
+  // entry was reaped (the caller can re-attach via gridTerm while still visible).
+  gridTermTouch: (host: string, terminal_id: string) =>
+    postJSON<{ alive: boolean }>("/api/grid/term-touch", { host, terminal_id }),
 
-  newTab: (workspace_id: string, title?: string) =>
-    postJSON<TreeTab>("/api/tab/new", { workspace_id, title }),
-  renameTab: (tab_id: string, title: string) =>
-    postJSON<{ ok: boolean }>("/api/tab/rename", { tab_id, title }),
-  closeTab: (tab_id: string) =>
-    postJSON<{ ok: boolean }>("/api/tab/close", { tab_id }),
-  // Close an agent: closes its tab and, if that empties its workspace, closes the
-  // workspace too (its worktree leaves the spaces pane; the on-disk worktree is
-  // kept). Use this for the agents-pane "Close agent", not the bare closeTab.
-  closeAgent: (tab_id: string) =>
-    postJSON<{ ok: boolean }>("/api/agent/close", { tab_id }),
-  // Create a bare scratch workspace (a shell, no agent).
-  createWorkspace: (title?: string) =>
-    postJSON<{ workspace_id: string; tab_id: string; work_dir: string }>(
-      "/api/workspace/create",
-      { title }
-    ),
-  renameWorkspace: (workspace_id: string, title: string) =>
-    postJSON<{ ok: boolean }>("/api/workspace/rename", { workspace_id, title }),
-  closeWorkspace: (workspace_id: string) =>
-    postJSON<{ ok: boolean }>("/api/workspace/close", { workspace_id }),
-  // Persist the user's drag-and-drop ordering of the unified "spaces" list (the
-  // full current key list in its new order). `host` scopes the order to one host
-  // group in all-hosts mode (omitted = the active host).
-  reorderSpaces: (order: string[], host?: string) =>
-    postJSON<{ ok: boolean }>("/api/spaces/reorder", { order, host }),
-  // Open (creating on first use) a terminal on a repo's primary branch — its
-  // main checkout at the repo root. `host` targets the repo's host in all-hosts
-  // mode (omitted = the active host).
-  openRepo: (repo: string, host?: string) =>
-    postJSON<{ tab_id: string; workspace_id: string }>("/api/repo/open", {
-      repo,
+  // Detach a pane's grid terminal (kills its ttyd). Called when a cell leaves
+  // the grid so the pane isn't held to the cell's narrow width while it's viewed
+  // full-size in the Herdr terminal. `keepalive` lets it complete even when fired
+  // from a React unmount/teardown. Best-effort — failures are ignored.
+  gridTermRelease: (host: string, terminal_id: string) =>
+    fetch("/api/grid/term-release", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, terminal_id }),
+      keepalive: true,
+    }).catch(() => {}),
+
+  // Tear down every grid terminal at once — the authoritative backstop fired when
+  // the Grid view is left, so no thin attach survives in the background to clamp a
+  // pane viewed full-size in Herdr (even if a per-cell release was dropped or raced
+  // a keepalive). `keepalive` lets it complete from a React unmount/teardown.
+  gridTermReleaseAll: () =>
+    fetch("/api/grid/term-release-all", {
+      method: "POST",
+      keepalive: true,
+    }).catch(() => {}),
+
+  // Rename the workspace a grid pane belongs to, on that pane's host.
+  gridRename: (host: string, workspace_id: string, label: string) =>
+    postJSON<{ ok: boolean }>("/api/grid/rename", {
       host,
+      workspace_id,
+      label,
     }),
-  renameRepo: (repo: string, name: string, host?: string) =>
-    postJSON<{ ok: boolean }>("/api/repo/rename", { repo, name, host }),
-  // Close a whole repo: closes its main checkout and every linked worktree (and
-  // their tabs/agents), dropping the repo from the spaces pane. The on-disk
-  // checkout/worktrees are kept; reopen via New Agent / ⌘K.
-  closeRepo: (repo: string, host?: string) =>
-    postJSON<{ ok: boolean }>("/api/repo/close", { repo, host }),
 
-  // Make a git worktree + workspace with a shell tab but NO agent.
-  createWorktree: (body: {
-    repo: string
-    base_branch?: string
-    branch_name?: string
-    title?: string
-    host?: string
-  }) =>
-    postJSON<{ workspace_id: string; work_dir: string; branch: string }>(
-      "/api/create-worktree",
-      body
+  // Close one or more grid panes (each tagged with its host — the selection can
+  // span hosts). Reports per-pane failures rather than failing the whole batch.
+  gridClose: (panes: { host: string; pane_id: string }[]) =>
+    postJSON<{ closed: number; errors?: Record<string, string> }>(
+      "/api/grid/close",
+      { panes }
     ),
+
+  // Persisted UI prefs (grid filters + sidebar collapse).
+  uiState: () => getJSON<UIState>("/api/ui-state"),
+  saveUIState: (s: UIState) => postJSON<UIState>("/api/ui-state", s),
+  version: () => getJSON<VersionInfo>("/api/version"),
 
   files: (path: string) =>
     getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
-
-  // The live working directory of a tab's terminal (its tmux pane cwd), polled
-  // by the Shell so the Files/Diff panel follows the active terminal as it cd's
-  // around. Falls back to the tab's saved launch dir when no session is live.
-  tabCwd: (tab: string) =>
-    getJSON<{ cwd: string }>(`/api/tab-cwd?tab=${encodeURIComponent(tab)}`),
 
   fileURL: (path: string) => `/api/file?path=${encodeURIComponent(path)}`,
 
@@ -530,6 +480,9 @@ export const api = {
     return getJSON<FileDiff>(`/api/diff-file?${params}`)
   },
 
+  focus: (workspace_id?: string, tab_id?: string) =>
+    postJSON<unknown>("/api/focus", { workspace_id, tab_id }),
+
   rename: (tab_id: string | undefined, label: string) =>
     postJSON<unknown>("/api/rename", { tab_id, label }),
 
@@ -543,8 +496,8 @@ export const api = {
       { pane_ids }
     ),
 
-  // Write a pasted image to disk and return its path to insert into the
-  // description.
+  // Write a pasted image to the target host (defaults to active) and return the
+  // path on that host to insert into the description.
   pasteImage: async (file: Blob, host?: string): Promise<{ path: string }> => {
     const r = await fetch(withHost("/api/paste-image", host), {
       method: "POST",
@@ -557,7 +510,9 @@ export const api = {
 
   // --- Agent creation ---
 
-  // The creator's settings + agent log (~/.lasso/lasso.db).
+  // The creator's settings + agent log for a host (its own lasso.db; defaults to
+  // the active host). Settings come from that host; last-used/agent log are this
+  // lasso's local memory of what it did there.
   agentConfig: (host?: string) =>
     getJSON<AgentConfig>(withHost("/api/agent-config", host)),
 
@@ -594,9 +549,9 @@ export const api = {
       withHost(`/api/repo-branches?path=${encodeURIComponent(path)}`, host)
     ),
 
-  // Stage attachment files before creating the agent; returns the staging dir
-  // id + stored filenames to pass to createAgent, which moves them into the
-  // work dir.
+  // Stage attachment files on the target host (defaults to active) before
+  // creating the agent; returns the staging dir id + stored filenames to pass to
+  // createAgent, which moves them into the work dir on that same host.
   uploadAgentFiles: async (
     files: File[],
     host?: string
@@ -615,51 +570,12 @@ export const api = {
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
 
-  // --- Multi-host + grid ---
-
-  // List ssh-config hosts lasso can drive (refresh forces a re-probe).
-  hosts: (refresh = false) =>
-    getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
-
-  // Switch the active host (the file browser, diff, repo picker, sidebar tree
-  // and new-agent target follow it). Bumps term_rev so iframes reload.
-  switchHost: (host: string) =>
-    postJSON<{ active: string }>("/api/host", { host }),
-
-  // The cross-host pane list (every host's live tabs).
-  gridPanes: () => getJSON<GridPayload>("/api/grid"),
-
-  // Ensure a ttyd attached to a grid pane and get its iframe base path.
-  gridTerm: (host: string, tab_id: string) =>
-    postJSON<{ base: string }>("/api/grid/term", { host, tab_id }),
-
-  // Keepalive so a visible cell's ttyd isn't reaped.
-  gridTermTouch: (host: string, tab_id: string) =>
-    postJSON<{ alive: boolean }>("/api/grid/term-touch", { host, tab_id }),
-
-  // Tear down a cell's ttyd when it scrolls out of view / the grid is left.
-  // keepalive:true so it still fires during page unload.
-  gridTermRelease: (host: string, tab_id: string) =>
-    fetch("/api/grid/term-release", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host, tab_id }),
-      keepalive: true,
-    }).then(() => undefined),
-
-  // Rename a workspace from the grid.
-  gridRename: (host: string, workspace_id: string, label: string) =>
-    postJSON<{ ok: boolean }>("/api/grid/rename", {
-      host,
-      workspace_id,
-      label,
-    }),
-
-  // Close one or more panes (kills their sessions, host-aware).
-  gridClose: (panes: { host: string; tab_id: string }[]) =>
-    postJSON<{ ok: boolean }>("/api/grid/close", { panes }),
-
-  // Server-persisted UI prefs (grid filters + sidebar collapsed).
-  uiState: () => getJSON<UIState>("/api/ui-state"),
-  saveUIState: (s: UIState) => postJSON<UIState>("/api/ui-state", s),
+  // Create a bare herdr workspace running just a shell (no agent) and focus it.
+  // The backend focuses the new workspace server-side; the caller surfaces the
+  // Herdr tab and hands the keyboard to its terminal.
+  createTerminal: (label: string) =>
+    postJSON<{ workspace_id: string; root_pane: string }>(
+      "/api/create-terminal",
+      { label }
+    ),
 }

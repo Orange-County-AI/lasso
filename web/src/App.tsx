@@ -1,33 +1,29 @@
-import { useQuery } from "@tanstack/react-query"
 import {
-  ArrowDown,
-  ArrowUp,
   ChevronLeft,
   ChevronRight,
-  CornerDownLeft,
   Files,
   Globe,
   LayoutGrid,
   type LucideIcon,
   NotebookPen,
-  PanelLeft,
-  Search,
   Settings,
+  SquareTerminal,
+  Terminal,
 } from "lucide-react"
 import * as React from "react"
-import type { PanelImperativeHandle } from "react-resizable-panels"
+import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
+import { toast } from "sonner"
 import { BrowserTab } from "@/components/BrowserTab"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
+import { NewTerminalDialog } from "@/components/NewTerminalDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
-import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
-import { Sidebar } from "@/components/Sidebar"
-import { TabStrip } from "@/components/TabStrip"
-import { TabTerminal } from "@/components/TabTerminal"
+import { SettingsTab } from "@/components/SettingsTab"
+import { TerminalFrame } from "@/components/TerminalFrame"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -35,39 +31,23 @@ import {
 } from "@/components/ui/resizable"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { api, type TreeWorkspace } from "@/lib/api"
+import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
-import { installHistoryToggle } from "@/lib/history-toggle"
-import { fetchTree, qk, queryClient } from "@/lib/query"
-import { matchShortcut } from "@/lib/shortcuts"
-import {
-  kickTerminalSize,
-  sendKeyToTerminal,
-  TERM_KEY,
-  VIEWPORT_TERM_ID,
-} from "@/lib/terminal"
-import { patchUIState, syncAllHostsFromServer } from "@/lib/ui-state"
-import { useIsMobile } from "@/lib/use-mobile"
+import { restorePaneFocus } from "@/lib/pane-focus"
+import { qk, queryClient } from "@/lib/query"
+import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
+import { patchUIState, useUIState } from "@/lib/ui-state"
+import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type RightView = "files" | "scratch" | "browser" | "settings"
+type LeftView = "herdr" | "grid"
+type RightView = "files" | "scratch" | "browser" | "terminal" | "settings"
 
-// Persist each side panel's collapsed state and width (% of the group) so both
-// survive reloads/restarts.
-const LEFT_COLLAPSED_KEY = "lasso-left-collapsed"
-const RIGHT_COLLAPSED_KEY = "lasso-right-collapsed"
-const LEFT_WIDTH_KEY = "lasso-left-width"
-const RIGHT_WIDTH_KEY = "lasso-right-width"
-const GRID_MODE_KEY = "lasso-grid-mode"
+const LEFT_VIEWS: LeftView[] = ["herdr", "grid"]
 
-// Read a persisted panel width (percentage), falling back to a default when
-// it's missing or unparseable.
-function lsGetWidth(key: string, fallback: number): number {
-  const n = Number.parseFloat(lsGet(key) ?? "")
-  return Number.isFinite(n) && n > 0 ? n : fallback
-}
-
+// Shared tab-strip styling: a full-width underline strip, matching the original
+// vanilla UI rather than shadcn's default pill TabsList.
 const stripClass =
   "h-auto w-full justify-start gap-0 rounded-none border-b border-border bg-background p-0"
 const tabClass =
@@ -171,48 +151,6 @@ function Pane({
   )
 }
 
-// MobileKeyBar: the row of keys the on-screen keyboard lacks (Esc, ↑/↓, Enter),
-// shown under the terminal on mobile. Each taps a raw sequence straight to the
-// active tab's terminal. onPointerDown + preventDefault keeps xterm's hidden
-// textarea focused, so the soft keyboard doesn't dismiss on tap.
-function MobileKeyBar() {
-  const press = (seq: string) => (e: React.PointerEvent) => {
-    e.preventDefault()
-    sendKeyToTerminal(seq)
-  }
-  const cell =
-    "flex flex-1 items-center justify-center gap-1.5 py-3 text-muted-foreground text-sm active:bg-accent active:text-accent-foreground"
-  return (
-    <div className="flex shrink-0 divide-x divide-border border-border border-t bg-card">
-      <button
-        type="button"
-        className={cell}
-        onPointerDown={press(TERM_KEY.escape)}
-      >
-        Esc
-      </button>
-      <button type="button" className={cell} onPointerDown={press(TERM_KEY.up)}>
-        <ArrowUp className="size-4" aria-label="up" />
-      </button>
-      <button
-        type="button"
-        className={cell}
-        onPointerDown={press(TERM_KEY.down)}
-      >
-        <ArrowDown className="size-4" aria-label="down" />
-      </button>
-      <button
-        type="button"
-        className={cell}
-        onPointerDown={press(TERM_KEY.enter)}
-      >
-        Enter
-        <CornerDownLeft className="size-4" />
-      </button>
-    </div>
-  )
-}
-
 export function App() {
   return (
     <AppProvider>
@@ -222,654 +160,372 @@ export function App() {
   )
 }
 
-// allWorkspaces flattens every selectable workspace: scratch, repo worktrees, and
-// each repo's main checkout (which is folded into the repo header in the tree but
-// must still resolve for the tab strip).
-function allWorkspaces(
-  tree:
-    | {
-        repos: {
-          workspaces?: TreeWorkspace[]
-          main_workspace?: TreeWorkspace
-        }[]
-        scratch?: TreeWorkspace[]
-      }
-    | undefined
-): TreeWorkspace[] {
-  if (!tree) return []
-  const out: TreeWorkspace[] = [...(tree.scratch ?? [])]
-  for (const r of tree.repos ?? []) {
-    out.push(...(r.workspaces ?? []))
-    if (r.main_workspace) out.push(r.main_workspace)
-  }
-  return out
-}
-
-// findWorkspace locates the workspace owning a tab id.
-function findWorkspace(
-  tree: Parameters<typeof allWorkspaces>[0],
-  tabId: string | null
-): TreeWorkspace | null {
-  if (!tabId) return null
-  return (
-    allWorkspaces(tree).find((ws) =>
-      (ws.tabs ?? []).some((t) => t.id === tabId)
-    ) ?? null
-  )
-}
-
 function Shell() {
-  // On mobile the left sidebar doesn't exist (not even its toggle) and the
-  // right panel becomes a full-screen overlay instead of a resizable panel.
-  const isMobile = useIsMobile()
+  const [leftView, setLeftView] = React.useState<LeftView>(() => {
+    // Prefer ?view=; fall back to a legacy #hash (migrated to a query param on
+    // first write below) so old links still land on the right tab.
+    const v = getQueryParam("view") ?? location.hash.slice(1)
+    return (LEFT_VIEWS as string[]).includes(v) ? (v as LeftView) : "herdr"
+  })
   const [rightView, setRightView] = React.useState<RightView>("files")
-  const [rightCollapsed, setRightCollapsed] = React.useState(
-    () => lsGet(RIGHT_COLLAPSED_KEY) === "true"
-  )
-  const [leftCollapsed, setLeftCollapsed] = React.useState(
-    () => lsGet(LEFT_COLLAPSED_KEY) === "true"
-  )
+  const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
-  const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
-  const [gridMode, setGridMode] = React.useState(
-    () => lsGet(GRID_MODE_KEY) === "true"
-  )
-  const [selectedTabId, setSelectedTabId] = React.useState<string | null>(() =>
-    lsGet("lasso-selected-tab")
-  )
-
-  const leftPanel = React.useRef<PanelImperativeHandle>(null)
+  const [newTermOpen, setNewTermOpen] = React.useState(false)
+  // Whether the herdr terminal held focus when ⌘K opened the palette, captured
+  // at keypress (before Radix moves focus into the dialog) so a cancel-close can
+  // restore the keyboard to its xterm. activeElement is the iframe element when
+  // focus lives inside it.
+  const [paletteFromTerm, setPaletteFromTerm] = React.useState(false)
+  // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
+  // the collapsed-sidebar indicator stay live even when the Files panel is
+  // hidden or the sidebar boots collapsed. `gitReady` gates the badge until we
+  // have a real answer for the active repo.
+  const diff = useDiff()
+  const diffDirty = diff.data?.dirty ?? 0
+  const gitReady = diff.data != null
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
+  const ui = useUIState()
 
-  // Last expanded width of each side panel (% of the group). Seeded from
-  // localStorage for an instant first paint, and updated on every resize so
-  // expanding from collapsed returns to where they left it. The durable copy
-  // lives server-side (/api/ui-state) so the layout survives a lasso restart
-  // and stays consistent across browsers/tabs: widths are pulled below and
-  // pushed (debounced) on resize; other clients' writes arrive via the SSE
-  // ui_rev. Last write wins.
-  const leftWidth = React.useRef(lsGetWidth(LEFT_WIDTH_KEY, 18))
-  const rightWidth = React.useRef(lsGetWidth(RIGHT_WIDTH_KEY, 32))
+  // The live focused pane + active host (SSE-driven). The pane is reflected in
+  // the URL so Back/Forward can re-focus it; the host is mirrored into a ref so
+  // the (referentially stable) popstate handler always sees the current host.
+  const { activePaneID, host } = useApp()
+  const hostRef = React.useRef(host)
+  hostRef.current = host
 
-  // What the server is known to hold, so an incoming pull doesn't get echoed
-  // straight back as a push. pushable stays false until the first fetch lands —
-  // a freshly-opened tab must not clobber the server with its localStorage seed.
-  const serverWidths = React.useRef<{ left?: number; right?: number }>({})
-  const pushable = React.useRef(false)
-  const pushTimer = React.useRef<number | null>(null)
-
-  // Persist the current widths server-side, debounced past the drag's resize
-  // stream so only the width the user settles on is written.
-  const schedulePush = React.useCallback(() => {
-    if (!pushable.current) return
-    if (pushTimer.current !== null) window.clearTimeout(pushTimer.current)
-    pushTimer.current = window.setTimeout(() => {
-      pushTimer.current = null
-      const left = leftWidth.current
-      const right = rightWidth.current
-      const s = serverWidths.current
-      const same = (a: number | undefined, b: number) =>
-        a !== undefined && Math.abs(a - b) < 0.5
-      if (same(s.left, left) && same(s.right, right)) return
-      serverWidths.current = { left, right }
-      // patchUIState merges into the shared ui_state blob, so the width push
-      // can't clobber the grid filters (and vice versa).
-      patchUIState({ left_width: left, right_width: right })
-    }, 400)
+  const savedLayout = React.useMemo<Layout | undefined>(() => {
+    try {
+      const v = lsGet("lasso-layout")
+      return v ? (JSON.parse(v) as Layout) : undefined
+    } catch {
+      return undefined
+    }
   }, [])
-  React.useEffect(
-    () => () => {
-      if (pushTimer.current !== null) window.clearTimeout(pushTimer.current)
+
+  // push=true adds a browser history entry (so Back returns to the previous
+  // view) instead of replacing the current one — used when focusing a Grid pane
+  // surfaces the Herdr tab, so Back goes back to the Grid.
+  const switchLeft = React.useCallback(
+    (name: LeftView, fromUrl = false, push = false) => {
+      setLeftView(name)
+      if (!fromUrl) (push ? pushQueryParam : setQueryParam)("view", name)
     },
     []
   )
 
-  // Pull the server widths on load, and again whenever any client writes them
-  // (the SSE ui_rev bumps on every /api/ui-state POST).
-  const { uiRev } = useApp()
+  // Warm the cross-host pane list in the background on load so the first ⌘K
+  // pane-switcher search is instant instead of waiting on a fresh fetch. Shares
+  // qk.grid with the Grid tab and the switcher, so all three reuse one cache.
   React.useEffect(() => {
-    if (uiRev >= 0) void queryClient.invalidateQueries({ queryKey: qk.uiState })
-  }, [uiRev])
-  const uiState = useQuery({ queryKey: qk.uiState, queryFn: api.uiState })
-  React.useEffect(() => {
-    const us = uiState.data
-    if (!us) return
-    // Reconcile the all-hosts flag (its fast localStorage seed) with the server's
-    // value, re-fetching the tree/agents if another client toggled it.
-    syncAllHostsFromServer(us.sidebar_all_hosts ?? false)
-    serverWidths.current = { left: us.left_width, right: us.right_width }
-    pushable.current = true
-    const apply = (
-      pct: number | undefined,
-      widthRef: React.RefObject<number>,
-      key: string,
-      panel: React.RefObject<PanelImperativeHandle | null>
-    ) => {
-      // Zero/absent = never saved; the ±0.5% tolerance keeps a pull from
-      // fighting this tab's own in-flight drag over rounding noise.
-      if (!pct || !Number.isFinite(pct)) return
-      if (Math.abs(pct - widthRef.current) < 0.5) return
-      widthRef.current = pct
-      lsSet(key, String(pct))
-      const p = panel.current
-      if (p && !p.isCollapsed()) p.resize(`${pct}%`)
-    }
-    apply(us.left_width, leftWidth, LEFT_WIDTH_KEY, leftPanel)
-    apply(us.right_width, rightWidth, RIGHT_WIDTH_KEY, rightPanel)
-  }, [uiState.data])
-
-  const diff = useDiff()
-  const diffDirty = diff.data?.dirty ?? 0
-  const gitReady = diff.data != null
-
-  const tree = useQuery({ queryKey: qk.tree, queryFn: fetchTree })
-
-  const activeWorkspace = React.useMemo(
-    () => findWorkspace(tree.data, selectedTabId),
-    [tree.data, selectedTabId]
-  )
-
-  // Tabs we've ever seen in the tree. Lets us tell a tab that's *gone* (was
-  // present, now closed → move selection off it) from one that's merely *not
-  // arrived yet* (a freshly-created agent the tree hasn't refetched → keep the
-  // selection so create-focus isn't clobbered by a stale refetch).
-  const seenTabs = React.useRef<Set<string>>(new Set())
-
-  // Order in which tabs have been opened, most-recent last (deduped). When the
-  // active tab's workspace is closed we fall back to the last terminal the user
-  // was on rather than jumping to the global first tab.
-  const tabHistory = React.useRef<string[]>([])
-  React.useEffect(() => {
-    if (!selectedTabId) return
-    const h = tabHistory.current
-    const i = h.indexOf(selectedTabId)
-    if (i !== -1) h.splice(i, 1)
-    h.push(selectedTabId)
-  }, [selectedTabId])
-
-  // Default the selection to the first tab once the tree loads, and move off a
-  // selection whose tab was closed — but never off one still loading in.
-  React.useEffect(() => {
-    if (!tree.data) return
-    const tabs = allWorkspaces(tree.data).flatMap((ws) => ws.tabs ?? [])
-    const ids = new Set(tabs.map((t) => t.id))
-    for (const t of tabs) seenTabs.current.add(t.id)
-    // Drop closed tabs from history so the fallback only ever lands on a live one.
-    tabHistory.current = tabHistory.current.filter((id) => ids.has(id))
-    if (selectedTabId) {
-      const exists = ids.has(selectedTabId)
-      // Present, or selected-but-not-yet-in-tree (pending create) → leave it.
-      if (exists || !seenTabs.current.has(selectedTabId)) return
-    }
-    // Selection's tab is gone (e.g. its workspace was closed): fall back to the
-    // last opened terminal still alive, else the first tab.
-    const recent = tabHistory.current[tabHistory.current.length - 1]
-    setSelectedTabId(recent ?? tabs[0]?.id ?? null)
-  }, [tree.data, selectedTabId])
-
-  const selectTab = React.useCallback((tabId: string) => {
-    setSelectedTabId(tabId)
-    lsSet("lasso-selected-tab", tabId)
-  }, [])
-
-  // The UI agent creator focuses its new agent by asking us to select its tab.
-  // (Agents created via MCP never dispatch this, so they don't steal focus.)
-  // While the grid is up we stay in it (no navigating away) and instead open the
-  // new agent fullscreen in the grid — the grid expands that cell on this event.
-  React.useEffect(() => {
-    const onSelect = (e: Event) => {
-      const tabId = (e as CustomEvent).detail as string
-      if (!tabId) return
-      selectTab(tabId)
-      if (gridMode)
-        window.dispatchEvent(
-          new CustomEvent("lasso:grid-expand-tab", { detail: tabId })
-        )
-    }
-    window.addEventListener("lasso:select-tab", onSelect)
-    return () => window.removeEventListener("lasso:select-tab", onSelect)
-  }, [selectTab, gridMode])
-
-  // Feed the selected tab's cwd to the Files/Diff panel (which follows
-  // useApp().activeCwd). The workspace's work_dir is only the tab's *launch*
-  // dir; we seed from it for an instant value, then poll the terminal's live
-  // pane cwd so the panel follows the active terminal as the user cd's around.
-  React.useEffect(() => {
-    if (!selectedTabId) return
-    const emit = (cwd: string | undefined) => {
-      if (cwd)
-        window.dispatchEvent(new CustomEvent("lasso:cwd", { detail: cwd }))
-    }
-    // Instant seed so the panel isn't blank while the first poll is in flight.
-    emit(activeWorkspace?.work_dir)
-    let cancelled = false
-    const poll = () =>
-      api
-        .tabCwd(selectedTabId)
-        .then((r) => {
-          if (!cancelled) emit(r.cwd)
-        })
-        .catch(() => {
-          /* session not live yet / transient host blip — keep last cwd */
-        })
-    void poll()
-    // Backgrounded tabs don't change cwd visibly; skip polling while hidden.
-    const id = setInterval(() => {
-      if (!document.hidden) void poll()
-    }, 2500)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [selectedTabId, activeWorkspace?.work_dir])
-
-  const toggleLeft = React.useCallback(() => {
-    const p = leftPanel.current
-    if (!p) return
-    if (p.isCollapsed()) p.resize(`${leftWidth.current}%`)
-    else p.collapse()
-  }, [])
-  const toggleRight = React.useCallback(() => {
-    const p = rightPanel.current
-    if (p) {
-      if (p.isCollapsed()) p.resize(`${rightWidth.current}%`)
-      else p.collapse()
-      return
-    }
-    // No panel mounted (mobile: the right side is a full-screen overlay, not a
-    // resizable panel) — flip the collapsed state directly.
-    setRightCollapsed((c) => {
-      lsSet(RIGHT_COLLAPSED_KEY, String(!c))
-      return !c
+    void queryClient.prefetchQuery({
+      queryKey: qk.grid,
+      queryFn: () => api.gridPanes(),
     })
   }, [])
 
-  // The Grid is a full main view: it replaces the spaces sidebar AND the center
-  // terminal (the wall of live terminals IS the workspace overview). Entering it
-  // collapses the left panel so the grid spans both; leaving restores the
-  // sidebar unless the user had collapsed it themselves before entering. The
-  // terminal viewport underneath stays mounted (just hidden) so flipping back
-  // is instant — no xterm re-handshake.
-  const preGridLeftCollapsed = React.useRef(false)
-  const wasGridMode = React.useRef(false)
-  const toggleGrid = React.useCallback(() => {
-    setGridMode((on) => {
-      lsSet(GRID_MODE_KEY, String(!on))
-      return !on
-    })
+  // Reflect the initial tab in the query string once on mount — this also
+  // clears any legacy #hash (setQueryParam drops the fragment). The initial
+  // value is captured in a ref so the effect needs no reactive deps.
+  const initialView = React.useRef(leftView)
+  React.useEffect(() => {
+    setQueryParam("view", initialView.current)
   }, [])
-  React.useEffect(() => {
-    const p = leftPanel.current
-    if (!p) return
-    if (gridMode) {
-      // Entering (or loading straight into) grid mode: remember whether the
-      // user had the sidebar collapsed themselves, then take its space.
-      if (!wasGridMode.current) preGridLeftCollapsed.current = p.isCollapsed()
-      p.collapse()
-    } else if (wasGridMode.current) {
-      if (!preGridLeftCollapsed.current) p.resize(`${leftWidth.current}%`)
-      // The grid's per-cell tmux clients shrank the shared windows (tmux sizes
-      // to the latest active client). Their release alone may not restore the
-      // viewport's width — tmux falls back to whichever remaining client was
-      // active last, which can be a stale co-viewer. Assert the visible
-      // viewport as the latest client so the window snaps back now, not on the
-      // user's next keystroke. Delayed a beat so the iframe is unhidden first.
-      const t = setTimeout(() => kickTerminalSize(VIEWPORT_TERM_ID), 150)
-      wasGridMode.current = gridMode
-      return () => clearTimeout(t)
-    }
-    wasGridMode.current = gridMode
-  }, [gridMode])
 
-  // Focusing a grid pane drops back to the normal view on that pane (the grid
-  // is the overview; focus means "take me to this terminal").
-  const selectTabFromGrid = React.useCallback(
-    (tabId: string) => {
-      if (gridMode) toggleGrid()
-      selectTab(tabId)
-    },
-    [gridMode, toggleGrid, selectTab]
-  )
-
-  // ⌘K opens the switcher, ⌘I the new-workspace modal. Cmd-only so terminal
-  // control keys (Ctrl-*) are never clobbered; the terminal iframes re-dispatch
-  // Cmd shortcuts to this document so they work with focus inside. (⌘[/⌘] are
-  // NOT keydowns — macOS reserves them for history nav and eats them before the
-  // page; they're handled by the history trap below.)
+  // Reflect the focused pane in the URL (replaceState; cleared when none) so the
+  // current history entry always names the pane on screen. Pushed entries are
+  // created only by an explicit ⌘K/Grid navigation (see focusPaneInHerdr); this
+  // effect fires on the SSE-driven pane change, not on those pushes, so it never
+  // clobbers a freshly-pushed entry — the previous entry keeps the previous
+  // pane, which is exactly what Back should restore.
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const action = matchShortcut(e)
-      if (!action) return
-      e.preventDefault()
-      e.stopPropagation()
-      if (action === "palette") setPaletteOpen(true)
-      else if (action === "shortcuts") setShortcutsOpen(true)
-      else if (action === "grid") toggleGrid()
-      else if (action === "new-workspace")
-        window.dispatchEvent(new CustomEvent("lasso:new-workspace"))
-      else if (action === "new-tab")
-        window.dispatchEvent(new CustomEvent("lasso:new-tab"))
-      else if (action === "close-tab") {
-        // In the grid, ⌘⇧U expands/restores the focused cell instead of closing
-        // a tab (the grid has no single "active tab"); the grid owns the toggle.
-        if (gridMode)
-          window.dispatchEvent(new CustomEvent("lasso:grid-expand-toggle"))
-        else window.dispatchEvent(new CustomEvent("lasso:close-tab"))
+    setQueryParam("pane", activePaneID)
+  }, [activePaneID])
+
+  // Back/forward drives the active left tab from the URL, and — when returning
+  // to a Herdr entry that named a pane — re-focuses that pane (switching host
+  // first if needed), so Back after a ⌘K jump lands you back on the pane you
+  // came from, across hosts. Restoring is gated to the Herdr view: a Grid entry
+  // just shows the Grid (re-focusing a pane behind it would be an invisible
+  // backend change).
+  React.useEffect(() => {
+    const onPop = () => {
+      const v = getQueryParam("view") ?? ""
+      const view = (LEFT_VIEWS as string[]).includes(v)
+        ? (v as LeftView)
+        : "herdr"
+      switchLeft(view, true)
+      const pane = getQueryParam("pane")
+      if (view === "herdr" && pane) {
+        restorePaneFocus(
+          getQueryParam("host") ?? "local",
+          pane,
+          hostRef.current,
+          () => switchLeft("herdr", true)
+        ).catch((e) => toast.error(`focus failed: ${(e as Error).message}`))
       }
     }
-    document.addEventListener("keydown", onKey, true)
-    return () => document.removeEventListener("keydown", onKey, true)
-  }, [toggleGrid, gridMode])
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+  }, [switchLeft])
 
-  // ⌘[ / ⌘] (and the Back/Forward buttons / swipe) toggle the side panels via a
-  // history trap, since macOS browsers won't deliver those keys to the page.
-  React.useEffect(
-    () => installHistoryToggle(toggleLeft, toggleRight),
-    [toggleLeft, toggleRight]
-  )
+  // The sidebar's last open width (% of the group), so expanding restores it
+  // rather than snapping to minSize. react-resizable-panels' expand() only
+  // remembers the size from this session, so a sidebar that loads collapsed (or
+  // whose persisted layout is ~0) would expand thin — we resize() explicitly
+  // instead. The width is persisted to localStorage (see lib/sidebar) so it also
+  // survives a page reload / lasso restart, not just refreshed as the user drags.
+  const expandSidebar = React.useCallback(() => {
+    rightPanel.current?.resize(`${sidebarPctNow()}%`)
+  }, [])
+  const collapseSidebar = React.useCallback(() => {
+    const p = rightPanel.current
+    if (!p) return
+    const s = p.getSize().asPercentage
+    if (s > 5) setSidebarPct(s) // capture the true open width before hiding
+    p.collapse()
+  }, [])
+  const toggleSidebar = React.useCallback(() => {
+    if (rightPanel.current?.isCollapsed()) expandSidebar()
+    else collapseSidebar()
+  }, [expandSidebar, collapseSidebar])
 
-  // The right panel's content (files / scratch / browser / settings), shared by
-  // the desktop resizable panel and the mobile full-screen overlay.
-  const rightContent = (
-    <Tabs
-      value={rightView}
-      onValueChange={(v) => setRightView(v as RightView)}
-      className="flex h-full flex-col gap-0"
-    >
-      <FitTabs
-        tabs={[
-          {
-            value: "files",
-            label: "Files",
-            icon: Files,
-            badge: (
-              <GitStatusBadge
-                dirty={diffDirty}
-                ready={gitReady}
-                className="ml-1.5"
-                textClassName="text-[13px]"
-              />
-            ),
-          },
-          { value: "scratch", label: "Scratch", icon: NotebookPen },
-          { value: "browser", label: "Browser", icon: Globe },
-          { value: "settings", label: "Settings", icon: Settings },
-        ]}
-        trailing={
-          // Styled like the tab icons (same box model) rather than a
-          // bordered box, so it sits on the same baseline as them.
-          <button
-            type="button"
-            className={cn(tabClass, "flex items-center hover:text-primary")}
-            title="collapse panel (⌘])"
-            onClick={toggleRight}
-          >
-            <ChevronRight className="size-4" />
-          </button>
-        }
-      />
-      <div className="relative min-h-0 flex-1">
-        <Pane show={rightView === "files"}>
-          <FilesPanel />
-        </Pane>
-        <Pane show={rightView === "scratch"}>
-          <ScratchTab />
-        </Pane>
-        <Pane show={rightView === "browser"}>
-          <BrowserTab />
-        </Pane>
-        <Pane show={rightView === "settings"}>
-          <SettingsTab active={rightView === "settings"} />
-        </Pane>
-      </div>
-    </Tabs>
-  )
+  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘I → new terminal, ⌘] → toggle
+  // the sidebar. Bound to the Cmd key only
+  // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
+  // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
+  // this document, so these work even while a terminal holds focus. (See
+  // SHORTCUTS, the reference list shown in Settings.)
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      const k = e.key.toLowerCase()
+      if (k === "g") {
+        e.preventDefault()
+        switchLeft("grid")
+      } else if (k === "h") {
+        e.preventDefault()
+        switchLeft("herdr")
+      } else if (k === "]") {
+        e.preventDefault()
+        toggleSidebar()
+      } else if (k === "k") {
+        e.preventDefault()
+        setPaletteFromTerm(document.activeElement?.id === "term")
+        setPaletteOpen(true)
+      } else if (k === "i") {
+        e.preventDefault()
+        setNewTermOpen(true)
+      }
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [switchLeft, toggleSidebar])
+
+  // Restore the persisted (SQLite-backed) collapse state once the prefs load.
+  // Applied a single time — after that the panel's own resize events are the
+  // source of truth (and persist back via onResize below).
+  const collapseApplied = React.useRef(false)
+  React.useEffect(() => {
+    if (collapseApplied.current || ui.sidebar_collapsed == null) return
+    collapseApplied.current = true
+    if (ui.sidebar_collapsed) collapseSidebar()
+  }, [ui.sidebar_collapsed, collapseSidebar])
 
   return (
-    <div className="relative flex h-full w-full flex-col">
-      {/* Full-width header: the app-level controls live here — never inside a
-          panel — so their placement is identical whether the sidebar is open,
-          collapsed, or replaced by the grid. */}
-      <div className="flex shrink-0 items-center border-border border-b">
-        {!isMobile && (
-          <button
-            type="button"
-            title={
-              gridMode
-                ? "exit grid to the sidebar"
-                : leftCollapsed
-                  ? "show sidebar (⌘[)"
-                  : "hide sidebar (⌘[)"
-            }
-            aria-pressed={!gridMode && !leftCollapsed}
-            className="px-2 py-1.5 text-muted-foreground hover:text-primary"
-            onClick={() => {
-              // In grid mode the sidebar's space belongs to the grid; asking for
-              // the sidebar means leaving the grid (and restoring it expanded).
-              if (gridMode) {
-                preGridLeftCollapsed.current = false
-                toggleGrid()
-                return
-              }
-              toggleLeft()
-            }}
-          >
-            <PanelLeft className="size-4" />
-          </button>
-        )}
-        {!isMobile && (
-          <button
-            type="button"
-            aria-pressed={gridMode}
-            title={gridMode ? "back to terminal (⌘G)" : "grid view (⌘G)"}
-            className={cn(
-              "mr-1 flex size-6 shrink-0 items-center justify-center self-center rounded border",
-              gridMode
-                ? "border-primary/50 bg-accent text-primary"
-                : "border-border text-muted-foreground hover:border-primary hover:text-primary"
-            )}
-            onClick={toggleGrid}
-          >
-            <LayoutGrid className="size-3.5" />
-          </button>
-        )}
-        <HostSwitcher />
-        {/* ⌘K as a visible control: styled like a search input but really a
-            button that opens the pane switcher (the palette owns the real
-            input + filtering). */}
-        <div className="flex min-w-0 flex-1 justify-center px-2">
-          <button
-            type="button"
-            title="find a tab or agent (⌘K)"
-            onClick={() => setPaletteOpen(true)}
-            className="flex w-full min-w-0 max-w-sm items-center gap-1.5 rounded border border-border px-2 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary"
-          >
-            <Search className="size-3.5 shrink-0" />
-            <span className="truncate">Search…</span>
-            {!isMobile && (
-              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/70">
-                ⌘K
-              </span>
-            )}
-          </button>
-        </div>
-        <div className="ml-2 flex shrink-0 items-center gap-1.5">
-          <CreateAgentDialog variant="header" />
-          {rightCollapsed && (
-            <>
-              <GitStatusBadge
-                dirty={diffDirty}
-                ready={gitReady}
-                textClassName="self-center text-[13px]"
-              />
-              <button
-                type="button"
-                className="my-1 mr-1.5 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                title="show file viewer (⌘])"
-                onClick={toggleRight}
-              >
-                <ChevronLeft className="size-4" />
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
+    <div className="relative h-full w-full">
       <ResizablePanelGroup
         orientation="horizontal"
-        className="min-h-0 w-full flex-1"
+        defaultLayout={savedLayout}
+        onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
+        className="h-full w-full"
       >
-        {/* Left: spaces tree + agents pane. On mobile it isn't rendered at all
-            (no panel, no handle — the header doesn't show its toggle either). */}
-        {!isMobile && (
-          <>
-            <ResizablePanel
-              id="sidebar"
-              panelRef={leftPanel}
-              defaultSize={leftCollapsed ? 0 : leftWidth.current}
-              minSize={12}
-              collapsible
-              collapsedSize={0}
-              onResize={(s) => {
-                const collapsed = s.asPercentage < 0.05
-                setLeftCollapsed(collapsed)
-                lsSet(LEFT_COLLAPSED_KEY, String(collapsed))
-                if (!collapsed) {
-                  leftWidth.current = s.asPercentage
-                  lsSet(LEFT_WIDTH_KEY, String(s.asPercentage))
-                  schedulePush()
-                }
-              }}
-              className="min-h-0"
-            >
-              <Sidebar
-                selectedTabId={selectedTabId}
-                onSelectTab={selectTab}
-                onCollapse={toggleLeft}
-              />
-            </ResizablePanel>
-
-            <ResizableHandle
-              withHandle
-              className={cn(leftCollapsed && "hidden")}
-            />
-          </>
-        )}
-
-        {/* Center: the selected workspace's tabs + terminal (or the grid) */}
         <ResizablePanel
-          id="center"
-          defaultSize={50}
-          minSize={20}
-          className="min-h-0"
+          id="left"
+          defaultSize={60}
+          minSize={15}
+          className="flex h-full min-h-0 flex-col"
         >
-          <div className="flex h-full min-h-0 flex-col">
-            {/* The active workspace's tab strip, its own row under the global
-                header (which holds the app-level controls). Hidden in grid
-                mode — the grid spans every workspace. */}
-            {!gridMode && (
-              <TabStrip
-                workspace={activeWorkspace}
-                selectedTabId={selectedTabId}
-                onSelectTab={selectTab}
-              />
-            )}
-            <div className="relative flex min-h-0 flex-1 flex-col">
-              {/* One persistent viewport, mounted once and pointed at the
-                  selected tab — never remounted per tab (see TabTerminal). Pass
-                  null when the selection doesn't resolve to a workspace (matches
-                  the strip's "no workspace selected") so TabTerminal hides the
-                  iframe and shows the empty state instead of a stray session.
-                  In grid mode it stays mounted underneath (hidden) so leaving
-                  the grid doesn't re-handshake xterm. */}
-              <div
-                className={cn(
-                  "flex min-h-0 flex-1 flex-col",
-                  gridMode && "hidden"
-                )}
-              >
-                <TabTerminal tabId={activeWorkspace ? selectedTabId : null} />
-              </div>
-              {/* The grid view — the cross-host wall of live terminals that
-                  replaces the sidebar + terminal while active. */}
-              <div
-                className={cn(
-                  "absolute inset-0 flex-col",
-                  gridMode ? "flex" : "hidden"
-                )}
-              >
-                <GridTab
-                  active={gridMode}
-                  selectTab={selectTabFromGrid}
-                  selectTabInGrid={selectTab}
+          <Tabs
+            value={leftView}
+            onValueChange={(v) => switchLeft(v as LeftView)}
+            className="flex h-full flex-col gap-0"
+          >
+            <FitTabs
+              tabs={[
+                { value: "herdr", label: "Herdr", icon: Terminal },
+                { value: "grid", label: "Grid", icon: LayoutGrid },
+              ]}
+              leading={<HostSwitcher variant="nav" />}
+              listClassName="pr-2"
+              trailing={
+                // New Agent sits at the far-right of the strip; when the sidebar
+                // is collapsed the git status + expand control follow it.
+                <div className="ml-2 flex items-center gap-1.5">
+                  {/* Surface the herdr terminal on create so it's visible when
+                      the dialog's close handler hands it keyboard focus. */}
+                  <CreateAgentDialog
+                    variant="header"
+                    onCreated={() => switchLeft("herdr")}
+                  />
+                  {collapsed && (
+                    <>
+                      {/* Git status at a glance while the file viewer is hidden:
+                          the uncommitted-change count (or a green dot when clean),
+                          mirroring the Files tab's badge. */}
+                      <GitStatusBadge
+                        dirty={diffDirty}
+                        ready={gitReady}
+                        textClassName="self-center text-[13px]"
+                      />
+                      <button
+                        type="button"
+                        className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                        title="show file viewer"
+                        onClick={expandSidebar}
+                      >
+                        <ChevronLeft className="size-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              }
+            />
+            <div className="relative min-h-0 flex-1">
+              <Pane show={leftView === "herdr"}>
+                <TerminalFrame
+                  id="term"
+                  src="/terminal/"
+                  title="Herdr terminal"
+                  suppressContext
+                  hidden={leftView !== "herdr"}
                 />
-              </div>
+              </Pane>
+              <Pane show={leftView === "grid"}>
+                <GridTab
+                  active={leftView === "grid"}
+                  onFocusInHerdr={() => switchLeft("herdr")}
+                />
+              </Pane>
             </div>
-            {/* The on-screen keys the soft keyboard lacks — mobile only, and
-                only with a live terminal (not the grid / empty state). */}
-            {isMobile && !gridMode && activeWorkspace && selectedTabId && (
-              <MobileKeyBar />
-            )}
-          </div>
+          </Tabs>
         </ResizablePanel>
 
-        {/* Right: files / scratch / browser / settings — a resizable side panel
-            on desktop only; the mobile overlay below takes over otherwise. */}
-        {!isMobile && (
-          <>
-            <ResizableHandle
-              withHandle
-              className={cn(rightCollapsed && "hidden")}
-            />
-            <ResizablePanel
-              id="right"
-              panelRef={rightPanel}
-              defaultSize={rightCollapsed ? 0 : rightWidth.current}
-              minSize={15}
-              collapsible
-              collapsedSize={0}
-              onResize={(s) => {
-                const collapsed = s.asPercentage < 0.05
-                setRightCollapsed(collapsed)
-                lsSet(RIGHT_COLLAPSED_KEY, String(collapsed))
-                if (!collapsed) {
-                  rightWidth.current = s.asPercentage
-                  lsSet(RIGHT_WIDTH_KEY, String(s.asPercentage))
-                  schedulePush()
-                }
-              }}
-              className="relative flex h-full min-h-0 flex-col border-border border-l bg-card"
-            >
-              {rightContent}
-            </ResizablePanel>
-          </>
-        )}
-      </ResizablePanelGroup>
+        <ResizableHandle
+          withHandle
+          className={cn(collapsed && "hidden", "max-md:hidden")}
+        />
 
-      {/* On mobile the right panel covers the whole screen while expanded.
-          Kept mounted (hidden) while collapsed so the panes' state — e.g. the
-          browser iframe — survives toggling, same as the desktop panel. */}
-      {isMobile && (
-        <div
+        <ResizablePanel
+          id="right"
+          panelRef={rightPanel}
+          defaultSize={40}
+          minSize={15}
+          collapsible
+          collapsedSize={0}
+          onResize={(size) => {
+            const c = size.asPercentage < 0.05
+            setCollapsed((prev) => (prev === c ? prev : c))
+            // Remember the open width so a later expand restores it (the panel
+            // snaps to 0 below minSize, so any non-zero size is a real width).
+            if (size.asPercentage > 5) setSidebarPct(size.asPercentage)
+            patchUIState({ sidebar_collapsed: c })
+          }}
           className={cn(
-            "fixed inset-0 z-40 flex-col bg-card",
-            rightCollapsed ? "hidden" : "flex"
+            "relative flex h-full min-h-0 flex-col border-border border-l bg-card",
+            // On phones there isn't room to split the screen, so an open sidebar
+            // takes it over entirely: lift it out of the flex flow and overlay the
+            // left panel full-screen. Drops back to an in-flow resizable panel at
+            // md+. Gated on !collapsed so a collapsed sidebar stays hidden (0-width)
+            // rather than overlaying everything.
+            !collapsed &&
+              "max-md:absolute max-md:inset-0 max-md:z-30 max-md:w-full max-md:border-l-0"
           )}
         >
-          {rightContent}
-        </div>
-      )}
+          <Tabs
+            value={rightView}
+            onValueChange={(v) => setRightView(v as RightView)}
+            className="flex h-full flex-col gap-0"
+          >
+            <FitTabs
+              tabs={[
+                {
+                  value: "files",
+                  label: "Files",
+                  icon: Files,
+                  badge: (
+                    <GitStatusBadge
+                      dirty={diffDirty}
+                      ready={gitReady}
+                      className="ml-1.5"
+                      textClassName="text-[13px]"
+                    />
+                  ),
+                },
+                { value: "scratch", label: "Scratch", icon: NotebookPen },
+                { value: "browser", label: "Browser", icon: Globe },
+                { value: "terminal", label: "Terminal", icon: SquareTerminal },
+                { value: "settings", label: "Settings", icon: Settings },
+              ]}
+              trailing={
+                // Styled like the tab icons (same box model) rather than a
+                // bordered box, so it sits on the same baseline as them.
+                <button
+                  type="button"
+                  className={cn(
+                    tabClass,
+                    "flex items-center hover:text-primary"
+                  )}
+                  title="collapse sidebar"
+                  onClick={collapseSidebar}
+                >
+                  <ChevronRight className="size-4" />
+                </button>
+              }
+            />
 
-      {/* ⌘K switcher — searches workspaces/tabs/agents by display name. */}
+            <div className="relative min-h-0 flex-1">
+              <Pane show={rightView === "files"}>
+                <FilesPanel />
+              </Pane>
+              <Pane show={rightView === "scratch"}>
+                <ScratchTab />
+              </Pane>
+              <Pane show={rightView === "browser"}>
+                <BrowserTab />
+              </Pane>
+              <Pane show={rightView === "terminal"}>
+                <TerminalFrame
+                  id="shellframe"
+                  src="/shell/"
+                  title="Terminal (outside herdr)"
+                  suppressContext={false}
+                  hidden={rightView !== "terminal"}
+                />
+              </Pane>
+              <Pane show={rightView === "settings"}>
+                <SettingsTab active={rightView === "settings"} />
+              </Pane>
+            </div>
+          </Tabs>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+      {/* ⌘K pane switcher — searches every pane on every host, opens the chosen
+          one in the Herdr tab. focusPaneInHerdr pushes a history entry naming
+          the pane, so Back re-focuses the pane you came from (see the popstate
+          handler above). */}
       <PaneSwitcher
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
-        onSelectTab={selectTab}
+        onFocusInHerdr={() => switchLeft("herdr")}
+        termWasFocused={paletteFromTerm}
       />
-
-      {/* ⌘? opens the keyboard-shortcuts reference from anywhere (the Settings
-          tab has its own copy behind the keyboard icon). */}
-      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
+          agent) and drops the user into its shell in the Herdr tab. */}
+      <NewTerminalDialog
+        open={newTermOpen}
+        onOpenChange={setNewTermOpen}
+        surfaceHerdr={() => switchLeft("herdr")}
+      />
     </div>
   )
 }

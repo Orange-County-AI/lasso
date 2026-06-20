@@ -1,5 +1,5 @@
 // CodeMirror 6 wiring for the file viewer: a language resolver and a theme that
-// both track the live palette (the --h-* CSS variables that lib/theme.ts
+// both track the live herdr palette (the --h-* CSS variables that lib/theme.ts
 // rewrites at runtime). Kept out of FileViewer.tsx so the component stays lean.
 import { cpp } from "@codemirror/lang-cpp"
 import { css } from "@codemirror/lang-css"
@@ -117,7 +117,7 @@ const highlightStyle = HighlightStyle.define([
       t.standard(t.tagName),
       t.standard(t.name),
     ],
-    color: "var(--h-link)",
+    color: "var(--h-accent)",
   },
   {
     tag: [t.string, t.special(t.string), t.regexp, t.inserted],
@@ -130,7 +130,7 @@ const highlightStyle = HighlightStyle.define([
       t.function(t.propertyName),
       t.definition(t.function(t.variableName)),
     ],
-    color: "var(--h-fg)",
+    color: "var(--h-dir)",
   },
   {
     tag: [t.typeName, t.className, t.propertyName, t.attributeValue],
@@ -139,12 +139,12 @@ const highlightStyle = HighlightStyle.define([
   { tag: [t.variableName, t.attributeName], color: "var(--h-fg)" },
   { tag: [t.meta, t.processingInstruction], color: "var(--h-muted)" },
   { tag: t.deleted, color: "var(--h-bad)" },
-  { tag: t.heading, color: "var(--h-fg)", fontWeight: "700" },
+  { tag: t.heading, color: "var(--h-dir)", fontWeight: "700" },
   { tag: t.emphasis, fontStyle: "italic" },
   { tag: t.strong, fontWeight: "700" },
   {
     tag: [t.link, t.url],
-    color: "var(--h-link)",
+    color: "var(--h-accent)",
     textDecoration: "underline",
   },
 ])
@@ -181,7 +181,7 @@ const baseTheme = EditorView.theme(
     // band, so on light themes a faint accent wash over a light surface was nearly
     // invisible (and earlier attempts using color-mix() inside ::selection risk
     // failing to parse, leaving the band fully transparent). Recoloring the text
-    // too makes the highlight unmistakable and legible in every theme, since
+    // too makes the highlight unmistakable and legible in every herdr theme, since
     // accent vs background is the palette's strongest pairing by construction.
     // Plain var()s only — ::selection is finicky about anything fancier.
     "&.cm-focused .cm-line::selection, &.cm-focused .cm-line ::selection, .cm-line::selection, .cm-line ::selection, .cm-content ::selection":

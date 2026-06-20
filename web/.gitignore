@@ -12,10 +12,9 @@ dist
 dist-ssr
 *.local
 
-# The production build no longer lands in web/ — Vite writes it to
-# server/web/dist (gitignored via the root .gitignore), which the Go binary
-# embeds via //go:embed all:web/dist. Run `mise run build` to regenerate it
-# locally; CI builds it for releases.
+# web/dist is gitignored (also via the root .gitignore): it's the built bundle
+# the Go binary embeds via //go:embed all:web/dist. Run `mise run build` to
+# regenerate it locally; CI builds it for releases.
 
 # Editor directories and files
 .vscode/*

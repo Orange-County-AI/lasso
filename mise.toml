@@ -3,26 +3,19 @@
 #   mise run build  — build the frontend (web/dist) then the binary
 #   mise run test   — run the Go tests
 
-# Runtime tools lasso is supervised by / shells out to, pinned for dev parity
-# with the mise-based install (install.sh). tmux is intentionally omitted here —
-# it compiles from source under mise; install it from your package manager.
-[tools]
-pitchfork = "latest"
-"aqua:tsl0922/ttyd" = "latest"
-
 [tasks."build:web"]
-description = "Build the React/shadcn frontend into server/web/dist (embedded by Go)"
+description = "Build the React/shadcn frontend into web/dist (embedded by Go)"
 dir = "web"
 run = "bun install && bun run build"
 
 [tasks.build]
 description = "Build the frontend then the lasso binary"
 depends = ["build:web"]
-run = "go build -o lasso ./server"
+run = "go build -o lasso ."
 
 [tasks.test]
 description = "Run the Go test suite"
-run = "go test ./server"
+run = "go test ."
 
 [tasks.bump]
 description = "Bump lassoSemver (major, minor, or patch)"
@@ -34,9 +27,9 @@ run = """
 #!/usr/bin/env bash
 set -e
 
-# server/version.go holds the single source of truth: const lassoSemver = "X.Y.Z".
-current=$(perl -ne 'print $1 if /lassoSemver = "([0-9]+\\.[0-9]+\\.[0-9]+)"/' server/version.go)
-[ -n "$current" ] || { echo "couldn't read lassoSemver from server/version.go" >&2; exit 1; }
+# version.go holds the single source of truth: const lassoSemver = "X.Y.Z".
+current=$(perl -ne 'print $1 if /lassoSemver = "([0-9]+\\.[0-9]+\\.[0-9]+)"/' version.go)
+[ -n "$current" ] || { echo "couldn't read lassoSemver from version.go" >&2; exit 1; }
 IFS='.' read -r major minor patch <<< "$current"
 
 case "${usage_type}" in
@@ -48,12 +41,12 @@ esac
 
 new_version="$major.$minor.$patch"
 
-perl -i -pe "s/lassoSemver = \\"[0-9]+\\.[0-9]+\\.[0-9]+\\"/lassoSemver = \\"$new_version\\"/" server/version.go
+perl -i -pe "s/lassoSemver = \\"[0-9]+\\.[0-9]+\\.[0-9]+\\"/lassoSemver = \\"$new_version\\"/" version.go
 echo "Bumped lassoSemver: $current → $new_version"
 
 # Auto-commit if --commit flag is set
 if [ "$usage_commit" = "true" ]; then
-  git add server/version.go
+  git add version.go
   git commit -m "chore: bump version to $new_version"
   echo "Committed version bump"
 fi
@@ -95,5 +88,98 @@ trap 'kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT
 echo "lasso (dev): backend on 127.0.0.1:$port · Vite UI on http://$ip (frontend hot reload ON)"
 echo "edit anything under web/src and the browser hot-reloads; restart this task for Go changes."
 # Vite auto-bumps its own port (5173→5174→…) if busy and prints the chosen URL.
+cd web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
+'''
+
+[tasks.dev-herdr]
+description = "Like `dev`, but the backend talks to an ISOLATED herdr release (smoke-test a herdr version before adopting it — the prod daemon is never touched)"
+depends = ["build"]
+shell = "bash -c"
+usage = '''
+arg "[version]" help="herdr release to smoke-test (e.g. 0.6.8); downloaded + cached on first use" default="0.6.8"
+'''
+run = '''
+set -euo pipefail
+ver="${usage_version:-0.6.8}"; ver="${ver#v}"   # accept 0.6.8 or v0.6.8
+
+# Map this machine to a herdr release asset.
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)              asset=herdr-linux-x86_64 ;;
+  Linux-aarch64|Linux-arm64) asset=herdr-linux-aarch64 ;;
+  Darwin-arm64)              asset=herdr-macos-aarch64 ;;
+  Darwin-x86_64)             asset=herdr-macos-x86_64 ;;
+  *) echo "dev-herdr: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+
+# Isolated home: a private socket + XDG config/data/state so this daemon shares
+# NOTHING with the production herdr — its socket, sqlite state, panes, and logs
+# all live here. The prod daemon (~/.config/herdr/herdr.sock) is never read or
+# written, so a regression in the version under test can't corrupt real sessions.
+home="${TMPDIR:-/tmp}/lasso-herdr-smoke/$ver"
+bin="$home/herdr"
+sock="$home/herdr.sock"
+mkdir -p "$home/xdg-config/herdr" "$home/xdg-data" "$home/xdg-state" "$home/run"
+
+# Cache the binary across runs; download on first use.
+if [ ! -x "$bin" ]; then
+  echo "dev-herdr: downloading herdr $ver ($asset) …"
+  curl -fsSL -o "$bin" "https://github.com/ogulcancelik/herdr/releases/download/v$ver/$asset"
+  chmod +x "$bin"
+fi
+echo "dev-herdr: $("$bin" --version | head -n1) at $bin"
+
+export XDG_CONFIG_HOME="$home/xdg-config" XDG_DATA_HOME="$home/xdg-data" \
+       XDG_STATE_HOME="$home/xdg-state" XDG_RUNTIME_DIR="$home/run"
+export HERDR_SOCKET_PATH="$sock" HERDR_CONFIG_PATH="$home/xdg-config/herdr/config.toml"
+# Minimal isolated config: ignore the prod config.toml, but DO permit nesting —
+# lasso's embedded "Herdr" terminal launches the herdr TUI inside the prod pane
+# (HERDR_ENV=1), so without allow_nested it errors "nested herdr is disabled".
+# Mirrors the prod config's [experimental] allow_nested = true.
+cat > "$HERDR_CONFIG_PATH" <<'EOF'
+[experimental]
+allow_nested = true
+EOF
+
+# Start the isolated daemon (headless) and tear it down on exit. `herdr server`
+# is headless, on its own socket, so starting it from inside a prod herdr pane
+# does not disturb prod panes.
+"$bin" server >"$home/server.log" 2>&1 &
+hpid=$!
+stop_herdr() { "$bin" server stop >/dev/null 2>&1 || true; kill "$hpid" 2>/dev/null || true; }
+trap stop_herdr EXIT INT TERM
+for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
+[ -S "$sock" ] || { echo "dev-herdr: isolated herdr never bound $sock:" >&2; cat "$home/server.log" >&2; exit 1; }
+echo "dev-herdr: isolated herdr $ver daemon on $sock (log: $home/server.log)"
+
+# Put the isolated binary first on PATH so lasso's terminal tab (-term-cmd herdr,
+# default) opens THIS version's TUI attached to the isolated daemon. lasso scrubs
+# HERDR_ENV from the terminal child (outsideHerdrEnv), so there is no nested-session
+# conflict and the TUI follows HERDR_SOCKET_PATH to the isolated daemon.
+export PATH="$home:$PATH"
+
+# ---- below mirrors `dev`, except defaultSock() now resolves to the isolated
+# ---- HERDR_SOCKET_PATH, so the backend drives herdr $ver instead of prod. ----
+ip="$(tailscale ip -4 | head -n1)"
+[ -n "$ip" ] || { echo "no tailscale IPv4 found — is tailscale up? (tailscale status)" >&2; exit 1; }
+
+logf="$(mktemp)"
+./lasso -listen 127.0.0.1:8190 -insecure-no-auth -dev >"$logf" 2>&1 &
+backend=$!
+trap 'stop_herdr; kill "$backend" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
+
+port=""
+for _ in $(seq 1 100); do
+  port="$(sed -n 's#.*UI:[[:space:]]*http://127\.0\.0\.1:\([0-9][0-9]*\).*#\1#p' "$logf" | head -n1)"
+  [ -n "$port" ] && break
+  kill -0 "$backend" 2>/dev/null || { echo "backend exited before binding a port:" >&2; cat "$logf" >&2; exit 1; }
+  sleep 0.1
+done
+[ -n "$port" ] || { echo "backend never reported its port; log:" >&2; cat "$logf" >&2; exit 1; }
+
+tail -n +1 -f "$logf" & tailpid=$!
+trap 'stop_herdr; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
+
+echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI http://$ip"
+echo "Settings tab should read herdr $ver / protocol 12 / compatible. Ctrl-C stops lasso AND the isolated daemon."
 cd web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
 '''

@@ -1,5 +1,5 @@
 /lasso
-/server/web/dist/
+/web/dist/
 shot.png
 shot-*.png
 .authpass

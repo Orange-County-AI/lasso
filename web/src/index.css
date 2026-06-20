@@ -6,9 +6,7 @@
  * into the embedded build — no Google Fonts CDN on this loopback tool). The trio:
  * Space Grotesk = UI/body sans; Space Mono = instrument-panel labels & data
  * (ALL CAPS); Doto = variable dot-matrix display for hero moments. JetBrains Mono
- * is kept for code/diff (a true coding face), and the *terminal* keeps its own
- * vendored JetBrainsMono Nerd Font (injected into ttyd by lib/theme.ts) for the
- * Nerd glyphs TUIs draw with. Geist stays as a sans fallback. */
+ * is kept for code/diff; the *terminal* keeps its own vendored Nerd Font. */
 @import "@fontsource/space-grotesk/300.css";
 @import "@fontsource/space-grotesk/400.css";
 @import "@fontsource/space-grotesk/500.css";
@@ -20,7 +18,6 @@
 @import "@fontsource/doto/500.css";
 @import "@fontsource/doto/700.css";
 @import "@fontsource/geist-sans/400.css";
-@import "@fontsource/geist-sans/500.css";
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 @import "@fontsource/jetbrains-mono/600.css";
@@ -28,46 +25,13 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  /* Nothing type stacks. font-sans (Space Grotesk) is the UI/body voice;
-   * font-display (Doto, variable dot-matrix) is for hero moments only;
-   * font-label (Space Mono) is the ALL-CAPS instrument-panel label face;
-   * font-mono (JetBrains Mono) stays for code/diff. All exposed as Tailwind
-   * utilities: font-display, font-label, font-mono. */
+  /* Nothing type stacks. font-sans (Space Grotesk) = UI/body voice;
+   * font-display (Doto, dot-matrix) = hero moments only; font-label (Space Mono)
+   * = ALL-CAPS instrument-panel label face; font-mono (JetBrains Mono) = code. */
   --font-sans: "Space Grotesk", "Geist", system-ui, sans-serif;
   --font-display: "Doto", "Space Grotesk", system-ui, sans-serif;
   --font-label: "Space Mono", "JetBrains Mono", ui-monospace, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  /* Theme-utility aliases, available as bg-onyx-bg / text-onyx-accent /
-   * rounded-onyx-md / ease-onyx for new work. Repointed onto the live --h-*
-   * Nothing seam so they track the active light/dark mode (no longer the old
-   * Onyx indigo). ease-onyx is the Nothing "percussive" ease-out. */
-  --color-onyx-bg: var(--h-bg);
-  --color-onyx-bg-1: var(--h-panel);
-  --color-onyx-bg-2: var(--h-hover);
-  --color-onyx-bg-vis: var(--h-hover);
-  --color-onyx-fg: var(--h-fg);
-  --color-onyx-fg-1: var(--h-fg);
-  --color-onyx-fg-2: var(--h-muted);
-  --color-onyx-fg-3: var(--h-muted);
-  --color-onyx-line: var(--h-border);
-  --color-onyx-line-1: var(--h-border);
-  --color-onyx-line-active: var(--h-muted);
-  --color-onyx-line-dash: var(--h-border);
-  --color-onyx-accent: var(--h-accent);
-  --color-onyx-accent-1: var(--h-accent);
-  --color-onyx-accent-2: var(--h-accent);
-  --color-onyx-accent-fade: var(--h-accent-dim);
-  --color-onyx-accent-grid: var(--h-accent-dim);
-  --color-onyx-warn: var(--h-warn);
-  --color-onyx-warn-fade: rgba(212, 168, 67, 0.16);
-  --color-onyx-danger: var(--h-bad);
-  --color-onyx-danger-fade: rgba(215, 25, 33, 0.16);
-  --color-onyx-ok: var(--h-good);
-  --color-onyx-ok-fade: rgba(74, 158, 92, 0.16);
-  --radius-onyx-sm: 2px;
-  --radius-onyx-md: 4px;
-  --radius-onyx-lg: 6px;
-  --ease-onyx: cubic-bezier(0.25, 0.1, 0.25, 1);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -94,7 +58,7 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
-  /* semantic colors, exposed as Tailwind utilities (text-good etc.) */
+  /* herdr semantic colors, exposed as Tailwind utilities (text-good etc.) */
   --color-good: var(--h-good);
   --color-warn: var(--h-warn);
   --color-bad: var(--h-bad);
@@ -104,11 +68,10 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
 
-  /* Nothing is flat: no shadows, no blur. Surfaces separate by border and
-   * background contrast, never elevation. These shadow-* utilities are kept as
-   * names (button/dialog/input still reference them) but neutralized to `none`,
-   * so the whole UI reads as crisp instrument panels rather than floating cards.
-   * Tailwind v4 still composes ring-* on top, so focus rings survive. */
+  /* Nothing is flat: no elevation shadows — surfaces separate by border + a
+   * panel/hover brightness step, never by drop shadow or blur. The shadow-elev-*
+   * / shadow-well utilities are kept (call sites still compose them with ring-*),
+   * but neutralized to none so focus rings survive while elevation reads flat. */
   --shadow-elev-sm: none;
   --shadow-elev-md: none;
   --shadow-elev-pop: none;
@@ -118,13 +81,18 @@
 
 /*
  * The Nothing palette. These --h-* variables are the single source of truth for
- * lasso's colors: every bespoke view below, the CodeMirror theme, highlight.js,
- * and shadcn's design tokens (mapped onto them) all cascade from here. :root holds
- * the *dark* tokens (OLED-black "instrument panel in a dark room"); the
- * `:root.light` block below overrides only the --h-* values for light mode
+ * lasso's *chrome* colors: every bespoke view below, the CodeMirror theme,
+ * highlight.js, and shadcn's design tokens (mapped onto them) cascade from here.
+ * :root holds the *dark* tokens (OLED-black "instrument panel in a dark room");
+ * the `:root.light` block below overrides only the --h-* values for light mode
  * ("printed technical manual" — off-white paper, black ink), so every shadcn
- * token and bespoke view flips automatically. The active mode is set as a
- * dark/light class on <html> (see lib/mode.ts + the inline script in index.html).
+ * token and bespoke view flips automatically. The active mode is a dark/light
+ * class on <html>, chosen from the system color scheme (see lib/mode.ts + the
+ * inline script in index.html) — exactly like the main (tmux) branch.
+ *
+ * NOTE: the chrome no longer reflects herdr's theme. herdr now dictates *only*
+ * the terminal (xterm) palette — refreshTheme() in lib/theme.ts pins the live
+ * terminals to herdr's theme but deliberately does NOT repaint these --h-* vars.
  *
  * Nothing rule: color is not the hierarchy — brightness is. --h-accent is
  * monochrome (white on dark, black on light): the high-contrast "primary/active"
@@ -154,7 +122,7 @@
   --foreground: var(--h-fg);
   --card: var(--h-panel);
   --card-foreground: var(--h-fg);
-  --popover: var(--h-hover); /* onyx dark popover = --bg-2 */
+  --popover: var(--h-hover);
   --popover-foreground: var(--h-fg);
   --primary: var(--h-accent);
   --primary-foreground: var(--h-bg);
@@ -215,9 +183,8 @@
     @apply bg-background text-foreground;
     font: 13px / 1.5 var(--font-sans);
   }
-  /* Onyx selection + focus treatment (onyx preset.json css block): accent-tinted
-   * selection, a 1px accent focus ring at 2px offset. Uses the --h-* vars so it
-   * adapts to light/dark. */
+  /* Nothing selection + focus: accent-tinted selection, a 1px accent focus ring
+   * at 2px offset. Uses the --h-* vars so it adapts to light/dark. */
   ::selection {
     background: var(--h-accent-dim);
     color: var(--h-fg);
@@ -242,10 +209,98 @@
 /* ===========================================================================
  * Bespoke lasso views, ported from the original index.html. shadcn primitives
  * (Tabs, Button, Badge, Dialog, ContextMenu, Resizable, …) provide the chrome;
- * these rules style the data-dense content panes (file list, diff, file viewer,
- * markdown, syntax highlighting) that have no shadcn equivalent.
- * All colors come from the --h-* palette so they track the live theme.
+ * these rules style the data-dense content panes (pane grid, file list, diff,
+ * file viewer, markdown, syntax highlighting) that have no shadcn equivalent.
+ * All colors come from the --h-* palette so they track the active light/dark
+ * Nothing mode (the terminal — not these views — is what reflects herdr).
  * ======================================================================== */
+
+/* pane grid */
+.panegrid {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  align-content: start;
+  align-items: start;
+}
+.pcard {
+  position: relative;
+  border: 1px solid var(--h-border);
+  border-radius: 6px;
+  padding: 8px 9px;
+  cursor: pointer;
+  background: var(--h-bg);
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.pcard:hover {
+  border-color: var(--h-accent);
+  background: var(--h-hover);
+}
+.pcard.focused {
+  border-color: var(--h-accent);
+  background: var(--h-accent-dim);
+}
+.pcard.selected {
+  outline: 2px solid var(--h-accent);
+  outline-offset: -2px;
+  background: var(--h-accent-dim);
+}
+.pcard.selected::after {
+  content: "✓";
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  color: var(--h-accent);
+  font-size: 11px;
+  line-height: 1;
+}
+.pcard.selected .ptitle {
+  padding-right: 12px;
+}
+.pcard .pws {
+  color: var(--h-accent);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.pcard .ptitle {
+  color: var(--h-fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pcard .pmeta {
+  color: var(--h-muted);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.pcard .pagent {
+  font-size: 10px;
+  color: var(--h-muted);
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.pcard .pagent.working {
+  color: var(--h-warn);
+}
+.pcard .pagent.blocked {
+  color: var(--h-bad);
+}
+.pcard .pagent.idle,
+.pcard .pagent.done {
+  color: var(--h-good);
+}
 
 .hint {
   flex: 0 0 auto;
@@ -259,6 +314,148 @@
 .empty {
   color: var(--h-muted);
   padding: 16px 12px;
+}
+
+/* grid tab: a wall of live per-pane terminals across hosts. Each cell is a
+   clickable header (focus the pane in Herdr) over an embedded ttyd iframe. */
+.termgrid {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 14px;
+  /* Flex wrap (not CSS grid) so the cells in each row grow to fill the row's
+     full width — a CSS grid leaves empty tracks, stranding a lone last-row cell
+     at its min width. align-content: start packs rows to the top. */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-content: start;
+}
+/* A zero-height, full-width flex item that forces a row break, so the top row
+   can hold just the remainder cells (which then grow to fill the width). The
+   negative margins cancel the extra row-gap the break would otherwise add. */
+.termbreak {
+  flex-basis: 100%;
+  width: 100%;
+  height: 0;
+  margin: -7px 0;
+}
+.termcell {
+  /* grow to share the row's width, wrapping when a cell can't keep ~360px */
+  flex: 1 1 360px;
+  display: flex;
+  flex-direction: column;
+  height: 260px;
+  /* Blend the (subtle) border toward muted so each cell reads as a distinct
+     tile rather than dissolving into the background. */
+  border: 1px solid color-mix(in srgb, var(--h-border) 45%, var(--h-muted));
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--h-bg);
+}
+.termcell.focused {
+  border-color: var(--h-accent);
+}
+.termcell.selected {
+  outline: 2px solid var(--h-accent);
+  outline-offset: -2px;
+  border-color: var(--h-accent);
+}
+.termcell-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--h-border);
+  background: var(--h-bg);
+  color: var(--h-fg);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.termcell-head:hover {
+  background: var(--h-hover);
+}
+/* Keep a single, steady cursor across the whole header rather than flipping
+   between pointer / text / default over its spans — the hover highlight already
+   signals it's clickable. */
+.termcell-head,
+.termcell-head * {
+  cursor: default;
+}
+.termcell-host {
+  flex: 0 0 auto;
+  color: var(--h-accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.termcell-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.termcell-agent {
+  flex: 0 0 auto;
+  color: var(--h-muted);
+  white-space: nowrap;
+}
+.termcell-agent.working {
+  color: var(--h-warn);
+}
+.termcell-agent.blocked {
+  color: var(--h-bad);
+}
+.termcell-agent.idle,
+.termcell-agent.done {
+  color: var(--h-good);
+}
+.termcell-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.termcell-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--h-bg);
+  /* Fade the terminal in once it's live (the loading overlay sits on top until
+     then), so the reveal is smooth rather than a hard cut over ttyd's churn. */
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+.termcell-body iframe.is-loading {
+  opacity: 0;
+}
+.termcell-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Opaque so it fully hides the connecting iframe underneath. */
+  background: var(--h-bg);
+  color: var(--h-muted);
+  font-size: 11px;
+}
+.termcell-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--h-border);
+  border-top-color: var(--h-accent);
+  animation: termcell-spin 0.7s linear infinite;
+}
+@keyframes termcell-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* file list */
@@ -312,10 +509,9 @@
 .entry .chg {
   flex: 0 0 auto;
   margin-left: 8px;
-  font-family: var(--font-label);
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 .entry.d .chg {
   margin-left: auto;
@@ -333,7 +529,7 @@
   color: var(--h-warn);
 }
 .entry.chg-renamed .chg {
-  color: var(--h-link);
+  color: var(--h-accent);
 }
 .entry.chg-deleted .chg {
   color: var(--h-bad);
@@ -346,7 +542,7 @@
   color: var(--h-warn);
 }
 .entry.chg-renamed .nm {
-  color: var(--h-link);
+  color: var(--h-accent);
 }
 
 /* file viewer */
@@ -377,58 +573,6 @@
   border: 0;
   background: #fff;
 }
-/* Inline audio/video player: center the controls in the viewer body. Video is
-   capped to the viewport; audio gets a sensible minimum width. */
-.vmedia {
-  padding: 16px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-}
-.vmedia audio {
-  width: 100%;
-  max-width: 640px;
-}
-.vmedia video {
-  max-width: 100%;
-  max-height: 100%;
-}
-/* Directory listing shown when a folder (or symlink to one) is opened in the
-   viewer — a column of clickable rows, mirroring the file tree's affordances. */
-.vdir {
-  padding: 4px 0;
-  font-size: 13px;
-}
-.vdir-empty {
-  color: var(--h-muted);
-  padding: 16px;
-}
-.vdir-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 3px 16px;
-  text-align: left;
-  color: var(--h-fg);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-.vdir-row:hover {
-  background: var(--h-accent, #80808022);
-}
-.vdir-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.vdir-size {
-  flex: 0 0 auto;
-  color: var(--h-muted);
-  font-variant-numeric: tabular-nums;
-}
 /* CodeMirror 6 host: fill the scrollable .vbody (the editor itself is themed in
    lib/codemirror.ts; the .cm-scroller does the scrolling). */
 .cm-host {
@@ -453,7 +597,7 @@
 .hljs-name,
 .hljs-tag,
 .hljs-meta-keyword {
-  color: var(--h-link);
+  color: var(--h-accent);
 }
 .hljs-string,
 .hljs-regexp,
@@ -498,7 +642,7 @@
   font-weight: 700;
 }
 .hljs-link {
-  color: var(--h-link);
+  color: var(--h-accent);
   text-decoration: underline;
 }
 
@@ -510,7 +654,8 @@
   color: var(--h-fg);
   line-height: 1.65;
   font-size: 14px;
-  font-family: var(--font-sans);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 .md-body :first-child {
   margin-top: 0;
@@ -541,14 +686,14 @@
   margin: 0.7em 0;
 }
 .md-body a {
-  color: var(--h-link);
+  color: var(--h-accent);
   text-decoration: none;
 }
 .md-body a:hover {
   text-decoration: underline;
 }
 .md-body code {
-  font-family: var(--font-mono);
+  font-family: ui-monospace, monospace;
   font-size: 0.88em;
   background: var(--h-panel);
   border: 1px solid var(--h-border);
@@ -583,7 +728,7 @@
 .md-body blockquote {
   margin: 0.8em 0;
   padding: 0.2em 1em;
-  border-left: 3px solid var(--h-muted);
+  border-left: 3px solid var(--h-accent);
   color: var(--h-muted);
   background: var(--h-accent-dim);
 }
@@ -655,11 +800,10 @@
 }
 .dfhead .dfbadge {
   flex: 0 0 auto;
-  font-family: var(--font-label);
   font-size: 10px;
   line-height: 1;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   padding: 2px 5px;
   border-radius: 999px;
   border: 1px solid currentColor;
@@ -723,7 +867,7 @@
   color: var(--h-muted);
 }
 .dline.hunk {
-  color: var(--h-link);
+  color: var(--h-accent);
   background: var(--h-accent-dim);
 }
 .dline.hunk .txt {
@@ -749,206 +893,3 @@
 .dragging iframe {
   pointer-events: none;
 }
-
-/* --- Grid view (cross-host terminal wall) --- */
-.termgrid {
-  flex: 1 1 auto;
-  overflow: auto;
-  /* No padding or gap between cells: the wall spans the full available width and
-     every pixel goes to terminal content; the cells' own 1px borders are the
-     only seams. To scroll the grid itself while the cursor is over a terminal,
-     hold Shift (the iframe forwards Shift+wheel to the grid — see
-     wireTerminalIframe in lib/terminal.ts). */
-  padding: 0;
-  /* CSS grid: --grid-cols equal-width columns (so every cell is the same width)
-     and uniform --termcell-h row-units. GridTab places each cell explicitly (an
-     agent cell spans two row-units, a shell cell one — a dense masonry), so the
-     grid never auto-flows; the inline grid-column / grid-row do the layout. */
-  display: grid;
-  grid-template-columns: repeat(var(--grid-cols, 1), minmax(0, 1fr));
-  grid-auto-rows: var(--termcell-h, 260px);
-  gap: 0;
-}
-.termcell {
-  display: flex;
-  flex-direction: column;
-  /* Height comes from the cell's row span (1 unit for a shell, 2 for an agent)
-     times --termcell-h, which GridTab grows to fill the vertical space, floored
-     at 260px per unit (past that the grid scrolls). */
-  min-height: 0;
-  /* Blend the (subtle) border toward muted so each cell reads as a distinct
-     tile rather than dissolving into the background. */
-  border: 1px solid
-    color-mix(in srgb, var(--color-border) 45%, var(--color-muted-foreground));
-  overflow: hidden;
-  background: var(--color-background);
-}
-.termcell.focused {
-  border-color: var(--color-primary);
-}
-.termcell.selected {
-  outline: 2px solid var(--color-primary);
-  outline-offset: -2px;
-  border-color: var(--color-primary);
-}
-/* A cell expanded to fill the whole grid: collapse to a single full-size track,
-   hide every other cell, and let this one span it. */
-.termgrid-expanded {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
-  overflow: hidden;
-  /* reclaim the right scroll strip — nothing scrolls while one cell fills */
-  padding: 0;
-}
-.termgrid-expanded .termcell {
-  display: none;
-}
-.termgrid-expanded .termcell-expanded {
-  display: flex;
-  grid-column: 1 / -1;
-  grid-row: 1 / -1;
-}
-.termcell-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: stretch;
-  width: 100%;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-background);
-}
-/* The clickable title region (focus the pane); the expand/close buttons sit
-   beside it as their own controls. */
-.termcell-head-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 0;
-  background: transparent;
-  color: var(--color-foreground);
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.termcell-head-main:hover {
-  background: var(--color-accent);
-}
-/* Keep a single, steady cursor across the whole title region rather than
-   flipping between pointer / text / default over its spans — the hover
-   highlight already signals it's clickable. */
-.termcell-head-main,
-.termcell-head-main * {
-  cursor: default;
-}
-/* Icon buttons in the header (expand / close). */
-.termcell-btn {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 6px;
-  border: 0;
-  background: transparent;
-  color: var(--color-muted-foreground);
-  cursor: pointer;
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-.termcell-btn:hover {
-  background: var(--color-accent);
-  color: var(--color-foreground);
-}
-.termcell-btn-close:hover {
-  background: var(--color-bad);
-  color: var(--color-background);
-}
-.termcell-host {
-  flex: 0 0 auto;
-  color: var(--color-primary);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.termcell-title {
-  flex: 1 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Git working-tree status dot: green when clean, amber (with a change count)
-   when dirty. Only rendered for panes in a git checkout. */
-.termcell-git {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.termcell-git.clean {
-  color: var(--color-good);
-}
-.termcell-git.dirty {
-  color: var(--color-warn);
-}
-.termcell-agent {
-  flex: 0 0 auto;
-  color: var(--color-muted-foreground);
-  white-space: nowrap;
-}
-.termcell-agent.working {
-  color: var(--color-warn);
-}
-.termcell-agent.blocked {
-  color: var(--color-bad);
-}
-.termcell-agent.idle,
-.termcell-agent.done {
-  color: var(--color-good);
-}
-.termcell-body {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.termcell-body iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
-  background: var(--color-background);
-  /* Fade the terminal in once it's live (the loading overlay sits on top until
-     then), so the reveal is smooth rather than a hard cut over ttyd's churn. */
-  opacity: 1;
-  transition: opacity 0.2s ease;
-}
-.termcell-body iframe.is-loading {
-  opacity: 0;
-}
-.termcell-placeholder {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Opaque so it fully hides the connecting iframe underneath. */
-  background: var(--color-background);
-  color: var(--color-muted-foreground);
-  font-size: 11px;
-}
-.termcell-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  animation: termcell-spin 0.7s linear infinite;
-}
-@keyframes termcell-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* file list */

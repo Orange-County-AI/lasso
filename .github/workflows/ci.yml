@@ -31,6 +31,6 @@ jobs:
       - name: Go (format, vet, build, test)
         run: |
           test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
-          go vet ./server
-          go build -o lasso ./server
-          go test ./server
+          go vet .
+          go build -o lasso .
+          go test .

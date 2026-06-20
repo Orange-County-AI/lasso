@@ -14,9 +14,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { api, type CreateAgentPayload } from "@/lib/api"
+import { api, type CreateAgentPayload, type HostInfo } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
-import { qk, treeAddScratchWorkspace, treeAddWorktree } from "@/lib/query"
+import { qk } from "@/lib/query"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
@@ -98,13 +99,20 @@ function extractImagePaths(text: string): string[] {
   return [...new Set(text.match(imagePathRE) || [])]
 }
 
+// A host is selectable when it's reachable, running herdr, and protocol-
+// compatible (mirror of HostSwitcher's helper). Unusable hosts are listed
+// disabled — the footer switcher stays the place to provision/update them.
+function hostUsable(h: HostInfo): boolean {
+  return h.reachable && h.running && h.compatible
+}
+
 export function CreateAgentDialog({
   onCreated,
   variant = "button",
 }: {
   onCreated?: () => void
   // "button" — the inline outline button on the Agents tab header.
-  // "floating" — a pill for the bottom-left footer.
+  // "floating" — a pill matching the host switcher, for the bottom-left footer.
   // "header" — a compact button for the left column's tab-strip trailing slot.
   variant?: "button" | "floating" | "header"
 }) {
@@ -113,21 +121,13 @@ export function CreateAgentDialog({
   const [placeholderIdx, setPlaceholderIdx] = React.useState(0)
   const queryClient = useQueryClient()
   // Set when the dialog closes because an agent was just created, so the close
-  // handler hands keyboard focus to the terminal instead of letting Radix
+  // handler hands keyboard focus to the herdr terminal instead of letting Radix
   // restore it to the trigger (which would force the user to click the pane).
   const createdRef = React.useRef(false)
 
-  // A repo (+ base) the sidebar's "New agent…" wants the form prefilled with,
-  // applied in the seed effect on the next open. Cleared once consumed.
-  const pendingPrefill = React.useRef<{
-    repo?: string
-    base?: string
-    host?: string
-  } | null>(null)
-
-  // Cmd/Ctrl+O opens the creator, and the "lasso:new-agent" event opens it
-  // prefilled (from the sidebar's repo right-click). Bound to the non-"button"
-  // variants so the shortcut/event has a single owner.
+  // Cmd/Ctrl+O opens the creator. Bound to the non-"button" variants (the
+  // header / floating triggers) so the shortcut has a single owner even when the
+  // Agents-tab button is also mounted.
   React.useEffect(() => {
     if (variant === "button") return
     const onKey = (e: KeyboardEvent) => {
@@ -136,21 +136,8 @@ export function CreateAgentDialog({
         setOpen(true)
       }
     }
-    const onNew = (e: Event) => {
-      pendingPrefill.current =
-        ((e as CustomEvent).detail as {
-          repo?: string
-          base?: string
-          host?: string
-        }) ?? null
-      setOpen(true)
-    }
     document.addEventListener("keydown", onKey)
-    window.addEventListener("lasso:new-agent", onNew)
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      window.removeEventListener("lasso:new-agent", onNew)
-    }
+    return () => document.removeEventListener("keydown", onKey)
   }, [variant])
 
   // Pick a fresh random Prompt placeholder each time the dialog opens — a little
@@ -160,36 +147,33 @@ export function CreateAgentDialog({
     setPlaceholderIdx(Math.floor(Math.random() * PROMPT_PLACEHOLDERS.length))
   }, [open])
 
-  // Target host for the new agent. Seeded from the active host each open; the
-  // host picker (shown only when reachable remote hosts exist) can override it.
+  // The form targets a host the user picks (defaults to the active host). Each
+  // host's config/repos live in its own lasso.db, so the queries are keyed and
+  // fetched by selectedHost — picking another host previews that host's repos
+  // (read from its db over SSH) WITHOUT switching the active backend. The switch
+  // is deferred to create time so the Herdr tab isn't yanked while still editing.
   const { host: activeHost } = useApp()
-  const [host, setHost] = React.useState("local")
-  React.useEffect(() => {
-    // A sidebar "New agent…" on a remote repo prefills its host; otherwise seed
-    // from the active host.
-    if (open) setHost(pendingPrefill.current?.host || activeHost || "local")
-  }, [open, activeHost])
+  const [selectedHost, setSelectedHost] = React.useState("local")
 
+  // Host list for the dropdown (local + ssh-config hosts), fetched while open.
   const hostsQuery = useQuery({
-    queryKey: qk.hosts,
+    queryKey: ["hosts"],
     queryFn: () => api.hosts(),
     enabled: open,
-    staleTime: 20_000,
   })
-  const remoteHosts = (hostsQuery.data?.hosts ?? []).filter(
-    (h) => h.reachable && h.has_tmux
-  )
+  const localLabel = hostsQuery.data?.local?.hostname || "local"
+  const remoteHosts = hostsQuery.data?.hosts ?? []
 
-  // Server state via TanStack Query, fetched while the dialog is open — re-keyed
-  // by the selected host so the repo/branch pickers reflect that host's fs.
+  // Server state via TanStack Query, fetched while the dialog is open, scoped to
+  // selectedHost (each host's data comes from its own lasso.db / filesystem).
   const configQuery = useQuery({
-    queryKey: qk.agentConfig(host),
-    queryFn: () => api.agentConfig(host),
+    queryKey: qk.agentConfig(selectedHost),
+    queryFn: () => api.agentConfig(selectedHost),
     enabled: open,
   })
   const reposQuery = useQuery({
-    queryKey: qk.repos(host),
-    queryFn: () => api.repos(host),
+    queryKey: qk.repos(selectedHost),
+    queryFn: () => api.repos(selectedHost),
     enabled: open,
   })
   const config = configQuery.data ?? null
@@ -210,47 +194,56 @@ export function CreateAgentDialog({
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
 
   const branchesQuery = useQuery({
-    queryKey: qk.repoBranches(host, repo),
-    queryFn: () => api.repoBranches(repo, host),
+    queryKey: qk.repoBranches(selectedHost, repo),
+    queryFn: () => api.repoBranches(repo, selectedHost),
     enabled: open && type === "git" && !!repo,
   })
   const branches = React.useMemo(() => {
     const b = branchesQuery.data
     // branches/remoteBranches can be null (Go nil slice → JSON null) when the
-    // repo path doesn't resolve.
+    // repo path doesn't resolve on the host — e.g. transiently after switching
+    // the host dropdown while `repo` is still the previous host's path.
     return b ? [...(b.branches ?? []), ...(b.remoteBranches ?? [])] : []
   }, [branchesQuery.data])
 
-  // Seed the form from the remembered selections once per open (not on every
-  // data change, so it never clobbers in-progress edits): the last agent type,
-  // branch prefix, AI agent (default_agent, else last_agent, else claude), and
-  // the last repo if it still exists — gated on the repos query having settled so
-  // it doesn't seed from a stale list while the refetch is still in flight.
-  const seeded = React.useRef(false)
+  // Default the form's host to the active host each time the dialog opens (the
+  // dropdown is otherwise a free local selection that previews repos per host).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: seed from activeHost only on open, not when it later changes
+  React.useEffect(() => {
+    if (open && activeHost) setSelectedHost(activeHost)
+  }, [open])
+
+  // Seed the form from the remembered selections once per host per open (not on
+  // every data change, so it never clobbers in-progress edits): the last agent
+  // type, branch prefix, AI agent (default_agent, else last_agent, else claude),
+  // and the last repo if it still exists on that host. Re-keyed on selectedHost
+  // so switching the dropdown re-seeds from that host's state — gated on the
+  // repos query having settled so it doesn't seed from the previous host's stale
+  // list while the refetch is still in flight.
+  const seededForHost = React.useRef<string | null>(null)
   React.useEffect(() => {
     if (!open) {
-      seeded.current = false
+      seededForHost.current = null
       return
     }
     if (!config || !reposQuery.isSuccess || reposQuery.isFetching) return
-    if (seeded.current) return
-    seeded.current = true
-    const pf = pendingPrefill.current
-    pendingPrefill.current = null
-    setType("git")
+    if (seededForHost.current === selectedHost) return
+    seededForHost.current = selectedHost
+    setType(config.last_agent_type || "git")
     setPrefix(config.branch_prefix || "")
     setAgent(config.default_agent || config.last_agent || "claude")
-    if (pf?.repo) {
-      setRepo(pf.repo) // base auto-resolves via the branches effect below
-    } else {
-      const last = config.last_repo
-      setRepo(
-        last && repos.some((r) => r.path === last)
-          ? last
-          : (repos[0]?.path ?? "")
-      )
-    }
-  }, [open, config, reposQuery.isSuccess, reposQuery.isFetching, repos])
+    const last = config.last_repo
+    setRepo(
+      last && repos.some((r) => r.path === last) ? last : (repos[0]?.path ?? "")
+    )
+  }, [
+    open,
+    selectedHost,
+    config,
+    reposQuery.isSuccess,
+    reposQuery.isFetching,
+    repos,
+  ])
 
   // When the selected repo's branches load, pick its remembered base branch (if
   // still present) else the repo's default. Keyed on the branches data so it
@@ -300,7 +293,7 @@ export function CreateAgentDialog({
     e.preventDefault()
     setPastingImage(true)
     try {
-      const { path } = await api.pasteImage(file, host)
+      const { path } = await api.pasteImage(file, selectedHost)
       const textarea = promptRef.current
       if (!textarea) {
         onPromptChange(prompt + (prompt ? "\n" : "") + path)
@@ -342,23 +335,28 @@ export function CreateAgentDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      // Commit the host choice now: switch the active backend so the agent is
+      // created on it, attachments land there, and the terminal points at it for
+      // focus. Deferred to here (not on dropdown change) so previewing a host's
+      // repos while editing doesn't yank the Herdr tab onto another host.
+      if (selectedHost !== (activeHost ?? "local")) {
+        await api.switchHost(selectedHost)
+      }
       let uploadDir: string | undefined
       let attachments: string[] | undefined
       if (files.length > 0) {
-        const up = await api.uploadAgentFiles(files, host)
+        const up = await api.uploadAgentFiles(files, selectedHost)
         uploadDir = up.upload_dir
         attachments = up.files
       }
       const payload: CreateAgentPayload = {
-        host,
+        type,
         prompt: prompt.trim(),
         agent,
         plan_mode: planMode,
         attachments,
         upload_dir: uploadDir,
       }
-      // The creation mode is derived from repo: send it (+ branch fields) for a
-      // git worktree; omit it for a repo-less workspace.
       if (type === "git") {
         payload.repo = repo
         payload.base_branch = baseBranch || undefined
@@ -369,66 +367,14 @@ export function CreateAgentDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      const created = rec.host || host
-      // Surface the new workspace optimistically so the selection (dispatched
-      // below) has something to land on before the refetch — the viewport attaches
-      // to the right host on its own (TabTerminal re-points via /api/tab/term), so
-      // navigation only needs the tab present in the tree cache.
-      //
-      // In all-hosts mode the sidebar polls the tree every few seconds (each poll
-      // dials every remote, so it's slow); a poll that started before this create
-      // resolves with a pre-create snapshot and would overwrite the cache — dropping
-      // the workspace we add and bouncing the just-made selection off a tab that
-      // vanished. Cancel any in-flight tree fetch first so the optimistic add (and,
-      // for a cross-host create, the post-switch refetch) is what wins.
-      if (rec.workspace_id && rec.tab_id) {
-        void queryClient.cancelQueries({ queryKey: qk.tree })
-        const tab = {
-          id: rec.tab_id,
-          title: rec.title,
-          kind: "agent" as const,
-          agent: rec.agent,
-          status: "idle" as const,
-        }
-        if (rec.repo) {
-          treeAddWorktree(rec.repo, {
-            id: rec.workspace_id,
-            title: rec.title,
-            repo: rec.repo,
-            work_dir: rec.work_dir,
-            branch: rec.branch,
-            host: rec.host,
-            tabs: [tab],
-          })
-        } else {
-          treeAddScratchWorkspace({
-            id: rec.workspace_id,
-            title: rec.title,
-            work_dir: rec.work_dir,
-            host: rec.host,
-            tabs: [tab],
-          })
-        }
-      }
-      // If the agent landed on a different host than the active one, switch to it
-      // so the viewport attaches to that host's terminal and (in single-host mode,
-      // where the tree is scoped to one host) the tree re-scopes to include it.
-      if (created !== (activeHost || "local")) {
-        void api.switchHost(created)
-      }
-      // Focus the new agent in the UI — select its tab (and show its terminal).
-      // Only the UI creator does this; agents created via MCP must NOT steal the
-      // user's focus, and they don't (MCP never dispatches this).
-      if (rec.tab_id) {
-        window.dispatchEvent(
-          new CustomEvent("lasso:select-tab", { detail: rec.tab_id })
-        )
+      if (rec.workspace_id) {
+        api.focus(rec.workspace_id).catch(() => {})
       }
       createdRef.current = true
       setOpen(false)
       reset()
-      // The creator just updated the remembered selections + agent log, so
-      // refetch them.
+      // The creator just updated this host's remembered selections + agent log,
+      // so refetch them (prefix-match clears every host's cached config).
       queryClient.invalidateQueries({ queryKey: ["agent-config"] })
       queryClient.invalidateQueries({ queryKey: ["repos"] })
       onCreated?.()
@@ -467,14 +413,15 @@ export function CreateAgentDialog({
           // faint tint, so it reads as the row's primary action without a solid fill.
           <button
             type="button"
-            className="mx-2 my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
+            className="my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
             title="create a new agent (⌘O)"
           >
             <Plus className="size-3.5" />
-            <span className="max-md:hidden">New Agent</span>
+            <span>New Agent</span>
           </button>
         ) : variant === "floating" ? (
-          // Footer pill (see App.tsx, bottom-left).
+          // Mirrors the HostSwitcher pill so the two footer controls read as a
+          // pair (see App.tsx, where this sits to the host button's right).
           <button
             type="button"
             className="flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
@@ -495,13 +442,13 @@ export function CreateAgentDialog({
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
         onCloseAutoFocus={(e) => {
-          // On a create-driven close, don't let Radix restore focus to the
-          // trigger — the newly-selected tab's terminal takes focus on mount, so
-          // the user can type into the agent immediately. Cancel/Esc keep the
-          // default (focus returns to the trigger).
+          // On a create-driven close, send focus to the herdr terminal so the
+          // user can type into the new agent immediately. Otherwise (cancel /
+          // Esc) let Radix restore focus to the trigger as usual.
           if (createdRef.current) {
             createdRef.current = false
             e.preventDefault()
+            focusHerdrTerminal()
           }
         }}
       >
@@ -613,26 +560,28 @@ export function CreateAgentDialog({
               >
                 Start in plan mode
               </label>
-              {/* Host picker — only when reachable remote hosts exist. The new
-                  agent's worktree/session is created on the chosen host. */}
-              {remoteHosts.length > 0 && (
+              <div className="ml-auto flex items-center gap-1.5">
+                <label htmlFor="agent-host" className={labelClass}>
+                  Host
+                </label>
                 <select
                   id="agent-host"
-                  aria-label="Host"
-                  className={cn(fieldClass, "ml-auto w-auto py-1")}
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
+                  className={cn(fieldClass, "w-auto py-1")}
+                  value={selectedHost}
+                  onChange={(e) => setSelectedHost(e.target.value)}
                 >
-                  <option value="local">
-                    {hostsQuery.data?.hostname ?? "local"}
-                  </option>
+                  <option value="local">{localLabel}</option>
                   {remoteHosts.map((h) => (
-                    <option key={h.alias} value={h.alias}>
-                      {h.alias}
+                    <option
+                      key={h.alias}
+                      value={h.alias}
+                      disabled={!hostUsable(h)}
+                    >
+                      {hostUsable(h) ? h.alias : `${h.alias} (unavailable)`}
                     </option>
                   ))}
                 </select>
-              )}
+              </div>
             </div>
 
             {type === "git" && (

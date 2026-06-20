@@ -145,11 +145,7 @@ export function Combobox({
                   }}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none",
-                    // The keyboard/pointer cursor uses the primary tint so the
-                    // highlighted option reads clearly — `bg-accent` resolves to
-                    // the near-white hover gray (--h-hover) and is imperceptible
-                    // against the popover, so you couldn't tell what was selected.
-                    i === active && "bg-primary text-primary-foreground"
+                    i === active && "bg-accent text-accent-foreground"
                   )}
                 >
                   <Check

@@ -3,9 +3,9 @@ import * as React from "react"
 import { HOST_CHANGED_EVENT } from "@/lib/app-store"
 import { bootTermFrame, refitTerminal } from "@/lib/terminal"
 
-// A ttyd terminal iframe (the terminal at /terminal/ or the shell at /shell/).
-// It stays mounted across tab switches — only hidden via CSS — so the WebSocket
-// never reconnects. When shown again, nudge xterm to refit.
+// A ttyd terminal iframe (the herdr terminal at /terminal/ or the out-of-herdr
+// shell at /shell/). It stays mounted across tab switches — only hidden via CSS
+// — so the WebSocket never reconnects. When shown again, nudge xterm to refit.
 export function TerminalFrame({
   id,
   src,
@@ -19,11 +19,11 @@ export function TerminalFrame({
   suppressContext: boolean
   hidden: boolean
 }) {
-  // Bump to remount the iframe onto a fresh ttyd session. We remount (fresh
-  // element via React key) rather than reloading the existing frame's document:
-  // reloading runs ttyd's beforeunload handler, which pops the browser's "Reload
-  // site? Changes may not be saved." prompt, whereas unmounting the element just
-  // tears the frame down with no prompt.
+  // Bump on a host switch to remount the iframe onto the new host's ttyd
+  // session. We remount (fresh element via React key) rather than reloading the
+  // existing frame's document: reloading runs ttyd's beforeunload handler, which
+  // pops the browser's "Reload site? Changes may not be saved." prompt, whereas
+  // unmounting the element just tears the frame down with no prompt.
   const [reloadKey, setReloadKey] = React.useState(0)
   React.useEffect(() => {
     const onHostChange = () => setReloadKey((k) => k + 1)
@@ -32,8 +32,8 @@ export function TerminalFrame({
   }, [])
 
   // Re-wire xterm whenever the iframe element is (re)created — on mount and on
-  // each remount. reloadKey is a trigger-only dep: a new key means a fresh
-  // iframe element, so bootTermFrame must re-run to wire the new one.
+  // each host-switch remount. reloadKey is a trigger-only dep: a new key means a
+  // fresh iframe element, so bootTermFrame must re-run to wire the new one.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey re-runs boot on iframe remount
   React.useEffect(
     () => bootTermFrame(id, suppressContext),

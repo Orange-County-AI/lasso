@@ -1,14 +1,30 @@
 # lasso
 
-A web UI for running and orchestrating coding agents — a single Go binary that
-serves a terminal-centric workspace over your tailnet (or a Cloudflare tunnel):
-a sidebar of your git repos and their worktrees, live agents (Claude Code /
-Codex) with their status, a fast terminal, and a git diff + file browser
-alongside. It also exposes an [MCP](https://modelcontextprotocol.io) server at
-`/mcp` so an agent can spawn and drive other agents through lasso.
+A web viewer for [herdr](https://herdr.dev) workspaces — a single Go binary that
+serves a two-pane UI over your tailnet: herdr's terminal alongside a live git
+diff, a file browser, and a grid of every pane herdr is running, across every
+host you're connected to. It also exposes an [MCP](https://modelcontextprotocol.io)
+server at `/mcp` so an agent can spawn and drive other agents through lasso.
 
-Terminals and agents run in **tmux** (on a dedicated server socket), so they
-survive lasso restarts and updates.
+## What's in it
+
+Two resizable, collapsible columns:
+
+- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), a **Grid**
+  of every herdr pane (click to focus, right-click to rename/close,
+  ⌘/ctrl/shift-click to multi-select), and **Settings** (the lasso version and
+  whether an update is available, the herdr protocol/version with a one-click
+  `herdr update`, and the New-Agent defaults).
+- **Right** — the git **Diff** of the focused pane's repo (working tree, or the
+  branch vs. its base when clean), a **Files** browser that follows the active
+  pane's directory and opens files in a markdown/code/image viewer, a **Browser**
+  web-preview iframe for a dev server, and a plain **Terminal** shell outside
+  herdr.
+
+The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
+(its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
+**chrome** uses lasso's own design system and follows your system light/dark
+preference.
 
 ## Install
 
@@ -16,66 +32,158 @@ survive lasso restarts and updates.
 curl -fsSL https://go.52labs.us/install-lasso | sh
 ```
 
+This drops a prebuilt binary at `~/.local/bin/lasso` (override with
+`LASSO_INSTALL_DIR`). lasso drives **herdr**, which the installer fetches
+automatically if it's missing (set `LASSO_SKIP_HERDR=1` to install it yourself):
+
+```bash
+curl -fsSL https://herdr.dev/install.sh | sh
+```
+
 Then:
 
 ```bash
-lasso status # the pitchfork daemon's status
+lasso start          # run it in the background
 open http://127.0.0.1:8090
 ```
 
+Run `lasso doctor` if anything looks off.
+
 ## Using the CLI
 
-The binary is both the server and its own control surface. lasso is supervised by
-**pitchfork**, so `start`/`stop`/`restart`/`status` drive a pitchfork daemon:
+The binary is both the server and its own control surface:
 
 | command | what it does |
 | --- | --- |
-| `lasso` (no args) | print help — a bare invocation does **not** start the server |
-| `lasso start` (alias `up`) | register + start the pitchfork-supervised server |
-| `lasso stop` (alias `down`) | stop the supervised server |
-| `lasso restart` | restart it (re-applying any flags) |
-| `lasso status` | show the pitchfork daemon's status |
-| `lasso update` | update to the latest release (`mise upgrade` or self-replace), then restart the daemon |
-| `lasso doctor` | check tmux, ttyd, pitchfork, the port, and whether an update is available |
+| `lasso start` (alias `up`) | start the server in the background (PID + log under `~/.lasso/`) |
+| `lasso stop` (alias `down`) | stop the background server |
+| `lasso restart` | stop (if running) then start |
+| `lasso status` | report whether it's running, and its URL |
+| `lasso update` | update to the latest release (see [Updating](#updating)) |
+| `lasso doctor` | check herdr, the socket, the port, and the version |
 | `lasso version` | print the version |
+| `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
-`start`/`restart` accept the server flags (`--tailscale`, `-listen`,
-`-insecure-no-auth`, …) and persist them into the daemon's run line, so `lasso
-start --tailscale` keeps exposing the tailnet across restarts and reboots until
-you `lasso start` without it. (The pitchfork daemon runs the foreground server by
-passing those flags to the binary; there's no `serve` subcommand.)
+`start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
+`-insecure-no-auth`, …); `lasso serve -h` lists them.
+
+## Run from source
+
+```bash
+mise run build      # build the frontend (web/dist) then the binary
+./lasso             # serves on 127.0.0.1:8090, spawns ttyd running herdr
+mise run dev        # Vite dev server (frontend HMR) + Go backend, on your tailnet
+mise run test       # Go tests
+```
+
+The frontend is a React + Vite + Tailwind (shadcn/ui) app under `web/`, built to
+`web/dist` and embedded into the binary via `go:embed` — so the shipped binary is
+self-contained. `go build` therefore needs `web/dist` to exist; `mise run build`
+produces it. `web/dist` is **gitignored** (not committed) — run `mise run build`
+locally, and CI builds it for releases.
+
+`mise run dev` serves the UI through Vite with hot reload and proxies the API and
+terminal routes to the Go backend: frontend edits reload instantly, Go changes
+need a task restart. It binds your tailscale interface and uses a dedicated dev
+port that bumps if busy, so it never clashes with a production instance.
+
+## Architecture
+
+One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
+(WebSocket), talks to the herdr server over its unix socket to track the focused
+pane and workspace layout, and pushes live state to the browser over SSE. It can
+drive herdr on the local box or on SSH-reachable hosts (the footer's host
+switcher / the Grid), so one lasso fronts a whole fleet. Each instance spawns its
+own ttyds on per-PID unix sockets, so several can run at once without colliding.
+The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
+plus an unauthenticated MCP server at `/mcp`; see the route table in `main.go`.
+
+## Theming
+
+The **terminal** adopts the theme from `~/.config/herdr/config.toml`
+(`[theme].name`) and repaints live when you change it — no restart. Leave
+`-theme auto` to follow herdr, or force one with `-theme <name>` (`lasso serve -h`
+lists the names).
+
+The **chrome** around the terminal (sidebar, diff, files, settings) is lasso's
+own monochrome design system, not herdr's palette. It follows your **system
+light/dark** preference (`prefers-color-scheme`), overridable in Settings →
+Appearance (System / Light / Dark, persisted per device).
+
+## Updating
+
+`lasso update` brings the binary up to date. It auto-detects the install:
+
+- A **release binary** (the curl install) downloads the latest GitHub release for
+  your platform, verifies its checksum, atomically replaces itself, and restarts
+  the background server if one is running.
+- A **pitchfork-supervised source checkout** (the maintainer's prod) keeps the
+  historical behavior: `git pull --ff-only` then `pitchfork restart`, which
+  rebuilds from source.
+
+The Settings tab surfaces "update available → vX.Y.Z" when a newer release exists.
 
 ## Exposing it
 
-The terminal is a **writable shell** (and `/mcp` is unauthenticated), so never
+The left pane is a **writable shell** (and `/mcp` is unauthenticated), so never
 bind to `0.0.0.0` — on a VPS that's the public internet. Two safe ways to reach
 it off-box:
 
+### Over a Cloudflare tunnel (recommended)
+
+Keep lasso on loopback and let a tunnel reach it, so no port is ever exposed:
+
+```bash
+lasso start -listen 127.0.0.1:8090
+```
+
+Point a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+tunnel's ingress at `http://127.0.0.1:8090` and gate the hostname with
+**Cloudflare Access** (or equivalent) — that authentication is what guards the
+writable shell and the MCP endpoint. A loopback bind needs no `-insecure-no-auth`.
+Because the tunnel serves **HTTPS**, the browser runs in a secure context, so
+Files-tab downloads work (see the caveat below).
+
 ### Over your tailnet
 
-Pass `--tailscale`: lasso stays bound to loopback and publishes itself on your
-tailnet through [**Tailscale Serve**](https://tailscale.com/kb/1242/tailscale-serve),
-which terminates **HTTPS** with real certs at `https://<node>.<tailnet>.ts.net`.
+Bind to your tailscale interface; only your tailnet can reach it, and WireGuard
+already encrypts and authenticates it:
 
 ```bash
-lasso start --tailscale
+lasso start -listen "$(tailscale ip -4):8090" -insecure-no-auth
 ```
 
-This needs the one-time `sudo tailscale set --operator=$USER` so the (non-root)
-daemon can write the serve config — the installer does that for you (tailscale is
-installed and `--tailscale` enabled by default). Only your tailnet can reach the URL, and WireGuard already encrypts
-and authenticates it; lasso never binds a non-loopback port, so no
-`-insecure-no-auth` is involved. The route is held only while lasso runs and is
-torn down on stop. Because it's served over HTTPS, the browser runs in a secure
-context, so Files-tab downloads work.
+For a login on top, set `UI_AUTH=user:pass` in the environment (never argv) and
+drop `-insecure-no-auth`. The server **refuses** a non-loopback bind unless one of
+those is set, so it can't accidentally expose a bare shell. Then reach it from any
+tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 
-If `:443` is already taken on the host (e.g. a Docker/Traefik publish owns it),
-Tailscale Serve on 443 is shadowed — serve on another HTTPS port instead:
-
-```bash
-lasso start --tailscale -tailscale-https-port 8443
-# → https://<node>.<tailnet>.ts.net:8443
-```
+> **Downloads need a secure context.** The Files tab downloads via a synthetic
+> `<a download>`, which browsers only honor on **localhost** or over **HTTPS**.
+> Over plain-HTTP tailnet access (`http://citadel:8090`) a download silently
+> won't fire — use the Cloudflare tunnel (HTTPS) if you need to pull files off
+> the box. (Viewing files still works; only the download action is gated.)
 
 Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
 fine on a private tailnet or behind Access, but confine it before widening access.
+
+## Releasing
+
+Releases are cut by CI on a version tag:
+
+```bash
+mise run bump patch --commit     # bump lassoSemver in version.go and commit
+git tag "v$(grep -oP 'lassoSemver = "\K[^"]+' version.go)"
+git push origin main --tags
+```
+
+`.github/workflows/release.yml` then builds the frontend, cross-compiles the
+binaries (linux/darwin × amd64/arm64) with the tag stamped in, and publishes a
+GitHub Release with the binaries, `checksums.txt`, and `install.sh`. The tag must
+match `lassoSemver` (the workflow enforces it).
+
+## Dogfooding
+
+To run lasso from *inside* a herdr session (e.g. building lasso with itself), its
+embedded terminal would otherwise refuse to nest. Set `allow_nested = true` under
+`[experimental]` in `~/.config/herdr/config.toml` to allow it.

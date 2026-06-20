@@ -40,18 +40,6 @@ export function FilesPanel() {
   const [sub, setSub] = React.useState<SubView>("files")
   const [viewerPath, setViewerPath] = React.useState<string | null>(null)
 
-  // The "go to path" input is shared by both subtabs: its value re-roots/opens
-  // in Files and filters the diff in Diff (so there's one input, not one per
-  // tab). `follow` lives here too because editing the path on either tab must
-  // stop the Files tree from snapping back to the active pane's cwd.
-  const [pathValue, setPathValue] = React.useState("")
-  const [follow, setFollow] = React.useState(true)
-  // Editing the path on any tab means the user is steering — stop following.
-  const onPathChange = React.useCallback((v: string) => {
-    setPathValue(v)
-    setFollow(false)
-  }, [])
-
   // The changed-file metadata is fetched + polled app-wide via the shared
   // useDiff query (so the top-level tab badge stays live even while this panel
   // is hidden); here we just read it. react-query's structural sharing keeps the
@@ -104,11 +92,6 @@ export function FilesPanel() {
             viewerPath={viewerPath}
             onOpenFile={setViewerPath}
             changes={changes}
-            pathValue={pathValue}
-            onPathChange={onPathChange}
-            setPathValue={setPathValue}
-            follow={follow}
-            setFollow={setFollow}
           />
         </div>
         <div
@@ -117,21 +100,12 @@ export function FilesPanel() {
             sub !== "diff" && "hidden"
           )}
         >
-          <DiffTab
-            repoPath={activeCwd}
-            data={data}
-            error={error}
-            pathValue={pathValue}
-          />
+          <DiffTab repoPath={activeCwd} data={data} error={error} />
         </div>
 
         {viewerPath && (
           <React.Suspense fallback={null}>
-            <FileViewer
-              path={viewerPath}
-              onClose={() => setViewerPath(null)}
-              onOpen={setViewerPath}
-            />
+            <FileViewer path={viewerPath} onClose={() => setViewerPath(null)} />
           </React.Suspense>
         )}
       </div>

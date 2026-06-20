@@ -33,7 +33,7 @@ export function GitStatusBadge({
     )
   }
   // The theme's "good" token (a teal/foam) as the "clean" signal, so the dot
-  // tracks the live theme rather than a hardcoded green.
+  // tracks the live herdr theme rather than a hardcoded green.
   return (
     <span
       className={cn(

@@ -1,94 +1,28 @@
-// The xterm.js palettes for the terminal, tuned to the Nothing design system.
-// The base is monochrome — OLED black canvas, white text, a white (not colored)
-// cursor and a neutral selection — matching the achromatic chrome. The ANSI
-// hue slots stay functional (TUIs, git diff, ls --color rely on them) but are
-// mapped to Nothing's restrained status palette: red is the one true signal
-// (#d71921), green/yellow the data status hues, and the cool slots
-// (blue/cyan/magenta) are desaturated so the terminal reads calm rather than
-// neon. Which palette is live follows the app's appearance mode (see
-// lib/mode.ts); the browser re-pins it on mode change and across ttyd
-// reconnects. (Export names keep the ONYX_* identifier for back-compat with
-// importers — only the values changed.)
-export const ONYX_XTERM_DARK: Record<string, unknown> = {
-  background: "#000000",
-  foreground: "#ededed",
-  cursor: "#ffffff",
-  cursorAccent: "#000000",
-  selectionBackground: "rgba(255, 255, 255, 0.20)",
-  black: "#1a1a1a",
-  red: "#d71921",
-  green: "#4a9e5c",
-  yellow: "#d4a843",
-  blue: "#5b9bf6",
-  magenta: "#a78bda",
-  cyan: "#6fb7c4",
-  white: "#b8b8b8",
-  brightBlack: "#555555",
-  brightRed: "#ef5b61",
-  brightGreen: "#6cba7d",
-  brightYellow: "#e3c06a",
-  brightBlue: "#82b4ff",
-  brightMagenta: "#c0a9e6",
-  brightCyan: "#92cbd6",
-  brightWhite: "#ffffff",
-}
+import { api, type ThemePayload } from "@/lib/api"
 
-// Light mode — "printed technical manual": black ink on warm off-white paper;
-// the bright hues are darkened so they stay legible on a light background.
-export const ONYX_XTERM_LIGHT: Record<string, unknown> = {
-  background: "#f5f5f5",
-  foreground: "#1a1a1a",
-  cursor: "#000000",
-  cursorAccent: "#f5f5f5",
-  selectionBackground: "rgba(0, 0, 0, 0.14)",
-  black: "#1a1a1a",
-  red: "#c0141b",
-  green: "#2e7d46",
-  yellow: "#9a7b1f",
-  blue: "#007aff",
-  magenta: "#7a4fb0",
-  cyan: "#2f7e8c",
-  white: "#8a8a8a",
-  brightBlack: "#666666",
-  brightRed: "#d71921",
-  brightGreen: "#3a9457",
-  brightYellow: "#b48f24",
-  brightBlue: "#3392ff",
-  brightMagenta: "#9265c4",
-  brightCyan: "#3f97a6",
-  brightWhite: "#000000",
-}
-
-// Fixed terminal iframes (the standalone terminal + shell). The per-tab
+// The fixed terminal iframes whose xterm.js theme we keep in sync with herdr's
+// (the left "Herdr" terminal and the right shell). The Grid tab's per-pane
 // terminals are matched by class instead — see termFrames.
 const TERM_FRAME_IDS = ["term", "shellframe"]
 
-// TERM_FRAME_CLASS marks the per-tab terminal iframes (TabTerminal renders the
-// ttyd iframe with this class; its id is `tabterm-<tabId>`). Matching by class
-// is what keeps the live terminal in sync with theme changes — without it the
-// terminal stays on ttyd's default palette while the UI repaints.
-const TERM_FRAME_CLASS = "frame"
-
 // GRID_FRAME_CLASS marks each Grid cell's terminal iframe so it's re-themed
-// alongside the main viewport on a mode change / ttyd reconnect.
+// alongside the fixed terminals (its id is dynamic, one per host+pane).
 export const GRID_FRAME_CLASS = "gridterm"
 
-// termFrames collects every terminal iframe the theme should track: the fixed
-// ones by id, plus every per-tab and grid terminal by class. Deduped, since a
-// frame could in principle match more than one selector.
+// termFrames collects every terminal iframe the theme should track: the two
+// fixed ones by id, plus every live Grid cell terminal by class.
 function termFrames(): HTMLIFrameElement[] {
-  const seen = new Set<HTMLIFrameElement>()
+  const out: HTMLIFrameElement[] = []
   for (const id of TERM_FRAME_IDS) {
     const el = document.getElementById(id) as HTMLIFrameElement | null
-    if (el) seen.add(el)
+    if (el) out.push(el)
   }
-  for (const cls of [TERM_FRAME_CLASS, GRID_FRAME_CLASS]) {
-    for (const el of Array.from(
-      document.querySelectorAll<HTMLIFrameElement>(`iframe.${cls}`)
-    ))
-      seen.add(el)
-  }
-  return Array.from(seen)
+  out.push(
+    ...Array.from(
+      document.querySelectorAll<HTMLIFrameElement>(`iframe.${GRID_FRAME_CLASS}`)
+    )
+  )
+  return out
 }
 
 // The terminal font stack. JetBrainsMono Nerd Font carries the icon glyphs that
@@ -96,7 +30,7 @@ function termFrames(): HTMLIFrameElement[] {
 // The face is vendored as woff2 under web/public/fonts and served at /fonts/*.
 const TERM_FONT_FAMILY = "JetBrainsMono Nerd Font"
 const TERM_FONT_STACK = `"${TERM_FONT_FAMILY}", ui-monospace, monospace`
-const TERM_FONT_STYLE_ID = "lasso-term-font"
+const TERM_FONT_STYLE_ID = "herdr-term-font"
 
 // The @font-face must live in the *terminal iframe's* document — a parent
 // stylesheet doesn't cross the iframe boundary. We mirror index.css here so the
@@ -113,7 +47,7 @@ const TERM_FONT_FACE_CSS = (
   .join("")
 
 interface FontDoc extends Document {
-  __fontWired?: boolean
+  __herdrFontWired?: boolean
 }
 
 // Once the webfont is actually loaded inside the iframe, set xterm's fontFamily.
@@ -131,23 +65,6 @@ function setTermFontWhenReady(
     } catch {
       /* private/locked options: never break the terminal */
     }
-    // The swap changes xterm's cell metrics but not its rows/cols, so a fit
-    // computed against the fallback font leaves the bottom rows drawn past the
-    // iframe (Claude Code's input box clipped below the terminal on reload).
-    // Nudge ttyd's own resize→fit handler so rows/cols are re-derived from the
-    // real metrics — again a beat later in case the re-measure was deferred a
-    // frame. Skip hidden frames (zero-size fit is garbage); they refit when
-    // shown.
-    try {
-      const win = doc.defaultView
-      if (win && win.innerWidth > 0 && win.innerHeight > 0) {
-        const refit = () => win.dispatchEvent(new win.Event("resize"))
-        refit()
-        win.setTimeout(refit, 100)
-      }
-    } catch {
-      /* never break the terminal */
-    }
   }
   const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts
   if (fonts && typeof fonts.load === "function") {
@@ -161,8 +78,8 @@ function setTermFontWhenReady(
 }
 
 // applyTermFont injects the Nerd Font @font-face into every terminal iframe and
-// points xterm at it. Mirrors applyTermTheme: iterates the same frames, and
-// retries while an iframe is still (re)connecting. Each fresh
+// points xterm at it. Mirrors applyTermTheme: iterates the same frames (fixed +
+// Grid cells), and retries while an iframe is still (re)connecting. Each fresh
 // xterm lives in a fresh iframe document, so the per-document guard re-arms on
 // ttyd reconnects.
 export function applyTermFont(tries = 0) {
@@ -189,8 +106,8 @@ export function applyTermFont(tries = 0) {
         pending = true
         continue
       }
-      if (doc.__fontWired) continue
-      doc.__fontWired = true
+      if (doc.__herdrFontWired) continue
+      doc.__herdrFontWired = true
       setTermFontWhenReady(doc, w.term)
     } catch {
       /* same-origin: shouldn't throw, but never let it break the caller */
@@ -239,7 +156,7 @@ export function lastTerminalTheme() {
 // sleep/wake, a network blip — and that reconnect happens *inside the existing
 // iframe document*, so it fires no iframe `load` event for bootTermFrame to
 // hook. Without this, a reconnected terminal keeps ttyd's default theme until
-// the next theme change or a full page reload, while the React/CSS side
+// the next herdr theme change or a full page reload, while the React/CSS side
 // (whose --h-* vars live on the parent document and persist) stays correctly
 // themed — the half-light/half-dark desync. We compare the live background
 // against the cached one and only write when they differ, so xterm rebuilds its
@@ -276,16 +193,20 @@ export function startTermThemeReconciler() {
   termThemeReconciler = setInterval(reconcileTermTheme, 1500)
 }
 
-// applyTermThemeForMode pins every terminal to the Onyx palette for the given
-// resolved appearance ("light" | "dark") plus the Nerd Font. The UI/CSS side is
-// driven by the html dark/light class (see lib/mode.ts); this drives the live
-// terminals — it sets the xterm.js theme inside the same-origin ttyd iframes (no
-// reconnect) and injects the terminal font. Called on mount and whenever the mode
-// changes; the reconciler (startTermThemeReconciler) re-pins across ttyd
-// reconnects.
-export function applyTermThemeForMode(resolved: "light" | "dark") {
-  const theme = resolved === "light" ? ONYX_XTERM_LIGHT : ONYX_XTERM_DARK
-  lastXtermTheme = theme
-  applyTermTheme(theme, 0)
+// refreshTheme pulls herdr's resolved theme and applies it to the *terminals
+// only*: it sets the xterm.js palette inside the same-origin ttyd iframes (no
+// reconnect) and pins the terminal font. herdr dictates the terminal theme; the
+// surrounding chrome is the Nothing design system (its --h-* vars come from
+// index.css and follow the system light/dark mode, see lib/mode.ts) — so we
+// deliberately no longer repaint the chrome from herdr's palette here.
+export async function refreshTheme() {
+  let t: ThemePayload
+  try {
+    t = await api.theme()
+  } catch {
+    return
+  }
+  lastXtermTheme = t.xterm
+  applyTermTheme(t.xterm, 0)
   applyTermFont(0)
 }

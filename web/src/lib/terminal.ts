@@ -1,5 +1,4 @@
 import { api } from "@/lib/api"
-import { matchShortcut } from "@/lib/shortcuts"
 import {
   applyTermFont,
   applyTermTheme,
@@ -7,10 +6,10 @@ import {
   startTermThemeReconciler,
 } from "@/lib/theme"
 
-// Behavior attached to the same-origin ttyd terminal iframes. All of this is
-// ported faithfully from the original index.html — xterm.js can only paste text,
-// sends a bare CR for both Enter and Shift+Enter, and starts from ttyd's theme
-// on every reconnect, so we patch around each.
+// Behavior attached to the same-origin ttyd terminal iframes (/terminal/ and
+// /shell/). All of this is ported faithfully from the original index.html —
+// xterm.js can only paste text, sends a bare CR for both Enter and Shift+Enter,
+// and starts from ttyd's theme on every reconnect, so we patch around each.
 
 interface XTermBufferLine {
   translateToString: (trimRight?: boolean) => string
@@ -27,14 +26,12 @@ interface XTerm {
   paste?: (text: string) => void
   input?: (data: string) => void
   focus?: () => void
-  resize?: (cols: number, rows: number) => void
-  cols?: number
   rows?: number
   buffer?: XTermBuffer
   options?: Record<string, unknown>
   attachCustomKeyEventHandler?: (h: (e: KeyboardEvent) => boolean) => void
   // xterm.js public IParser. ttyd 1.7.4 never registers an OSC 52 handler, so
-  // we add our own (wireOsc52) to honour the terminal's clipboard copies.
+  // we add our own (wireOsc52) to honour herdr's clipboard copies.
   parser?: {
     registerOscHandler?: (
       ident: number,
@@ -44,17 +41,14 @@ interface XTerm {
   _core?: {
     coreService?: { triggerDataEvent?: (data: string, sync?: boolean) => void }
   }
-  __shiftEnterWired?: boolean
-  __osc52Wired?: boolean
+  __herdrShiftEnter?: boolean
+  __herdrOsc52?: boolean
 }
 interface TermWindow extends Window {
   term?: XTerm
 }
 interface WiredDoc extends Document {
-  __terminalWired?: boolean
-  __gridScrollWired?: boolean
-  __gridFocusWired?: boolean
-  __touchScrollWired?: boolean
+  __herdrWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -80,39 +74,6 @@ function sendNewline(term: XTerm) {
   }
 }
 
-// sendKeyToTerminal feeds a raw key sequence to the active tab's terminal —
-// used by the mobile key bar, whose soft keyboard lacks Esc/arrows/Enter. Writes
-// straight to the PTY (same path as sendNewline), so it needs no focus and won't
-// dismiss the soft keyboard. Arrows are the normal-mode (DECCKM off) CSI forms,
-// correct for the shell + agents; app-cursor-mode TUIs (vim/less) won't see them.
-export const TERM_KEY = {
-  escape: "\x1b",
-  up: "\x1b[A",
-  down: "\x1b[B",
-  enter: "\r",
-} as const
-
-export function sendKeyToTerminal(seq: string) {
-  let term: XTerm | undefined
-  try {
-    term = frameWindow(VIEWPORT_TERM_ID)?.term
-  } catch {
-    return
-  }
-  if (!term) return
-  if (typeof term.input === "function") {
-    term.input(seq)
-    return
-  }
-  try {
-    const cs = term._core?.coreService
-    if (cs && typeof cs.triggerDataEvent === "function")
-      cs.triggerDataEvent(seq, true)
-  } catch {
-    /* private API moved: no-op rather than throw */
-  }
-}
-
 function wireShiftEnter(id: string, tries: number) {
   let term: XTerm | undefined
   try {
@@ -121,8 +82,8 @@ function wireShiftEnter(id: string, tries: number) {
     return
   }
   if (term && typeof term.attachCustomKeyEventHandler === "function") {
-    if (!term.__shiftEnterWired) {
-      term.__shiftEnterWired = true
+    if (!term.__herdrShiftEnter) {
+      term.__herdrShiftEnter = true
       const t = term
       term.attachCustomKeyEventHandler((e) => {
         const enterish =
@@ -152,12 +113,12 @@ function wireShiftEnter(id: string, tries: number) {
   if (tries < 20) setTimeout(() => wireShiftEnter(id, tries + 1), 150)
 }
 
-// The terminal copies (copy-mode, double-click token, mouse selection) by
+// herdr copies (copy-mode, double-click token, mouse selection in a pane) by
 // emitting OSC 52 — `ESC ] 52 ; c ; <base64> BEL` — and immediately shows
 // "copied to clipboard". But ttyd 1.7.4's bundled xterm.js registers no OSC 52
 // handler, so the sequence is silently dropped and the browser clipboard is
-// never written: it says it copied, but nothing actually did. We register the
-// missing handler on the same-origin xterm to close that gap.
+// never written: herdr says it copied, but nothing actually did. We register
+// the missing handler on the same-origin xterm to close that gap.
 //
 // `data` is the OSC payload after "52;" — "<Pc>;<base64>", where Pc is the
 // target selection ("c" for clipboard, may be empty or multi-char). A read
@@ -224,8 +185,8 @@ function wireOsc52(id: string, tries: number) {
   }
   const term = win?.term
   if (term?.parser && typeof term.parser.registerOscHandler === "function") {
-    if (!term.__osc52Wired) {
-      term.__osc52Wired = true
+    if (!term.__herdrOsc52) {
+      term.__herdrOsc52 = true
       const w = win as TermWindow
       term.parser.registerOscHandler(52, (data) => {
         const text = osc52Text(data)
@@ -238,138 +199,11 @@ function wireOsc52(id: string, tries: number) {
   if (tries < 20) setTimeout(() => wireOsc52(id, tries + 1), 150)
 }
 
-// wireGridScroll lets the grid wall scroll while the cursor sits over a terminal:
-// holding Shift turns the wheel into a grid scroll instead of the terminal's
-// scrollback. The iframe is same-origin, so we read its frameElement, walk up to
-// the enclosing .termgrid, and drive its scrollTop ourselves — capturing the
-// event first (and stopping it) so xterm never sees it. (deltaX covers platforms
-// where Shift+wheel arrives as a horizontal delta.) Idempotent per document.
-function wireGridScroll(doc: WiredDoc, win: Window) {
-  if (doc.__gridScrollWired) return
-  doc.__gridScrollWired = true
-  doc.addEventListener(
-    "wheel",
-    (e: WheelEvent) => {
-      if (!e.shiftKey) return
-      const grid = win.frameElement?.closest?.(
-        ".termgrid"
-      ) as HTMLElement | null
-      if (!grid) return
-      e.preventDefault()
-      e.stopPropagation()
-      grid.scrollTop += e.deltaY || e.deltaX
-    },
-    { capture: true, passive: false }
-  )
-}
-
-// wireGridFocus tells the parent app which grid cell the user just interacted
-// with, so the sidebar can follow it ("follow active pane"). The grid otherwise
-// learns the focused cell from a window-level `blur`, but that only fires the
-// FIRST time focus leaves the top document for a terminal — clicking straight
-// from one terminal to another (iframe→iframe) never re-fires it. These iframes
-// are same-origin, so we hook the cell's own pointerdown/focusin and dispatch its
-// frame id up to the parent window. Idempotent per document.
-function wireGridFocus(doc: WiredDoc, win: Window) {
-  if (doc.__gridFocusWired) return
-  doc.__gridFocusWired = true
-  const notify = () => {
-    const id = win.frameElement?.id
-    if (!id) return
-    window.dispatchEvent(
-      new CustomEvent("lasso:grid-cell-focus", { detail: id })
-    )
-  }
-  doc.addEventListener("pointerdown", notify, { capture: true })
-  doc.addEventListener("focusin", notify, { capture: true })
-}
-
-// wireTouchScroll gives terminals a finger-drag scroll on touch devices. Two
-// things conspire to make the obvious approaches fail:
-//   1. Our terminals are `tmux attach`, and tmux lives in xterm's ALTERNATE
-//      screen — so `.xterm-viewport` holds no scrollback to move (scrollTop is a
-//      no-op). The scrollable content belongs to the app inside tmux.
-//   2. xterm has its own touch-scroll, but disables it whenever the app has mouse
-//      tracking on (Claude Code does), forwarding the touch as a mouse drag.
-// Both the alt-screen case and the scrollback case ARE reachable the same way the
-// desktop reaches them: the wheel. xterm turns a wheel into scrollback movement
-// (normal buffer), alternate-scroll arrow keys, or app mouse-wheel forwarding
-// (mouse mode) — whichever applies. So we translate the drag into synthetic wheel
-// events aimed at xterm, emitting one "line" per row-height of travel, and always
-// preventDefault so the page itself never scrolls underneath. A bare tap (no
-// move) is left alone, so taps still reach the terminal as clicks. Idempotent.
-function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
-  if (doc.__touchScrollWired) return
-  doc.__touchScrollWired = true
-  let lastY = 0
-  let accum = 0
-  let tracking = false
-  const rowHeight = (): number => {
-    const screen = doc.querySelector(".xterm-screen") as HTMLElement | null
-    const rows = win.term?.rows ?? 24
-    const h = screen?.clientHeight ?? 0
-    return h && rows ? h / rows : 18
-  }
-  doc.addEventListener(
-    "touchstart",
-    (e: TouchEvent) => {
-      tracking = e.touches.length === 1
-      if (tracking) {
-        lastY = e.touches[0].clientY
-        accum = 0
-      }
-    },
-    { capture: true, passive: true }
-  )
-  doc.addEventListener(
-    "touchmove",
-    (e: TouchEvent) => {
-      if (!tracking || e.touches.length !== 1) return
-      const t = e.touches[0]
-      // Finger DOWN (clientY grows) reveals older content above → negative
-      // deltaY (wheel up), matching natural touch scrolling.
-      accum += lastY - t.clientY
-      lastY = t.clientY
-      const target =
-        (doc.querySelector(".xterm-viewport") as HTMLElement | null) ??
-        (doc.querySelector(".xterm") as HTMLElement | null)
-      const rh = rowHeight()
-      // The iframe realm's WheelEvent ctor, so the event belongs to xterm's window.
-      const WheelEventCtor = (
-        win as unknown as { WheelEvent: typeof WheelEvent }
-      ).WheelEvent
-      while (target && Math.abs(accum) >= rh) {
-        const dir = accum > 0 ? 1 : -1
-        accum -= dir * rh
-        target.dispatchEvent(
-          new WheelEventCtor("wheel", {
-            deltaY: dir * rh,
-            deltaMode: 0, // pixels
-            bubbles: true,
-            cancelable: true,
-            clientX: t.clientX,
-            clientY: t.clientY,
-          })
-        )
-      }
-      e.preventDefault()
-      e.stopPropagation()
-    },
-    { capture: true, passive: false }
-  )
-}
-
-// wireTerminalIframe: (1) optionally suppress the native context menu so
-// right-click only triggers the terminal's handling; (2) intercept image paste
+// wireTerminalIframe: (1) for the herdr terminal, suppress the native context
+// menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
-// text); (3) in the grid, forward Shift+wheel to the grid (gridScroll). Re-run on
-// each iframe (re)load; __terminalWired guards double-attaching.
-export function wireTerminalIframe(
-  id: string,
-  suppressContext: boolean,
-  gridScroll = false,
-  host?: string
-) {
+// text). Re-run on each iframe (re)load; __herdrWired guards double-attaching.
+export function wireTerminalIframe(id: string, suppressContext: boolean) {
   let win: TermWindow | null
   let doc: WiredDoc | null
   try {
@@ -378,36 +212,22 @@ export function wireTerminalIframe(
   } catch {
     return
   }
-  if (!doc) return
-  if (win) wireTouchScroll(doc, win)
-  if (gridScroll && win) {
-    wireGridScroll(doc, win)
-    wireGridFocus(doc, win)
-  }
-
-  if (doc.__terminalWired) return
-  doc.__terminalWired = true
+  if (!doc || doc.__herdrWired) return
+  doc.__herdrWired = true
 
   if (suppressContext)
     doc.addEventListener("contextmenu", (e) => e.preventDefault(), true)
 
   // Forward app-level shortcuts (Cmd/Ctrl+<key>) to the parent document so
   // global handlers fire even while the terminal holds keyboard focus — the
-  // iframe is same-origin, so we can re-dispatch. Clones land on the parent
-  // `document`, not this one, so there's no re-entrancy.
-  //
-  // For our OWN keydown shortcuts (⌘K/⌘I — matchShortcut) we neutralize the
-  // original unconditionally, so xterm never also acts on them, not just when the
-  // re-dispatched clone is claimed. For any other Cmd/Ctrl combo we still mirror
-  // a parent claim (preventDefault ⇒ dispatchEvent returns false) so e.g. Cmd-C
-  // copy keeps reaching xterm when nobody claimed it. (⌘[/⌘] never get here —
-  // the browser consumes them for history nav; they're handled by the history
-  // trap, see lib/history-toggle.ts.)
+  // iframe is same-origin, so we can re-dispatch. If a parent listener claims
+  // the combo (preventDefault ⇒ dispatchEvent returns false), mirror that back
+  // into the iframe so neither xterm nor the browser also acts on it. Clones
+  // land on the parent `document`, not this one, so there's no re-entrancy.
   doc.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
-      const ours = matchShortcut(e) !== null
       const clone = new KeyboardEvent("keydown", {
         key: e.key,
         code: e.code,
@@ -418,8 +238,7 @@ export function wireTerminalIframe(
         bubbles: true,
         cancelable: true,
       })
-      const claimed = !document.dispatchEvent(clone)
-      if (ours || claimed) {
+      if (!document.dispatchEvent(clone)) {
         e.preventDefault()
         e.stopPropagation()
       }
@@ -441,10 +260,7 @@ export function wireTerminalIframe(
       e.preventDefault()
       e.stopPropagation()
       try {
-        // Save the image on the SAME host this terminal runs on, so the path we
-        // type resolves there. The cross-host grid shows tabs from several hosts
-        // at once, so we can't rely on the server's single active host.
-        const { path } = await api.pasteImage(file, host)
+        const { path } = await api.pasteImage(file)
         const term = win?.term
         if (term && typeof term.paste === "function") term.paste(`${path} `)
       } catch {
@@ -458,105 +274,15 @@ export function wireTerminalIframe(
   wireOsc52(id, 0)
 }
 
-// --- auto-reconnect ----------------------------------------------------------
-//
-// When the ttyd backend process exits cleanly (e.g. its `tmux attach` ends
-// because the park/agent session was torn down and recreated a tick later by
-// the reconcile loop), the WebSocket closes with code 1000. ttyd 1.7.7 only
-// auto-reconnects on ABnormal closes (code != 1000, and only when its
-// `reconnect` client option is set); on a clean exit it parks on a manual
-// "Press ⏎ to Reconnect" overlay and waits for the user to hit Enter. That
-// Enter just refreshes the token and reconnects — almost always succeeding,
-// since the session is back by then. So we press it for the user a couple of
-// times before leaving the manual prompt for a disconnect that won't recover.
-//
-// ttyd's overlay is a class-less <div> appended to the xterm element, carrying
-// a distinctive inline `border-radius: 15px`. We read it same-origin: the exact
-// prompt text means "parked, waiting for Enter"; "Reconnecting…" means an
-// attempt is in flight (wait); opacity "0" (faded out) or no overlay means
-// connected — reset the attempt counter for the next disconnect episode.
-const RECONNECT_PROMPT = "Press ⏎ to Reconnect"
-const MAX_AUTO_RECONNECTS = 3
-
-function ttydOverlay(win: TermWindow): HTMLElement | null {
-  const xterm = win.document?.querySelector?.(".xterm")
-  return (
-    (xterm?.querySelector(
-      ':scope > div[style*="border-radius"]'
-    ) as HTMLElement | null) ?? null
-  )
-}
-
-// pressTerminalEnter synthesizes the Enter keydown ttyd's reconnect listener
-// waits on. xterm binds keydown on its `.xterm-helper-textarea`, maps keyCode 13
-// to CR, and fires onKey({domEvent}) — which ttyd checks for `key === "Enter"`.
-// keyCode must be set (xterm's evaluateKeyboardEvent switches on it); the
-// re-dispatched CR goes nowhere since the socket's data listeners are disposed.
-function pressTerminalEnter(win: TermWindow) {
-  const ta = win.document?.querySelector?.(
-    ".xterm-helper-textarea"
-  ) as HTMLTextAreaElement | null
-  if (!ta) return
-  // Constructed in the parent realm but dispatched on the same-origin iframe's
-  // textarea — xterm reads key/keyCode off the event, not its prototype.
-  ta.dispatchEvent(
-    new KeyboardEvent("keydown", {
-      key: "Enter",
-      code: "Enter",
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-    } as KeyboardEventInit)
-  )
-}
-
-// startAutoReconnect polls the ttyd overlay and presses Enter on the manual
-// reconnect prompt up to MAX_AUTO_RECONNECTS times per disconnect episode.
-// Returns a canceller. The interval outlives ttyd WS reconnects (which don't
-// reload the iframe), so frameWindow(id) is re-resolved every tick.
-function startAutoReconnect(id: string): () => void {
-  let attempts = 0
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const tick = () => {
-    try {
-      const win = frameWindow(id)
-      const ov = win ? ttydOverlay(win) : null
-      if (!ov || ov.style.opacity === "0") {
-        attempts = 0 // connected (or overlay faded) — ready for the next episode
-      } else if (
-        ov.textContent === RECONNECT_PROMPT &&
-        attempts < MAX_AUTO_RECONNECTS
-      ) {
-        attempts++
-        pressTerminalEnter(win as TermWindow)
-      }
-      // "Reconnecting…" / hit the cap: leave it be
-    } catch {
-      /* same-origin; ignore */
-    }
-    timer = setTimeout(tick, 600)
-  }
-  timer = setTimeout(tick, 600)
-  return () => {
-    if (timer) clearTimeout(timer)
-  }
-}
-
 // bootTermFrame wires the iframe now and re-wires (and re-applies the latest
 // theme) on every reload, since ttyd reconnects yield a fresh xterm.
-export function bootTermFrame(
-  id: string,
-  suppressContext: boolean,
-  gridScroll = false,
-  host?: string
-) {
+export function bootTermFrame(id: string, suppressContext: boolean) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
-    wireTerminalIframe(id, suppressContext, gridScroll, host)
+    wireTerminalIframe(id, suppressContext)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -564,18 +290,14 @@ export function bootTermFrame(
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
-  wireTerminalIframe(id, suppressContext, gridScroll, host) // in case it already loaded
-  const stopReconnect = startAutoReconnect(id)
-  return () => {
-    el.removeEventListener("load", onLoad)
-    stopReconnect()
-  }
+  wireTerminalIframe(id, suppressContext) // in case it already loaded
+  return () => el.removeEventListener("load", onLoad)
 }
 
 // termHasRendered reports whether the same-origin xterm has painted real pane
 // content yet. A fresh ttyd starts blank and flashes its own connect/reconnect
-// chrome before the terminal repaints the pane; we treat the terminal as "live"
-// only once the cursor has advanced or a visible row carries text, so a loading
+// chrome before herdr repaints the pane; we treat the terminal as "live" only
+// once the cursor has advanced or a visible row carries text, so a loading
 // overlay can mask that churn until then.
 function termHasRendered(term: XTerm): boolean {
   const buf = term.buffer?.active
@@ -635,28 +357,6 @@ export function whenTerminalReady(id: string, onReady: () => void): () => void {
   }
 }
 
-// kickTerminalSize forces a real resize round-trip to the tmux client behind a
-// terminal iframe. tmux sizes windows to the most-recently-ACTIVE client
-// (`window-size latest`), and activity means input or a resize — so after grid
-// mode (whose per-cell clients shrank the window) the window can stay stuck at
-// a stale co-viewer's size (e.g. a background browser tab's never-fit 80x24
-// client) until the user types. A refit alone can't fix it: xterm only reports
-// a resize when its dims actually change. Resize down a row and back — two real
-// SIGWINCHes (the same trick the backend's nudgeRedraw plays) — which promotes
-// THIS client to latest and snaps the window to it immediately.
-export function kickTerminalSize(id: string) {
-  try {
-    const term = frameWindow(id)?.term
-    if (!term || typeof term.resize !== "function") return
-    const { cols, rows } = term
-    if (!cols || !rows || rows < 2) return
-    term.resize(cols, rows - 1)
-    term.resize(cols, rows)
-  } catch {
-    /* same-origin; ignore */
-  }
-}
-
 // Nudge a hidden-then-shown terminal to refit and take the keyboard.
 export function refitTerminal(id: string) {
   try {
@@ -672,7 +372,7 @@ export function refitTerminal(id: string) {
 
 // pasteIntoTerminal pastes text into a same-origin terminal iframe without
 // submitting, so the user can review and press Enter. Retries while xterm is
-// still loading. typeIntoShell / typeIntoTerminal are the per-frame shorthands.
+// still loading. typeIntoShell / typeIntoHerdr are the per-frame shorthands.
 export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   try {
     const w = frameWindow(id)
@@ -688,27 +388,21 @@ export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   if (tries < 20) setTimeout(() => pasteIntoTerminal(id, text, tries + 1), 150)
 }
 
-// typeIntoShell pastes into the standalone shell (/shell/).
+// typeIntoShell pastes into the out-of-herdr shell (/shell/).
 export function typeIntoShell(text: string) {
   pasteIntoTerminal("shellframe", text)
 }
 
-// VIEWPORT_TERM_ID is the iframe id of the single persistent viewport terminal
-// (the active tab's terminal — see TabTerminal).
-export const VIEWPORT_TERM_ID = "tabterm-viewport"
-
-// typeIntoTerminal pastes into the active tab's terminal (the viewport) without
-// submitting, so the user reviews and presses Enter — used by the scratch pad's
-// "Send to Terminal".
-export function typeIntoTerminal(text: string) {
-  pasteIntoTerminal(VIEWPORT_TERM_ID, text)
+// typeIntoHerdr pastes into the herdr terminal (/terminal/), where agents run.
+export function typeIntoHerdr(text: string) {
+  pasteIntoTerminal("term", text)
 }
 
-// Hand keyboard focus to the viewport terminal (/terminal/) so the user can type
+// Hand keyboard focus to the herdr terminal (/terminal/) so the user can type
 // into the focused pane without clicking it first. Focuses both the iframe
 // window and xterm's input, and retries while xterm is still (re)connecting —
 // mirrors pasteIntoTerminal. Used after creating/focusing an agent.
-export function focusViewportTerminal(tries = 0) {
+export function focusHerdrTerminal(tries = 0) {
   try {
     const w = frameWindow("term")
     if (w?.term && typeof w.term.focus === "function") {
@@ -719,23 +413,5 @@ export function focusViewportTerminal(tries = 0) {
   } catch {
     /* same-origin; ignore */
   }
-  if (tries < 20) setTimeout(() => focusViewportTerminal(tries + 1), 100)
-}
-
-// focusTerminal hands keyboard focus to a terminal iframe (by element id) so the
-// user can type immediately — after creating/selecting a tab, workspace, or
-// agent. Focuses both the iframe window and xterm's input, retrying while xterm
-// is still (re)connecting. The viewport-model counterpart of focusViewportTerminal.
-export function focusTerminal(id: string, tries = 0) {
-  try {
-    const w = frameWindow(id)
-    if (w?.term && typeof w.term.focus === "function") {
-      w.focus()
-      w.term.focus()
-      return
-    }
-  } catch {
-    /* same-origin; ignore */
-  }
-  if (tries < 20) setTimeout(() => focusTerminal(id, tries + 1), 100)
+  if (tries < 20) setTimeout(() => focusHerdrTerminal(tries + 1), 100)
 }

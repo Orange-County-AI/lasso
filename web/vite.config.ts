@@ -4,11 +4,11 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
 // In dev, Vite serves the SPA with HMR and proxies the data + terminal routes
-// to the running Go server (default :8190; override with LASSO_BACKEND). SSE
+// to the running Go server (default :8090; override with LASSO_BACKEND). SSE
 // (/api/events, /api/livereload) rides the plain HTTP proxy; the ttyd terminals
-// need WebSocket upgrade (ws: true). The Go server (in server/) still embeds the
-// production build (server/web/dist) for the non-dev binary.
-const backend = process.env.LASSO_BACKEND || "http://127.0.0.1:8190"
+// need WebSocket upgrade (ws: true). The Go server still embeds the production
+// build (web/dist) for the non-dev binary.
+const backend = process.env.LASSO_BACKEND || "http://127.0.0.1:8090"
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -16,14 +16,6 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
-  },
-  build: {
-    // The Go backend lives in server/ and embeds the bundle via
-    // `//go:embed all:web/dist` (relative to server/). go:embed can't reach a
-    // sibling directory, so build straight into server/web/dist. emptyOutDir is
-    // required because the target is outside this Vite project root (web/).
-    outDir: path.resolve(__dirname, "../server/web/dist"),
-    emptyOutDir: true,
   },
   server: {
     // Reached over tailscale by whatever MagicDNS name the machine has, which
@@ -33,12 +25,11 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": { target: backend, changeOrigin: true },
-      // Per-tab terminals: each tab embeds a ttyd under /tab-term/<token>/ (HTTP
-      // page + WebSocket). Without this, Vite's SPA fallback would serve
-      // index.html and the terminal would render a nested lasso (infinite UI).
-      "/tab-term": { target: backend, changeOrigin: true, ws: true },
-      // Grid per-pane terminals (same ttyd shape, same nested-lasso failure
-      // mode when unproxied).
+      "/terminal": { target: backend, changeOrigin: true, ws: true },
+      "/shell": { target: backend, changeOrigin: true, ws: true },
+      // The Grid tab's per-pane terminals: each cell embeds a ttyd under
+      // /grid-term/<token>/ (HTTP page + WebSocket). Without this, Vite's SPA
+      // fallback would serve index.html and the cell would render a nested lasso.
       "/grid-term": { target: backend, changeOrigin: true, ws: true },
     },
   },

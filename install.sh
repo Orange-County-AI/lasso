@@ -1,83 +1,108 @@
 #!/bin/sh
-# lasso installer — installs lasso and its whole runtime through mise, then
-# supervises the server with pitchfork.
+# lasso installer — downloads the latest release binary for your platform.
 #
-#   curl -fsSL https://go.52labs.us/install-lasso | sh
+#   curl -fsSL https://raw.githubusercontent.com/knowsuchagency/lasso/main/install.sh | sh
 #
-# Everything (lasso, pitchfork, ttyd, tmux) is installed as a global mise tool, so
-# `mise upgrade` / `lasso update` keep them current. tailscale is installed by
-# default and lasso is exposed on the tailnet. Honored env vars:
-#   LASSO_NO_START=1         install only; don't register/start the pitchfork daemon
+# Honors:
+#   LASSO_INSTALL_DIR   where to install (default ~/.local/bin)
 set -eu
 
-note() { printf 'lasso: %s\n' "$*"; }
+REPO="knowsuchagency/lasso"
+BASE="https://github.com/${REPO}/releases/latest/download"
 
-# --- ensure mise (the installer for everything) ----------------------------
-if ! command -v mise >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/mise" ]; then
-  note "installing mise …"
-  curl -fsSL https://mise.run | sh
+# --- detect platform -------------------------------------------------------
+os=$(uname -s)
+arch=$(uname -m)
+case "$os" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *) echo "lasso: unsupported OS '$os' (need Linux or macOS)" >&2; exit 1 ;;
+esac
+case "$arch" in
+  x86_64 | amd64) arch=amd64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+  *) echo "lasso: unsupported architecture '$arch'" >&2; exit 1 ;;
+esac
+asset="lasso-${os}-${arch}"
+
+# --- download --------------------------------------------------------------
+dl() { # url outfile
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    echo "lasso: need curl or wget to download" >&2
+    exit 1
+  fi
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+echo "lasso: downloading ${asset} …"
+dl "${BASE}/${asset}" "${tmp}/${asset}"
+dl "${BASE}/checksums.txt" "${tmp}/checksums.txt" || true
+
+# --- verify checksum (when published) --------------------------------------
+if [ -s "${tmp}/checksums.txt" ]; then
+  want=$(awk -v a="$asset" '$2==a{print $1}' "${tmp}/checksums.txt")
+  if [ -n "$want" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      got=$(sha256sum "${tmp}/${asset}" | awk '{print $1}')
+    else
+      got=$(shasum -a 256 "${tmp}/${asset}" | awk '{print $1}')
+    fi
+    if [ "$want" != "$got" ]; then
+      echo "lasso: checksum mismatch for ${asset} (want ${want}, got ${got})" >&2
+      exit 1
+    fi
+    echo "lasso: checksum verified"
+  fi
 fi
-MISE="$(command -v mise 2>/dev/null || echo "$HOME/.local/bin/mise")"
-[ -x "$MISE" ] || { echo "lasso: mise install failed — see https://mise.jdx.dev" >&2; exit 1; }
 
-# Make this run's mise shims callable for the rest of the script.
-MISE_DATA="${MISE_DATA_DIR:-$HOME/.local/share/mise}"
-export PATH="$MISE_DATA/shims:$HOME/.local/bin:$PATH"
-
-# --- install lasso + runtime as global mise tools --------------------------
-note "installing lasso + runtime via mise (lasso, pitchfork, ttyd) …"
-"$MISE" use -g \
-  "ubi:52labs/lasso" \
-  "pitchfork" \
-  "aqua:tsl0922/ttyd"
-
-# tmux compiles from source under mise (asdf plugin) and needs a C toolchain, so
-# it's best-effort: fall back to a system package if the build can't run here.
-if ! command -v tmux >/dev/null 2>&1; then
-  note "installing tmux via mise (compiles from source) …"
-  "$MISE" use -g tmux 2>/dev/null || true
-fi
-if ! command -v tmux >/dev/null 2>&1; then
-  note "tmux still missing — install it with your package manager:"
-  echo "      Debian/Ubuntu:  sudo apt install tmux"
-  echo "      macOS:          brew install tmux"
-fi
-
-# --- tailscale + tailnet exposure (installed by default) -------------------
-if ! command -v tailscale >/dev/null 2>&1; then
-  note "installing tailscale (official installer) …"
-  curl -fsSL https://tailscale.com/install.sh | sh || \
-    note "tailscale install failed — see https://tailscale.com/download"
-fi
-# `tailscale serve` writes need operator permission once; otherwise the lasso
-# daemon (non-root) can't publish the tailnet route.
-if command -v tailscale >/dev/null 2>&1; then
-  note "granting this user 'tailscale serve' permission (sudo) …"
-  sudo tailscale set --operator="$USER" 2>/dev/null || \
-    note "couldn't set the operator — run once:  sudo tailscale set --operator=\$USER"
-fi
-
-note "installed → $("$MISE" which lasso 2>/dev/null || echo lasso) ($(lasso version 2>/dev/null || echo unknown))"
-
-# --- supervise with pitchfork ----------------------------------------------
-if [ "${LASSO_NO_START:-0}" = "1" ]; then
-  note "skipping daemon start (LASSO_NO_START=1) — run 'lasso start --tailscale' when ready"
-else
-  note "enabling the pitchfork supervisor + starting lasso …"
-  pitchfork boot enable 2>/dev/null || true
-  pitchfork supervisor start 2>/dev/null || true
-  lasso start --tailscale
-fi
+# --- install ---------------------------------------------------------------
+dir="${LASSO_INSTALL_DIR:-$HOME/.local/bin}"
+mkdir -p "$dir"
+chmod +x "${tmp}/${asset}"
+mv "${tmp}/${asset}" "${dir}/lasso"
+echo "lasso: installed → ${dir}/lasso ($("${dir}/lasso" version 2>/dev/null || echo unknown))"
 
 # --- PATH hint -------------------------------------------------------------
 case ":${PATH}:" in
-  *":$MISE_DATA/shims:"*) ;;
+  *":${dir}:"*) ;;
   *)
     echo
-    note "add mise's shims to your shell so 'lasso' is always found:"
-    echo "      echo 'eval \"\$($MISE activate bash)\"' >> ~/.bashrc   # or your shell's rc"
+    echo "note: ${dir} is not on your PATH — add it, e.g.:"
+    echo "  export PATH=\"${dir}:\$PATH\""
     ;;
 esac
 
+# --- herdr prerequisite ----------------------------------------------------
+# lasso is a UI over herdr, so install it automatically when missing — the whole
+# point is a frictionless one-command setup. Honors LASSO_SKIP_HERDR=1 to opt out.
+if ! command -v herdr >/dev/null 2>&1; then
+  if [ "${LASSO_SKIP_HERDR:-}" = "1" ]; then
+    echo
+    echo "lasso drives herdr, which isn't installed yet. Install it with:"
+    echo "  curl -fsSL https://herdr.dev/install.sh | sh"
+  else
+    echo
+    echo "lasso: herdr not found — installing it (set LASSO_SKIP_HERDR=1 to skip) …"
+    # Non-fatal: a herdr install hiccup shouldn't abort a successful lasso setup.
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL https://herdr.dev/install.sh | sh || herdr_ok=0
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- https://herdr.dev/install.sh | sh || herdr_ok=0
+    else
+      herdr_ok=0
+    fi
+    if [ "${herdr_ok:-1}" = "0" ]; then
+      echo "lasso: couldn't install herdr automatically — install it with:" >&2
+      echo "  curl -fsSL https://herdr.dev/install.sh | sh" >&2
+    fi
+  fi
+fi
+
 echo
-note "ready — open http://127.0.0.1:8090   (run 'lasso doctor' to verify, 'lasso status' for the daemon)"
+echo "next: run 'lasso start', then open http://127.0.0.1:8090"

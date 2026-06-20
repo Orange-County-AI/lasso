@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 
 import { api, type UIState } from "@/lib/api"
-import { lsSet } from "@/lib/app-store"
-import { ALL_HOSTS_KEY, allHostsNow, qk, queryClient } from "@/lib/query"
+import { qk, queryClient } from "@/lib/query"
 
 // Persisted, SQLite-backed UI preferences (Grid filters + sidebar collapse).
 // One shared React Query cache is the single source of truth so the components
@@ -15,7 +14,6 @@ const DEFAULTS: UIState = {
   grid_hidden_hosts: [],
   grid_selected: [],
   sidebar_collapsed: false,
-  sidebar_all_hosts: false,
 }
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).
@@ -33,28 +31,6 @@ export function useUIState(): UIState {
 // — for non-component code and merges.
 export function uiStateNow(): UIState {
   return queryClient.getQueryData<UIState>(qk.uiState) ?? DEFAULTS
-}
-
-// setAllHosts flips the all-hosts sidebar on/off: it seeds the localStorage flag
-// the tree/agent fetchers read, persists it to the shared uiState (so it sticks
-// across reloads and the status poller scrapes every host), and re-fetches the
-// tree + agents at the new scope.
-export function setAllHosts(on: boolean) {
-  lsSet(ALL_HOSTS_KEY, String(on))
-  patchUIState({ sidebar_all_hosts: on })
-  void queryClient.invalidateQueries({ queryKey: qk.tree })
-  void queryClient.invalidateQueries({ queryKey: qk.agents })
-}
-
-// syncAllHostsFromServer reconciles the fast localStorage flag with the
-// authoritative server value once uiState lands (or when another client toggles
-// it). When they differ it updates the seed and re-fetches the tree/agents so a
-// remote toggle takes effect without a manual flip.
-export function syncAllHostsFromServer(on: boolean) {
-  if (allHostsNow() === on) return
-  lsSet(ALL_HOSTS_KEY, String(on))
-  void queryClient.invalidateQueries({ queryKey: qk.tree })
-  void queryClient.invalidateQueries({ queryKey: qk.agents })
 }
 
 // patchUIState merges a partial update into the cached prefs, updates the cache
