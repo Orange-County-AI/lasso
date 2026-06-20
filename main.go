@@ -200,6 +200,7 @@ func runServer() {
 	mux.HandleFunc("/api/close", serveClose)
 	mux.HandleFunc("/api/agent/close", serveAgentClose)
 	mux.HandleFunc("/api/paste-image", servePasteImage)
+	mux.HandleFunc("/api/preview", servePreview)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
