@@ -63,6 +63,14 @@ var (
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
 	devMode     = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
 	themeName   = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	// previewPublicDomain, when set, makes the Browser tab's port preview return
+	// a PUBLIC Cloudflare hostname (https://<port>.<domain>/) instead of a
+	// tailnet `tailscale serve` URL — but only when lasso itself is reached over
+	// a public origin (not loopback / *.ts.net). This is what lets a dev server
+	// embed in the sidebar while you're on lasso's public hostname. It requires
+	// the wildcard tunnel + `lasso devproxy` + Access app to be set up (see
+	// docs/dev-previews-cloudflare.md). Empty = always use the tailscale-serve flow.
+	previewPublicDomain = flag.String("preview-public-domain", os.Getenv("PREVIEW_PUBLIC_DOMAIN"), "public base domain for Cloudflare-fronted port previews, e.g. dev.example.com (see `lasso devproxy`)")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the

@@ -231,6 +231,24 @@ func servePreview(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// isLoopbackOrTailnetHost reports whether the request's Host is loopback or a
+// tailnet (*.ts.net) name — i.e. lasso is being reached over a PRIVATE origin,
+// where the `tailscale serve` preview flow is appropriate. Anything else (a
+// public Cloudflare hostname) is treated as a public origin, where a private
+// tailnet preview URL would be blocked by the browser's Private Network Access.
+func isLoopbackOrTailnetHost(host string) bool {
+	h := host
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		h = hh
+	}
+	h = strings.ToLower(strings.TrimSuffix(h, "."))
+	switch h {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return true
+	}
+	return strings.HasSuffix(h, ".ts.net")
+}
+
 func servePreviewCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Port int `json:"port"`
@@ -243,19 +261,40 @@ func servePreviewCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "port must be 1-65535", http.StatusBadRequest)
 		return
 	}
-	id, err := tailnetSelf()
-	if err != nil {
-		http.Error(w, "tailscale unavailable: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Verify a local server is actually listening — a clear error beats a blank
+	// iframe regardless of which URL shape we hand back.
 	target, err := localTarget(req.Port)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// Public origin + a configured Cloudflare dev domain: hand back the public
+	// hostname routed by the wildcard tunnel + `lasso devproxy` (no tailscale
+	// serve). This is what lets a dev server embed in the sidebar while lasso is
+	// reached over its public hostname — a tailnet URL would be Private-Network-
+	// Access-blocked there. See devproxy.go.
+	if dom := strings.TrimSuffix(strings.TrimSpace(*previewPublicDomain), "."); dom != "" && !isLoopbackOrTailnetHost(r.Host) {
+		writeJSON(w, previewEntry{Port: req.Port, URL: fmt.Sprintf("https://%d.%s/", req.Port, dom)})
+		return
+	}
+
+	id, err := tailnetSelf()
+	if err != nil {
+		http.Error(w, "tailscale unavailable: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	st, err := serveStatus()
 	if err != nil {
 		http.Error(w, "tailscale serve unavailable: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Bare-port trap: a port that is itself a tailscale HTTPS serve endpoint is
+	// not a local dev server. Forwarding plain HTTP to it yields a broken,
+	// blank preview — the classic "typed 8445 meaning the remote :8445" mistake.
+	// Reject it with a hint to type the full URL instead.
+	if st.httpsPorts[req.Port] {
+		http.Error(w, fmt.Sprintf("port %d is a tailscale HTTPS serve port, not a local dev server — type the full https:// URL to open a remote page", req.Port), http.StatusBadRequest)
 		return
 	}
 	// Idempotent: if some HTTPS port already proxies this local port, reuse it

@@ -38,6 +38,28 @@ func TestParseServeStatusEmpty(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackOrTailnetHost(t *testing.T) {
+	priv := []string{
+		"localhost", "localhost:8090", "127.0.0.1:8090", "[::1]:8090",
+		"node.tailnet.ts.net", "node.tailnet.ts.net:8443",
+		"node.tailnet.ts.net.", // trailing dot
+	}
+	for _, h := range priv {
+		if !isLoopbackOrTailnetHost(h) {
+			t.Errorf("isLoopbackOrTailnetHost(%q) = false; want true", h)
+		}
+	}
+	pub := []string{
+		"lasso.example.com", "lasso.example.com:443",
+		"example.com", "5173.dev.example.com",
+	}
+	for _, h := range pub {
+		if isLoopbackOrTailnetHost(h) {
+			t.Errorf("isLoopbackOrTailnetHost(%q) = true; want false", h)
+		}
+	}
+}
+
 func TestAllocHTTPSPort(t *testing.T) {
 	// 8500 and 8501 in use (plus an out-of-range port) -> first free is 8502.
 	st := &serveState{
