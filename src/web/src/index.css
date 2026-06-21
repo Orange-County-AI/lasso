@@ -122,7 +122,10 @@
   --foreground: var(--h-fg);
   --card: var(--h-panel);
   --card-foreground: var(--h-fg);
-  --popover: var(--h-hover);
+  /* Popover/dialog surface sits one tier below the hover highlight (Surface0,
+     not Surface1) so bg-accent/bg-muted hovers on elements inside a popover
+     stand out instead of blending into the panel. */
+  --popover: var(--h-panel);
   --popover-foreground: var(--h-fg);
   --primary: var(--h-accent);
   --primary-foreground: var(--h-bg);
@@ -134,7 +137,11 @@
   --accent-foreground: var(--h-fg);
   --destructive: var(--h-bad);
   --border: var(--h-border);
-  --input: var(--h-border);
+  /* Form-control border: the bare --h-border (Surface1) is nearly identical to
+     the page background in low-contrast themes (e.g. rose-pine), so inputs
+     vanish. Lift it toward the foreground so fields always read as bordered.
+     Mixing toward --h-fg works in both dark and light themes. */
+  --input: color-mix(in oklch, var(--h-border), var(--h-fg) 28%);
   --ring: var(--h-accent);
   --sidebar: var(--h-panel);
   --sidebar-foreground: var(--h-fg);

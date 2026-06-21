@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Keyboard, Monitor, Moon, Palette, RotateCw, Sun } from "lucide-react"
 import * as React from "react"
+import { toast } from "sonner"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
 import {
@@ -41,6 +42,62 @@ function Field({
       {children}
       {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
+  )
+}
+
+type SaveState = "idle" | "saving" | "saved" | "error"
+
+// Debounced autosave: fires `save` `delay`ms after the watched fields last
+// changed, but only while `dirty`. Returns `flush` to save immediately (on blur).
+function useDebouncedSave(
+  dirty: boolean,
+  save: () => void,
+  deps: React.DependencyList,
+  delay = 600
+) {
+  const timer = React.useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined
+  )
+  const saveRef = React.useRef(save)
+  saveRef.current = save
+  const dirtyRef = React.useRef(dirty)
+  dirtyRef.current = dirty
+  React.useEffect(() => {
+    if (!dirty) return
+    timer.current = setTimeout(() => saveRef.current(), delay)
+    return () => clearTimeout(timer.current)
+  }, [dirty, delay, ...deps])
+  return React.useCallback(() => {
+    clearTimeout(timer.current)
+    if (dirtyRef.current) saveRef.current()
+  }, [])
+}
+
+// Replaces the old explicit Save button: a quiet inline status that reflects the
+// autosave lifecycle, with a retry affordance when a save fails.
+function SaveStatus({
+  state,
+  onRetry,
+}: {
+  state: SaveState
+  onRetry: () => void
+}) {
+  if (state === "idle") return null
+  if (state === "saving")
+    return <span className="text-[11px] text-muted-foreground">Saving…</span>
+  if (state === "saved")
+    return <span className="text-[11px] text-muted-foreground">Saved ✓</span>
+  return (
+    <span className="text-[11px] text-destructive">
+      Couldn't save —{" "}
+      <button
+        type="button"
+        className="underline hover:no-underline"
+        onClick={onRetry}
+      >
+        retry
+      </button>
+    </span>
   )
 }
 
@@ -338,13 +395,20 @@ function AgentCreatorSettings({
     )
   }, [repos])
 
-  // Mirror the selected repo's saved copy-files/setup into the editors.
+  // Mirror the selected repo's saved copy-files/setup into the editors. Runs on
+  // repo switch and on repos refetch (incl. after an autosave) — but it must NOT
+  // clear the saved status, or a save's own refetch would wipe the "Saved ✓".
   React.useEffect(() => {
     const re = repos.find((r) => r.path === repoPath)
     setCopyFiles(re?.copy_files || "")
     setSetup(re?.setup || "")
-    setSavedRepo(null)
   }, [repoPath, repos])
+
+  // Clear the saved status only when the user actually switches repos.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on repo switch only
+  React.useEffect(() => {
+    setSavedRepo(null)
+  }, [repoPath])
 
   const saveDefaultsMutation = useMutation({
     mutationFn: () =>
@@ -361,6 +425,7 @@ function AgentCreatorSettings({
       queryClient.invalidateQueries({ queryKey: qk.agentConfig(host) })
       queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
+    onError: () => toast.error("Couldn't save agent defaults"),
   })
 
   const saveRepoMutation = useMutation({
@@ -373,12 +438,44 @@ function AgentCreatorSettings({
       setSavedRepo(repoPath)
       queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
+    onError: () => toast.error("Couldn't save repository setup"),
   })
+
+  const dirtyDefaults =
+    !!configQuery.data &&
+    ((configQuery.data.repos_root || "") !== reposRoot ||
+      (configQuery.data.default_agent ?? "") !== defaultAgent ||
+      (configQuery.data.scratch_setup || "") !== scratchSetup)
 
   const dirtyRepo = (() => {
     const re = repos.find((r) => r.path === repoPath)
     return (re?.copy_files || "") !== copyFiles || (re?.setup || "") !== setup
   })()
+
+  // Autosave: debounce edits, flush on blur. No explicit Save button.
+  const flushDefaults = useDebouncedSave(
+    dirtyDefaults,
+    () => saveDefaultsMutation.mutate(),
+    [reposRoot, defaultAgent, scratchSetup]
+  )
+  const flushRepo = useDebouncedSave(dirtyRepo, () => {
+    if (repoPath) saveRepoMutation.mutate()
+  }, [copyFiles, setup, repoPath])
+
+  const defaultsStatus: SaveState = saveDefaultsMutation.isError
+    ? "error"
+    : dirtyDefaults
+      ? "saving"
+      : saveDefaultsMutation.isSuccess
+        ? "saved"
+        : "idle"
+  const repoStatus: SaveState = saveRepoMutation.isError
+    ? "error"
+    : dirtyRepo
+      ? "saving"
+      : savedRepo === repoPath
+        ? "saved"
+        : "idle"
 
   return (
     <div className="flex @2xl:flex-row flex-col gap-4">
@@ -398,6 +495,7 @@ function AgentCreatorSettings({
             rows={3}
             value={reposRoot}
             onChange={(e) => setReposRoot(e.target.value)}
+            onBlur={flushDefaults}
             placeholder={"~/projects\n~/work"}
           />
         </Field>
@@ -412,6 +510,7 @@ function AgentCreatorSettings({
             className={fieldClass}
             value={defaultAgent}
             onChange={(e) => setDefaultAgent(e.target.value)}
+            onBlur={flushDefaults}
           >
             <option value="">Auto (use last used)</option>
             <option value="claude">Claude Code</option>
@@ -430,20 +529,17 @@ function AgentCreatorSettings({
             rows={3}
             value={scratchSetup}
             onChange={(e) => setScratchSetup(e.target.value)}
+            onBlur={flushDefaults}
             placeholder="uv venv"
           />
         </Field>
 
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="self-start"
-          disabled={saveDefaultsMutation.isPending}
-          onClick={() => saveDefaultsMutation.mutate()}
-        >
-          {saveDefaultsMutation.isPending ? "Saving…" : "Save defaults"}
-        </Button>
+        <div className="h-4 self-start">
+          <SaveStatus
+            state={defaultsStatus}
+            onRetry={() => saveDefaultsMutation.mutate()}
+          />
+        </div>
       </section>
 
       <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
@@ -484,6 +580,7 @@ function AgentCreatorSettings({
             rows={2}
             value={copyFiles}
             onChange={(e) => setCopyFiles(e.target.value)}
+            onBlur={flushRepo}
             placeholder=".env, .env.local"
             disabled={!repoPath}
           />
@@ -500,24 +597,18 @@ function AgentCreatorSettings({
             rows={3}
             value={setup}
             onChange={(e) => setSetup(e.target.value)}
+            onBlur={flushRepo}
             placeholder="bun install"
             disabled={!repoPath}
           />
         </Field>
 
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="self-start"
-            disabled={!repoPath || saveRepoMutation.isPending || !dirtyRepo}
-            onClick={() => saveRepoMutation.mutate()}
-          >
-            {saveRepoMutation.isPending ? "Saving…" : "Save repo setup"}
-          </Button>
-          {savedRepo === repoPath && !dirtyRepo && (
-            <span className="text-[11px] text-muted-foreground">Saved</span>
+        <div className="h-4 self-start">
+          {repoPath && (
+            <SaveStatus
+              state={repoStatus}
+              onRetry={() => saveRepoMutation.mutate()}
+            />
           )}
         </div>
       </section>

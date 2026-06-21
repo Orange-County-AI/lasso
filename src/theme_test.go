@@ -23,12 +23,14 @@ func TestRosePineNoRegression(t *testing.T) {
 	if got := rt.xtermJSON(); got != prevRosePine {
 		t.Errorf("rose-pine xterm theme regressed:\n got:  %s\n want: %s", got, prevRosePine)
 	}
-	// Sidebar vars must match the prior hand-tuned values.
+	// Sidebar vars. --accent maps to the theme's own Accent (mauve), not Teal,
+	// so the New Agent button reads purple; --muted is the Subtext0 tier (not the
+	// dimmer Overlay0) so form labels keep readable contrast. --good stays Teal.
 	css := rt.cssVars()
 	for _, want := range []string{
 		"--bg: #191724;", "--panel: #1f1d2e;", "--border: #26233a;",
-		"--fg: #e0def4;", "--muted: #6e6a86;", "--accent: #9ccfd8;",
-		"--accent-dim: #9ccfd826;", "--dir: #c4a7e7;", "--good: #9ccfd8;",
+		"--fg: #e0def4;", "--muted: #c8c5dc;", "--accent: #c4a7e7;",
+		"--accent-dim: #c4a7e726;", "--dir: #c4a7e7;", "--good: #9ccfd8;",
 		"--warn: #f6c177;", "--bad: #eb6f92;",
 	} {
 		if !strings.Contains(css, want) {

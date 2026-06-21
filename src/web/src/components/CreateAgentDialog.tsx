@@ -485,7 +485,7 @@ export function CreateAgentDialog({
                     "flex-1 rounded-md border bg-background px-3 py-1.5 text-sm capitalize transition-all",
                     type === t
                       ? "border-primary bg-primary/15 text-primary shadow-elev-sm"
-                      : "border-border text-muted-foreground shadow-well hover:bg-accent hover:text-foreground"
+                      : "border-border text-muted-foreground shadow-well hover:border-primary/50 hover:bg-primary/10 hover:text-foreground"
                   )}
                 >
                   {t}

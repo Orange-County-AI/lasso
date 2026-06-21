@@ -462,9 +462,13 @@ func (rt resolvedTheme) xtermJSON() string {
 
 func q(k, v string) string { return `"` + k + `":"` + v + `"` }
 
-// cssVars renders the :root custom-property declarations for the sidebar. The
-// mapping is chosen so rose-pine reproduces the prior hand-tuned look exactly,
-// while every other theme derives the same way from its tokens.
+// cssVars renders the :root custom-property declarations for the sidebar.
+// --accent maps to each theme's own Accent token (the signature color that
+// drives --primary in the chrome), so e.g. rose-pine reads purple, not teal.
+// --good stays on Teal since it's the success color, independent of the accent.
+// --muted is the secondary-text tier (form labels, metadata), so it maps to
+// Subtext0, not Overlay0 — Overlay0 is the dimmest "subtle line/disabled" tier
+// and reads at ~2:1 against the panel, too low for labels.
 func (rt resolvedTheme) cssVars() string {
 	u := rt.ui
 	var b strings.Builder
@@ -474,9 +478,9 @@ func (rt resolvedTheme) cssVars() string {
 	put("--border", u.Surface1)
 	put("--hover", u.Surface1)
 	put("--fg", u.Text)
-	put("--muted", u.Overlay0)
-	put("--accent", u.Teal)
-	put("--accent-dim", rgba(u.Teal, 0x26))
+	put("--muted", u.Subtext0)
+	put("--accent", u.Accent)
+	put("--accent-dim", rgba(u.Accent, 0x26))
 	put("--dir", u.Mauve)
 	put("--good", u.Teal)
 	put("--warn", u.Yellow)
