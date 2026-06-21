@@ -65,6 +65,29 @@ function setTermFontWhenReady(
       if (term.options) term.options.fontFamily = TERM_FONT_STACK
     } catch {
       /* private/locked options: never break the terminal */
+      return
+    }
+    // Switching to the real font makes xterm remeasure its cell against the
+    // (taller) Nerd Font metrics, but it does NOT re-fit the row count: the rows
+    // ttyd computed against the startup fallback font are now too many for the
+    // container, so on a cold load the bottom row(s) render below the viewport
+    // until a reload (where the cached font is measured up front). ttyd's
+    // FitAddon refits on window resize, so nudge it to recompute rows for the new
+    // metrics — once now, once on the next frame in case the remeasure trails the
+    // option write.
+    const win = doc.defaultView
+    if (!win) return
+    try {
+      win.dispatchEvent(new Event("resize"))
+      win.requestAnimationFrame(() => {
+        try {
+          win.dispatchEvent(new Event("resize"))
+        } catch {
+          /* ignore */
+        }
+      })
+    } catch {
+      /* ignore */
     }
   }
   const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts
