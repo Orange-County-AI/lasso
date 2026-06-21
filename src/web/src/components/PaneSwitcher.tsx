@@ -232,18 +232,45 @@ export function PaneSwitcher({
                   {p.workspace_id &&
                     multiPaneWorkspaces.has(p.workspace_id) &&
                     detailLabel(p) && (
-                      <span className="shrink-0 rounded bg-foreground/10 px-1.5 py-0.5 font-medium text-[11px] text-foreground/70">
+                      <span
+                        className={cn(
+                          "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                          // On the active (bg-primary) row the foreground tints
+                          // wash out, so swap to primary-foreground tints.
+                          i === active
+                            ? "bg-primary-foreground/20 text-primary-foreground"
+                            : "bg-foreground/10 text-foreground/70"
+                        )}
+                      >
                         {detailLabel(p)}
                       </span>
                     )}
                   {p.has_agent && p.agent && (
-                    <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-[11px] text-primary">
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                        // text-primary on a bg-primary row is invisible — use
+                        // the contrasting primary-foreground when active.
+                        i === active
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-primary/15 text-primary"
+                      )}
+                    >
                       {p.agent}
                       {p.agent_status ? ` · ${p.agent_status}` : ""}
                     </span>
                   )}
                 </span>
-                <span className="flex w-full items-center gap-2 truncate text-muted-foreground text-xs">
+                <span
+                  className={cn(
+                    "flex w-full items-center gap-2 truncate text-xs",
+                    // The muted gray subtitle is unreadable on the active row;
+                    // ride the row's primary-foreground at reduced opacity.
+                    i === active
+                      ? "text-primary-foreground/80"
+                      : "text-muted-foreground"
+                  )}
+                >
                   <span className="shrink-0">{p.host_label}</span>
                   {p.cwd && (
                     <span className="truncate font-mono">{tilde(p.cwd)}</span>
