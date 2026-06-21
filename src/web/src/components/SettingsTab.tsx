@@ -480,9 +480,15 @@ function AgentCreatorSettings({
   return (
     <div className="flex @2xl:flex-row flex-col gap-4">
       <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
-        <h3 className="font-medium text-foreground text-sm">
-          New Agent defaults
-        </h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-medium text-foreground text-sm">
+            New Agent defaults
+          </h3>
+          <SaveStatus
+            state={defaultsStatus}
+            onRetry={() => saveDefaultsMutation.mutate()}
+          />
+        </div>
 
         <Field
           label="Git repos directories"
@@ -533,24 +539,26 @@ function AgentCreatorSettings({
             placeholder="uv venv"
           />
         </Field>
-
-        <div className="h-4 self-start">
-          <SaveStatus
-            state={defaultsStatus}
-            onRetry={() => saveDefaultsMutation.mutate()}
-          />
-        </div>
       </section>
 
       <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
-        <div className="flex flex-col gap-0.5">
-          <h3 className="font-medium text-foreground text-sm">
-            Per-repository setup
-          </h3>
-          <p className="text-[11px] text-muted-foreground">
-            Files copied into a new worktree and commands run before the agent —
-            both relative to the repo, applied to every agent created from it.
-          </p>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex flex-col gap-0.5">
+            <h3 className="font-medium text-foreground text-sm">
+              Per-repository setup
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              Files copied into a new worktree and commands run before the agent
+              — both relative to the repo, applied to every agent created from
+              it.
+            </p>
+          </div>
+          {repoPath && (
+            <SaveStatus
+              state={repoStatus}
+              onRetry={() => saveRepoMutation.mutate()}
+            />
+          )}
         </div>
 
         <Field label="Repository" htmlFor="settings-repo">
@@ -602,15 +610,6 @@ function AgentCreatorSettings({
             disabled={!repoPath}
           />
         </Field>
-
-        <div className="h-4 self-start">
-          {repoPath && (
-            <SaveStatus
-              state={repoStatus}
-              onRetry={() => saveRepoMutation.mutate()}
-            />
-          )}
-        </div>
       </section>
     </div>
   )
