@@ -257,22 +257,28 @@ export function PaneSwitcher({
             agents whose pane was closed, so old sessions can be reopened. */}
         <label className="flex cursor-pointer select-none items-center justify-end gap-2 border-border border-b px-4 pb-2 text-muted-foreground text-xs">
           <Checkbox
+            // The shared checkbox's focus-visible ring doesn't render here, so give
+            // it an explicit outline so keyboard users can see it's focused (it's
+            // reachable via Tab from the search box).
+            className="focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary focus-visible:[outline-style:solid]"
             checked={activeOnly}
-            onCheckedChange={(c) => {
-              setActiveOnly(c === true)
-              // Hand the keyboard straight back to the search box so the user can
-              // keep typing instead of having to click it again.
-              inputRef.current?.focus()
-            }}
+            onCheckedChange={(c) => setActiveOnly(c === true)}
             onKeyDown={(e) => {
               // Radix checkboxes toggle on Space, not Enter (per WAI-ARIA). Honor
-              // Enter too, so a user who Tabbed here from the search box can flip
-              // the filter with Enter, then lands back in the input.
+              // Enter too, and keep focus on the toggle so a second Enter flips it
+              // again instead of falling through to the input's Enter (= open the
+              // selected pane and close the modal).
               if (e.key === "Enter") {
                 e.preventDefault()
                 setActiveOnly((v) => !v)
-                inputRef.current?.focus()
               }
+            }}
+            onClick={(e) => {
+              // Only a real mouse click (detail > 0) hands focus back to the search
+              // box so the user can keep typing. Keyboard activation keeps focus on
+              // the toggle (Space's synthetic click has detail 0; Enter is handled
+              // above and never fires a click).
+              if (e.detail > 0) inputRef.current?.focus()
             }}
           />
           Active
