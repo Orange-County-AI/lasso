@@ -140,6 +140,12 @@ type gridPane struct {
 	// (lasso's AgentRecord.Description, not anything herdr knows). It's shipped so
 	// the pane switcher can search the full prompt text; the UI need not display it.
 	Prompt string `json:"prompt,omitempty"`
+	// AgentID + Closed are set only on the rows /api/agent-history adds for past
+	// agents (lasso AgentRecords) whose herdr pane is gone. AgentID is the record's
+	// id, passed back to /api/agent/reopen to re-create a workspace at its work dir.
+	// Live grid panes leave both empty/false.
+	AgentID string `json:"agent_id,omitempty"`
+	Closed  bool   `json:"closed,omitempty"`
 }
 
 type gridPayload struct {
@@ -307,6 +313,135 @@ func serveGridClose(w http.ResponseWriter, r *http.Request) {
 	}
 	invalidateGridCache()
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/agent-history — every agent lasso ever spawned, as switcher rows
+// ---------------------------------------------------------------------------
+
+// serveAgentHistory returns every recorded agent (across hosts) shaped as a
+// gridPane so the ⌘K switcher can list past agents alongside live panes. These
+// carry AgentID (for reopen) and the agent's work dir as Cwd; the title rides in
+// WorkspaceLabel so the switcher's primary label and search both pick it up. The
+// frontend decides which are actually closed by diffing host+pane_id against the
+// live grid — a record whose pane is still live is just the same agent it already
+// shows, so it dedupes those out.
+func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
+	recs, err := listAllAgents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	local := localHostname()
+	out := make([]gridPane, 0, len(recs))
+	for _, ha := range recs {
+		label := ha.Host
+		if ha.Host == "local" {
+			label = local
+		}
+		out = append(out, gridPane{
+			Host:           ha.Host,
+			HostLabel:      label,
+			PaneID:         ha.Agent.RootPane,
+			WorkspaceID:    ha.Agent.WorkspaceID,
+			WorkspaceLabel: ha.Agent.Title,
+			Cwd:            ha.Agent.WorkDir,
+			Agent:          ha.Agent.Agent,
+			HasAgent:       ha.Agent.Agent != "",
+			Prompt:         ha.Agent.Description,
+			AgentID:        ha.Agent.ID,
+		})
+	}
+	writeJSON(w, map[string]any{"agents": out})
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/reopen — re-create a workspace at a past agent's work dir
+// ---------------------------------------------------------------------------
+
+// serveAgentReopen re-opens the workspace for a previously-spawned agent whose
+// herdr pane was closed: it creates a fresh herdr workspace rooted at the stored
+// work dir (the worktree/scratch dir still on disk) and focuses it. It does NOT
+// relaunch the agent — per the design, reopening just lands you back in the
+// directory; the user starts claude (e.g. `claude --continue`) themselves. The
+// record is re-pointed at the new workspace/pane so it shows as live again, and
+// the new pane is returned (as a gridPane) so the client can focus it.
+func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Host    string `json:"host"`
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Host == "" {
+		req.Host = "local"
+	}
+	if req.AgentID == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	if !gridHostAllowed(req.Host) {
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
+	}
+	rec, err := findAgentRecord(req.Host, req.AgentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if rec.WorkDir == "" {
+		http.Error(w, "agent has no work dir to reopen", http.StatusBadRequest)
+		return
+	}
+	b, err := gridHostBackend(req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, statErr := b.Stat(rec.WorkDir); statErr != nil {
+		http.Error(w, fmt.Sprintf("work dir %s is gone: %v", rec.WorkDir, statErr), http.StatusGone)
+		return
+	}
+	res, err := b.HerdrCall("workspace.create", map[string]any{
+		"cwd":   rec.WorkDir,
+		"label": rec.Title,
+		"focus": true,
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("workspace.create: %v", err), http.StatusBadGateway)
+		return
+	}
+	ws, pane := parseCreateResult(res)
+	// Re-point the record at the new workspace/pane so it reads as live again.
+	_ = updateAgentPane(rec.ID, req.Host, ws, pane)
+	invalidateGridCache()
+
+	// Return the new pane as a full gridPane (terminal_id, tab_id, …) so the client
+	// can focus it through the normal path. Look it up in the host's live panes.
+	panes, _ := gridHostPanes(b, req.Host, hostLabelFor(req.Host))
+	for _, p := range panes {
+		if p.PaneID == pane {
+			writeJSON(w, p)
+			return
+		}
+	}
+	// Fall back to the minimal identifiers if the fresh pane isn't listed yet.
+	writeJSON(w, gridPane{Host: req.Host, HostLabel: hostLabelFor(req.Host), PaneID: pane, WorkspaceID: ws, Cwd: rec.WorkDir})
+}
+
+// hostLabelFor returns the display label for a host: the machine hostname for
+// local, else the ssh-config alias (matching fetchGridPanes' labeling).
+func hostLabelFor(host string) string {
+	if host == "local" {
+		return localHostname()
+	}
+	return host
 }
 
 func serveGrid(w http.ResponseWriter, r *http.Request) {

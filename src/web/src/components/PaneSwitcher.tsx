@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
 import { toast } from "sonner"
 
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -12,13 +13,17 @@ import { api, type GridPane } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
-import { qk } from "@/lib/query"
+import { qk, queryClient } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
-// cellKey uniquely identifies a pane across hosts (pane ids are only unique
-// within a host) — also the Grid's identity formula.
-const cellKey = (p: GridPane) => `${p.host}|${p.pane_id}`
+// cellKey uniquely identifies a row. Live panes are keyed by host+pane_id (pane
+// ids are only unique within a host) — the Grid's identity formula. Closed agent
+// rows have no live pane, so they're keyed by their record id instead.
+const cellKey = (p: GridPane) =>
+  p.closed && p.agent_id
+    ? `agent|${p.host}|${p.agent_id}`
+    : `${p.host}|${p.pane_id}`
 
 // The descriptive pane title shown bold at the top of each row. Prefer the
 // workspace label (e.g. "accessibility") over the bare herdr tab number.
@@ -73,7 +78,15 @@ export function PaneSwitcher({
   const { host: activeHost } = useApp()
   const [query, setQuery] = React.useState("")
   const [active, setActive] = React.useState(0)
+  // "Active" filter — on by default, so the switcher shows only live panes (its
+  // historical behavior). Turning it off folds in past agents whose herdr pane was
+  // closed, so an old session can be found and its workspace reopened. Reset to on
+  // every time the modal opens (see the open effect below).
+  const [activeOnly, setActiveOnly] = React.useState(true)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // The search input — focus returns here after toggling the Active filter so the
+  // user can keep typing without clicking back into it.
+  const inputRef = React.useRef<HTMLInputElement>(null)
   // Set when a pane is chosen so the close handler can tell a pick (choose()
   // already hands focus to the pane's terminal) from a cancel.
   const chosenRef = React.useRef(false)
@@ -85,7 +98,29 @@ export function PaneSwitcher({
     queryFn: () => api.gridPanes(),
     enabled: open,
   })
-  const panes = q.data?.panes ?? [] // backend order = newest first (mirrors Grid)
+  const livePanes = q.data?.panes ?? [] // backend order = newest first (mirrors Grid)
+
+  // Past agents (every one lasso spawned). Only fetched when the Active filter is
+  // off, since that's the only mode that surfaces closed ones.
+  const hist = useQuery({
+    queryKey: qk.agentHistory,
+    queryFn: () => api.agentHistory(),
+    enabled: open && !activeOnly,
+  })
+
+  // Closed agents = recorded agents whose herdr pane is no longer live. Diff the
+  // history against the live pane set (host+pane_id) so an agent that's still
+  // running isn't listed twice — it already shows as its live pane.
+  const closedAgents = React.useMemo(() => {
+    if (activeOnly) return [] as GridPane[]
+    const live = new Set(livePanes.map((p) => `${p.host}|${p.pane_id}`))
+    return (hist.data?.agents ?? [])
+      .filter((a) => !live.has(`${a.host}|${a.pane_id}`))
+      .map((a) => ({ ...a, closed: true }))
+  }, [activeOnly, livePanes, hist.data])
+
+  // Closed rows go after the live ones (newest live panes first, then history).
+  const panes = activeOnly ? livePanes : [...livePanes, ...closedAgents]
 
   // Workspaces holding more than one pane — the only ones where the shared
   // workspace label is ambiguous and each row needs its more-specific name
@@ -95,14 +130,14 @@ export function PaneSwitcher({
   // on or off.
   const multiPaneWorkspaces = React.useMemo(() => {
     const countByWs = new Map<string, number>()
-    for (const p of panes) {
+    for (const p of livePanes) {
       if (!p.workspace_id) continue
       countByWs.set(p.workspace_id, (countByWs.get(p.workspace_id) ?? 0) + 1)
     }
     const multi = new Set<string>()
     for (const [ws, n] of countByWs) if (n > 1) multi.add(ws)
     return multi
-  }, [panes])
+  }, [livePanes])
 
   const filtered = React.useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
@@ -119,9 +154,14 @@ export function PaneSwitcher({
     setActive(0)
   }, [query])
 
-  // Clear the query each time the modal opens so it starts fresh.
+  // Each time the modal opens, start fresh: clear the query and reset the Active
+  // filter to on (so it always defaults to live-panes-only, never inheriting a
+  // prior session's "show closed" choice).
   React.useEffect(() => {
-    if (open) setQuery("")
+    if (open) {
+      setQuery("")
+      setActiveOnly(true)
+    }
   }, [open])
 
   // Keep the highlighted row scrolled into view.
@@ -137,6 +177,20 @@ export function PaneSwitcher({
     onOpenChange(false)
     // Close first so the Dialog doesn't re-grab focus on unmount — then hand the
     // keyboard to the pane's terminal.
+    if (p.closed && p.agent_id) {
+      // A past agent with no live pane: re-create its workspace at the stored work
+      // dir, then focus the fresh pane. Refresh both lists so the row flips from
+      // closed to live. The agent itself isn't relaunched (start claude yourself).
+      api
+        .reopenAgent(p.host, p.agent_id)
+        .then((np) => {
+          queryClient.invalidateQueries({ queryKey: qk.grid })
+          queryClient.invalidateQueries({ queryKey: qk.agentHistory })
+          return focusPaneInHerdr(np, activeHost, onFocusInHerdr)
+        })
+        .catch((e) => toast.error(`reopen failed: ${(e as Error).message}`))
+      return
+    }
     focusPaneInHerdr(p, activeHost, onFocusInHerdr).catch((e) =>
       toast.error(`focus failed: ${(e as Error).message}`)
     )
@@ -192,16 +246,49 @@ export function PaneSwitcher({
           <DialogTitle>Find a pane</DialogTitle>
         </DialogHeader>
         <input
+          ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Search panes by tab, workspace, host, agent, path, or prompt…"
-          className="w-full border-border border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
+          className="w-full bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
         />
+        {/* Active filter: on shows only live panes (default); off folds in past
+            agents whose pane was closed, so old sessions can be reopened. */}
+        <label className="flex cursor-pointer select-none items-center justify-end gap-2 border-border border-b px-4 pb-2 text-muted-foreground text-xs">
+          <Checkbox
+            // The shared checkbox's focus-visible ring doesn't render here, so give
+            // it an explicit outline so keyboard users can see it's focused (it's
+            // reachable via Tab from the search box).
+            className="focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2 focus-visible:[outline-style:solid]"
+            checked={activeOnly}
+            onCheckedChange={(c) => setActiveOnly(c === true)}
+            onKeyDown={(e) => {
+              // Radix checkboxes toggle on Space, not Enter (per WAI-ARIA). Honor
+              // Enter too, and keep focus on the toggle so a second Enter flips it
+              // again instead of falling through to the input's Enter (= open the
+              // selected pane and close the modal).
+              if (e.key === "Enter") {
+                e.preventDefault()
+                setActiveOnly((v) => !v)
+              }
+            }}
+            onClick={(e) => {
+              // Only a real mouse click (detail > 0) hands focus back to the search
+              // box so the user can keep typing. Keyboard activation keeps focus on
+              // the toggle (Space's synthetic click has detail 0; Enter is handled
+              // above and never fires a click).
+              if (e.detail > 0) inputRef.current?.focus()
+            }}
+          />
+          Active
+        </label>
         <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
-              {q.isLoading ? "Loading panes…" : "No matching panes."}
+              {q.isLoading || hist.isLoading
+                ? "Loading…"
+                : "No matching panes."}
             </div>
           ) : (
             filtered.map((p, i) => (
@@ -245,6 +332,21 @@ export function PaneSwitcher({
                         {detailLabel(p)}
                       </span>
                     )}
+                  {/* Closed agents (no live pane) read distinctly so it's clear
+                      selecting one reopens its workspace rather than focusing a
+                      running pane. */}
+                  {p.closed && (
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                        i === active
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-foreground/10 text-muted-foreground"
+                      )}
+                    >
+                      closed
+                    </span>
+                  )}
                   {p.has_agent && p.agent && (
                     <span
                       className={cn(

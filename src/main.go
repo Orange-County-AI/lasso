@@ -207,6 +207,8 @@ func runServer() {
 	mux.HandleFunc("/api/workspace-rename", serveWorkspaceRename)
 	mux.HandleFunc("/api/close", serveClose)
 	mux.HandleFunc("/api/agent/close", serveAgentClose)
+	mux.HandleFunc("/api/agent/reopen", serveAgentReopen)
+	mux.HandleFunc("/api/agent-history", serveAgentHistory)
 	mux.HandleFunc("/api/paste-image", servePasteImage)
 	mux.HandleFunc("/api/preview", servePreview)
 	mux.HandleFunc("/api/diff", serveDiff)

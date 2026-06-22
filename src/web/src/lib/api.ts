@@ -67,6 +67,11 @@ export interface GridPane {
   // The agent's initial prompt (creation description). Carried for search only —
   // the pane switcher matches against it but doesn't display the full text.
   prompt?: string
+  // Set only on rows from /api/agent-history (past agents). agent_id identifies the
+  // record for reopenAgent; closed is derived client-side (its pane is no longer
+  // live) so the switcher renders it distinctly and reopens rather than focuses.
+  agent_id?: string
+  closed?: boolean
 }
 
 export interface GridPayload {
@@ -335,6 +340,18 @@ export const api = {
   // remotes), for the Grid tab. Aggregated server-side; per-host failures come
   // back in `errors` rather than failing the whole request.
   gridPanes: () => getJSON<GridPayload>("/api/grid"),
+
+  // Every agent lasso ever spawned (across hosts), shaped as GridPane rows so the
+  // ⌘K switcher can list past agents next to live panes. AgentID is set; the
+  // switcher treats a row whose host+pane_id isn't currently live as "closed" and
+  // reopens it via reopenAgent on select.
+  agentHistory: () => getJSON<{ agents: GridPane[] }>("/api/agent-history"),
+
+  // Re-open a past agent's workspace: re-creates a herdr workspace at its stored
+  // work dir and focuses it (does NOT relaunch the agent). Returns the new pane so
+  // the caller can focus it through the normal pane-focus path.
+  reopenAgent: (host: string, agent_id: string) =>
+    postJSON<GridPane>("/api/agent/reopen", { host, agent_id }),
 
   // Ensure a ttyd is attached to one pane's terminal and return its proxy base
   // path (the iframe src). Used to first-attach a visible cell; creates the ttyd

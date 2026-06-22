@@ -337,6 +337,53 @@ func listAgents(host string) ([]AgentRecord, error) {
 	return out, rows.Err()
 }
 
+// hostAgent pairs an AgentRecord with the host it ran on — used by the cross-host
+// history view (the agent log is host-local but tagged per host).
+type hostAgent struct {
+	Host  string
+	Agent AgentRecord
+}
+
+// listAllAgents returns every recorded agent across all hosts, oldest first. The
+// ⌘K switcher's "show closed" mode joins these against the live panes so an agent
+// whose pane was closed can still be found (and reopened) by its work dir/prompt.
+func listAllAgents() ([]hostAgent, error) {
+	rows, err := db.Query(
+		`SELECT id, host, title, type, repo, base_branch, branch, agent, description, notes,
+			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at
+		 FROM agents ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []hostAgent
+	for rows.Next() {
+		var rec AgentRecord
+		var host, att, created string
+		var plan int
+		if err := rows.Scan(&rec.ID, &host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
+			&rec.Branch, &rec.Agent, &rec.Description, &rec.Notes, &att, &plan,
+			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(att), &rec.Attachments)
+		rec.PlanMode = plan != 0
+		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, hostAgent{Host: host, Agent: rec})
+	}
+	return out, rows.Err()
+}
+
+// updateAgentPane re-points a recorded agent at a freshly created workspace/pane,
+// so a reopened agent shows as live again (the switcher matches records to panes
+// by host+root_pane). Scoped by id+host since ids are only unique within a host.
+func updateAgentPane(id, host, workspaceID, rootPane string) error {
+	_, err := db.Exec(
+		`UPDATE agents SET workspace_id=?, root_pane=? WHERE id=? AND host=?`,
+		workspaceID, rootPane, id, host)
+	return err
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

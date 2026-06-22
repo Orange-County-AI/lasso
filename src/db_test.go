@@ -54,6 +54,51 @@ func TestDefaultAgentEmptyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestListAllAgentsAndUpdatePane(t *testing.T) {
+	openTestDB(t)
+	mk := func(id, title, work string) AgentRecord {
+		return AgentRecord{ID: id, Title: title, Type: "git", Agent: "claude",
+			WorkDir: work, WorkspaceID: "ws-" + id, RootPane: "p-" + id, CreatedAt: time.Now()}
+	}
+	if err := appendAgent("local", mk("a1", "First", "/w/a1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendAgent("remote", mk("b1", "Second", "/w/b1")); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := listAllAgents()
+	if err != nil {
+		t.Fatalf("listAllAgents: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("listAllAgents len = %d, want 2", len(all))
+	}
+	// Append order preserved, and each row carries its host.
+	if all[0].Host != "local" || all[0].Agent.ID != "a1" {
+		t.Errorf("row 0 = %+v, want host=local id=a1", all[0])
+	}
+	if all[1].Host != "remote" || all[1].Agent.WorkDir != "/w/b1" {
+		t.Errorf("row 1 = %+v, want host=remote work=/w/b1", all[1])
+	}
+
+	// Re-pointing an agent at a fresh workspace/pane is scoped by id+host.
+	if err := updateAgentPane("a1", "local", "ws-new", "p-new"); err != nil {
+		t.Fatalf("updateAgentPane: %v", err)
+	}
+	rec, err := findAgentRecord("local", "a1")
+	if err != nil {
+		t.Fatalf("findAgentRecord: %v", err)
+	}
+	if rec.WorkspaceID != "ws-new" || rec.RootPane != "p-new" {
+		t.Errorf("after update: ws=%q pane=%q, want ws-new/p-new", rec.WorkspaceID, rec.RootPane)
+	}
+	// The same id on another host is untouched.
+	if other, _ := findAgentRecord("remote", "b1"); other.RootPane != "p-b1" {
+		t.Errorf("remote agent pane = %q, want p-b1 (unchanged)", other.RootPane)
+	}
+}
+
 func TestPerHostIsolation(t *testing.T) {
 	openTestDB(t)
 	if err := setLastRepo("local", "/a"); err != nil {
