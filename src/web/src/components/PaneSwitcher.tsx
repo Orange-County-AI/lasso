@@ -80,8 +80,8 @@ export function PaneSwitcher({
   const [active, setActive] = React.useState(0)
   // "Active" filter — on by default, so the switcher shows only live panes (its
   // historical behavior). Turning it off folds in past agents whose herdr pane was
-  // closed, so an old session can be found and its workspace reopened. Kept across
-  // opens within a session rather than reset, so the choice sticks.
+  // closed, so an old session can be found and its workspace reopened. Reset to on
+  // every time the modal opens (see the open effect below).
   const [activeOnly, setActiveOnly] = React.useState(true)
   const listRef = React.useRef<HTMLDivElement>(null)
   // Set when a pane is chosen so the close handler can tell a pick (choose()
@@ -151,9 +151,14 @@ export function PaneSwitcher({
     setActive(0)
   }, [query])
 
-  // Clear the query each time the modal opens so it starts fresh.
+  // Each time the modal opens, start fresh: clear the query and reset the Active
+  // filter to on (so it always defaults to live-panes-only, never inheriting a
+  // prior session's "show closed" choice).
   React.useEffect(() => {
-    if (open) setQuery("")
+    if (open) {
+      setQuery("")
+      setActiveOnly(true)
+    }
   }, [open])
 
   // Keep the highlighted row scrolled into view.
