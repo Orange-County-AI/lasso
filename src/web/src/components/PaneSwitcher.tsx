@@ -84,6 +84,9 @@ export function PaneSwitcher({
   // every time the modal opens (see the open effect below).
   const [activeOnly, setActiveOnly] = React.useState(true)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // The search input — focus returns here after toggling the Active filter so the
+  // user can keep typing without clicking back into it.
+  const inputRef = React.useRef<HTMLInputElement>(null)
   // Set when a pane is chosen so the close handler can tell a pick (choose()
   // already hands focus to the pane's terminal) from a cancel.
   const chosenRef = React.useRef(false)
@@ -243,6 +246,7 @@ export function PaneSwitcher({
           <DialogTitle>Find a pane</DialogTitle>
         </DialogHeader>
         <input
+          ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
@@ -254,7 +258,12 @@ export function PaneSwitcher({
         <label className="flex cursor-pointer select-none items-center justify-end gap-2 border-border border-b px-4 pb-2 text-muted-foreground text-xs">
           <Checkbox
             checked={activeOnly}
-            onCheckedChange={(c) => setActiveOnly(c === true)}
+            onCheckedChange={(c) => {
+              setActiveOnly(c === true)
+              // Hand the keyboard straight back to the search box so the user can
+              // keep typing instead of having to click it again.
+              inputRef.current?.focus()
+            }}
           />
           Active
         </label>
