@@ -260,7 +260,7 @@ export function PaneSwitcher({
             // The shared checkbox's focus-visible ring doesn't render here, so give
             // it an explicit outline so keyboard users can see it's focused (it's
             // reachable via Tab from the search box).
-            className="focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary focus-visible:[outline-style:solid]"
+            className="focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2 focus-visible:[outline-style:solid]"
             checked={activeOnly}
             onCheckedChange={(c) => setActiveOnly(c === true)}
             onKeyDown={(e) => {
