@@ -18,12 +18,14 @@ import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 // cellKey uniquely identifies a row. Live panes are keyed by host+pane_id (pane
-// ids are only unique within a host) — the Grid's identity formula. Closed agent
-// rows have no live pane, so they're keyed by their record id instead.
-const cellKey = (p: GridPane) =>
-  p.closed && p.agent_id
-    ? `agent|${p.host}|${p.agent_id}`
-    : `${p.host}|${p.pane_id}`
+// ids are only unique within a host) — the Grid's identity formula. Closed rows
+// have no live pane: recorded agents key by their record id, orphan worktree/
+// scratch dirs (no record, no pane) key by their host+cwd.
+const cellKey = (p: GridPane) => {
+  if (p.closed && p.agent_id) return `agent|${p.host}|${p.agent_id}`
+  if (p.closed && p.cwd) return `dir|${p.host}|${p.cwd}`
+  return `${p.host}|${p.pane_id}`
+}
 
 // The descriptive pane title shown bold at the top of each row. Prefer the
 // workspace label (e.g. "accessibility") over the bare herdr tab number.
@@ -108,14 +110,20 @@ export function PaneSwitcher({
     enabled: open && !activeOnly,
   })
 
-  // Closed agents = recorded agents whose herdr pane is no longer live. Diff the
-  // history against the live pane set (host+pane_id) so an agent that's still
-  // running isn't listed twice — it already shows as its live pane.
+  // Closed sessions = history rows whose herdr pane is no longer live: recorded
+  // agents and orphan worktree/scratch dirs alike. Diff against the live set by
+  // host+pane_id (a still-running agent already shows as its live pane) and by
+  // host+cwd (an orphan dir that's currently open is already a live pane), so
+  // nothing is listed twice.
   const closedAgents = React.useMemo(() => {
     if (activeOnly) return [] as GridPane[]
-    const live = new Set(livePanes.map((p) => `${p.host}|${p.pane_id}`))
+    const livePaneIds = new Set(livePanes.map((p) => `${p.host}|${p.pane_id}`))
+    const liveCwds = new Set(
+      livePanes.filter((p) => p.cwd).map((p) => `${p.host}|${p.cwd}`)
+    )
     return (hist.data?.agents ?? [])
-      .filter((a) => !live.has(`${a.host}|${a.pane_id}`))
+      .filter((a) => !livePaneIds.has(`${a.host}|${a.pane_id}`))
+      .filter((a) => !a.cwd || !liveCwds.has(`${a.host}|${a.cwd}`))
       .map((a) => ({ ...a, closed: true }))
   }, [activeOnly, livePanes, hist.data])
 
@@ -177,12 +185,14 @@ export function PaneSwitcher({
     onOpenChange(false)
     // Close first so the Dialog doesn't re-grab focus on unmount — then hand the
     // keyboard to the pane's terminal.
-    if (p.closed && p.agent_id) {
-      // A past agent with no live pane: re-create its workspace at the stored work
-      // dir, then focus the fresh pane. Refresh both lists so the row flips from
-      // closed to live. The agent itself isn't relaunched (start claude yourself).
+    if (p.closed && (p.agent_id || p.cwd)) {
+      // A past session with no live pane: re-create its workspace at the work dir,
+      // then focus the fresh pane. Refresh both lists so the row flips from closed
+      // to live. The agent itself isn't relaunched (start claude yourself). Recorded
+      // agents reopen by agent_id; orphan worktree/scratch dirs reopen by path.
+      const body = p.agent_id ? { agent_id: p.agent_id } : { work_dir: p.cwd }
       api
-        .reopenAgent(p.host, p.agent_id)
+        .reopenAgent(p.host, body)
         .then((np) => {
           queryClient.invalidateQueries({ queryKey: qk.grid })
           queryClient.invalidateQueries({ queryKey: qk.agentHistory })

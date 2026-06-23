@@ -347,11 +347,13 @@ export const api = {
   // reopens it via reopenAgent on select.
   agentHistory: () => getJSON<{ agents: GridPane[] }>("/api/agent-history"),
 
-  // Re-open a past agent's workspace: re-creates a herdr workspace at its stored
-  // work dir and focuses it (does NOT relaunch the agent). Returns the new pane so
-  // the caller can focus it through the normal pane-focus path.
-  reopenAgent: (host: string, agent_id: string) =>
-    postJSON<GridPane>("/api/agent/reopen", { host, agent_id }),
+  // Re-open a past session's workspace: re-creates a herdr workspace at its work
+  // dir and focuses it (does NOT relaunch the agent). Identify it by agent_id (a
+  // recorded agent — also re-points its record at the new pane) or by work_dir (an
+  // orphan worktree/scratch dir with no record). Returns the new pane so the caller
+  // can focus it through the normal pane-focus path.
+  reopenAgent: (host: string, body: { agent_id?: string; work_dir?: string }) =>
+    postJSON<GridPane>("/api/agent/reopen", { host, ...body }),
 
   // Ensure a ttyd is attached to one pane's terminal and return its proxy base
   // path (the iframe src). Used to first-attach a visible cell; creates the ttyd

@@ -334,6 +334,7 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	local := localHostname()
 	out := make([]gridPane, 0, len(recs))
+	known := map[string]map[string]bool{} // host -> recorded work dirs (for orphan dedup)
 	for _, ha := range recs {
 		label := ha.Host
 		if ha.Host == "local" {
@@ -351,8 +352,89 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 			Prompt:         ha.Agent.Description,
 			AgentID:        ha.Agent.ID,
 		})
+		if ha.Agent.WorkDir != "" {
+			if known[ha.Host] == nil {
+				known[ha.Host] = map[string]bool{}
+			}
+			known[ha.Host][ha.Agent.WorkDir] = true
+		}
 	}
+	// Fold in orphan directories on the local host — sessions whose worktree/scratch
+	// dir is still on disk but have no agent record (created before agent tracking,
+	// or whose record was never written). Without this they're unreachable from the
+	// switcher; with it they're findable by directory name and reopenable by path.
+	// Remote-host agents still surface via their DB records above; only local orphan
+	// dirs are scanned (the common case, and it avoids per-toggle SFTP round-trips).
+	lb := &localBackend{sock: *herdrSock}
+	out = append(out, scanOrphanWorkDirs(lb, "local", local, known["local"])...)
 	writeJSON(w, map[string]any{"agents": out})
+}
+
+// scanOrphanWorkDirs lists directories under a host's lasso scratch/ and
+// worktrees/<repo>/ trees that aren't in known (the recorded work dirs), shaped as
+// switcher rows. Scratch dirs sit one level under scratch/; worktree dirs sit two
+// levels under worktrees/ (worktrees/<repo>/<dir>). The full path rides in Cwd so
+// the switcher matches against it; the humanized basename is the display label.
+// They carry no AgentID — reopen lands by raw path. A tree that can't be read just
+// yields no rows.
+func scanOrphanWorkDirs(b Backend, host, hostLabel string, known map[string]bool) []gridPane {
+	var out []gridPane
+	add := func(dir string) {
+		if known[dir] {
+			return
+		}
+		out = append(out, gridPane{
+			Host:           host,
+			HostLabel:      hostLabel,
+			WorkspaceLabel: humanizeSlug(filepath.Base(dir)),
+			Cwd:            dir,
+		})
+	}
+	scratch := lassoScratchDirFor(b)
+	if ents, err := b.ReadDir(scratch); err == nil {
+		for _, e := range ents {
+			if e.Dir {
+				add(filepath.Join(scratch, e.Name))
+			}
+		}
+	}
+	wt := lassoWorktreesDirFor(b)
+	if repos, err := b.ReadDir(wt); err == nil {
+		for _, repo := range repos {
+			if !repo.Dir {
+				continue
+			}
+			repoDir := filepath.Join(wt, repo.Name)
+			if ents, err := b.ReadDir(repoDir); err == nil {
+				for _, e := range ents {
+					if e.Dir {
+						add(filepath.Join(repoDir, e.Name))
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// humanizeSlug turns a directory slug ("ksa-boilerplate-engagement-odoo-sign-1i5t")
+// into a readable label by swapping dashes for spaces. The raw path still rides in
+// Cwd for search, so this is purely cosmetic.
+func humanizeSlug(s string) string { return strings.ReplaceAll(s, "-", " ") }
+
+// withinLassoWorkTrees reports whether dir sits strictly under the host's lasso
+// worktrees/ or scratch/ trees — the only paths reopen-by-raw-path is allowed to
+// open (an orphan dir with no agent record), so the endpoint can't be coaxed into
+// opening an arbitrary directory.
+func withinLassoWorkTrees(b Backend, dir string) bool {
+	clean := filepath.Clean(dir)
+	for _, root := range []string{lassoWorktreesDirFor(b), lassoScratchDirFor(b)} {
+		root = filepath.Clean(root)
+		if clean != root && strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +456,7 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Host    string `json:"host"`
 		AgentID string `json:"agent_id"`
+		WorkDir string `json:"work_dir"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -382,21 +465,12 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	if req.Host == "" {
 		req.Host = "local"
 	}
-	if req.AgentID == "" {
-		http.Error(w, "agent_id required", http.StatusBadRequest)
+	if req.AgentID == "" && req.WorkDir == "" {
+		http.Error(w, "agent_id or work_dir required", http.StatusBadRequest)
 		return
 	}
 	if !gridHostAllowed(req.Host) {
 		http.Error(w, "host not available", http.StatusBadRequest)
-		return
-	}
-	rec, err := findAgentRecord(req.Host, req.AgentID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	if rec.WorkDir == "" {
-		http.Error(w, "agent has no work dir to reopen", http.StatusBadRequest)
 		return
 	}
 	b, err := gridHostBackend(req.Host)
@@ -404,13 +478,36 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, statErr := b.Stat(rec.WorkDir); statErr != nil {
-		http.Error(w, fmt.Sprintf("work dir %s is gone: %v", rec.WorkDir, statErr), http.StatusGone)
+	// Resolve the dir + label either from the agent record (re-pointing it so it
+	// reads as live again) or, for an orphan directory with no record, from the
+	// requested path (constrained to the lasso worktrees/scratch trees).
+	var workDir, label, recID string
+	if req.AgentID != "" {
+		rec, err := findAgentRecord(req.Host, req.AgentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if rec.WorkDir == "" {
+			http.Error(w, "agent has no work dir to reopen", http.StatusBadRequest)
+			return
+		}
+		workDir, label, recID = rec.WorkDir, rec.Title, rec.ID
+	} else {
+		if !withinLassoWorkTrees(b, req.WorkDir) {
+			http.Error(w, "work dir is outside the lasso worktrees/scratch dirs", http.StatusBadRequest)
+			return
+		}
+		workDir = filepath.Clean(req.WorkDir)
+		label = humanizeSlug(filepath.Base(workDir))
+	}
+	if _, statErr := b.Stat(workDir); statErr != nil {
+		http.Error(w, fmt.Sprintf("work dir %s is gone: %v", workDir, statErr), http.StatusGone)
 		return
 	}
 	res, err := b.HerdrCall("workspace.create", map[string]any{
-		"cwd":   rec.WorkDir,
-		"label": rec.Title,
+		"cwd":   workDir,
+		"label": label,
 		"focus": true,
 	})
 	if err != nil {
@@ -419,7 +516,10 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, pane := parseCreateResult(res)
 	// Re-point the record at the new workspace/pane so it reads as live again.
-	_ = updateAgentPane(rec.ID, req.Host, ws, pane)
+	// Orphan dirs have no record to update.
+	if recID != "" {
+		_ = updateAgentPane(recID, req.Host, ws, pane)
+	}
 	invalidateGridCache()
 
 	// Return the new pane as a full gridPane (terminal_id, tab_id, …) so the client
@@ -432,7 +532,7 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Fall back to the minimal identifiers if the fresh pane isn't listed yet.
-	writeJSON(w, gridPane{Host: req.Host, HostLabel: hostLabelFor(req.Host), PaneID: pane, WorkspaceID: ws, Cwd: rec.WorkDir})
+	writeJSON(w, gridPane{Host: req.Host, HostLabel: hostLabelFor(req.Host), PaneID: pane, WorkspaceID: ws, Cwd: workDir})
 }
 
 // hostLabelFor returns the display label for a host: the machine hostname for
