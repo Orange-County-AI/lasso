@@ -2168,12 +2168,21 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	info, err := curBackend().Stat(path)
+	// Read from the host the request targets (?host=, default active) so a preview
+	// of a file that lives on another host — e.g. a screenshot just pasted onto the
+	// host an agent will run on — resolves there instead of 404ing against the
+	// active backend.
+	be, err := reqHostBackend(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	info, err := be.Stat(path)
 	if err != nil || info.IsDir() {
 		http.Error(w, "not a file", http.StatusNotFound)
 		return
 	}
-	f, err := curBackend().Open(path)
+	f, err := be.Open(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
