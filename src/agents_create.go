@@ -44,6 +44,24 @@ func slugify(s string) string {
 	return strings.Trim(s, "-")
 }
 
+// imagePromptRe matches a pasted-image path anywhere in a prompt — the kind the
+// UI inserts when you paste a screenshot. Mirrors the frontend's imagePathRE.
+var imagePromptRe = regexp.MustCompile(`(?i)/[\w\-/.]+\.(?:png|jpe?g|gif|webp)`)
+
+// promptTitle is the first meaningful line of a prompt — the source of the agent
+// title (and thus its branch name, dir name, and workspace label). Pasted-image
+// paths are stripped first, so a prompt that opens with a pasted screenshot
+// still titles by the text the user typed rather than the image's file path.
+func promptTitle(s string) string {
+	s = imagePromptRe.ReplaceAllString(s, " ")
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 // uniqueChildDir returns an absolute path under parent based on slug, suffixing
 // -2, -3, … if the name is already taken on the active host.
 func uniqueChildDir(parent, slug string) string {
@@ -334,7 +352,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
-		req.Title = firstLine(req.Prompt)
+		req.Title = promptTitle(req.Prompt)
 	}
 	if req.Title == "" {
 		return AgentRecord{}, &createErr{http.StatusBadRequest, errors.New("prompt required")}

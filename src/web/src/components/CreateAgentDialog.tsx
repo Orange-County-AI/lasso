@@ -62,9 +62,19 @@ function generateBranchName(title: string): string {
   return slug ? `${slug}-${randomSuffix()}` : ""
 }
 
-// The prompt's first line acts as the title (branch/dir name, workspace label).
-function firstLine(text: string): string {
-  return text.trim().split("\n", 1)[0].trim()
+const imagePathRE = /\/[\w\-/.]+\.(?:png|jpe?g|gif|webp)/gi
+
+// The prompt's first meaningful line acts as the title (branch/dir name,
+// workspace label). Pasted-image paths are stripped first, so a prompt that
+// opens with a pasted screenshot still titles by the text the user typed rather
+// than the image's file path. Mirrors the backend's promptTitle.
+function promptTitle(text: string): string {
+  const cleaned = text.replace(imagePathRE, " ")
+  for (const line of cleaned.split("\n")) {
+    const t = line.trim()
+    if (t) return t
+  }
+  return ""
 }
 
 // Native textarea/select styled to match the shadcn <Input> (same border,
@@ -74,7 +84,6 @@ function firstLine(text: string): string {
 const fieldClass =
   "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
 const labelClass = "font-medium text-muted-foreground text-xs"
-const imagePathRE = /\/[\w\-/.]+\.(?:png|jpe?g|gif|webp)/gi
 
 function Field({
   label,
@@ -286,7 +295,7 @@ export function CreateAgentDialog({
   const onPromptChange = (v: string) => {
     setPrompt(v)
     // The first line drives the auto-generated branch/dir name.
-    setAutoBranch(generateBranchName(firstLine(v)))
+    setAutoBranch(generateBranchName(promptTitle(v)))
   }
 
   const onPromptPaste = async (
