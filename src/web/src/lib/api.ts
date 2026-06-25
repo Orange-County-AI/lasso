@@ -415,7 +415,11 @@ export const api = {
   files: (path: string) =>
     getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
 
-  fileURL: (path: string) => `/api/file?path=${encodeURIComponent(path)}`,
+  // Optionally pass a host to read the file from that host (?host=); omitted =
+  // the active backend. Used for previewing a file that lives on another host
+  // (e.g. a screenshot pasted onto the host an agent will run on).
+  fileURL: (path: string, host?: string) =>
+    withHost(`/api/file?path=${encodeURIComponent(path)}`, host),
 
   // A URL that forces a browser download (Content-Disposition: attachment) and
   // skips the preview size cap.

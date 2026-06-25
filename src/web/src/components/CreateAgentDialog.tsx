@@ -191,6 +191,15 @@ export function CreateAgentDialog({
   const [pastingImage, setPastingImage] = React.useState(false)
   const [planMode, setPlanMode] = React.useState(false)
   const [files, setFiles] = React.useState<File[]>([])
+  // Screenshots pasted into the Prompt are written to a host *immediately* (so a
+  // path can be inserted), but the agent runs on the host chosen at create time —
+  // and the Host dropdown sits below the Prompt, so the common flow is to paste
+  // first and pick the host after. We keep each pasted blob and the host it
+  // currently lives on so we can re-home it to the selected host before creating
+  // (see rehomePastedImages). Keyed by the path currently in the prompt.
+  const [pastedImages, setPastedImages] = React.useState<
+    { path: string; blob: Blob; host: string }[]
+  >([])
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
 
   const branchesQuery = useQuery({
@@ -294,6 +303,12 @@ export function CreateAgentDialog({
     setPastingImage(true)
     try {
       const { path } = await api.pasteImage(file, selectedHost)
+      // Remember the blob + where it landed so we can re-home it if the user
+      // picks a different host before creating.
+      setPastedImages((prev) => [
+        ...prev,
+        { path, blob: file, host: selectedHost },
+      ])
       const textarea = promptRef.current
       if (!textarea) {
         onPromptChange(prompt + (prompt ? "\n" : "") + path)
@@ -323,18 +338,60 @@ export function CreateAgentDialog({
     }
   }
 
+  // Re-upload any pasted screenshots that don't already live on `host` (the user
+  // changed the Host dropdown after pasting) so the file is on the host the agent
+  // will actually run on, and rewrite its path in `text`. Returns the updated
+  // text. Best-effort per image: a re-upload failure leaves that path untouched
+  // rather than blocking agent creation.
+  const rehomePastedImages = React.useCallback(
+    async (text: string, host: string): Promise<string> => {
+      const stale = pastedImages.filter(
+        (im) => im.host !== host && text.includes(im.path)
+      )
+      if (stale.length === 0) return text
+      let next = text
+      const moved: { path: string; blob: Blob; host: string }[] = []
+      for (const im of stale) {
+        try {
+          const { path: newPath } = await api.pasteImage(im.blob, host)
+          next = next.split(im.path).join(newPath)
+          moved.push({ path: newPath, blob: im.blob, host })
+        } catch (err) {
+          toast.error("Failed to move pasted image to host", {
+            description: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      if (moved.length > 0) {
+        setPastedImages((prev) =>
+          prev.map(
+            (im) =>
+              moved.find((m) => m.blob === im.blob && m.host === host) ?? im
+          )
+        )
+      }
+      return next
+    },
+    [pastedImages]
+  )
+
   const reset = () => {
     setPrompt("")
     setPastingImage(false)
     setBranchName("")
     setAutoBranch("")
     setFiles([])
+    setPastedImages([])
     setPlanMode(false)
     setShowAdvanced(false)
   }
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      // Move any screenshots pasted before the host was picked onto the selected
+      // host, rewriting their paths in the prompt we submit, so the agent on that
+      // host can actually read them. No-op when they're already there.
+      const finalPrompt = await rehomePastedImages(prompt, selectedHost)
       // Commit the host choice now: switch the active backend so the agent is
       // created on it, attachments land there, and the terminal points at it for
       // focus. Deferred to here (not on dropdown change) so previewing a host's
@@ -351,7 +408,7 @@ export function CreateAgentDialog({
       }
       const payload: CreateAgentPayload = {
         type,
-        prompt: prompt.trim(),
+        prompt: finalPrompt.trim(),
         agent,
         plan_mode: planMode,
         attachments,
@@ -403,6 +460,10 @@ export function CreateAgentDialog({
     return p && raw ? `${p}/${raw}` : raw
   })()
   const pastedImagePaths = extractImagePaths(prompt)
+  // Preview a pasted image from the host it lives on; manually-typed paths fall
+  // back to the selected host (where the agent — and presumably the path — is).
+  const hostForImage = (p: string) =>
+    pastedImages.find((im) => im.path === p)?.host ?? selectedHost
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -523,13 +584,13 @@ export function CreateAgentDialog({
                     {pastedImagePaths.map((path) => (
                       <a
                         key={path}
-                        href={api.fileURL(path)}
+                        href={api.fileURL(path, hostForImage(path))}
                         target="_blank"
                         rel="noreferrer"
                         className="block rounded border border-border bg-card p-1 transition-opacity hover:opacity-80"
                       >
                         <img
-                          src={api.fileURL(path)}
+                          src={api.fileURL(path, hostForImage(path))}
                           alt={path}
                           className="h-16 w-auto max-w-32 object-contain"
                         />
