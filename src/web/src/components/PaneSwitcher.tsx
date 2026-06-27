@@ -86,6 +86,10 @@ export function PaneSwitcher({
   // every time the modal opens (see the open effect below).
   const [activeOnly, setActiveOnly] = React.useState(true)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // Tracks what last moved the highlight. We only auto-scroll the active row into
+  // view for keyboard nav: doing it on pointer-driven changes re-snaps the list on
+  // every hover, which on touch fights a drag-scroll so the list feels stuck.
+  const navSource = React.useRef<"keyboard" | "pointer">("keyboard")
   // The search input — focus returns here after toggling the Active filter so the
   // user can keep typing without clicking back into it.
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -172,9 +176,11 @@ export function PaneSwitcher({
     }
   }, [open])
 
-  // Keep the highlighted row scrolled into view.
+  // Keep the highlighted row scrolled into view — but only when the highlight
+  // moved via the keyboard. On pointer/touch it would re-snap the list on every
+  // hover and block drag-scrolling.
   React.useEffect(() => {
-    if (!open) return
+    if (!open || navSource.current !== "keyboard") return
     listRef.current
       ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" })
@@ -212,9 +218,11 @@ export function PaneSwitcher({
       onOpenChange(false)
     } else if (e.key === "ArrowDown") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.min(a + 1, filtered.length - 1))
     } else if (e.key === "ArrowUp") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.max(a - 1, 0))
     } else if (e.key === "Enter") {
       e.preventDefault()
@@ -307,7 +315,10 @@ export function PaneSwitcher({
                 type="button"
                 data-index={i}
                 onClick={() => choose(p)}
-                onMouseMove={() => setActive(i)}
+                onMouseMove={() => {
+                  navSource.current = "pointer"
+                  setActive(i)
+                }}
                 className={cn(
                   "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
                   // The keyboard/hover highlight uses the primary tint so the
