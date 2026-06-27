@@ -26,10 +26,14 @@ export function MobileKeyBar({ targetId }: { targetId: string }) {
           type="button"
           title={title}
           tabIndex={-1}
-          // Don't let the tap blur the terminal (which would dismiss the
-          // keyboard); sendKeyToTerminal re-focuses it anyway.
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => sendKeyToTerminal(targetId, key)}
+          // Act on pointerdown and preventDefault so the tap never moves focus
+          // off the terminal's textarea — that's what was toggling the on-screen
+          // keyboard. (No onClick: it would fire a second time after the keyboard
+          // re-took focus.)
+          onPointerDown={(e) => {
+            e.preventDefault()
+            sendKeyToTerminal(targetId, key)
+          }}
           className="flex flex-1 items-center justify-center border-border border-r py-2.5 font-mono text-muted-foreground text-sm last:border-r-0 hover:text-foreground active:bg-accent/40"
         >
           {label}
