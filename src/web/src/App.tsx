@@ -35,6 +35,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restorePaneFocus } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
@@ -254,6 +255,10 @@ function Shell() {
       queryFn: () => api.gridPanes(),
     })
   }, [])
+
+  // Keep the app pinned to the space above the mobile keyboard so the terminal's
+  // input line never hides behind it (no-op on desktop).
+  React.useEffect(syncViewportHeight, [])
 
   // Reflect the initial tab in the query string once on mount — this also
   // clears any legacy #hash (setQueryParam drops the fragment). The initial
