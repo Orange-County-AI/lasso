@@ -77,12 +77,18 @@ export function mountTerminalKeyBar(id: string, tries = 0): void {
       "flex:1 1 0;border:0;border-right:1px solid var(--h-border);background:transparent;color:var(--h-muted);font:500 17px/1 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;"
     const press = (e: Event) => {
       // Same-document preventDefault keeps the xterm textarea focused, so the
-      // on-screen keyboard never drops. Refocus it too as belt-and-suspenders.
+      // on-screen keyboard never drops.
       e.preventDefault()
-      sendKeyToTerminal(id, key)
+      // Focus xterm BEFORE sending the key — crucial. A tap can briefly blur the
+      // textarea, making xterm emit a focus-out (ESC[O); a key that lands in that
+      // window is ignored by apps that gate on focus (Claude Code runs with
+      // sendFocusMode on, which is why ↑ didn't reach history). Refocusing first
+      // emits focus-in (ESC[I) so the key arrives focused. Verified byte order:
+      // ESC[O, ESC[I, ESC[A — arrow after focus-in, not before.
       ;(
         doc.querySelector(".xterm-helper-textarea") as HTMLElement | null
       )?.focus?.()
+      sendKeyToTerminal(id, key)
       b.style.background = "var(--h-hover,var(--h-accent-dim))"
       b.style.color = "var(--h-fg)"
     }
