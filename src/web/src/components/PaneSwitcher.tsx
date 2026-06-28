@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -86,6 +87,10 @@ export function PaneSwitcher({
   // every time the modal opens (see the open effect below).
   const [activeOnly, setActiveOnly] = React.useState(true)
   const listRef = React.useRef<HTMLDivElement>(null)
+  // Tracks what last moved the highlight. We only auto-scroll the active row into
+  // view for keyboard nav: doing it on pointer-driven changes re-snaps the list on
+  // every hover, which on touch fights a drag-scroll so the list feels stuck.
+  const navSource = React.useRef<"keyboard" | "pointer">("keyboard")
   // The search input — focus returns here after toggling the Active filter so the
   // user can keep typing without clicking back into it.
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -172,9 +177,11 @@ export function PaneSwitcher({
     }
   }, [open])
 
-  // Keep the highlighted row scrolled into view.
+  // Keep the highlighted row scrolled into view — but only when the highlight
+  // moved via the keyboard. On pointer/touch it would re-snap the list on every
+  // hover and block drag-scrolling.
   React.useEffect(() => {
-    if (!open) return
+    if (!open || navSource.current !== "keyboard") return
     listRef.current
       ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" })
@@ -212,9 +219,11 @@ export function PaneSwitcher({
       onOpenChange(false)
     } else if (e.key === "ArrowDown") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.min(a + 1, filtered.length - 1))
     } else if (e.key === "ArrowUp") {
       e.preventDefault()
+      navSource.current = "keyboard"
       setActive((a) => Math.max(a - 1, 0))
     } else if (e.key === "Enter") {
       e.preventDefault()
@@ -227,13 +236,28 @@ export function PaneSwitcher({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="top-[15%] translate-y-0 gap-0 p-0 sm:max-w-lg"
+        className={cn(
+          "gap-0 p-0",
+          // Mobile: a full-screen sheet sized to the visible area above the
+          // keyboard (--vvh), so the list scrolls inside it and the soft keyboard
+          // can't push it off-screen / scroll the page behind it.
+          "inset-0 flex h-[var(--vvh,100dvh)] max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col rounded-none",
+          // sm+: the centered floating palette.
+          "sm:inset-auto sm:top-[15%] sm:left-1/2 sm:h-auto sm:max-h-[70dvh] sm:max-w-lg sm:-translate-x-1/2 sm:rounded-xl"
+        )}
         onOpenAutoFocus={(e) => {
-          // Focus the search input rather than the first row.
           e.preventDefault()
-          ;(e.currentTarget as HTMLElement | null)
-            ?.querySelector("input")
-            ?.focus()
+          // On touch, do NOT autofocus the search field: the soft keyboard would
+          // push this fixed modal partly behind itself, and on iOS that lets the
+          // page scroll to reveal the hidden part instead of the list scrolling.
+          // Focus the content (so Esc/keys still work); users tap the field to
+          // filter. On desktop, focus the input so you can type immediately.
+          const content = e.currentTarget as HTMLElement | null
+          if (window.matchMedia("(pointer: coarse)").matches) {
+            content?.focus?.()
+            return
+          }
+          content?.querySelector("input")?.focus()
         }}
         onCloseAutoFocus={(e) => {
           // A chosen pane already had focus handed to its terminal by choose();
@@ -255,13 +279,23 @@ export function PaneSwitcher({
         <DialogHeader className="sr-only">
           <DialogTitle>Find a pane</DialogTitle>
         </DialogHeader>
+        {/* A full-screen sheet on mobile has no backdrop to tap away, so give it
+            an explicit close. Hidden on sm+, where Esc / click-away dismiss. */}
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          aria-label="Close"
+          className="absolute top-2 right-2 z-10 flex size-9 items-center justify-center rounded-md text-muted-foreground hover:text-foreground sm:hidden"
+        >
+          <X className="size-5" />
+        </button>
         <input
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Search panes by tab, workspace, host, agent, path, or prompt…"
-          className="w-full bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
+          className="w-full bg-transparent px-4 py-3 pr-14 text-sm outline-none placeholder:text-muted-foreground sm:pr-4"
         />
         {/* Active filter: on shows only live panes (default); off folds in past
             agents whose pane was closed, so old sessions can be reopened. */}
@@ -293,7 +327,10 @@ export function PaneSwitcher({
           />
           Active
         </label>
-        <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
+        <div
+          ref={listRef}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 sm:max-h-80 sm:flex-none"
+        >
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
               {q.isLoading || hist.isLoading
@@ -307,7 +344,10 @@ export function PaneSwitcher({
                 type="button"
                 data-index={i}
                 onClick={() => choose(p)}
-                onMouseMove={() => setActive(i)}
+                onMouseMove={() => {
+                  navSource.current = "pointer"
+                  setActive(i)
+                }}
                 className={cn(
                   "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
                   // The keyboard/hover highlight uses the primary tint so the

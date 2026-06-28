@@ -1,4 +1,5 @@
 import { api } from "@/lib/api"
+import { mountTerminalKeyBar } from "@/lib/mobile-keybar"
 import {
   applyTermFont,
   applyTermTheme,
@@ -49,6 +50,7 @@ interface TermWindow extends Window {
 }
 interface WiredDoc extends Document {
   __herdrWired?: boolean
+  __touchScrollWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -199,6 +201,81 @@ function wireOsc52(id: string, tries: number) {
   if (tries < 20) setTimeout(() => wireOsc52(id, tries + 1), 150)
 }
 
+// wireTouchScroll gives terminals a finger-drag scroll on touch devices. Two
+// things conspire to make the obvious approaches fail:
+//   1. Our terminals are `tmux attach`, and tmux lives in xterm's ALTERNATE
+//      screen — so `.xterm-viewport` holds no scrollback to move (scrollTop is a
+//      no-op). The scrollable content belongs to the app inside tmux.
+//   2. xterm has its own touch-scroll, but disables it whenever the app has mouse
+//      tracking on (Claude Code does), forwarding the touch as a mouse drag.
+// Both the alt-screen case and the scrollback case ARE reachable the same way the
+// desktop reaches them: the wheel. xterm turns a wheel into scrollback movement
+// (normal buffer), alternate-scroll arrow keys, or app mouse-wheel forwarding
+// (mouse mode) — whichever applies. So we translate the drag into synthetic wheel
+// events aimed at xterm, emitting one "line" per row-height of travel, and always
+// preventDefault so the page itself never scrolls underneath. A bare tap (no
+// move) is left alone, so taps still reach the terminal as clicks. Idempotent.
+function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
+  if (doc.__touchScrollWired) return
+  doc.__touchScrollWired = true
+  let lastY = 0
+  let accum = 0
+  let tracking = false
+  const rowHeight = (): number => {
+    const screen = doc.querySelector(".xterm-screen") as HTMLElement | null
+    const rows = win.term?.rows ?? 24
+    const h = screen?.clientHeight ?? 0
+    return h && rows ? h / rows : 18
+  }
+  doc.addEventListener(
+    "touchstart",
+    (e: TouchEvent) => {
+      tracking = e.touches.length === 1
+      if (tracking) {
+        lastY = e.touches[0].clientY
+        accum = 0
+      }
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchmove",
+    (e: TouchEvent) => {
+      if (!tracking || e.touches.length !== 1) return
+      const t = e.touches[0]
+      // Finger DOWN (clientY grows) reveals older content above → negative
+      // deltaY (wheel up), matching natural touch scrolling.
+      accum += lastY - t.clientY
+      lastY = t.clientY
+      const target =
+        (doc.querySelector(".xterm-viewport") as HTMLElement | null) ??
+        (doc.querySelector(".xterm") as HTMLElement | null)
+      const rh = rowHeight()
+      // The iframe realm's WheelEvent ctor, so the event belongs to xterm's window.
+      const WheelEventCtor = (
+        win as unknown as { WheelEvent: typeof WheelEvent }
+      ).WheelEvent
+      while (target && Math.abs(accum) >= rh) {
+        const dir = accum > 0 ? 1 : -1
+        accum -= dir * rh
+        target.dispatchEvent(
+          new WheelEventCtor("wheel", {
+            deltaY: dir * rh,
+            deltaMode: 0, // pixels
+            bubbles: true,
+            cancelable: true,
+            clientX: t.clientX,
+            clientY: t.clientY,
+          })
+        )
+      }
+      e.preventDefault()
+      e.stopPropagation()
+    },
+    { capture: true, passive: false }
+  )
+}
+
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -214,6 +291,8 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
   }
   if (!doc || doc.__herdrWired) return
   doc.__herdrWired = true
+
+  if (win) wireTouchScroll(doc, win)
 
   if (suppressContext)
     doc.addEventListener("contextmenu", (e) => e.preventDefault(), true)
@@ -283,6 +362,7 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
     wireTerminalIframe(id, suppressContext)
+    mountTerminalKeyBar(id)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -291,6 +371,7 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext) // in case it already loaded
+  mountTerminalKeyBar(id) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 
@@ -396,6 +477,57 @@ export function typeIntoShell(text: string) {
 // typeIntoHerdr pastes into the herdr terminal (/terminal/), where agents run.
 export function typeIntoHerdr(text: string) {
   pasteIntoTerminal("term", text)
+}
+
+// Virtual on-screen keys for mobile, where the soft keyboard offers no Esc, Tab,
+// or arrows — keys agents (Claude Code) lean on constantly (Enter is omitted: the
+// iOS keyboard already has Return). We dispatch a real keydown at xterm's hidden
+// textarea and let XTERM encode it, exactly as it would a hardware keypress. This
+// is the only way to be correct across every keyboard mode the app may turn on —
+// application-cursor (ESCO vs ESC[ on the arrows), the kitty/extended protocol,
+// modifyOtherKeys — which a fixed byte sequence written via term.input() can't
+// track. xterm 5 keys its encoder off event.keyCode, which the KeyboardEvent ctor
+// ignores from the init dict, so we pin it (and legacy `which`). Verified
+// end-to-end: a dispatched ArrowUp drives shell/Claude Code history. Falls back to
+// a raw sequence only if the textarea isn't mounted yet.
+export type VirtualKey = "Escape" | "ArrowUp" | "ArrowDown" | "Tab"
+
+const KEY_SPEC: Record<
+  VirtualKey,
+  { code: string; keyCode: number; seq: string }
+> = {
+  Escape: { code: "Escape", keyCode: 27, seq: "\x1b" },
+  Tab: { code: "Tab", keyCode: 9, seq: "\t" },
+  ArrowUp: { code: "ArrowUp", keyCode: 38, seq: "\x1b[A" },
+  ArrowDown: { code: "ArrowDown", keyCode: 40, seq: "\x1b[B" },
+}
+
+export function sendKeyToTerminal(id: string, key: VirtualKey) {
+  try {
+    const win = frameWindow(id)
+    if (!win) return
+    const spec = KEY_SPEC[key]
+    const ta = win.document.querySelector(
+      ".xterm-helper-textarea"
+    ) as HTMLElement | null
+    if (ta) {
+      const Ctor = (win as unknown as { KeyboardEvent: typeof KeyboardEvent })
+        .KeyboardEvent
+      const ev = new Ctor("keydown", {
+        key,
+        code: spec.code,
+        bubbles: true,
+        cancelable: true,
+      })
+      Object.defineProperty(ev, "keyCode", { get: () => spec.keyCode })
+      Object.defineProperty(ev, "which", { get: () => spec.keyCode })
+      ta.dispatchEvent(ev)
+      return
+    }
+    win.term?.input?.(spec.seq)
+  } catch {
+    /* same-origin; ignore */
+  }
 }
 
 // Hand keyboard focus to the herdr terminal (/terminal/) so the user can type

@@ -35,6 +35,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restorePaneFocus } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
@@ -150,18 +151,20 @@ function FitTabs({
 }
 
 // A search affordance for the header: styled like an input but it's a button
-// that opens the ⌘K pane switcher (the actual search lives in that palette).
+// that opens the ⌘K pane switcher (the actual search lives in that palette). On
+// mobile it's a compact "Search" pill (only the ⌘K hint is dropped — there's no
+// ⌘ key); the full-width bar shows from md up.
 function HeaderSearch({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
       title="Search panes (⌘K)"
-      className="flex h-7 w-full max-w-xs items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground max-md:hidden"
+      className="flex h-7 w-auto items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground md:w-full md:max-w-xs"
     >
       <Search className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-left">Search…</span>
-      <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate text-left">Search</span>
+      <kbd className="hidden rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground md:inline-block">
         ⌘K
       </kbd>
     </button>
@@ -254,6 +257,10 @@ function Shell() {
       queryFn: () => api.gridPanes(),
     })
   }, [])
+
+  // Keep the app pinned to the space above the mobile keyboard so the terminal's
+  // input line never hides behind it (no-op on desktop).
+  React.useEffect(syncViewportHeight, [])
 
   // Reflect the initial tab in the query string once on mount — this also
   // clears any legacy #hash (setQueryParam drops the fragment). The initial
