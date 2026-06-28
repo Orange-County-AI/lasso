@@ -152,20 +152,18 @@ function FitTabs({
 
 // A search affordance for the header: styled like an input but it's a button
 // that opens the ⌘K pane switcher (the actual search lives in that palette). On
-// mobile it collapses to a compact icon button (no room for the bar + ⌘K hint,
-// and there's no ⌘ key); the full bar shows from md up.
+// mobile it's a compact "Search" pill (only the ⌘K hint is dropped — there's no
+// ⌘ key); the full-width bar shows from md up.
 function HeaderSearch({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
       title="Search panes (⌘K)"
-      className="flex h-7 w-7 items-center justify-center gap-2 rounded-md border border-border bg-muted/40 text-muted-foreground text-sm hover:border-primary hover:text-foreground md:w-full md:max-w-xs md:justify-start md:px-2.5"
+      className="flex h-7 w-auto items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground md:w-full md:max-w-xs"
     >
       <Search className="size-3.5 shrink-0" />
-      <span className="hidden min-w-0 flex-1 truncate text-left md:block">
-        Search…
-      </span>
+      <span className="min-w-0 flex-1 truncate text-left">Search</span>
       <kbd className="hidden rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground md:inline-block">
         ⌘K
       </kbd>
