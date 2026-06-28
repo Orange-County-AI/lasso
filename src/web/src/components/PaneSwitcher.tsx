@@ -237,11 +237,18 @@ export function PaneSwitcher({
         showCloseButton={false}
         className="top-[15%] translate-y-0 gap-0 p-0 sm:max-w-lg"
         onOpenAutoFocus={(e) => {
-          // Focus the search input rather than the first row.
           e.preventDefault()
-          ;(e.currentTarget as HTMLElement | null)
-            ?.querySelector("input")
-            ?.focus()
+          // On touch, do NOT autofocus the search field: the soft keyboard would
+          // push this fixed modal partly behind itself, and on iOS that lets the
+          // page scroll to reveal the hidden part instead of the list scrolling.
+          // Focus the content (so Esc/keys still work); users tap the field to
+          // filter. On desktop, focus the input so you can type immediately.
+          const content = e.currentTarget as HTMLElement | null
+          if (window.matchMedia("(pointer: coarse)").matches) {
+            content?.focus?.()
+            return
+          }
+          content?.querySelector("input")?.focus()
         }}
         onCloseAutoFocus={(e) => {
           // A chosen pane already had focus handed to its terminal by choose();
@@ -301,7 +308,10 @@ export function PaneSwitcher({
           />
           Active
         </label>
-        <div ref={listRef} className="max-h-80 overflow-y-auto p-1">
+        <div
+          ref={listRef}
+          className="max-h-80 overflow-y-auto overscroll-contain p-1"
+        >
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
               {q.isLoading || hist.isLoading
