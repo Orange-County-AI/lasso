@@ -50,7 +50,16 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 // plain --dangerously-skip-permissions: the latter forces bypass mode and
 // silently overrides --permission-mode plan, so the agent never plans.
 func TestAgentCommandPlanModeFlags(t *testing.T) {
+	// Both claude variants must scrub the leaked CLAUDE_CODE_* session markers so
+	// 2.1.193+ doesn't treat the interactive agent as a child session and suppress
+	// transcript persistence. The prefix must lead the command (it's an env wrapper
+	// around the claude exec, not a claude flag).
+	const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID claude "
+
 	plan := agentCommand("claude", true, "do it")
+	if !strings.HasPrefix(plan, envScrub) {
+		t.Errorf("plan command must scrub child-session env: %q", plan)
+	}
 	if !strings.Contains(plan, "--permission-mode plan") {
 		t.Errorf("plan command missing --permission-mode plan: %q", plan)
 	}
@@ -64,6 +73,9 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	}
 
 	def := agentCommand("claude", false, "do it")
+	if !strings.HasPrefix(def, envScrub) {
+		t.Errorf("default command must scrub child-session env: %q", def)
+	}
 	if !strings.Contains(def, "--dangerously-skip-permissions") ||
 		strings.Contains(def, "--permission-mode") {
 		t.Errorf("default command should bypass permissions without plan: %q", def)

@@ -713,13 +713,23 @@ func agentCommand(agent string, planMode bool, prompt string) string {
 		}
 		return cmd
 	default: // claude
+		// env -u scrubs the three CLAUDE_CODE_* session markers the lasso (and
+		// herdr) daemon leaks because it was itself launched from inside a Claude
+		// Code session. Claude Code 2.1.193+ treats their presence as "this is a
+		// child session" and SUPPRESSES transcript persistence for an INTERACTIVE
+		// agent — so the spawned agent writes no ~/.claude/projects/.../*.jsonl,
+		// breaking resume/recovery and leaving nothing for restic to back up.
+		// Scrubbing them per-launch restores normal transcript writing. This is
+		// claude-specific (the codex branch needs no scrub); do not "clean it up".
+		//
 		// --dangerously-skip-permissions forces bypass mode and silently overrides
 		// --permission-mode plan, so plan agents never actually plan. In plan mode
 		// use --allow-dangerously-skip-permissions instead, which only *enables*
 		// bypassing and coexists with plan. Mirrors fulcrum's agent-commands.ts.
-		cmd := "claude --dangerously-skip-permissions"
+		const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "
+		cmd := envScrub + "claude --dangerously-skip-permissions"
 		if planMode {
-			cmd = "claude --allow-dangerously-skip-permissions --permission-mode plan"
+			cmd = envScrub + "claude --allow-dangerously-skip-permissions --permission-mode plan"
 		}
 		if prompt != "" {
 			cmd += " " + shellQuote(prompt)
