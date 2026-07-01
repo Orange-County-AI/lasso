@@ -44,6 +44,27 @@ func slugify(s string) string {
 	return strings.Trim(s, "-")
 }
 
+// maxSlugLen caps a title-derived slug so the branch names and directory
+// components built from it stay well under the filesystem's 255-byte limit. A
+// prompt with no line breaks becomes its own title (see promptTitle), so a long
+// single-paragraph prompt would otherwise slugify to a 300+ char directory name
+// and fail mkdir with ENAMETOOLONG.
+const maxSlugLen = 60
+
+// titleSlug slugifies a title and truncates it to maxSlugLen, cutting back to
+// the last dash so the name ends on a whole word rather than mid-token.
+func titleSlug(s string) string {
+	slug := slugify(s)
+	if len(slug) <= maxSlugLen {
+		return slug
+	}
+	slug = slug[:maxSlugLen]
+	if i := strings.LastIndex(slug, "-"); i > 0 {
+		slug = slug[:i]
+	}
+	return strings.Trim(slug, "-")
+}
+
 // imagePromptRe matches a pasted-image path anywhere in a prompt — the kind the
 // UI inserts when you paste a screenshot. Mirrors the frontend's imagePathRE.
 var imagePromptRe = regexp.MustCompile(`(?i)/[\w\-/.]+\.(?:png|jpe?g|gif|webp)`)
@@ -367,7 +388,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// host's worktree is set up from its own configuration. Best-effort: a setup
 	// we can't read just means none runs, never a failed create.
 	defaults, _ := hostDefaults(host)
-	slug := slugify(req.Title)
+	slug := titleSlug(req.Title)
 
 	rec := AgentRecord{
 		ID:          strconv.FormatInt(time.Now().UnixNano(), 36),

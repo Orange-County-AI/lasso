@@ -92,6 +92,24 @@ func TestAgentCommandCodexBypassesApprovals(t *testing.T) {
 	}
 }
 
+// titleSlug must cap a long single-paragraph prompt so the scratch dir / branch
+// name built from it doesn't blow past the filesystem's 255-byte component limit
+// (mkdir would fail with ENAMETOOLONG). It should also end on a whole word.
+func TestTitleSlug(t *testing.T) {
+	long := "Ticket 500 Tech Stack. See the imessage conversatoin I have with Ray Peters earlier today. track the need to get her the Ticket 500 Tech stack in todoist and let's start putting that together."
+	slug := titleSlug(long)
+	if len(slug) > maxSlugLen {
+		t.Errorf("titleSlug len = %d, want <= %d (%q)", len(slug), maxSlugLen, slug)
+	}
+	if strings.HasPrefix(slug, "-") || strings.HasSuffix(slug, "-") {
+		t.Errorf("titleSlug %q should not start/end with a dash", slug)
+	}
+	// A short title passes through unchanged.
+	if got := titleSlug("Fix the bug"); got != "fix-the-bug" {
+		t.Errorf("titleSlug(short) = %q, want fix-the-bug", got)
+	}
+}
+
 // randSuffix tags scratch dirs to keep same-titled scratch agents distinct.
 func TestRandSuffix(t *testing.T) {
 	const ok = "abcdefghijklmnopqrstuvwxyz0123456789"
