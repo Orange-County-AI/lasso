@@ -13,6 +13,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
 import {
   api,
@@ -766,21 +767,18 @@ export function CreateAgentDialog({
                     </select>
                   </Field>
                   <Field label="Model" htmlFor="agent-model">
-                    {/* Free text + native datalist suggestions: model names
-                        churn faster than releases, so never a fixed list. */}
-                    <Input
+                    {/* Free text + suggestions: model names churn faster than
+                        releases, so the list is a hint, not a constraint. The
+                        editable combobox always shows every suggestion on open
+                        (unlike a native datalist, which hides them once the
+                        field holds a complete value). */}
+                    <EditableCombobox
                       id="agent-model"
-                      className="bg-background dark:bg-background"
-                      list="agent-model-suggestions"
                       value={model}
-                      onChange={(e) => setModel(e.target.value)}
+                      onValueChange={setModel}
+                      suggestions={harness.model_suggestions ?? []}
                       placeholder="default"
                     />
-                    <datalist id="agent-model-suggestions">
-                      {(harness.model_suggestions ?? []).map((m) => (
-                        <option key={m} value={m} />
-                      ))}
-                    </datalist>
                   </Field>
                 </div>
                 <Field label="Extra CLI args" htmlFor="agent-extra-args">
