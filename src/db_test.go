@@ -141,6 +141,54 @@ func TestLastAgentAndType(t *testing.T) {
 	}
 }
 
+// A spawned agent's model + extra CLI args survive the db round-trip, and
+// last_models remembers the model per harness (an empty model is a real
+// remembered choice — "use the harness default").
+func TestAgentModelAndExtraArgsPersist(t *testing.T) {
+	openTestDB(t)
+	rec := AgentRecord{
+		ID: "m1", Title: "t", Type: "scratch", Agent: "claude",
+		Model: "opus", ExtraArgs: "--append-system-prompt hi", CreatedAt: time.Now(),
+	}
+	if err := appendAgent("local", rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := listAgents("local")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("listAgents = %+v, %v", got, err)
+	}
+	if got[0].Model != "opus" || got[0].ExtraArgs != "--append-system-prompt hi" {
+		t.Errorf("round-trip lost fields: %+v", got[0])
+	}
+
+	if err := setLastModel("local", "claude", "sonnet"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setLastModel("local", "codex", ""); err != nil {
+		t.Fatal(err)
+	}
+	hs, _ := getHostState("local")
+	if hs.LastModels["claude"] != "sonnet" {
+		t.Errorf("claude model = %q, want sonnet", hs.LastModels["claude"])
+	}
+	if m, ok := hs.LastModels["codex"]; !ok || m != "" {
+		t.Errorf("codex model = %q (present=%v), want remembered empty", m, ok)
+	}
+
+	// The config the UI reads carries the compiled-in harness registry and the
+	// per-host last-model memory.
+	c, err := loadLassoConfig("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Harnesses) == 0 || c.Harnesses[0].ID != "claude" {
+		t.Errorf("config missing harness registry: %+v", c.Harnesses)
+	}
+	if c.LastModels["claude"] != "sonnet" {
+		t.Errorf("config last_models = %+v", c.LastModels)
+	}
+}
+
 func TestLoadLassoConfigPerHost(t *testing.T) {
 	openTestDB(t)
 	_ = setSetting("branch_prefix", "feat/")

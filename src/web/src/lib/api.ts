@@ -206,6 +206,8 @@ export interface AgentRecord {
   base_branch?: string
   branch?: string
   agent: string
+  model?: string
+  extra_args?: string
   description?: string
   notes?: string
   attachments?: string[]
@@ -227,10 +229,23 @@ export interface AgentConfig {
   default_agent: string
   last_repo?: string
   last_agent?: string
+  // Model chosen last time on this host, per harness id ("" = harness default).
+  last_models?: Record<string, string>
+  // The server's compiled-in agent registry — drives the creator's AI-agent
+  // dropdown, plan-mode visibility, and model suggestions.
+  harnesses?: HarnessDef[]
   last_agent_type?: "git" | "scratch"
   scratch_setup?: string
   repos?: Record<string, RepoConfig>
   agents?: AgentRecord[]
+}
+
+// One launchable agent CLI, as served by the backend's harness registry.
+export interface HarnessDef {
+  id: string
+  label: string
+  supports_plan_mode: boolean
+  model_suggestions: string[] | null
 }
 
 // One git repo discovered under repos_root, with its remembered per-repo state.
@@ -259,6 +274,10 @@ export interface CreateAgentPayload {
   branch_prefix?: string
   branch_name?: string
   agent: string
+  // Model for the agent's CLI (its --model flag); omit for the harness default.
+  model?: string
+  // Free-form CLI flags appended verbatim to the launch command.
+  extra_args?: string
   notes?: string
   plan_mode: boolean
   attachments?: string[]

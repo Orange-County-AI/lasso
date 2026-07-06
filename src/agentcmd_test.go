@@ -56,7 +56,7 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	// around the claude exec, not a claude flag).
 	const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID claude "
 
-	plan := agentCommand("claude", true, "do it")
+	plan := agentCommand("claude", launchOpts{planMode: true, prompt: "do it"})
 	if !strings.HasPrefix(plan, envScrub) {
 		t.Errorf("plan command must scrub child-session env: %q", plan)
 	}
@@ -72,7 +72,7 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 		t.Errorf("plan command must not force bypass mode: %q", plan)
 	}
 
-	def := agentCommand("claude", false, "do it")
+	def := agentCommand("claude", launchOpts{prompt: "do it"})
 	if !strings.HasPrefix(def, envScrub) {
 		t.Errorf("default command must scrub child-session env: %q", def)
 	}
@@ -86,9 +86,57 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 // so it runs autonomously. Its boot-time trust dialog is handled separately by
 // the trust goroutine, not a launch flag.
 func TestAgentCommandCodexBypassesApprovals(t *testing.T) {
-	cmd := agentCommand("codex", false, "do it")
+	cmd := agentCommand("codex", launchOpts{prompt: "do it"})
 	if !strings.Contains(cmd, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Errorf("codex command missing bypass flag: %q", cmd)
+	}
+}
+
+// A chosen model rides in via --model (shell-quoted — it's free user text),
+// extra args are appended verbatim, and both land BEFORE the prompt so the
+// prompt stays the final positional argument. Empty model/extra args add
+// nothing at all.
+func TestAgentCommandModelAndExtraArgs(t *testing.T) {
+	cmd := agentCommand("claude", launchOpts{
+		model:     "opus",
+		extraArgs: "--append-system-prompt hi",
+		prompt:    "do it",
+	})
+	wantOrder := []string{"--model 'opus'", "--append-system-prompt hi", "'do it'"}
+	last := -1
+	for _, w := range wantOrder {
+		i := strings.Index(cmd, w)
+		if i < 0 {
+			t.Fatalf("command missing %q: %q", w, cmd)
+		}
+		if i < last {
+			t.Fatalf("%q out of order (flags must precede the prompt): %q", w, cmd)
+		}
+		last = i
+	}
+
+	codex := agentCommand("codex", launchOpts{model: "gpt-5.1-codex", prompt: "do it"})
+	if !strings.Contains(codex, "--model 'gpt-5.1-codex'") {
+		t.Errorf("codex command missing model flag: %q", codex)
+	}
+
+	bare := agentCommand("claude", launchOpts{prompt: "do it"})
+	if strings.Contains(bare, "--model") {
+		t.Errorf("empty model must not emit a --model flag: %q", bare)
+	}
+
+	// Plan mode and model compose.
+	planned := agentCommand("claude", launchOpts{planMode: true, model: "sonnet"})
+	if !strings.Contains(planned, "--permission-mode plan") || !strings.Contains(planned, "--model 'sonnet'") {
+		t.Errorf("plan mode + model should compose: %q", planned)
+	}
+}
+
+// Unknown harness ids fall back to claude — the historical default for a
+// createAgentReq with a bogus agent value.
+func TestHarnessByIDDefaultsToClaude(t *testing.T) {
+	if got := harnessByID("gemini-someday").ID; got != "claude" {
+		t.Errorf("harnessByID(unknown) = %q, want claude", got)
 	}
 }
 
