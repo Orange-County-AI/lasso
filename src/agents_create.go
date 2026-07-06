@@ -311,18 +311,27 @@ func gitDefaultBranch(cur Backend, repo string) string {
 // ---------------------------------------------------------------------------
 
 type createAgentReq struct {
-	Type         string   `json:"type"`   // "git" | "scratch"
-	Prompt       string   `json:"prompt"` // the agent's instruction; its first line is the title
-	Title        string   `json:"title"`  // optional explicit title override; defaults to the prompt's first line
-	Repo         string   `json:"repo"`
-	BaseBranch   string   `json:"base_branch"`
-	BranchPrefix string   `json:"branch_prefix"`
-	BranchName   string   `json:"branch_name"`
-	Agent        string   `json:"agent"`
-	Notes        string   `json:"notes"`
-	PlanMode     bool     `json:"plan_mode"`
-	Attachments  []string `json:"attachments"` // filenames staged under UploadDir
-	UploadDir    string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
+	Type         string `json:"type"`   // "git" | "scratch"
+	Prompt       string `json:"prompt"` // the agent's instruction; its first line is the title
+	Title        string `json:"title"`  // optional explicit title override; defaults to the prompt's first line
+	Repo         string `json:"repo"`
+	BaseBranch   string `json:"base_branch"`
+	BranchPrefix string `json:"branch_prefix"`
+	BranchName   string `json:"branch_name"`
+	Agent        string `json:"agent"`
+	// Model is the harness's model selection (e.g. "opus", "gpt-5.1-codex");
+	// empty means the harness's own default. Free text — passed through to the
+	// CLI's --model flag, never validated against a list (model names churn
+	// faster than lasso releases).
+	Model string `json:"model"`
+	// ExtraArgs are free-form CLI flags appended verbatim to the launch
+	// command, after the flags lasso builds and before the prompt. The escape
+	// hatch for any harness knob lasso doesn't model.
+	ExtraArgs   string   `json:"extra_args"`
+	Notes       string   `json:"notes"`
+	PlanMode    bool     `json:"plan_mode"`
+	Attachments []string `json:"attachments"` // filenames staged under UploadDir
+	UploadDir   string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
 	// NoFocus suppresses focusing the new agent's herdr pane. The web "New Agent"
 	// flow leaves this false (an explicit "take me there"); the MCP create_agent
 	// tool sets it so spawning an agent doesn't yank a watching user away from
@@ -395,6 +404,8 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		Title:       req.Title,
 		Type:        req.Type,
 		Agent:       req.Agent,
+		Model:       strings.TrimSpace(req.Model),
+		ExtraArgs:   strings.TrimSpace(req.ExtraArgs),
 		Description: req.Prompt,
 		Notes:       strings.TrimSpace(req.Notes),
 		Attachments: req.Attachments,
@@ -501,7 +512,13 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// their leading characters eaten. The backend is captured so the launch always
 	// targets the host the agent was created on, even if the active host changes.
 	if rootPane != "" {
-		go launchAgentInPane(b, rootPane, setup, agentCommand(req.Agent, rec.PlanMode, agentPrompt(rec)))
+		cmd := agentCommand(req.Agent, launchOpts{
+			planMode:  rec.PlanMode,
+			model:     rec.Model,
+			extraArgs: rec.ExtraArgs,
+			prompt:    agentPrompt(rec),
+		})
+		go launchAgentInPane(b, rootPane, setup, cmd)
 	}
 
 	// Persist this host's remembered selections, then append the record. Errors
@@ -512,6 +529,9 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	}
 	_ = setLastAgent(host, rec.Agent)
 	_ = setLastAgentType(host, rec.Type)
+	// Remember the model per harness (an empty model — "use the harness
+	// default" — is itself a remembered choice, so always write it).
+	_ = setLastModel(host, rec.Agent, rec.Model)
 	if err := appendAgent(host, rec); err != nil {
 		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
 	}
@@ -713,50 +733,6 @@ func agentPrompt(rec AgentRecord) string {
 		b.WriteString("\n\nAttachments: " + strings.Join(rec.Attachments, ", "))
 	}
 	return b.String()
-}
-
-// agentCommand builds the shell command that launches the chosen agent. A
-// non-empty prompt is passed as the agent's initial instruction; plan mode is
-// requested when supported.
-func agentCommand(agent string, planMode bool, prompt string) string {
-	switch agent {
-	case "codex":
-		// --dangerously-bypass-approvals-and-sandbox is codex's analog of claude's
-		// --dangerously-skip-permissions (lasso worktrees are already isolated), so
-		// the agent runs autonomously instead of prompting per command. It does NOT
-		// skip codex's boot-time "Do you trust this directory?" gate, though — that
-		// dialog is auto-accepted via the trust goroutine in serveCreateAgent (a
-		// config-file/-c pre-trust is fragile across the pane's shell). No
-		// documented plan-mode flag, so plan agents launch in the default mode.
-		cmd := "codex --dangerously-bypass-approvals-and-sandbox"
-		if prompt != "" {
-			cmd += " " + shellQuote(prompt)
-		}
-		return cmd
-	default: // claude
-		// env -u scrubs the three CLAUDE_CODE_* session markers the lasso (and
-		// herdr) daemon leaks because it was itself launched from inside a Claude
-		// Code session. Claude Code 2.1.193+ treats their presence as "this is a
-		// child session" and SUPPRESSES transcript persistence for an INTERACTIVE
-		// agent — so the spawned agent writes no ~/.claude/projects/.../*.jsonl,
-		// breaking resume/recovery and leaving nothing for restic to back up.
-		// Scrubbing them per-launch restores normal transcript writing. This is
-		// claude-specific (the codex branch needs no scrub); do not "clean it up".
-		//
-		// --dangerously-skip-permissions forces bypass mode and silently overrides
-		// --permission-mode plan, so plan agents never actually plan. In plan mode
-		// use --allow-dangerously-skip-permissions instead, which only *enables*
-		// bypassing and coexists with plan. Mirrors fulcrum's agent-commands.ts.
-		const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "
-		cmd := envScrub + "claude --dangerously-skip-permissions"
-		if planMode {
-			cmd = envScrub + "claude --allow-dangerously-skip-permissions --permission-mode plan"
-		}
-		if prompt != "" {
-			cmd += " " + shellQuote(prompt)
-		}
-		return cmd
-	}
 }
 
 // launchAgentInPane runs the optional setup script then the agent command in a

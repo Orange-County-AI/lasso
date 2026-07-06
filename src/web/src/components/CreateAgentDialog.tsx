@@ -14,7 +14,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { api, type CreateAgentPayload, type HostInfo } from "@/lib/api"
+import {
+  api,
+  type CreateAgentPayload,
+  type HarnessDef,
+  type HostInfo,
+} from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
@@ -22,9 +27,22 @@ import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
 
-const AGENTS: { value: string; label: string }[] = [
-  { value: "claude", label: "Claude Code" },
-  { value: "codex", label: "Codex" },
+// Fallback registry while the config query is in flight (or against an older
+// backend without `harnesses`); normally the list comes from the server's
+// compiled-in harness table via /api/agent-config.
+const FALLBACK_HARNESSES: HarnessDef[] = [
+  {
+    id: "claude",
+    label: "Claude Code",
+    supports_plan_mode: true,
+    model_suggestions: [],
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    supports_plan_mode: false,
+    model_suggestions: [],
+  },
 ]
 
 // One of these is picked at random for the Prompt field's placeholder each time
@@ -197,6 +215,8 @@ export function CreateAgentDialog({
   const [branchName, setBranchName] = React.useState("")
   const [autoBranch, setAutoBranch] = React.useState("")
   const [agent, setAgent] = React.useState("claude")
+  const [model, setModel] = React.useState("")
+  const [extraArgs, setExtraArgs] = React.useState("")
   const [pastingImage, setPastingImage] = React.useState(false)
   const [planMode, setPlanMode] = React.useState(false)
   const [files, setFiles] = React.useState<File[]>([])
@@ -210,6 +230,16 @@ export function CreateAgentDialog({
     { path: string; blob: Blob; host: string }[]
   >([])
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
+
+  // The launchable-harness registry (compiled into the backend) drives the
+  // AI-agent dropdown, plan-mode visibility, and model suggestions.
+  const harnesses = config?.harnesses?.length
+    ? config.harnesses
+    : FALLBACK_HARNESSES
+  const harness =
+    harnesses.find((h) => h.id === agent) ??
+    harnesses[0] ??
+    FALLBACK_HARNESSES[0]
 
   const branchesQuery = useQuery({
     queryKey: qk.repoBranches(selectedHost, repo),
@@ -249,7 +279,10 @@ export function CreateAgentDialog({
     seededForHost.current = selectedHost
     setType(config.last_agent_type || "git")
     setPrefix(config.branch_prefix || "")
-    setAgent(config.default_agent || config.last_agent || "claude")
+    const seededAgent = config.default_agent || config.last_agent || "claude"
+    setAgent(seededAgent)
+    setModel(config.last_models?.[seededAgent] ?? "")
+    setExtraArgs("")
     const last = config.last_repo
     setRepo(
       last && repos.some((r) => r.path === last) ? last : (repos[0]?.path ?? "")
@@ -392,6 +425,7 @@ export function CreateAgentDialog({
     setFiles([])
     setPastedImages([])
     setPlanMode(false)
+    setExtraArgs("")
     setShowAdvanced(false)
   }
 
@@ -419,7 +453,12 @@ export function CreateAgentDialog({
         type,
         prompt: finalPrompt.trim(),
         agent,
-        plan_mode: planMode,
+        model: model.trim() || undefined,
+        extra_args: extraArgs.trim() || undefined,
+        // The checkbox is hidden for harnesses without a plan mode, but its
+        // state survives harness switches — gate it so a codex agent never
+        // records plan_mode.
+        plan_mode: planMode && harness.supports_plan_mode,
         attachments,
         upload_dir: uploadDir,
       }
@@ -611,25 +650,31 @@ export function CreateAgentDialog({
             </Field>
 
             <div className="flex items-center gap-2">
-              <Checkbox
-                id="agent-plan-mode"
-                checked={planMode}
-                onCheckedChange={(v) => setPlanMode(v === true)}
-                // Checkboxes toggle on Space by ARIA convention; this form is
-                // otherwise Enter-driven, so accept Enter to toggle too.
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault()
-                    setPlanMode((v) => !v)
-                  }
-                }}
-              />
-              <label
-                htmlFor="agent-plan-mode"
-                className="cursor-pointer text-sm"
-              >
-                Start in plan mode
-              </label>
+              {/* Plan mode only exists on harnesses that support it (claude);
+                  hide the checkbox elsewhere rather than offering a no-op. */}
+              {harness.supports_plan_mode && (
+                <>
+                  <Checkbox
+                    id="agent-plan-mode"
+                    checked={planMode}
+                    onCheckedChange={(v) => setPlanMode(v === true)}
+                    // Checkboxes toggle on Space by ARIA convention; this form is
+                    // otherwise Enter-driven, so accept Enter to toggle too.
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        setPlanMode((v) => !v)
+                      }
+                    }}
+                  />
+                  <label
+                    htmlFor="agent-plan-mode"
+                    className="cursor-pointer text-sm"
+                  >
+                    Start in plan mode
+                  </label>
+                </>
+              )}
               <div className="ml-auto flex items-center gap-1.5">
                 <label htmlFor="agent-host" className={labelClass}>
                   Host
@@ -699,19 +744,53 @@ export function CreateAgentDialog({
 
             {showAdvanced && (
               <div className="flex flex-col gap-3 border-border border-l pl-3">
-                <Field label="AI agent" htmlFor="agent-agent">
-                  <select
-                    id="agent-agent"
-                    className={fieldClass}
-                    value={agent}
-                    onChange={(e) => setAgent(e.target.value)}
-                  >
-                    {AGENTS.map((a) => (
-                      <option key={a.value} value={a.value}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="AI agent" htmlFor="agent-agent">
+                    <select
+                      id="agent-agent"
+                      className={fieldClass}
+                      value={agent}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setAgent(next)
+                        // Each harness remembers its own last-used model;
+                        // switching harness swaps in that memory.
+                        setModel(config?.last_models?.[next] ?? "")
+                      }}
+                    >
+                      {harnesses.map((h) => (
+                        <option key={h.id} value={h.id}>
+                          {h.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Model" htmlFor="agent-model">
+                    {/* Free text + native datalist suggestions: model names
+                        churn faster than releases, so never a fixed list. */}
+                    <Input
+                      id="agent-model"
+                      className="bg-background dark:bg-background"
+                      list="agent-model-suggestions"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      placeholder="default"
+                    />
+                    <datalist id="agent-model-suggestions">
+                      {(harness.model_suggestions ?? []).map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                  </Field>
+                </div>
+                <Field label="Extra CLI args" htmlFor="agent-extra-args">
+                  <Input
+                    id="agent-extra-args"
+                    className="bg-background font-mono dark:bg-background"
+                    value={extraArgs}
+                    onChange={(e) => setExtraArgs(e.target.value)}
+                    placeholder="appended to the launch command"
+                  />
                 </Field>
                 {type === "git" && (
                   <>

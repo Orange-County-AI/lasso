@@ -34,6 +34,12 @@ type LassoConfig struct {
 	// LastAgent is the AI agent chosen last time on this host (the fallback when
 	// DefaultAgent is empty).
 	LastAgent string `json:"last_agent,omitempty"`
+	// LastModels remembers the model chosen last time on this host, per agent
+	// harness (keyed by harness id). Seeds the creator's model field.
+	LastModels map[string]string `json:"last_models,omitempty"`
+	// Harnesses is the compiled-in agent registry (see harness.go): the launchable
+	// agents plus their UI metadata (plan-mode support, model suggestions).
+	Harnesses []harnessDef `json:"harnesses"`
 	// LastAgentType is the agent type chosen last time ("git"|"scratch"),
 	// preselected next time.
 	LastAgentType string `json:"last_agent_type,omitempty"`
@@ -69,6 +75,8 @@ type AgentRecord struct {
 	BaseBranch  string    `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
 	Branch      string    `yaml:"branch,omitempty" json:"branch,omitempty"`
 	Agent       string    `yaml:"agent" json:"agent"`
+	Model       string    `yaml:"model,omitempty" json:"model,omitempty"`
+	ExtraArgs   string    `yaml:"extra_args,omitempty" json:"extra_args,omitempty"`
 	Description string    `yaml:"description,omitempty" json:"description,omitempty"`
 	Notes       string    `yaml:"notes,omitempty" json:"notes,omitempty"`
 	Attachments []string  `yaml:"attachments,omitempty" json:"attachments,omitempty"`
@@ -172,6 +180,8 @@ func loadLassoConfig(host string) (*LassoConfig, error) {
 		LastRepo:      hs.LastRepo,
 		LastAgent:     hs.LastAgent,
 		LastAgentType: hs.LastAgentType,
+		LastModels:    hs.LastModels,
+		Harnesses:     harnesses,
 		Repos:         repos,
 		Agents:        agents,
 	}, nil
