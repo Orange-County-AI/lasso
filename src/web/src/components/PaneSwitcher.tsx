@@ -132,7 +132,9 @@ export function PaneSwitcher({
       .map((a) => ({ ...a, closed: true }))
   }, [activeOnly, livePanes, hist.data])
 
-  // Closed rows go after the live ones (newest live panes first, then history).
+  // Closed rows go after the live ones (newest live panes first, then closed
+  // agents newest-first — see /api/agent-history, which orders by creation time
+  // descending).
   const panes = activeOnly ? livePanes : [...livePanes, ...closedAgents]
 
   // Workspaces holding more than one pane — the only ones where the shared

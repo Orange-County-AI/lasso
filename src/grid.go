@@ -335,7 +335,11 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 	local := localHostname()
 	out := make([]gridPane, 0, len(recs))
 	known := map[string]map[string]bool{} // host -> recorded work dirs (for orphan dedup)
-	for _, ha := range recs {
+	// listAllAgents returns oldest-first; walk it in reverse so the switcher lists
+	// the most recently created agents at the top — the ones you're most likely
+	// looking for and least likely to remember a search term for.
+	for i := len(recs) - 1; i >= 0; i-- {
+		ha := recs[i]
 		label := ha.Host
 		if ha.Host == "local" {
 			label = local
