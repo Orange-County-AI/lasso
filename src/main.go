@@ -1130,7 +1130,13 @@ func outsideHerdrEnv() []string {
 // Bumped 12→14 for herdr 0.7.0 (which pongs protocol 14): the wire shapes lasso
 // uses are unchanged across the bump, so adopting it is value-only (the 0.7.0
 // plugin surface), the same as the 0.6.x line.
-const lassoHerdrProtocol = 14
+// Bumped 14→16 for herdr 0.7.3 (0.7.1 pongs protocol 15, 0.7.3 pongs 16 — both
+// verified by pinging the binaries on an isolated socket). The 0.7.1/0.7.2/0.7.3
+// releases only *add* to the socket API (layout.updated, session.snapshot,
+// pane.scroll_changed events, terminal-session bridge commands) and fix bugs — no
+// method lasso calls (ping, events.subscribe, foreground_cwd) changed shape, so
+// adopting 0.7.3 is value-only, the same as prior bumps.
+const lassoHerdrProtocol = 16
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
 // build targets, the protocol the installed herdr daemon reports over its socket,

@@ -98,11 +98,11 @@ description = "Like `dev`, but the backend talks to an ISOLATED herdr release (s
 depends = ["build"]
 shell = "bash -c"
 usage = '''
-arg "[version]" help="herdr release to smoke-test (e.g. 0.6.8); downloaded + cached on first use" default="0.6.8"
+arg "[version]" help="herdr release to smoke-test (e.g. 0.7.3); downloaded + cached on first use" default="0.7.3"
 '''
 run = '''
 set -euo pipefail
-ver="${usage_version:-0.6.8}"; ver="${ver#v}"   # accept 0.6.8 or v0.6.8
+ver="${usage_version:-0.7.3}"; ver="${ver#v}"   # accept 0.7.3 or v0.7.3
 
 # Map this machine to a herdr release asset.
 case "$(uname -s)-$(uname -m)" in
@@ -182,6 +182,6 @@ tail -n +1 -f "$logf" & tailpid=$!
 trap 'stop_herdr; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
 
 echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI http://$ip"
-echo "Settings tab should read herdr $ver / protocol 12 / compatible. Ctrl-C stops lasso AND the isolated daemon."
+echo "Settings tab should read herdr $ver / protocol 16 / compatible. Ctrl-C stops lasso AND the isolated daemon."
 cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
 '''
