@@ -13,7 +13,9 @@
 //   - the sidebar/file-viewer CSS  <- herdr's UI tokens (matches herdr's chrome)
 //   - the embedded terminal theme  <- bg/fg/cursor from the UI tokens (so the
 //     iframe blends with herdr) + the *canonical* 16-color ANSI palette for
-//     that scheme (so colored output inside the terminal looks right).
+//     that scheme (so colored output inside the terminal looks right) + a
+//     translucent-accent selection highlight (visible on every theme — see
+//     termSelectionAlpha).
 //
 // UI token values are transcribed verbatim from herdr's src/app/state.rs
 // (v0.6.4); ANSI palettes from each scheme's canonical Alacritty/iTerm export.
@@ -33,9 +35,10 @@ type uiPalette struct {
 	Text, Subtext0, Mauve, Green, Yellow, Red, Blue, Teal, Peach        string
 }
 
-// ansiPalette is a canonical 16-color terminal palette + selection bg.
+// ansiPalette is a canonical 16-color terminal palette. (The terminal's
+// selection highlight is derived from the UI accent, not stored here — see
+// xtermJSON.)
 type ansiPalette struct {
-	Sel                                                string
 	Black, Red, Green, Yellow, Blue, Magenta, Cyan     string
 	White                                              string
 	BrightBlack, BrightRed, BrightGreen, BrightYellow  string
@@ -57,7 +60,7 @@ var themes = map[string]themeDef{
 			Red: "#f38ba8", Blue: "#89b4fa", Teal: "#94e2d5", Peach: "#fab387",
 		},
 		ansi: ansiPalette{
-			Sel: "#585b70", Black: "#45475a", Red: "#f38ba8", Green: "#a6e3a1", Yellow: "#f9e2af",
+			Black: "#45475a", Red: "#f38ba8", Green: "#a6e3a1", Yellow: "#f9e2af",
 			Blue: "#89b4fa", Magenta: "#f5c2e7", Cyan: "#94e2d5", White: "#a6adc8",
 			BrightBlack: "#585b70", BrightRed: "#f37799", BrightGreen: "#89d88b", BrightYellow: "#ebd391",
 			BrightBlue: "#74a8fc", BrightMagenta: "#f2aede", BrightCyan: "#6bd7ca", BrightWhite: "#bac2de",
@@ -71,7 +74,7 @@ var themes = map[string]themeDef{
 			Red: "#f7768e", Blue: "#7aa2f7", Teal: "#7dcfff", Peach: "#ff9e64",
 		},
 		ansi: ansiPalette{
-			Sel: "#283457", Black: "#15161e", Red: "#f7768e", Green: "#9ece6a", Yellow: "#e0af68",
+			Black: "#15161e", Red: "#f7768e", Green: "#9ece6a", Yellow: "#e0af68",
 			Blue: "#7aa2f7", Magenta: "#bb9af7", Cyan: "#7dcfff", White: "#a9b1d6",
 			BrightBlack: "#414868", BrightRed: "#ff899d", BrightGreen: "#9fe044", BrightYellow: "#faba4a",
 			BrightBlue: "#8db0ff", BrightMagenta: "#c7a9ff", BrightCyan: "#a4daff", BrightWhite: "#c0caf5",
@@ -85,7 +88,7 @@ var themes = map[string]themeDef{
 			Red: "#ff5555", Blue: "#8be9fd", Teal: "#8be9fd", Peach: "#ffb86c",
 		},
 		ansi: ansiPalette{
-			Sel: "#44475a", Black: "#21222c", Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c",
+			Black: "#21222c", Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c",
 			Blue: "#bd93f9", Magenta: "#ff79c6", Cyan: "#8be9fd", White: "#f8f8f2",
 			BrightBlack: "#6272a4", BrightRed: "#ff6e6e", BrightGreen: "#69ff94", BrightYellow: "#ffffa5",
 			BrightBlue: "#d6acff", BrightMagenta: "#ff92df", BrightCyan: "#a4ffff", BrightWhite: "#ffffff",
@@ -99,7 +102,7 @@ var themes = map[string]themeDef{
 			Red: "#bf616a", Blue: "#81a1c1", Teal: "#8fbcbb", Peach: "#d08770",
 		},
 		ansi: ansiPalette{
-			Sel: "#4c566a", Black: "#3b4252", Red: "#bf616a", Green: "#a3be8c", Yellow: "#ebcb8b",
+			Black: "#3b4252", Red: "#bf616a", Green: "#a3be8c", Yellow: "#ebcb8b",
 			Blue: "#81a1c1", Magenta: "#b48ead", Cyan: "#88c0d0", White: "#e5e9f0",
 			BrightBlack: "#596377", BrightRed: "#bf616a", BrightGreen: "#a3be8c", BrightYellow: "#ebcb8b",
 			BrightBlue: "#81a1c1", BrightMagenta: "#b48ead", BrightCyan: "#8fbcbb", BrightWhite: "#eceff4",
@@ -113,7 +116,7 @@ var themes = map[string]themeDef{
 			Red: "#fb4934", Blue: "#83a598", Teal: "#8ec07c", Peach: "#fe8019",
 		},
 		ansi: ansiPalette{
-			Sel: "#665c54", Black: "#282828", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
+			Black: "#282828", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
 			Blue: "#458588", Magenta: "#b16286", Cyan: "#689d6a", White: "#a89984",
 			BrightBlack: "#928374", BrightRed: "#fb4934", BrightGreen: "#b8bb26", BrightYellow: "#fabd2f",
 			BrightBlue: "#83a598", BrightMagenta: "#d3869b", BrightCyan: "#8ec07c", BrightWhite: "#ebdbb2",
@@ -127,7 +130,7 @@ var themes = map[string]themeDef{
 			Red: "#e06c75", Blue: "#61afef", Teal: "#56b6c2", Peach: "#d19a66",
 		},
 		ansi: ansiPalette{
-			Sel: "#323844", Black: "#21252b", Red: "#e06c75", Green: "#98c379", Yellow: "#e5c07b",
+			Black: "#21252b", Red: "#e06c75", Green: "#98c379", Yellow: "#e5c07b",
 			Blue: "#61afef", Magenta: "#c678dd", Cyan: "#56b6c2", White: "#abb2bf",
 			BrightBlack: "#767676", BrightRed: "#e06c75", BrightGreen: "#98c379", BrightYellow: "#e5c07b",
 			BrightBlue: "#61afef", BrightMagenta: "#c678dd", BrightCyan: "#56b6c2", BrightWhite: "#abb2bf",
@@ -141,7 +144,7 @@ var themes = map[string]themeDef{
 			Red: "#dc322f", Blue: "#268bd2", Teal: "#2aa198", Peach: "#cb4b16",
 		},
 		ansi: ansiPalette{
-			Sel: "#073642", Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
+			Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
 			Blue: "#268bd2", Magenta: "#d33682", Cyan: "#2aa198", White: "#eee8d5",
 			BrightBlack: "#586e75", BrightRed: "#cb4b16", BrightGreen: "#586e75", BrightYellow: "#657b83",
 			BrightBlue: "#839496", BrightMagenta: "#6c71c4", BrightCyan: "#93a1a1", BrightWhite: "#fdf6e3",
@@ -155,7 +158,7 @@ var themes = map[string]themeDef{
 			Red: "#c34043", Blue: "#7e9cd8", Teal: "#7fb4ca", Peach: "#ffa066",
 		},
 		ansi: ansiPalette{
-			Sel: "#2d4f67", Black: "#090618", Red: "#c34043", Green: "#76946a", Yellow: "#c0a36e",
+			Black: "#090618", Red: "#c34043", Green: "#76946a", Yellow: "#c0a36e",
 			Blue: "#7e9cd8", Magenta: "#957fb8", Cyan: "#6a9589", White: "#c8c093",
 			BrightBlack: "#727169", BrightRed: "#e82424", BrightGreen: "#98bb6c", BrightYellow: "#e6c384",
 			BrightBlue: "#7fb4ca", BrightMagenta: "#938aa9", BrightCyan: "#7aa89f", BrightWhite: "#dcd7ba",
@@ -169,7 +172,7 @@ var themes = map[string]themeDef{
 			Red: "#eb6f92", Blue: "#31748f", Teal: "#9ccfd8", Peach: "#ea9a97",
 		},
 		ansi: ansiPalette{
-			Sel: "#403d52", Black: "#26233a", Red: "#eb6f92", Green: "#31748f", Yellow: "#f6c177",
+			Black: "#26233a", Red: "#eb6f92", Green: "#31748f", Yellow: "#f6c177",
 			Blue: "#9ccfd8", Magenta: "#c4a7e7", Cyan: "#ebbcba", White: "#e0def4",
 			BrightBlack: "#6e6a86", BrightRed: "#eb6f92", BrightGreen: "#31748f", BrightYellow: "#f6c177",
 			BrightBlue: "#9ccfd8", BrightMagenta: "#c4a7e7", BrightCyan: "#ebbcba", BrightWhite: "#e0def4",
@@ -183,7 +186,7 @@ var themes = map[string]themeDef{
 			Red: "#ff8080", Blue: "#b0b0b0", Teal: "#66ddcc", Peach: "#ffc799",
 		},
 		ansi: ansiPalette{
-			Sel: "#988049", Black: "#101010", Red: "#f5a191", Green: "#90b99f", Yellow: "#e6b99d",
+			Black: "#101010", Red: "#f5a191", Green: "#90b99f", Yellow: "#e6b99d",
 			Blue: "#aca1cf", Magenta: "#e29eca", Cyan: "#ea83a5", White: "#a0a0a0",
 			BrightBlack: "#7e7e7e", BrightRed: "#ff8080", BrightGreen: "#99ffe4", BrightYellow: "#ffc799",
 			BrightBlue: "#b9aeda", BrightMagenta: "#ecaad6", BrightCyan: "#f591b2", BrightWhite: "#ffffff",
@@ -200,7 +203,7 @@ var themes = map[string]themeDef{
 			Red: "#d75f5f", Blue: "#5f87d7", Teal: "#5fd7d7", Peach: "#d7875f",
 		},
 		ansi: ansiPalette{
-			Sel: "#444444", Black: "#000000", Red: "#cd0000", Green: "#00cd00", Yellow: "#cdcd00",
+			Black: "#000000", Red: "#cd0000", Green: "#00cd00", Yellow: "#cdcd00",
 			Blue: "#1e90ff", Magenta: "#cd00cd", Cyan: "#00cdcd", White: "#e5e5e5",
 			BrightBlack: "#7f7f7f", BrightRed: "#ff0000", BrightGreen: "#00ff00", BrightYellow: "#ffff00",
 			BrightBlue: "#5c5cff", BrightMagenta: "#ff00ff", BrightCyan: "#00ffff", BrightWhite: "#ffffff",
@@ -219,7 +222,7 @@ var themes = map[string]themeDef{
 			Red: "#d20f39", Blue: "#1e66f5", Teal: "#179299", Peach: "#fe640b",
 		},
 		ansi: ansiPalette{
-			Sel: "#acb0be", Black: "#5c5f77", Red: "#d20f39", Green: "#40a02b", Yellow: "#df8e1d",
+			Black: "#5c5f77", Red: "#d20f39", Green: "#40a02b", Yellow: "#df8e1d",
 			Blue: "#1e66f5", Magenta: "#ea76cb", Cyan: "#179299", White: "#acb0be",
 			BrightBlack: "#6c6f85", BrightRed: "#de293e", BrightGreen: "#49af3d", BrightYellow: "#eea02d",
 			BrightBlue: "#456eff", BrightMagenta: "#fe85d8", BrightCyan: "#2d9fa8", BrightWhite: "#bcc0cc",
@@ -233,7 +236,7 @@ var themes = map[string]themeDef{
 			Red: "#f52a65", Blue: "#2e7de9", Teal: "#118c74", Peach: "#b15c00",
 		},
 		ansi: ansiPalette{
-			Sel: "#99a7df", Black: "#e9e9ed", Red: "#f52a65", Green: "#587539", Yellow: "#8c6c3e",
+			Black: "#e9e9ed", Red: "#f52a65", Green: "#587539", Yellow: "#8c6c3e",
 			Blue: "#2e7de9", Magenta: "#9854f1", Cyan: "#007197", White: "#6172b0",
 			BrightBlack: "#a1a6c5", BrightRed: "#f52a65", BrightGreen: "#587539", BrightYellow: "#8c6c3e",
 			BrightBlue: "#2e7de9", BrightMagenta: "#9854f1", BrightCyan: "#007197", BrightWhite: "#3760bf",
@@ -247,7 +250,7 @@ var themes = map[string]themeDef{
 			Red: "#9d0006", Blue: "#076678", Teal: "#427b58", Peach: "#af3a03",
 		},
 		ansi: ansiPalette{
-			Sel: "#3c3836", Black: "#fbf1c7", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
+			Black: "#fbf1c7", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
 			Blue: "#458588", Magenta: "#b16286", Cyan: "#689d6a", White: "#7c6f64",
 			BrightBlack: "#928374", BrightRed: "#9d0006", BrightGreen: "#79740e", BrightYellow: "#b57614",
 			BrightBlue: "#076678", BrightMagenta: "#8f3f71", BrightCyan: "#427b58", BrightWhite: "#3c3836",
@@ -261,7 +264,7 @@ var themes = map[string]themeDef{
 			Red: "#e45649", Blue: "#4078f2", Teal: "#0184bc", Peach: "#986801",
 		},
 		ansi: ansiPalette{
-			Sel: "#ededed", Black: "#000000", Red: "#de3e35", Green: "#3f953a", Yellow: "#d2b67c",
+			Black: "#000000", Red: "#de3e35", Green: "#3f953a", Yellow: "#d2b67c",
 			Blue: "#2f5af3", Magenta: "#950095", Cyan: "#3f953a", White: "#bbbbbb",
 			BrightBlack: "#000000", BrightRed: "#de3e35", BrightGreen: "#3f953a", BrightYellow: "#d2b67c",
 			BrightBlue: "#2f5af3", BrightMagenta: "#a00095", BrightCyan: "#3f953a", BrightWhite: "#ffffff",
@@ -275,7 +278,7 @@ var themes = map[string]themeDef{
 			Red: "#dc322f", Blue: "#268bd2", Teal: "#2aa198", Peach: "#cb4b16",
 		},
 		ansi: ansiPalette{
-			Sel: "#eee8d5", Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
+			Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
 			Blue: "#268bd2", Magenta: "#d33682", Cyan: "#2aa198", White: "#bbb5a2",
 			BrightBlack: "#002b36", BrightRed: "#cb4b16", BrightGreen: "#586e75", BrightYellow: "#657b83",
 			BrightBlue: "#839496", BrightMagenta: "#6c71c4", BrightCyan: "#93a1a1", BrightWhite: "#fdf6e3",
@@ -289,7 +292,7 @@ var themes = map[string]themeDef{
 			Red: "#c84053", Blue: "#4d699b", Teal: "#4e8ca2", Peach: "#cc6d00",
 		},
 		ansi: ansiPalette{
-			Sel: "#545464", Black: "#1f1f28", Red: "#c84053", Green: "#6f894e", Yellow: "#77713f",
+			Black: "#1f1f28", Red: "#c84053", Green: "#6f894e", Yellow: "#77713f",
 			Blue: "#4d699b", Magenta: "#b35b79", Cyan: "#597b75", White: "#545464",
 			BrightBlack: "#8a8980", BrightRed: "#d7474b", BrightGreen: "#6e915f", BrightYellow: "#836f4a",
 			BrightBlue: "#6693bf", BrightMagenta: "#624c83", BrightCyan: "#5e857a", BrightWhite: "#43436c",
@@ -303,7 +306,7 @@ var themes = map[string]themeDef{
 			Red: "#b4637a", Blue: "#286983", Teal: "#56949f", Peach: "#d7827e",
 		},
 		ansi: ansiPalette{
-			Sel: "#dfdad9", Black: "#f2e9e1", Red: "#b4637a", Green: "#286983", Yellow: "#ea9d34",
+			Black: "#f2e9e1", Red: "#b4637a", Green: "#286983", Yellow: "#ea9d34",
 			Blue: "#56949f", Magenta: "#907aa9", Cyan: "#d7827e", White: "#575279",
 			BrightBlack: "#9893a5", BrightRed: "#b4637a", BrightGreen: "#286983", BrightYellow: "#ea9d34",
 			BrightBlue: "#56949f", BrightMagenta: "#907aa9", BrightCyan: "#d7827e", BrightWhite: "#575279",
@@ -442,15 +445,24 @@ func (rt *resolvedTheme) applyToken(tok, hex string) {
 	}
 }
 
-// xtermJSON builds an xterm.js ITheme: chrome (bg/fg/cursor/selection) from the
-// herdr UI tokens so the terminal blends with herdr's own theme, and the 16
-// ANSI colors from the scheme's canonical palette.
+// termSelectionAlpha is the opacity of the terminal's selection/highlight tint.
+// Selection is a *translucent* wash of the theme accent (see xtermJSON): unlike
+// an opaque color it composites over whatever cell content is underneath, so it
+// stays visible on every theme instead of vanishing when the canonical selection
+// color sits a shade off the background (e.g. tokyo-night's #283457 over
+// #1a1b26). ~40% reads as a clear band while the text below stays legible.
+const termSelectionAlpha = 0x66
+
+// xtermJSON builds an xterm.js ITheme: chrome (bg/fg/cursor) from the herdr UI
+// tokens so the terminal blends with herdr's own theme, a translucent-accent
+// selection highlight (theme-matched yet always visible — see
+// termSelectionAlpha), and the 16 ANSI colors from the scheme's canonical palette.
 func (rt resolvedTheme) xtermJSON() string {
 	a := rt.ansi
 	return `{` +
 		q("background", rt.ui.PanelBg) + "," + q("foreground", rt.ui.Text) + "," +
 		q("cursor", rt.ui.Text) + "," + q("cursorAccent", rt.ui.PanelBg) + "," +
-		q("selectionBackground", a.Sel) + "," +
+		q("selectionBackground", rgba(rt.ui.Accent, termSelectionAlpha)) + "," +
 		q("black", a.Black) + "," + q("red", a.Red) + "," + q("green", a.Green) + "," +
 		q("yellow", a.Yellow) + "," + q("blue", a.Blue) + "," + q("magenta", a.Magenta) + "," +
 		q("cyan", a.Cyan) + "," + q("white", a.White) + "," +

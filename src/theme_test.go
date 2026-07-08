@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-// The previously hardcoded Rosé Pine xterm.js ITheme — the resolved rose-pine
-// theme must reproduce it byte-for-byte so the current setup doesn't regress.
+// The resolved Rosé Pine xterm.js ITheme — a regression guard on the derivation.
+// selectionBackground is the theme accent (#c4a7e7) at termSelectionAlpha (0x66),
+// a translucent highlight that stays visible on every theme.
 const prevRosePine = `{` +
 	`"background":"#191724","foreground":"#e0def4",` +
-	`"cursor":"#e0def4","cursorAccent":"#191724","selectionBackground":"#403d52",` +
+	`"cursor":"#e0def4","cursorAccent":"#191724","selectionBackground":"#c4a7e766",` +
 	`"black":"#26233a","red":"#eb6f92","green":"#31748f","yellow":"#f6c177",` +
 	`"blue":"#9ccfd8","magenta":"#c4a7e7","cyan":"#ebbcba","white":"#e0def4",` +
 	`"brightBlack":"#6e6a86","brightRed":"#eb6f92","brightGreen":"#31748f","brightYellow":"#f6c177",` +
@@ -68,6 +69,13 @@ func TestEveryThemeResolves(t *testing.T) {
 		j := rt.xtermJSON()
 		if strings.Count(j, "#") < 19 { // bg,fg,cursor,cursorAccent,sel + 16 ansi... but some share
 			t.Errorf("%s xterm json looks short: %s", name, j)
+		}
+		// The selection highlight must be a *translucent* accent wash (8-digit
+		// #rrggbbaa), so it composites over cell content and stays visible on
+		// every theme rather than an opaque near-bg color that disappears.
+		wantSel := `"selectionBackground":"` + rgba(rt.ui.Accent, termSelectionAlpha) + `"`
+		if !strings.Contains(j, wantSel) {
+			t.Errorf("%s selection not translucent accent (want %s) in:\n%s", name, wantSel, j)
 		}
 		if !strings.Contains(rt.cssVars(), "--accent-dim:") {
 			t.Errorf("%s missing accent-dim", name)
