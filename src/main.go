@@ -2194,6 +2194,17 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	// Force revalidation on every fetch. http.ServeContent only sets
+	// Last-Modified; with no Cache-Control the browser (and any proxy in front,
+	// e.g. the Cloudflare tunnel exposing lasso.knowsuchagency.ai) applies
+	// heuristic freshness and keeps serving a stale copy after the file is
+	// rewritten on disk — the reported "old content when I reopen the file". With
+	// no-cache the cached copy is still stored but must be revalidated first, so
+	// ServeContent's If-Modified-Since handling answers 304 when unchanged (cheap,
+	// no body — matters for remote SFTP reads) and 200 with fresh bytes once it
+	// changes. The viewer's poll and binary-preview signature checks then see the
+	// real on-disk state.
+	w.Header().Set("Cache-Control", "no-cache")
 	// `download=1` forces a browser save (Content-Disposition: attachment) and
 	// bypasses the preview cap — the viewer's text fetch omits it, so previews
 	// still stay bounded.
