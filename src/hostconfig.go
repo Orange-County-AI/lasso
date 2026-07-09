@@ -142,6 +142,21 @@ func reposListWith(be Backend, reposRoot string, repoState map[string]*RepoConfi
 			repos = append(repos, re)
 		}
 	}
+	// Disambiguate name collisions: when two repos share a basename (e.g.
+	// .../52labs/bot and .../ocai/bot), prepend the parent directory so the
+	// picker/search shows "52labs/bot" vs "ocai/bot" instead of two bare "bot"s.
+	counts := map[string]int{}
+	for _, re := range repos {
+		counts[re.Name]++
+	}
+	for i := range repos {
+		if counts[repos[i].Name] > 1 {
+			parent := filepath.Base(filepath.Dir(repos[i].Path))
+			if parent != "" && parent != "." && parent != string(filepath.Separator) {
+				repos[i].Name = parent + "/" + repos[i].Name
+			}
+		}
+	}
 	// Sort by name; break ties on path since two roots can hold same-named repos.
 	sort.Slice(repos, func(i, j int) bool {
 		if repos[i].Name != repos[j].Name {

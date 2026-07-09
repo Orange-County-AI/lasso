@@ -45,6 +45,20 @@ func TestReposListWithDedupesRepeatedRoot(t *testing.T) {
 	}
 }
 
+func TestReposListWithDisambiguatesNameCollisions(t *testing.T) {
+	be := newMemBackend()
+	be.addRepo("/home/me/52labs/bot")
+	be.addRepo("/home/me/ocai/bot")
+	be.addRepo("/home/me/52labs/uniq") // no collision — stays bare
+
+	_, repos := reposListWith(be, "/home/me/52labs\n/home/me/ocai", nil)
+	got := strings.Join(names(repos), ",")
+	// Colliding "bot" repos get their parent dir prepended; "uniq" stays bare.
+	if got != "52labs/bot,ocai/bot,uniq" {
+		t.Errorf("repos = %q, want 52labs/bot,ocai/bot,uniq", got)
+	}
+}
+
 func TestSplitReposRoots(t *testing.T) {
 	got := splitReposRoots("  ~/projects \n\n ~/work \n")
 	if len(got) != 2 || got[0] != "~/projects" || got[1] != "~/work" {
