@@ -153,13 +153,13 @@ export function CreateAgentDialog({
   // restore it to the trigger (which would force the user to click the pane).
   const createdRef = React.useRef(false)
 
-  // Cmd/Ctrl+O opens the creator. Bound to the non-"button" variants (the
+  // Cmd+O opens the creator. Bound to the non-"button" variants (the
   // header / floating triggers) so the shortcut has a single owner even when the
   // Agents-tab button is also mounted.
   React.useEffect(() => {
     if (variant === "button") return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
+      if (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "o") {
         e.preventDefault()
         setOpen(true)
       }
