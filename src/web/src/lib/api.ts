@@ -92,6 +92,9 @@ export interface UIState {
   // survives navigating away and back (or reloading).
   grid_selected: string[]
   sidebar_collapsed: boolean
+  // Files tab folder-click behavior: true re-roots the tree into the folder,
+  // false expands it in place. Defaults true (see getUIState in db.go).
+  files_click_navigates: boolean
 }
 
 export interface FileEntry {

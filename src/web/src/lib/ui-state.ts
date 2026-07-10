@@ -14,6 +14,7 @@ const DEFAULTS: UIState = {
   grid_hidden_hosts: [],
   grid_selected: [],
   sidebar_collapsed: false,
+  files_click_navigates: true,
 }
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).

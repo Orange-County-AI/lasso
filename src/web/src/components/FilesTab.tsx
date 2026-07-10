@@ -1,3 +1,4 @@
+import { FolderInput, ListTree } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import {
@@ -35,6 +36,7 @@ import {
 import { api, type FileEntry } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { fmtSize } from "@/lib/format"
+import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // An entry the user has targeted with a context-menu action. `parent` is the
@@ -71,9 +73,11 @@ const hasChangesUnder = (changes: Map<string, FileChange>, dir: string) => {
 }
 
 // The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
-// active pane (by default). Clicking a directory expands/collapses it in place;
-// clicking a file opens it in the full-column viewer (owned by the parent so
-// its highlight clears on close). Right-clicking an entry offers rename/delete.
+// active pane (by default). Clicking a directory either re-roots the tree into
+// it or expands it in place, per the persisted files_click_navigates pref
+// (toggled from the header); clicking a file opens it in the full-column viewer
+// (owned by the parent so its highlight clears on close). Right-clicking an
+// entry offers rename/delete.
 export function FilesTab({
   viewerPath,
   onOpenFile,
@@ -86,6 +90,9 @@ export function FilesTab({
   changes: Map<string, FileChange>
 }) {
   const { activeCwd } = useApp()
+  // When true, clicking a folder re-roots the tree into it; when false it
+  // expands in place. Persisted server-side and toggled from the header.
+  const clickNavigates = useUIState().files_click_navigates
   const [curPath, setCurPath] = React.useState<string | null>(null)
   const [follow, setFollow] = React.useState(true)
   const [pathValue, setPathValue] = React.useState("")
@@ -361,7 +368,13 @@ export function FilesTab({
             change={change}
             dirChanged={dirChanged}
             dropActive={dropTarget === target}
-            onClick={() => (e.dir ? toggleDir(full) : onOpenFile(full))}
+            onClick={() =>
+              e.dir
+                ? clickNavigates
+                  ? navigate(full)
+                  : toggleDir(full)
+                : onOpenFile(full)
+            }
             onRename={() => {
               setRenameTarget({ name: e.name, full, dir: e.dir, parent: dir })
               setRenameValue(e.name)
@@ -405,6 +418,31 @@ export function FilesTab({
           }}
         />
         <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0"
+                aria-label="Toggle folder-click behavior"
+                aria-pressed={clickNavigates}
+                onClick={() =>
+                  patchUIState({ files_click_navigates: !clickNavigates })
+                }
+              >
+                {clickNavigates ? (
+                  <FolderInput className="size-4" />
+                ) : (
+                  <ListTree className="size-4" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {clickNavigates
+                ? "folder click: navigate in — switch to expand in place"
+                : "folder click: expand in place — switch to navigate in"}
+            </TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Checkbox
