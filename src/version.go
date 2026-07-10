@@ -11,7 +11,7 @@ import "runtime/debug"
 // A var (not const) so release builds can stamp the exact tag via
 // `-ldflags "-X main.lassoSemver=<version>"` (see .github/workflows/release.yml);
 // the committed value is the source/dev default.
-var lassoSemver = "2.5.7"
+var lassoSemver = "2.5.8"
 
 // lassoVersion is the human-facing build identity: the hand-set semver plus the
 // exact commit it was built from, e.g. "0.1.0 (dc1e696)". The semver says
