@@ -38,7 +38,7 @@ func callVersion(t *testing.T) versionInfo {
 // matching arm here changes and the test fails.
 func TestVersionCompatibleExactMatch(t *testing.T) {
 	stubPinger(t, func() (string, int, error) {
-		return "0.7.3", lassoHerdrProtocol, nil
+		return "0.7.4", lassoHerdrProtocol, nil
 	})
 	vi := callVersion(t)
 	if !vi.Compatible {
@@ -47,7 +47,7 @@ func TestVersionCompatibleExactMatch(t *testing.T) {
 	if vi.LassoProtocol != lassoHerdrProtocol || vi.HerdrProtocol != lassoHerdrProtocol {
 		t.Errorf("protocols = lasso %d / herdr %d", vi.LassoProtocol, vi.HerdrProtocol)
 	}
-	if vi.HerdrVersion != "0.7.3" {
+	if vi.HerdrVersion != "0.7.4" {
 		t.Errorf("herdr_version = %q", vi.HerdrVersion)
 	}
 	if vi.Err != "" {

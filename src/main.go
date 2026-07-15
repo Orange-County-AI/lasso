@@ -1136,6 +1136,11 @@ func outsideHerdrEnv() []string {
 // pane.scroll_changed events, terminal-session bridge commands) and fix bugs — no
 // method lasso calls (ping, events.subscribe, foreground_cwd) changed shape, so
 // adopting 0.7.3 is value-only, the same as prior bumps.
+// Unchanged at 16 for herdr 0.7.4 (verified by pinging the 0.7.4 binary on an
+// isolated socket — it pongs protocol 16). 0.7.4 only adds sidebar row layouts,
+// popup panes, and copy-mode search, and its socket-API additions (pane/workspace
+// metadata reporting) don't touch the methods lasso calls, so adopting it needs
+// no constant change — only the pins below track the release.
 const lassoHerdrProtocol = 16
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
