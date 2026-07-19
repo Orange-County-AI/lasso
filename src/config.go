@@ -85,7 +85,30 @@ type AgentRecord struct {
 	WorkspaceID string    `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty"`
 	RootPane    string    `yaml:"root_pane,omitempty" json:"root_pane,omitempty"`
 	CreatedAt   time.Time `yaml:"created_at" json:"created_at"`
+	// BootStatus tracks the async boot that runs after create returns (see
+	// createAgent / bootAgent). create persists the record with BootBooting, then
+	// a background goroutine copies files, runs setup, and launches the agent CLI —
+	// flipping this to BootReady on success or BootFailed on error. A failed boot
+	// is surfaced as the agent's status (see agentInfoFrom) so get_agent/list_agents
+	// show it rather than a phantom healthy agent. Empty on legacy records.
+	BootStatus string `yaml:"boot_status,omitempty" json:"boot_status,omitempty"`
+	// BootError is the reason a boot failed, kept for get_agent/list_agents. Empty
+	// unless BootStatus is BootFailed.
+	BootError string `yaml:"boot_error,omitempty" json:"boot_error,omitempty"`
 }
+
+// Boot status values for AgentRecord.BootStatus.
+const (
+	// BootBooting: create returned; the async boot (file copy, setup, CLI launch)
+	// is still running. Not surfaced as a status string — the agent's live herdr
+	// status takes over as soon as the CLI comes up.
+	BootBooting = "booting"
+	// BootReady: the async boot finished launching the agent CLI.
+	BootReady = "ready"
+	// BootFailed: the async boot errored (pane gone, setup/launch RPC failed). The
+	// agent never came up; surfaced as status "failed".
+	BootFailed = "failed"
+)
 
 // legacyConfig mirrors the old ~/.lasso/config.yaml so migrateFromYAML can read
 // it. The live LassoConfig dropped its yaml tags, so it can't unmarshal the old

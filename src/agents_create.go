@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -372,12 +373,17 @@ type createErr struct {
 
 func (e *createErr) Error() string { return e.err.Error() }
 
-// createAgent runs the full New-Agent flow on backend b (host = b.Name()):
-// composes the branch, creates the worktree/workspace, copies repo files, moves
-// attachments, launches the agent in its root pane (async), and persists the
-// record. Shared by serveCreateAgent (active host) and the MCP create_agent tool
-// (any host, via gridHostBackend) — so every herdr/file call goes through b
-// rather than the package-level helpers that always hit the active host.
+// createAgent runs the synchronous half of the New-Agent flow on backend b (host
+// = b.Name()): it composes the branch, creates the worktree/workspace, and
+// persists the agent record — then returns as soon as those durable facts exist
+// (the id, workspace, and root pane the caller needs). The slow boot work —
+// copying repo files, moving attachments, running setup, launching the agent CLI,
+// and waiting for its pane — happens afterward in bootAgent, off the response's
+// critical path, so the create_agent tool honors its "returns immediately" promise
+// even when the boot is slow. Shared by serveCreateAgent (active host) and the MCP
+// create_agent tool (any host, via gridHostBackend) — so every herdr/file call
+// goes through b rather than the package-level helpers that always hit the active
+// host.
 func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.Title = strings.TrimSpace(req.Title)
@@ -391,12 +397,6 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		req.Agent = "claude"
 	}
 	host := b.Name()
-	// The files-to-copy and setup commands are properties of the repo (and the
-	// scratch default), configured in Settings — not per-agent. Read them from
-	// the target host's OWN settings (its lasso.db, via the provider) so a remote
-	// host's worktree is set up from its own configuration. Best-effort: a setup
-	// we can't read just means none runs, never a failed create.
-	defaults, _ := hostDefaults(host)
 	slug := titleSlug(req.Title)
 
 	rec := AgentRecord{
@@ -411,10 +411,12 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		Attachments: req.Attachments,
 		PlanMode:    req.PlanMode,
 		CreatedAt:   time.Now(),
+		// The agent's CLI is launched asynchronously by bootAgent after we return,
+		// so the record starts life "booting"; bootAgent flips it to ready/failed.
+		BootStatus: BootBooting,
 	}
 
 	var rootPane string
-	var setup string
 
 	switch req.Type {
 	case "git":
@@ -466,12 +468,6 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
 		rootPane = pane
 
-		// Copy the repo's configured files into the worktree and run its setup
-		// script before the agent (both per-repo settings, keyed by host+repo).
-		rc, _ := hostRepoConfig(host, repo)
-		copyRepoFiles(b, repo, workDir, rc.CopyFiles)
-		setup = rc.Setup
-
 	case "scratch":
 		// A scratch agent has no branch to carry a random suffix, so append one to
 		// the dir itself — two same-titled scratch agents then get distinct dirs
@@ -492,37 +488,15 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		ws, pane := parseCreateResult(res)
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
 		rootPane = pane
-		setup = defaults.ScratchSetup
 
 	default:
 		return AgentRecord{}, &createErr{http.StatusBadRequest, errors.New(`type must be "git" or "scratch"`)}
 	}
 
-	// Move staged attachments into the work dir; write notes to NOTES.md.
-	moveAttachments(b, req.UploadDir, req.Attachments, rec.WorkDir)
-	if rec.Notes != "" {
-		_ = b.WriteFile(filepath.Join(rec.WorkDir, "NOTES.md"), []byte(rec.Notes+"\n"), 0o644)
-	}
-
-	// Launch: run the setup script (if any), then the agent command, in the root
-	// pane's shell — the equivalent of the `herdr pane run` recipe. Done in a
-	// goroutine (so create returns immediately) that first waits for the shell to
-	// settle: a freshly-spawned pane is still sourcing its rc (mise/fnox, etc.,
-	// slow over SSH on a remote host) and types sent into it before it's ready get
-	// their leading characters eaten. The backend is captured so the launch always
-	// targets the host the agent was created on, even if the active host changes.
-	if rootPane != "" {
-		cmd := agentCommand(req.Agent, launchOpts{
-			planMode:  rec.PlanMode,
-			model:     rec.Model,
-			extraArgs: rec.ExtraArgs,
-			prompt:    agentPrompt(rec),
-		})
-		go launchAgentInPane(b, rootPane, setup, cmd)
-	}
-
-	// Persist this host's remembered selections, then append the record. Errors
-	// here are non-fatal: the agent is already running, so we still return it.
+	// Persist this host's remembered selections, then append the record. The record
+	// must land BEFORE the async boot starts, so bootAgent can update its status
+	// without racing this write (and a failed boot is never lost). A save failure is
+	// fatal — an agent we can't recover from the log is worse than none.
 	if req.Type == "git" {
 		_ = setLastRepo(host, rec.Repo)
 		_ = setLastBaseBranch(host, rec.Repo, rec.BaseBranch)
@@ -535,7 +509,62 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	if err := appendAgent(host, rec); err != nil {
 		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
 	}
+
+	// Everything past here — staging repo files/attachments/notes into the work
+	// dir, running the setup script, launching the agent CLI, and waiting for its
+	// pane to come up — is slow boot work, not a durable fact the caller needs. Run
+	// it in the background so create returns as soon as the worktree, record, and
+	// root pane exist (the contract the create_agent tool promises). bootAgent
+	// records its own outcome onto the persisted row; b is captured so the boot
+	// always targets the host the agent was created on, even if the active host
+	// changes. A pane-less create (herdr returned no root pane) has nowhere to boot,
+	// so there's nothing to launch.
+	if rootPane != "" {
+		go bootAgent(b, host, rec, req.UploadDir)
+	}
 	return rec, nil
+}
+
+// bootAgent runs an agent's boot after createAgent has returned: it stages the
+// work dir (repo files, attachments, notes), runs the repo/scratch setup script,
+// then launches the agent CLI in the root pane. It records the outcome on the
+// persisted record — BootReady on success, BootFailed (with the error) otherwise
+// — so a boot that never comes up surfaces as a "failed" agent in get_agent /
+// list_agents instead of a phantom healthy one. All the file/setup reads are
+// best-effort and host-scoped (host = b.Name()); only the CLI launch is treated
+// as the boot's success/failure signal.
+func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
+	// The files-to-copy and setup commands are per-repo (and per-scratch-default)
+	// Settings, read from the target host's OWN lasso.db. Best-effort: a config we
+	// can't read just means no copy/setup runs, never a failed boot.
+	var setup string
+	switch rec.Type {
+	case "git":
+		rc, _ := hostRepoConfig(host, rec.Repo)
+		copyRepoFiles(b, rec.Repo, rec.WorkDir, rc.CopyFiles)
+		setup = rc.Setup
+	case "scratch":
+		defaults, _ := hostDefaults(host)
+		setup = defaults.ScratchSetup
+	}
+	// Move staged attachments into the work dir; write notes to NOTES.md.
+	moveAttachments(b, uploadDir, rec.Attachments, rec.WorkDir)
+	if rec.Notes != "" {
+		_ = b.WriteFile(filepath.Join(rec.WorkDir, "NOTES.md"), []byte(rec.Notes+"\n"), 0o644)
+	}
+
+	cmd := agentCommand(rec.Agent, launchOpts{
+		planMode:  rec.PlanMode,
+		model:     rec.Model,
+		extraArgs: rec.ExtraArgs,
+		prompt:    agentPrompt(rec),
+	})
+	if err := launchAgentInPane(b, rec.RootPane, setup, cmd); err != nil {
+		log.Printf("agent %s on %s: boot failed: %v", rec.ID, host, err)
+		_ = updateAgentBootStatus(rec.ID, host, BootFailed, err.Error())
+		return
+	}
+	_ = updateAgentBootStatus(rec.ID, host, BootReady, "")
 }
 
 // parseCreateResult pulls the workspace_id and root pane_id out of a
@@ -741,17 +770,28 @@ func agentPrompt(rec AgentRecord) string {
 // sourcing its rc, and characters typed before it's ready get their leading
 // bytes eaten (e.g. "bun i" arriving as "i"). Runs on b — the backend the agent
 // was created on — so it never targets the wrong host if the active one changes.
-func launchAgentInPane(b Backend, paneID, setup, agentCmd string) {
+//
+// It returns an error when a pane write fails — the pane is gone or the herdr RPC
+// itself errored, i.e. the agent never got its launch command and won't come up.
+// bootAgent turns that into a BootFailed status. waitPaneReady and the trust
+// auto-accept stay best-effort (a slow shell or an absent trust dialog is normal),
+// so they don't fail the boot on their own.
+func launchAgentInPane(b Backend, paneID, setup, agentCmd string) error {
 	waitPaneReady(b, paneID)
 	if s := strings.TrimSpace(setup); s != "" {
-		paneRun(b, paneID, s)
+		if err := paneRun(b, paneID, s); err != nil {
+			return fmt.Errorf("run setup: %w", err)
+		}
 	}
-	paneRun(b, paneID, agentCmd)
+	if err := paneRun(b, paneID, agentCmd); err != nil {
+		return fmt.Errorf("launch agent: %w", err)
+	}
 	// Both claude and codex show a per-directory trust dialog at boot that their
 	// --dangerously-* flags do NOT bypass, leaving the agent blocked. Auto-accept
 	// it so the agent boots straight into the task (the prompt rode along as a CLI
 	// arg, so it proceeds once trust is granted).
 	confirmAgentTrust(b, paneID)
+	return nil
 }
 
 // waitPaneReady blocks until the pane's visible output stops changing (the shell
@@ -794,12 +834,15 @@ func waitPaneReady(b Backend, paneID string) {
 // paneRun sends a command line into a pane's shell (text + Enter) — the
 // pane.send_text behind `herdr pane run`. Targets a cooked-mode shell, where a
 // trailing "\n" ends the line. For submitting to an interactive agent TUI use
-// paneSubmit instead — see why there.
-func paneRun(b Backend, paneID, command string) {
-	_, _ = b.HerdrCall("pane.send_text", map[string]any{
+// paneSubmit instead — see why there. Returns the herdr RPC error so the caller
+// (launchAgentInPane) can tell a boot that never reached the pane from one that
+// did.
+func paneRun(b Backend, paneID, command string) error {
+	_, err := b.HerdrCall("pane.send_text", map[string]any{
 		"pane_id": paneID,
 		"text":    command + "\n",
 	})
+	return err
 }
 
 // paneSubmit types text into an interactive agent's pane (claude/codex TUI) and

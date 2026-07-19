@@ -100,6 +100,7 @@ type agentInfo struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	RootPane    string `json:"root_pane,omitempty"`
 	Status      string `json:"status,omitempty"`
+	BootError   string `json:"boot_error,omitempty"`
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -108,8 +109,21 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 		ID: rec.ID, Host: host, Title: rec.Title, Type: rec.Type, Agent: rec.Agent,
 		Model: rec.Model, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
-		Status: status, CreatedAt: rec.CreatedAt.Format(time.RFC3339),
+		Status: surfacedStatus(rec, status), BootError: rec.BootError,
+		CreatedAt: rec.CreatedAt.Format(time.RFC3339),
 	}
+}
+
+// surfacedStatus reconciles an agent's live herdr pane status with the outcome
+// of its async boot. A failed boot (the CLI never launched) is terminal and must
+// win, so a later get_agent/list_agents shows "failed" instead of a phantom
+// healthy agent — even if a zombie pane still reports idle. Otherwise the live
+// herdr status is authoritative (it means the agent actually came up).
+func surfacedStatus(rec AgentRecord, herdrStatus string) string {
+	if rec.BootStatus == BootFailed {
+		return "failed"
+	}
+	return herdrStatus
 }
 
 // paneAgentStatus returns the herdr agent_status for a pane (working/idle/

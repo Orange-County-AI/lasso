@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS agents (
   work_dir     TEXT NOT NULL DEFAULT '',
   workspace_id TEXT NOT NULL DEFAULT '',
   root_pane    TEXT NOT NULL DEFAULT '',
-  created_at   TEXT NOT NULL DEFAULT ''
+  created_at   TEXT NOT NULL DEFAULT '',
+  boot_status  TEXT NOT NULL DEFAULT '',
+  boot_error   TEXT NOT NULL DEFAULT ''
 );
 `
 
@@ -114,6 +116,8 @@ func openDB() error {
 		`ALTER TABLE host_state ADD COLUMN last_models TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN extra_args TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN boot_status TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN boot_error TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := h.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			h.Close()
@@ -355,11 +359,26 @@ func appendAgent(host string, rec AgentRecord) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO agents(id, host, title, type, repo, base_branch, branch, agent, model, extra_args,
-			description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at,
+			boot_status, boot_error)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.ID, host, rec.Title, rec.Type, rec.Repo, rec.BaseBranch, rec.Branch, rec.Agent,
 		rec.Model, rec.ExtraArgs, rec.Description, rec.Notes, string(att), boolToInt(rec.PlanMode),
-		rec.WorkDir, rec.WorkspaceID, rec.RootPane, rec.CreatedAt.Format(time.RFC3339Nano))
+		rec.WorkDir, rec.WorkspaceID, rec.RootPane, rec.CreatedAt.Format(time.RFC3339Nano),
+		rec.BootStatus, rec.BootError)
+	return err
+}
+
+// updateAgentBootStatus records the outcome of an agent's async boot (see
+// bootAgent). Scoped by id+host since ids are only unique within a host. Best
+// effort: a persist failure here just leaves the record at its prior status.
+func updateAgentBootStatus(id, host, status, bootErr string) error {
+	if db == nil {
+		return nil // db closed out from under a late boot goroutine (e.g. in tests)
+	}
+	_, err := db.Exec(
+		`UPDATE agents SET boot_status=?, boot_error=? WHERE id=? AND host=?`,
+		status, bootErr, id, host)
 	return err
 }
 
@@ -367,7 +386,7 @@ func appendAgent(host string, rec AgentRecord) error {
 func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
 		`SELECT id, title, type, repo, base_branch, branch, agent, model, extra_args, description, notes,
-			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at
+			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
 		 FROM agents WHERE host=? ORDER BY created_at`, host)
 	if err != nil {
 		return nil, err
@@ -380,7 +399,7 @@ func listAgents(host string) ([]AgentRecord, error) {
 		var plan int
 		if err := rows.Scan(&rec.ID, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
 			&rec.Branch, &rec.Agent, &rec.Model, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
-			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created); err != nil {
+			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(att), &rec.Attachments)
@@ -404,7 +423,7 @@ type hostAgent struct {
 func listAllAgents() ([]hostAgent, error) {
 	rows, err := db.Query(
 		`SELECT id, host, title, type, repo, base_branch, branch, agent, model, extra_args, description, notes,
-			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at
+			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
 		 FROM agents ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -417,7 +436,7 @@ func listAllAgents() ([]hostAgent, error) {
 		var plan int
 		if err := rows.Scan(&rec.ID, &host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
 			&rec.Branch, &rec.Agent, &rec.Model, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
-			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created); err != nil {
+			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(att), &rec.Attachments)
