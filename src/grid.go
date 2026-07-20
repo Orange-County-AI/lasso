@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -37,12 +38,16 @@ func gridTermSock(token string) string {
 // grid backend pool — herdr RPC to any compatible host without switching active
 // ---------------------------------------------------------------------------
 
-// gridPoolEntry is a cached remote backend used only for herdr RPC (no SFTP — it
-// stays lazy and never opens). lastUsed drives idle reaping so connections (and
-// their SSH control masters) don't linger after the Grid tab is closed.
+// gridPoolEntry is a cached remote backend for herdr RPC, grid terminal
+// attaches, and the file ops that target a selected (non-active) host — the
+// upload/paste handlers open its SFTP lazily via reqHostBackend. lastUsed
+// drives idle reaping so connections (and their SSH control masters) don't
+// linger after the Grid tab is closed; lastOK throttles the per-access
+// liveness check (see gridHostBackend).
 type gridPoolEntry struct {
 	backend  *remoteBackend
 	lastUsed time.Time
+	lastOK   time.Time // last successful liveness verification
 }
 
 var gridPool struct {
@@ -57,10 +62,24 @@ var gridPool struct {
 // log spam) with recurring windows where a grid op landed mid-reconnect.
 const gridBackendIdle = 5 * time.Minute
 
+// gridHealthEvery throttles the pooled-backend liveness check: a cache hit
+// pings the host's forwarded socket at most this often. Between checks a dead
+// connection surfaces as op errors; the next checked access (≤ one grid poll
+// away) heals it.
+const gridHealthEvery = 10 * time.Second
+
 // gridHostBackend returns a Backend for RPC against host without disturbing the
 // active backend: "local" → a localBackend on the local socket; the active host →
 // the live active backend (reuses its already-forwarded socket, no new SSH); any
 // other compatible remote → a lazily-created, idle-reaped remoteBackend.
+//
+// A cached backend is liveness-checked (throttled by gridHealthEvery) before
+// being handed out: its SSH master can die out from under it — network drop,
+// remote sshd restart, laptop sleep — and a pool that keeps serving the corpse
+// turns one dead connection into every grid op on that host failing until the
+// idle reaper happens by. A dead entry is dropped (killing the grid terminals
+// that streamed over its master — they're dead anyway, and the frontend
+// keepalive re-attaches them) and a fresh connection is dialed in its place.
 func gridHostBackend(host string) (Backend, error) {
 	if host == "local" {
 		return &localBackend{sock: *herdrSock}, nil
@@ -69,14 +88,48 @@ func gridHostBackend(host string) (Backend, error) {
 		return cur, nil
 	}
 	gridPool.mu.Lock()
-	defer gridPool.mu.Unlock()
 	if gridPool.entries == nil {
 		gridPool.entries = map[string]*gridPoolEntry{}
 	}
 	if e := gridPool.entries[host]; e != nil {
 		e.lastUsed = time.Now()
-		return e.backend, nil
+		fresh := time.Since(e.lastOK) < gridHealthEvery
+		b := e.backend
+		gridPool.mu.Unlock()
+		if fresh {
+			return b, nil
+		}
+		if _, _, err := herdrPing(b.HerdrSock()); err == nil {
+			gridPool.mu.Lock()
+			if e := gridPool.entries[host]; e != nil && e.backend == b {
+				e.lastOK = time.Now()
+			}
+			gridPool.mu.Unlock()
+			return b, nil
+		}
+		log.Printf("grid:     %s connection unhealthy — reconnecting", host)
+		gridPoolDrop(host, b)
+	} else {
+		gridPool.mu.Unlock()
 	}
+
+	// Dial (or wait for a concurrent dial of) a fresh connection. The per-host
+	// mutex — never the global pool lock, which must stay cheap for touch/evict/
+	// reap — serializes same-host dials: a new backend reuses the SAME PID+tag
+	// socket paths, so two dials at once (or a dial racing a teardown) would
+	// clobber each other's control master.
+	mu := gridDialMu(host)
+	mu.Lock()
+	defer mu.Unlock()
+	gridPool.mu.Lock()
+	if e := gridPool.entries[host]; e != nil { // a concurrent dialer beat us
+		e.lastUsed = time.Now()
+		b := e.backend
+		gridPool.mu.Unlock()
+		return b, nil
+	}
+	gridPool.mu.Unlock()
+
 	hi, ok := findHost(host)
 	if !ok || !hi.Reachable || !hi.Running || !hi.Compatible {
 		return nil, fmt.Errorf("host %s not available", host)
@@ -86,9 +139,75 @@ func gridHostBackend(host string) (Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	gridPool.entries[host] = &gridPoolEntry{backend: rb, lastUsed: time.Now()}
+	gridPool.mu.Lock()
+	gridPool.entries[host] = &gridPoolEntry{backend: rb, lastUsed: time.Now(), lastOK: time.Now()}
+	gridPool.mu.Unlock()
 	startGridReaper()
 	return rb, nil
+}
+
+// gridDialMu returns the per-host mutex serializing pool dials/teardowns for
+// one alias (see gridHostBackend).
+func gridDialMu(host string) *sync.Mutex {
+	gridDials.mu.Lock()
+	defer gridDials.mu.Unlock()
+	if gridDials.byHost == nil {
+		gridDials.byHost = map[string]*sync.Mutex{}
+	}
+	m := gridDials.byHost[host]
+	if m == nil {
+		m = &sync.Mutex{}
+		gridDials.byHost[host] = m
+	}
+	return m
+}
+
+var gridDials struct {
+	mu     sync.Mutex
+	byHost map[string]*sync.Mutex
+}
+
+// gridPoolDrop removes host's pool entry if it still holds b (a concurrent
+// healer may have already replaced it), closing b and releasing the grid
+// terminals that streamed over its SSH master. The close is synchronous, under
+// the host's dial mutex: the redial that typically follows reuses the same
+// socket paths, and an async teardown's `ssh -O exit` landing after the new
+// master bound them would kill the fresh connection.
+func gridPoolDrop(host string, b *remoteBackend) {
+	gridPool.mu.Lock()
+	e := gridPool.entries[host]
+	if e != nil && e.backend == b {
+		delete(gridPool.entries, host)
+	} else {
+		e = nil
+	}
+	gridPool.mu.Unlock()
+	if e != nil {
+		releaseGridTermsForHost(host)
+		mu := gridDialMu(host)
+		mu.Lock()
+		_ = b.Close()
+		mu.Unlock()
+	}
+}
+
+// gridPoolHas reports whether a pooled connection to host is currently held.
+func gridPoolHas(host string) bool {
+	gridPool.mu.Lock()
+	defer gridPool.mu.Unlock()
+	_, ok := gridPool.entries[host]
+	return ok
+}
+
+// gridPoolHosts snapshots the aliases with a pooled connection.
+func gridPoolHosts() []string {
+	gridPool.mu.Lock()
+	defer gridPool.mu.Unlock()
+	hosts := make([]string, 0, len(gridPool.entries))
+	for h := range gridPool.entries {
+		hosts = append(hosts, h)
+	}
+	return hosts
 }
 
 // gridPoolEvict closes and drops any pooled backend for host. Called when the
@@ -103,7 +222,15 @@ func gridPoolEvict(host string) {
 	gridPool.mu.Unlock()
 	if e != nil {
 		releaseGridTermsForHost(host)
-		go e.backend.Close()
+		// Close under the host's dial mutex so a redial (which reuses the same
+		// socket paths) can't start until this teardown's `ssh -O exit` and
+		// socket removal have finished.
+		go func() {
+			mu := gridDialMu(host)
+			mu.Lock()
+			_ = e.backend.Close()
+			mu.Unlock()
+		}()
 	}
 }
 
@@ -136,7 +263,11 @@ func reapGridBackends() {
 		}
 	}
 	gridTerms.mu.Unlock()
-	var dead []*remoteBackend
+	type deadEntry struct {
+		host    string
+		backend *remoteBackend
+	}
+	var dead []deadEntry
 	gridPool.mu.Lock()
 	for host, e := range gridPool.entries {
 		if inUse[host] {
@@ -144,13 +275,18 @@ func reapGridBackends() {
 			continue
 		}
 		if now.Sub(e.lastUsed) > gridBackendIdle {
-			dead = append(dead, e.backend)
+			dead = append(dead, deadEntry{host, e.backend})
 			delete(gridPool.entries, host)
 		}
 	}
 	gridPool.mu.Unlock()
-	for _, b := range dead {
-		_ = b.Close()
+	for _, d := range dead {
+		// Same dial-mutex discipline as gridPoolEvict: a concurrent redial
+		// reuses this host's socket paths and must not race the teardown.
+		mu := gridDialMu(d.host)
+		mu.Lock()
+		_ = d.backend.Close()
+		mu.Unlock()
 	}
 }
 
@@ -214,10 +350,14 @@ func invalidateGridCache() {
 }
 
 // gridHostAllowed reports whether host is one we may drive: local, the active
-// host, or a discovered reachable+compatible remote. Guards every grid mutation
-// so a bogus alias can't make us connect out.
+// host, a host we already hold a pooled connection to, or a discovered
+// reachable+compatible remote. Guards every grid mutation so a bogus alias
+// can't make us connect out. The pool check keeps a connected host usable
+// through a transiently-failed discovery probe (e.g. a saturated sshd): the
+// live connection is better evidence than a flapped probe, and without it the
+// probe cache's 30s of "unreachable" would reject attaches and drop cells.
 func gridHostAllowed(host string) bool {
-	if host == "local" || host == curBackend().Name() {
+	if host == "local" || host == curBackend().Name() || gridPoolHas(host) {
 		return true
 	}
 	hi, ok := findHost(host)
@@ -629,15 +769,67 @@ type gridTarget struct {
 	label string
 }
 
+// gridLastGood remembers each host's most recent successful pane listing so a
+// transient failure — a dead SSH master caught mid-heal, a flapped discovery
+// probe — degrades to stale panes plus an error instead of blanking the host
+// out of the grid (which unmounted its cells and dropped it from the pane
+// rail). A host that stays gone ages out after gridLastGoodTTL.
+var gridLastGood struct {
+	mu     sync.Mutex
+	byHost map[string]gridLastGoodEntry
+}
+
+type gridLastGoodEntry struct {
+	panes []gridPane
+	at    time.Time
+}
+
+const gridLastGoodTTL = 5 * time.Minute
+
+func gridLastGoodSet(host string, panes []gridPane) {
+	gridLastGood.mu.Lock()
+	if gridLastGood.byHost == nil {
+		gridLastGood.byHost = map[string]gridLastGoodEntry{}
+	}
+	gridLastGood.byHost[host] = gridLastGoodEntry{panes: panes, at: time.Now()}
+	gridLastGood.mu.Unlock()
+}
+
+// gridLastGoodFor returns host's remembered panes if still within the TTL,
+// dropping an aged-out entry on the way.
+func gridLastGoodFor(host string) ([]gridPane, bool) {
+	gridLastGood.mu.Lock()
+	defer gridLastGood.mu.Unlock()
+	e, ok := gridLastGood.byHost[host]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(e.at) > gridLastGoodTTL {
+		delete(gridLastGood.byHost, host)
+		return nil, false
+	}
+	return e.panes, true
+}
+
 // fetchGridPanes queries every compatible host concurrently and merges their
-// panes. A host that can't be listed lands in Errors rather than failing the
-// whole grid. Local is always included; remotes come from the (cached) host
-// discovery probe.
+// panes. A host that can't be listed serves its last-known panes (if fresh)
+// alongside an Errors entry rather than vanishing — or failing the whole grid.
+// Local is always included; remotes come from the (cached) host discovery
+// probe, plus any host we still hold a pooled connection to (a live connection
+// outranks a transiently-failed probe).
 func fetchGridPanes(ctx context.Context) gridPayload {
 	targets := []gridTarget{{host: "local", label: localHostname()}}
+	seen := map[string]bool{"local": true}
 	for _, hi := range discoverHosts(ctx, false) {
 		if hi.Reachable && hi.Running && hi.Compatible {
 			targets = append(targets, gridTarget{host: hi.Alias, label: hi.Alias})
+			seen[hi.Alias] = true
+		}
+	}
+	for _, host := range gridPoolHosts() {
+		if !seen[host] {
+			targets = append(targets, gridTarget{host: host, label: host})
+			seen[host] = true
 		}
 	}
 
@@ -673,8 +865,12 @@ func fetchGridPanes(ctx context.Context) gridPayload {
 				out.Errors = map[string]string{}
 			}
 			out.Errors[r.host] = firstLine(r.err.Error())
+			if panes, ok := gridLastGoodFor(r.host); ok {
+				out.Panes = append(out.Panes, panes...)
+			}
 			continue
 		}
+		gridLastGoodSet(r.host, r.panes)
 		out.Panes = append(out.Panes, r.panes...)
 	}
 	return out
@@ -854,13 +1050,11 @@ func serveGridTerm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host and a valid terminal_id required", http.StatusBadRequest)
 		return
 	}
-	// Only attach on a host we can actually reach: local, the active host, or a
-	// discovered compatible remote. Guards against a bogus alias shelling out.
-	if req.Host != "local" && req.Host != curBackend().Name() {
-		if hi, ok := findHost(req.Host); !ok || !hi.Reachable || !hi.Running || !hi.Compatible {
-			http.Error(w, "host not available", http.StatusBadRequest)
-			return
-		}
+	// Only attach on a host we can actually drive (local, active, pooled, or a
+	// discovered compatible remote). Guards against a bogus alias shelling out.
+	if !gridHostAllowed(req.Host) {
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
 	}
 	base, err := ensureGridTerm(req.Host, req.TerminalID)
 	if err != nil {

@@ -37,6 +37,7 @@ const herdrSSHReapInterval = 30 * time.Second
 func startHerdrSSHReaper(ctx context.Context) {
 	go func() {
 		reapOrphanHerdrSSH(ctx, os.TempDir())
+		reapOrphanLassoSSH(ctx, os.TempDir())
 		t := time.NewTicker(herdrSSHReapInterval)
 		defer t.Stop()
 		for {
@@ -45,9 +46,58 @@ func startHerdrSSHReaper(ctx context.Context) {
 				return
 			case <-t.C:
 				reapOrphanHerdrSSH(ctx, os.TempDir())
+				reapOrphanLassoSSH(ctx, os.TempDir())
 			}
 		}
 	}()
+}
+
+// reapOrphanLassoSSH cleans up after a lasso that died without running its own
+// teardown (SIGKILL, crash, power loss). Its per-host SSH control masters use
+// ControlPersist=yes — lifetime managed by backend Close — so nothing else ever
+// stops an orphaned one. All the files are PID-keyed, same as herdr's: a
+// lasso-ctl-<pid>-*.sock whose pid is dead is garbage — ask its master to exit
+// (dropping the sshd-side connection), then remove the socket file. The
+// companion forwarded-socket files (lasso-herdr-<pid>-*) and grid ttyd sockets
+// (lasso-gridterm-<pid>-*) of dead pids are plain unix socket files; just
+// remove them. Live pids (including our own) are never touched.
+func reapOrphanLassoSSH(ctx context.Context, tmpDir string) (removed int) {
+	deadPidFiles := func(pattern, prefix string) []string {
+		var out []string
+		files, _ := filepath.Glob(filepath.Join(tmpDir, pattern))
+		for _, f := range files {
+			pidStr, _, ok := strings.Cut(strings.TrimPrefix(filepath.Base(f), prefix), "-")
+			if !ok {
+				continue
+			}
+			pid, err := strconv.Atoi(pidStr)
+			if err != nil || pid <= 0 || pid == os.Getpid() || processAlive(pid) {
+				continue
+			}
+			out = append(out, f)
+		}
+		return out
+	}
+	for _, ctl := range deadPidFiles("lasso-ctl-*.sock", "lasso-ctl-") {
+		octx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = exec.CommandContext(octx, "ssh", "-o", "ControlPath="+ctl, "-O", "exit", "orphan").Run()
+		cancel()
+		if os.Remove(ctl) == nil {
+			removed++
+		}
+	}
+	for _, pattern := range []string{"lasso-herdr-*", "lasso-gridterm-*"} {
+		prefix := strings.TrimSuffix(pattern, "*")
+		for _, f := range deadPidFiles(pattern, prefix) {
+			if os.Remove(f) == nil {
+				removed++
+			}
+		}
+	}
+	if removed > 0 {
+		log.Printf("sshreap:  cleaned %d orphaned lasso ssh socket file(s)", removed)
+	}
+	return removed
 }
 
 // reapOrphanHerdrSSH removes every herdr-ssh control dir in tmpDir whose

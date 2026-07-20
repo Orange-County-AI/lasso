@@ -225,27 +225,16 @@ func warmHost(host string) {
 		log.Printf("warm: repos on %s: %v", key, err)
 		return
 	}
+	// Pooled backends outlive the idle TTL as long as warming keeps touching
+	// them (gridBackendIdle > warmInterval, deliberately — churning a full SSH
+	// connect/teardown per host per cycle was worse). A wedged connection is
+	// gridHostBackend's problem now: it liveness-checks pooled entries on
+	// access and redials dead ones in place, so this call already hands back a
+	// healthy (or freshly re-dialed) backend.
 	be, err := gridHostBackend(key)
 	if err != nil {
 		log.Printf("warm: backend for %s: %v", key, err)
 		return
-	}
-	// Pooled backends now outlive the idle TTL as long as warming keeps touching
-	// them (gridBackendIdle > warmInterval, deliberately — churning a full SSH
-	// connect/teardown per host per cycle was worse). The flip side: a wedged
-	// connection no longer ages out on its own, so health-check it here — one
-	// cheap ping over the existing forward per cycle — and redial when dead.
-	// Only pool entries are ours to evict; the active backend is managed by the
-	// host switcher.
-	if _, isRemote := be.(*remoteBackend); isRemote && key != curBackend().Name() {
-		if _, _, perr := herdrPing(be.HerdrSock()); perr != nil {
-			log.Printf("warm: %s connection unhealthy (%v) — reconnecting", key, perr)
-			gridPoolEvict(key)
-			if be, err = gridHostBackend(key); err != nil {
-				log.Printf("warm: backend for %s: %v", key, err)
-				return
-			}
-		}
 	}
 
 	sem := make(chan struct{}, warmRepoConcurrency)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -114,6 +115,16 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 	// ExitOnForwardFailure=no so a conflicting forward the user's config attaches
 	// to this host (e.g. a busy-port tunnel) can't abort our master — our own
 	// herdr-socket forward is verified separately by the ping readiness check.
+	// ControlPersist=yes: the master's lifetime is the backend's lifetime —
+	// Close/teardown kills it explicitly, and the sshreap loop cleans up after a
+	// crashed lasso. A timed persist (formerly 60) let the master exit during any
+	// quiet minute: the grid pool holds no persistent channel (unlike the active
+	// backend, whose event subscription reconnects every second), so pooled
+	// masters routinely died between polls, taking the forwarded sockets — and
+	// every grid terminal and SFTP session on them — down with them.
+	// ServerAlive* makes a genuinely dead path (network drop, sleep) kill the
+	// master within ~60s so liveness checks fail fast and trigger a redial,
+	// instead of every op hanging on a wedged TCP connection.
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=8",
@@ -121,7 +132,9 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		"-o", "ExitOnForwardFailure=no",
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + b.ctlPath,
-		"-o", "ControlPersist=60",
+		"-o", "ControlPersist=yes",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
 		"-fNT",
 		"-L", b.localSock + ":" + b.remoteSock,
 		// herdr's streaming client socket sits beside the RPC socket on the
@@ -281,7 +294,10 @@ func (b *remoteBackend) PasteImageDir() string {
 // ---------------------------------------------------------------------------
 
 // sftpClient lazily opens the SFTP subsystem over the control master and caches
-// the client for the backend's lifetime.
+// the client. The cache self-clears when the underlying ssh process dies (a
+// watcher goroutine reaps it), so a master teardown or network drop costs one
+// failed op at worst — the next op dials a fresh subsystem instead of failing
+// forever with "file already closed".
 func (b *remoteBackend) sftpClient() (*sftp.Client, error) {
 	b.sftpMu.Lock()
 	defer b.sftpMu.Unlock()
@@ -305,54 +321,133 @@ func (b *remoteBackend) sftpClient() (*sftp.Client, error) {
 	cl, err := sftp.NewClientPipe(rd, wr)
 	if err != nil {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("sftp on %s: %w", b.alias, err)
 	}
 	b.sftpCl, b.sftpCmd = cl, cmd
+	// Sole reaper for this cmd (teardown/dropSFTP only Kill): waits for the ssh
+	// subprocess to exit — however it dies — and drops it from the cache if it's
+	// still the cached one.
+	go func() {
+		_ = cmd.Wait()
+		b.sftpMu.Lock()
+		if b.sftpCmd == cmd {
+			_ = b.sftpCl.Close()
+			b.sftpCl, b.sftpCmd = nil, nil
+		}
+		b.sftpMu.Unlock()
+	}()
 	return cl, nil
 }
 
-func (b *remoteBackend) ReadDir(p string) ([]fileEntry, error) {
-	cl, err := b.sftpClient()
-	if err != nil {
-		return nil, err
-	}
-	infos, err := cl.ReadDir(p)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]fileEntry, 0, len(infos))
-	for _, info := range infos {
-		fe := fileEntry{Name: info.Name(), Dir: info.IsDir()}
-		if !info.IsDir() {
-			fe.Size = info.Size()
+// dropSFTP evicts cl from the cache (if still cached) and kills its transport so
+// the watcher reaps it. Called when an op fails at the connection level while
+// the process hasn't exited yet (e.g. a wedged path the ServerAlive probes
+// haven't condemned).
+func (b *remoteBackend) dropSFTP(cl *sftp.Client) {
+	b.sftpMu.Lock()
+	if b.sftpCl == cl {
+		_ = b.sftpCl.Close()
+		if b.sftpCmd != nil && b.sftpCmd.Process != nil {
+			_ = b.sftpCmd.Process.Kill()
 		}
-		out = append(out, fe)
+		b.sftpCl, b.sftpCmd = nil, nil
+	}
+	b.sftpMu.Unlock()
+}
+
+// sftpDo runs op against the cached SFTP client, reopening and retrying once
+// when the failure is connection-level (the transport died mid-use) rather than
+// a real filesystem error. Ops routed through it must be safe to re-run.
+func (b *remoteBackend) sftpDo(op func(cl *sftp.Client) error) error {
+	for attempt := 0; ; attempt++ {
+		cl, err := b.sftpClient()
+		if err != nil {
+			return err
+		}
+		err = op(cl)
+		if err == nil || attempt > 0 || !sftpConnDead(err) {
+			return err
+		}
+		b.dropSFTP(cl)
+	}
+}
+
+// sftpConnDead reports whether err means the SFTP transport itself is gone (as
+// opposed to a normal filesystem error like ENOENT). The string checks cover
+// the errors pkg/sftp wraps without a matchable sentinel: writes to the closed
+// stdin pipe surface as "file already closed" / "broken pipe", dead reads as
+// "connection lost".
+func sftpConnDead(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sftp.ErrSSHFxConnectionLost) || errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection lost") ||
+		strings.Contains(s, "file already closed") ||
+		strings.Contains(s, "broken pipe")
+}
+
+func (b *remoteBackend) ReadDir(p string) ([]fileEntry, error) {
+	var out []fileEntry
+	err := b.sftpDo(func(cl *sftp.Client) error {
+		infos, err := cl.ReadDir(p)
+		if err != nil {
+			return err
+		}
+		out = make([]fileEntry, 0, len(infos))
+		for _, info := range infos {
+			fe := fileEntry{Name: info.Name(), Dir: info.IsDir()}
+			if !info.IsDir() {
+				fe.Size = info.Size()
+			}
+			out = append(out, fe)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 func (b *remoteBackend) Stat(p string) (fs.FileInfo, error) {
-	cl, err := b.sftpClient()
+	var info fs.FileInfo
+	err := b.sftpDo(func(cl *sftp.Client) error {
+		var err error
+		info, err = cl.Stat(p)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return cl.Stat(p)
+	return info, nil
 }
 
 func (b *remoteBackend) Lstat(p string) (fs.FileInfo, error) {
-	cl, err := b.sftpClient()
+	var info fs.FileInfo
+	err := b.sftpDo(func(cl *sftp.Client) error {
+		var err error
+		info, err = cl.Lstat(p)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return cl.Lstat(p)
+	return info, nil
 }
 
 func (b *remoteBackend) Open(p string) (io.ReadSeekCloser, error) {
-	cl, err := b.sftpClient()
-	if err != nil {
-		return nil, err
-	}
-	f, err := cl.Open(p)
+	var f *sftp.File
+	err := b.sftpDo(func(cl *sftp.Client) error {
+		var err error
+		f, err = cl.Open(p)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -368,47 +463,44 @@ func (b *remoteBackend) ReadFile(p string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// WriteFile re-runs the whole create+write+chmod sequence on a connection-level
+// failure — Create truncates, so the retry rewrites the file from the start.
 func (b *remoteBackend) WriteFile(p string, data []byte, perm fs.FileMode) error {
-	cl, err := b.sftpClient()
-	if err != nil {
-		return err
-	}
-	f, err := cl.Create(p) // O_RDWR|O_CREATE|O_TRUNC
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return cl.Chmod(p, perm)
+	return b.sftpDo(func(cl *sftp.Client) error {
+		f, err := cl.Create(p) // O_RDWR|O_CREATE|O_TRUNC
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		return cl.Chmod(p, perm)
+	})
 }
 
 func (b *remoteBackend) Create(p string) (io.WriteCloser, error) {
-	cl, err := b.sftpClient()
+	var f *sftp.File
+	err := b.sftpDo(func(cl *sftp.Client) error {
+		var err error
+		f, err = cl.Create(p) // *sftp.File is an io.WriteCloser
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return cl.Create(p) // *sftp.File is an io.WriteCloser
+	return f, nil
 }
 
 func (b *remoteBackend) MkdirAll(p string, _ fs.FileMode) error {
-	cl, err := b.sftpClient()
-	if err != nil {
-		return err
-	}
-	return cl.MkdirAll(p)
+	return b.sftpDo(func(cl *sftp.Client) error { return cl.MkdirAll(p) })
 }
 
 func (b *remoteBackend) Rename(oldpath, newpath string) error {
-	cl, err := b.sftpClient()
-	if err != nil {
-		return err
-	}
-	return cl.Rename(oldpath, newpath)
+	return b.sftpDo(func(cl *sftp.Client) error { return cl.Rename(oldpath, newpath) })
 }
 
 // RemoveAll removes recursively. SFTP has no recursive delete, so shell out to
@@ -438,8 +530,8 @@ func (b *remoteBackend) teardown() {
 		b.sftpCl = nil
 	}
 	if b.sftpCmd != nil && b.sftpCmd.Process != nil {
+		// Kill only — the watcher goroutine in sftpClient owns the Wait.
 		_ = b.sftpCmd.Process.Kill()
-		_ = b.sftpCmd.Wait()
 		b.sftpCmd = nil
 	}
 	b.sftpMu.Unlock()
