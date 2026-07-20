@@ -132,6 +132,32 @@ func TestAgentCommandModelAndExtraArgs(t *testing.T) {
 	}
 }
 
+// opencode must auto-approve permissions (--auto, its analog of claude's
+// skip-permissions) so it runs autonomously, take its prompt via --prompt
+// (the TUI has no positional prompt arg), and select plan mode via its
+// built-in plan agent.
+func TestAgentCommandOpencode(t *testing.T) {
+	cmd := agentCommand("opencode", launchOpts{model: "kimi-for-coding/k3", prompt: "do it"})
+	for _, want := range []string{"opencode --auto", "--model 'kimi-for-coding/k3'", "--prompt 'do it'"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("opencode command missing %q: %q", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "'do it' --prompt") || !strings.HasSuffix(cmd, "--prompt 'do it'") {
+		t.Errorf("prompt must ride in via --prompt: %q", cmd)
+	}
+
+	plan := agentCommand("opencode", launchOpts{planMode: true, prompt: "do it"})
+	if !strings.Contains(plan, "--agent plan") {
+		t.Errorf("opencode plan command missing --agent plan: %q", plan)
+	}
+
+	def := agentCommand("opencode", launchOpts{prompt: "do it"})
+	if strings.Contains(def, "--agent") {
+		t.Errorf("non-plan opencode command must not pin an agent: %q", def)
+	}
+}
+
 // Unknown harness ids fall back to claude — the historical default for a
 // createAgentReq with a bogus agent value.
 func TestHarnessByIDDefaultsToClaude(t *testing.T) {

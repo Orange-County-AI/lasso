@@ -44,6 +44,12 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     supports_plan_mode: false,
     model_suggestions: [],
   },
+  {
+    id: "opencode",
+    label: "OpenCode",
+    supports_plan_mode: true,
+    model_suggestions: [],
+  },
 ]
 
 // One of these is picked at random for the Prompt field's placeholder each time

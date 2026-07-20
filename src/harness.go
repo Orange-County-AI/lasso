@@ -20,8 +20,9 @@ import (
 type harnessDef struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	// SupportsPlanMode gates the "Start in plan mode" checkbox — only claude
-	// has a plan mode today; on other harnesses the flag is silently ignored.
+	// SupportsPlanMode gates the "Start in plan mode" checkbox — claude and
+	// opencode have a plan mode today; on other harnesses the flag is silently
+	// ignored.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
 	// ModelSuggestions seed the creator's free-text model field. They are
 	// suggestions only — anything the user types is passed through, since
@@ -68,6 +69,20 @@ var harnesses = []harnessDef{
 		SupportsPlanMode: false,
 		ModelSuggestions: []string{"gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini"},
 		buildCmd:         codexCommand,
+	},
+	{
+		ID:               "opencode",
+		Label:            "OpenCode",
+		SupportsPlanMode: true,
+		ModelSuggestions: []string{
+			"kimi-for-coding/k3",
+			"anthropic/claude-opus-4-5",
+			"anthropic/claude-sonnet-4-5",
+			"anthropic/claude-haiku-4-5",
+			"openai/gpt-5.2",
+			"openai/gpt-5.2-codex",
+		},
+		buildCmd: opencodeCommand,
 	},
 }
 
@@ -225,4 +240,28 @@ func codexCommand(o launchOpts) string {
 		cmd += " --model " + shellQuote(m)
 	}
 	return appendCommonArgs(cmd, o)
+}
+
+func opencodeCommand(o launchOpts) string {
+	// --auto is opencode's analog of claude's --dangerously-skip-permissions:
+	// it auto-approves every permission that isn't explicitly denied, so the
+	// agent runs autonomously instead of prompting per action (lasso worktrees
+	// are already isolated). Plan mode is opencode's built-in "plan" agent,
+	// selected with --agent plan. Unlike claude/codex, opencode's TUI takes
+	// the initial prompt via --prompt (not a positional arg), and models are
+	// provider/model pairs. No boot-time trust dialog to auto-accept.
+	cmd := "opencode --auto"
+	if o.planMode {
+		cmd += " --agent plan"
+	}
+	if m := strings.TrimSpace(o.model); m != "" {
+		cmd += " --model " + shellQuote(m)
+	}
+	if e := strings.TrimSpace(o.extraArgs); e != "" {
+		cmd += " " + e
+	}
+	if o.prompt != "" {
+		cmd += " --prompt " + shellQuote(o.prompt)
+	}
+	return cmd
 }

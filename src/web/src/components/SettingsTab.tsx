@@ -590,6 +590,7 @@ function AgentCreatorSettings({
             <option value="">Auto (use last used)</option>
             <option value="claude">Claude Code</option>
             <option value="codex">Codex</option>
+            <option value="opencode">OpenCode</option>
           </select>
         </Field>
 

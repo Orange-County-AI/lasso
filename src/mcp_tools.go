@@ -41,7 +41,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude or codex) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model (omit for its default) and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model (omit for its default) and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -76,7 +76,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "close_agent",
-		Description: "Stop an agent: first kill the agent process (claude/codex) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane).",
+		Description: "Stop an agent: first kill the agent process (claude/codex/opencode) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane).",
 	}, closeAgentTool)
 }
 
@@ -357,8 +357,8 @@ type createAgentIn struct {
 	BaseBranch   string `json:"base_branch,omitempty" jsonschema:"Branch (or ref) to branch the new worktree off. Defaults to the repo's HEAD. Use list_branches to choose one."`
 	BranchName   string `json:"branch_name,omitempty" jsonschema:"Name for the new branch. Defaults to a slug of the title."`
 	BranchPrefix string `json:"branch_prefix,omitempty" jsonschema:"Optional prefix for the new branch, e.g. \"worktree\" -> worktree/<name>."`
-	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default) or \"codex\"."`
-	Model        string `json:"model,omitempty" jsonschema:"Model for the agent's CLI (passed to its --model flag), e.g. \"opus\", \"sonnet\", \"haiku\" for claude or \"gpt-5.1-codex\" for codex. Omit for the harness default."`
+	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default), \"codex\", or \"opencode\"."`
+	Model        string `json:"model,omitempty" jsonschema:"Model for the agent's CLI (passed to its --model flag), e.g. \"opus\", \"sonnet\", \"haiku\" for claude, \"gpt-5.1-codex\" for codex, or \"anthropic/claude-sonnet-4-5\" for opencode (provider/model). Omit for the harness default."`
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
