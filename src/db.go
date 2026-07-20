@@ -415,6 +415,7 @@ func listAgents(host string) ([]AgentRecord, error) {
 		_ = json.Unmarshal([]byte(att), &rec.Attachments)
 		rec.PlanMode = plan != 0
 		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		rec.Host = host
 		out = append(out, rec)
 	}
 	return out, rows.Err()
@@ -452,6 +453,7 @@ func listAllAgents() ([]hostAgent, error) {
 		_ = json.Unmarshal([]byte(att), &rec.Attachments)
 		rec.PlanMode = plan != 0
 		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		rec.Host = host
 		out = append(out, hostAgent{Host: host, Agent: rec})
 	}
 	return out, rows.Err()
