@@ -9,14 +9,15 @@ import (
 )
 
 // The opencode theme pins catppuccin for dark herdr themes and
-// catppuccin-frappe for light ones (opencode can't detect the terminal
-// background through the lasso/ttyd chain, so we choose for it).
+// catppuccin-latte (the one light catppuccin variant) for light ones
+// (opencode can't detect the terminal background through the lasso/ttyd
+// chain, so we choose for it).
 func TestOpencodeThemeFor(t *testing.T) {
 	if got := opencodeThemeFor(false); got != "catppuccin" {
 		t.Errorf("dark = %q, want catppuccin", got)
 	}
-	if got := opencodeThemeFor(true); got != "catppuccin-frappe" {
-		t.Errorf("light = %q, want catppuccin-frappe", got)
+	if got := opencodeThemeFor(true); got != "catppuccin-latte" {
+		t.Errorf("light = %q, want catppuccin-latte", got)
 	}
 }
 
@@ -47,8 +48,8 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("after flip: %v", err)
 	}
-	if got["theme"] != "catppuccin-frappe" {
-		t.Errorf("theme = %v, want catppuccin-frappe", got["theme"])
+	if got["theme"] != "catppuccin-latte" {
+		t.Errorf("theme = %v, want catppuccin-latte", got["theme"])
 	}
 	if _, ok := got["keybinds"]; !ok {
 		t.Errorf("existing keys dropped: %s", data)

@@ -86,10 +86,13 @@ func resolveThemeByName(name string) resolvedTheme {
 // opencodeThemeFor maps lasso's resolved light/dark onto the opencode built-in
 // catppuccin variants (opencode can't detect the terminal background through
 // the lasso/ttyd/xterm chain, so it can't pick its own variant — see the OSC 11
-// discussion in the docs; we pin it instead).
+// discussion in the docs; we pin it instead). Latte is catppuccin's light
+// variant; frappé/macchiato/mocha are all dark, so light must NOT map to any
+// of them (it used to map to frappé, which painted opencode dark inside a
+// light lasso).
 func opencodeThemeFor(light bool) string {
 	if light {
-		return "catppuccin-frappe"
+		return "catppuccin-latte"
 	}
 	return "catppuccin"
 }
