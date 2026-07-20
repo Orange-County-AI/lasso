@@ -50,7 +50,12 @@ var gridPool struct {
 	entries map[string]*gridPoolEntry // keyed by ssh-config alias
 }
 
-const gridBackendIdle = 90 * time.Second
+// gridBackendIdle must stay comfortably above the cache warmer's interval
+// (repocache.go's warmInterval, 2m): the warmer touches every host's backend
+// each cycle, so an idle TTL below it meant a full SSH connect + teardown per
+// remote host every 2 minutes, forever — constant control-master churn (and
+// log spam) with recurring windows where a grid op landed mid-reconnect.
+const gridBackendIdle = 5 * time.Minute
 
 // gridHostBackend returns a Backend for RPC against host without disturbing the
 // active backend: "local" → a localBackend on the local socket; the active host →
@@ -100,6 +105,22 @@ func gridPoolEvict(host string) {
 		releaseGridTermsForHost(host)
 		go e.backend.Close()
 	}
+}
+
+// closeBackendsOnExit synchronously closes the active backend and every pooled
+// grid backend so their SSH control masters and forwarded sockets are cleaned
+// up before the process exits. Teardown is otherwise async (a goroutine per
+// backend watching context cancel), and main returning would race it — leaving
+// masters to linger until their ControlPersist expires.
+func closeBackendsOnExit() {
+	gridPool.mu.Lock()
+	entries := gridPool.entries
+	gridPool.entries = nil
+	gridPool.mu.Unlock()
+	for _, e := range entries {
+		_ = e.backend.Close()
+	}
+	_ = curBackend().Close()
 }
 
 func reapGridBackends() {
