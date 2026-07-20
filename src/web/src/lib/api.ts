@@ -91,6 +91,11 @@ export interface UIState {
   // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
   // survives navigating away and back (or reloading).
   grid_selected: string[]
+  // Grid tab visibility mode: "all" shows every pane (minus filters), "watch"
+  // shows only the starred panes in grid_watched.
+  grid_mode: "all" | "watch"
+  // host|pane_id keys of starred (watched) panes.
+  grid_watched: string[]
   sidebar_collapsed: boolean
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).

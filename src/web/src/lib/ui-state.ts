@@ -13,6 +13,8 @@ const DEFAULTS: UIState = {
   grid_agents_only: false,
   grid_hidden_hosts: [],
   grid_selected: [],
+  grid_mode: "all",
+  grid_watched: [],
   sidebar_collapsed: false,
   files_click_navigates: true,
 }

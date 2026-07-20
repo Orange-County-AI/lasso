@@ -197,9 +197,15 @@ func getSetting(key string) (string, error) {
 // server-side (one JSON blob in settings) rather than in localStorage so the UI
 // looks the same across browsers/devices reaching the same lasso.
 type uiState struct {
-	GridAgentsOnly   bool     `json:"grid_agents_only"`
-	GridHiddenHosts  []string `json:"grid_hidden_hosts"`
-	GridSelected     []string `json:"grid_selected"`
+	GridAgentsOnly  bool     `json:"grid_agents_only"`
+	GridHiddenHosts []string `json:"grid_hidden_hosts"`
+	GridSelected    []string `json:"grid_selected"`
+	// GridMode is the Grid tab's visibility mode: "all" shows every pane (minus
+	// filters), "watch" shows only the panes in GridWatched. Anything else reads
+	// as "all" (normalized in getUIState).
+	GridMode string `json:"grid_mode"`
+	// GridWatched holds host|pane_id keys of starred (watched) panes.
+	GridWatched      []string `json:"grid_watched"`
 	SidebarCollapsed bool     `json:"sidebar_collapsed"`
 	// FilesClickNavigates controls the Files tab's folder-click behavior: when
 	// true (the default) clicking a folder re-roots the tree into it; when false
@@ -215,6 +221,8 @@ func getUIState() (uiState, error) {
 	us := uiState{
 		GridHiddenHosts:     []string{},
 		GridSelected:        []string{},
+		GridMode:            "all",
+		GridWatched:         []string{},
 		FilesClickNavigates: true,
 	}
 	var v string
@@ -231,6 +239,12 @@ func getUIState() (uiState, error) {
 	}
 	if us.GridSelected == nil {
 		us.GridSelected = []string{}
+	}
+	if us.GridWatched == nil {
+		us.GridWatched = []string{}
+	}
+	if us.GridMode != "watch" {
+		us.GridMode = "all"
 	}
 	return us, nil
 }

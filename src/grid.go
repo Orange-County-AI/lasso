@@ -228,6 +228,9 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if us.GridSelected == nil {
 			us.GridSelected = []string{}
 		}
+		if us.GridWatched == nil {
+			us.GridWatched = []string{}
+		}
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
