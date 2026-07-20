@@ -238,11 +238,12 @@ func TestServeAgentCloseUnknownPaneNeverAsksPeers(t *testing.T) {
 	}
 }
 
-// postAgentClose must POST the calling agent's own herdr pane id to
-// /api/agent/close, carrying basic auth when UI_AUTH is set — the same soft-close
-// the UI and close_agent MCP tool use.
+// postAgentClose must POST the calling agent's own herdr pane id — pinned to
+// host "local", since the pane lives on the machine closeme runs on — to
+// /api/agent/close, carrying basic auth when UI_AUTH is set. The same
+// soft-close the UI and close_agent MCP tool use.
 func TestPostAgentClose(t *testing.T) {
-	var gotPath, gotPaneID, gotAuthUser string
+	var gotPath, gotPaneID, gotHost, gotAuthUser string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if u, _, ok := r.BasicAuth(); ok {
@@ -250,10 +251,11 @@ func TestPostAgentClose(t *testing.T) {
 		}
 		var body struct {
 			PaneID string `json:"pane_id"`
+			Host   string `json:"host"`
 		}
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &body)
-		gotPaneID = body.PaneID
+		gotPaneID, gotHost = body.PaneID, body.Host
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -267,6 +269,9 @@ func TestPostAgentClose(t *testing.T) {
 	}
 	if gotPaneID != "p_82" {
 		t.Errorf("pane_id = %q, want p_82", gotPaneID)
+	}
+	if gotHost != "local" {
+		t.Errorf("host = %q, want local (the pane lives where closeme runs)", gotHost)
 	}
 	if gotAuthUser != "alice" {
 		t.Errorf("basic-auth user = %q, want alice", gotAuthUser)
@@ -294,15 +299,20 @@ func TestServeAgentCloseRejectsGET(t *testing.T) {
 	}
 }
 
-// A non-200 from the server is surfaced as an error, not swallowed.
+// A non-200 from the server is surfaced as an error carrying the server's own
+// explanation (an ambiguity message is useless if closeme swallows it).
 func TestPostAgentCloseServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusInternalServerError)
+		http.Error(w, "pane is ambiguous", http.StatusConflict)
 	}))
 	defer srv.Close()
 
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	if err := postAgentClose(addr, "p_82", "", "", false); err == nil {
-		t.Fatal("expected an error for a 500 response")
+	err := postAgentClose(addr, "p_82", "", "", false)
+	if err == nil {
+		t.Fatal("expected an error for a non-200 response")
+	}
+	if !strings.Contains(err.Error(), "pane is ambiguous") {
+		t.Errorf("error %q should carry the server's detail", err)
 	}
 }
