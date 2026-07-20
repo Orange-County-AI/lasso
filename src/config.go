@@ -106,6 +106,13 @@ type AgentRecord struct {
 
 // Boot status values for AgentRecord.BootStatus.
 const (
+	// BootCreating: the write-ahead state — the record is persisted before the
+	// worktree/workspace herdr calls run, so a create that dies mid-flight (a
+	// lasso restart, a lost SSH forward) leaves a visible, resumable record
+	// instead of an untracked branch + worktree. Flipped to BootBooting once
+	// herdr returns the workspace, or BootFailed if the create RPC errors;
+	// sweepInterruptedCreates catches the crash case at next startup.
+	BootCreating = "creating"
 	// BootBooting: create returned; the async boot (file copy, setup, CLI launch)
 	// is still running. Not surfaced as a status string — the agent's live herdr
 	// status takes over as soon as the CLI comes up.

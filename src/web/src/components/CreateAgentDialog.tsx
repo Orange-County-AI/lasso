@@ -17,6 +17,7 @@ import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
 import {
   api,
+  ApiError,
   type CreateAgentPayload,
   type HarnessDef,
   type HostInfo,
@@ -27,6 +28,37 @@ import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
+
+// A create whose response is lost mid-flight (lasso restarting under
+// `lasso update`, a dropped tunnel) surfaces as a 502/503/504 or a fetch
+// network error even though the server may have done — or can resume — the
+// work. The backend adopts an interrupted create when the same branch is
+// resubmitted, so these are "outcome unknown, retry is safe", not failures.
+function isTransientCreateError(err: unknown): boolean {
+  if (err instanceof ApiError) return [502, 503, 504].includes(err.status)
+  // fetch rejects with a TypeError on network failure (connection refused/reset)
+  return err instanceof TypeError
+}
+
+// createAgentRetrying resubmits a transiently-failed create a couple of times
+// with a short backoff — long enough for a restarting lasso to come back up.
+// The payload is identical each round, which is exactly what lets the server
+// resume the interrupted attempt instead of duplicating it.
+async function createAgentRetrying(payload: CreateAgentPayload) {
+  const maxAttempts = 3
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await api.createAgent(payload)
+    } catch (err) {
+      if (attempt >= maxAttempts || !isTransientCreateError(err)) throw err
+      toast.info("Server unreachable mid-create — retrying…", {
+        description:
+          "The same create is resubmitted; a partial attempt is resumed, not duplicated.",
+      })
+      await new Promise((r) => setTimeout(r, 2000 * attempt))
+    }
+  }
+}
 
 // Fallback registry while the config query is in flight (or against an older
 // backend without `harnesses`); normally the list comes from the server's
@@ -486,7 +518,7 @@ export function CreateAgentDialog({
         payload.branch_prefix = prefix.trim() || undefined
         payload.branch_name = branchName.trim() || autoBranch || undefined
       }
-      return api.createAgent(payload)
+      return createAgentRetrying(payload)
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)

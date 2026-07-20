@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -209,6 +210,134 @@ func TestCreateAgentReturnsBeforeBootAndRecordsBootFailure(t *testing.T) {
 	// don't report a phantom healthy agent.
 	if info := agentInfoFrom("local", final, ""); info.Status != "failed" {
 		t.Errorf("agentInfoFrom status = %q, want \"failed\"", info.Status)
+	}
+}
+
+// resumeFake simulates the host state an interrupted create leaves behind: the
+// branch exists in git, the worktree dir is on disk, and herdr already has a
+// workspace rooted there. It records which herdr methods were called so the
+// test can prove the retry adopted the orphan instead of re-creating.
+type resumeFake struct {
+	*memBackend
+	branch  string // the git branch that "exists"
+	workDir string // checkout path herdr's workspace reports
+	mu      sync.Mutex
+	calls   []string
+}
+
+func (b *resumeFake) HerdrCall(method string, _ any) (json.RawMessage, error) {
+	b.mu.Lock()
+	b.calls = append(b.calls, method)
+	b.mu.Unlock()
+	switch method {
+	case "workspace.list":
+		return json.RawMessage(fmt.Sprintf(
+			`{"workspaces":[{"workspace_id":"wsX","worktree":{"checkout_path":%q}}]}`, b.workDir)), nil
+	case "pane.list":
+		return json.RawMessage(`{"panes":[{"pane_id":"pX","workspace_id":"wsX"}]}`), nil
+	case "pane.read":
+		// Stable text so the async boot's waitPaneReady settles quickly.
+		return json.RawMessage(`{"read":{"text":"$ "}}`), nil
+	default:
+		return json.RawMessage(`{}`), nil
+	}
+}
+
+func (b *resumeFake) GitOut(_ string, args ...string) (string, error) {
+	// `git branch --list <name>`: only the interrupted attempt's branch exists.
+	if len(args) >= 2 && args[0] == "branch" && args[len(args)-1] == b.branch {
+		return "  " + b.branch + "\n", nil
+	}
+	return "", nil
+}
+
+func (b *resumeFake) called(method string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, c := range b.calls {
+		if c == method {
+			return true
+		}
+	}
+	return false
+}
+
+// A retried create after a mid-flight failure (lasso restarted, response lost)
+// must resume the interrupted attempt — same branch, same worktree dir, the
+// herdr workspace it already has — rather than minting a -2 branch beside an
+// orphan. This is the regression behind the 502-then-retry incident: the first
+// attempt's worktree.create completed host-side, but its record was never
+// saved, and the retry duplicated the whole tree.
+func TestCreateAgentResumesInterruptedCreate(t *testing.T) {
+	lasso := t.TempDir()
+	t.Setenv("LASSO_DIR", lasso)
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() {
+		if db != nil {
+			db.Close()
+			db = nil
+		}
+	})
+
+	branch := "feature/fix-login-a1b2"
+	workDir := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2")
+	b := &resumeFake{memBackend: newMemBackend(), branch: branch, workDir: workDir}
+	b.dirs[workDir] = true // the interrupted attempt's worktree is on disk
+
+	// The interrupted attempt's write-ahead record: no workspace, still at
+	// BootCreating (a sweep to BootFailed matches the same way — workspace_id
+	// being empty is what marks it interrupted).
+	if err := appendAgent("local", AgentRecord{
+		ID: "old1", Type: "git", Title: "Fix login", Repo: "/repo/app",
+		Branch: branch, WorkDir: workDir, BootStatus: BootCreating,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("appendAgent: %v", err)
+	}
+
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	rec, err := createAgent(b, createAgentReq{
+		Type: "git", Title: "Fix login", Prompt: "Fix login",
+		Repo: "/repo/app", BaseBranch: "main",
+		BranchPrefix: "feature", BranchName: "fix-login-a1b2",
+	})
+	if err != nil {
+		t.Fatalf("createAgent: %v", err)
+	}
+
+	if rec.Branch != branch {
+		t.Errorf("branch = %q, want %q (retry must not mint a -2 suffix)", rec.Branch, branch)
+	}
+	if rec.WorkDir != workDir {
+		t.Errorf("work_dir = %q, want the interrupted attempt's %q", rec.WorkDir, workDir)
+	}
+	if rec.WorkspaceID != "wsX" || rec.RootPane != "pX" {
+		t.Errorf("adoption: got workspace %q pane %q, want the live wsX/pX", rec.WorkspaceID, rec.RootPane)
+	}
+	if b.called("worktree.create") {
+		t.Error("worktree.create was called — the resume must reattach, not re-create")
+	}
+	// The orphan record is superseded by this attempt's, not left as a duplicate.
+	if _, err := findAgentRecord("local", "old1"); err == nil {
+		t.Error("interrupted record still present — resume should delete it")
+	}
+	recs, err := listAgents("local")
+	if err != nil {
+		t.Fatalf("listAgents: %v", err)
+	}
+	n := 0
+	for _, r := range recs {
+		if r.Branch == branch {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("records for %s = %d, want exactly 1", branch, n)
 	}
 }
 

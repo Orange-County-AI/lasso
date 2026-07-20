@@ -190,17 +190,32 @@ export interface ThemePayload {
 // when the origin is down or briefly unreachable — during a host switch, a
 // redeploy, etc. Dumping that raw HTML into the UI (the Diff tab, toasts) is just
 // noise, so collapse HTML bodies (and empty ones) to the status line.
+// ApiError carries the HTTP status alongside the message so callers can tell a
+// gateway-style transient failure (502/503/504 — e.g. lasso restarting under
+// `lasso update`) from a real rejection, and retry only the former.
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function httpError(r: Response): Promise<Error> {
   const body = (await r.text().catch(() => "")).trim()
   const isHTML =
     /^<(?:!doctype|html|head|body)\b/i.test(body) ||
     (r.headers.get("content-type") || "").includes("text/html")
   if (!body || isHTML) {
-    return new Error(
-      `HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ""}`
+    return new ApiError(
+      `HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ""}`,
+      r.status
     )
   }
-  return new Error(body.length > 300 ? `${body.slice(0, 300)}…` : body)
+  return new ApiError(
+    body.length > 300 ? `${body.slice(0, 300)}…` : body,
+    r.status
+  )
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -377,6 +378,63 @@ func appendAgent(host string, rec AgentRecord) error {
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.BootStatus, rec.BootError)
 	return err
+}
+
+// updateAgentCreated flips a write-ahead record (BootCreating) to its created
+// state in one statement: the workspace/pane herdr returned plus the next boot
+// status. Scoped by id+host since ids are only unique within a host.
+func updateAgentCreated(id, host, workspaceID, rootPane, status string) error {
+	_, err := db.Exec(
+		`UPDATE agents SET workspace_id=?, root_pane=?, boot_status=? WHERE id=? AND host=?`,
+		workspaceID, rootPane, status, id, host)
+	return err
+}
+
+// findInterruptedCreate returns the newest record of a create for host+repo+
+// branch that never completed: still at BootCreating (the process died mid-
+// create, or the response was lost) or flipped to BootFailed without ever
+// getting a workspace (the create RPC itself errored). Records that reached a
+// workspace are real agents and never match. Powers the resume-on-retry path in
+// createAgent — the New Agent modal resends the same generated branch name, so
+// a retry after a mid-create 502 picks the orphan up instead of minting a -2.
+func findInterruptedCreate(host, repo, branch string) (AgentRecord, bool) {
+	row := db.QueryRow(
+		`SELECT id, title, work_dir FROM agents
+		 WHERE host=? AND repo=? AND branch=? AND workspace_id='' AND boot_status IN (?, ?)
+		 ORDER BY created_at DESC LIMIT 1`,
+		host, repo, branch, BootCreating, BootFailed)
+	var rec AgentRecord
+	if err := row.Scan(&rec.ID, &rec.Title, &rec.WorkDir); err != nil {
+		return AgentRecord{}, false
+	}
+	rec.Host, rec.Repo, rec.Branch = host, repo, branch
+	return rec, true
+}
+
+// deleteAgentRecord removes one agent row. Used when a retried create adopts an
+// interrupted attempt: the new attempt's record supersedes the orphan, and one
+// logical agent should not appear twice in history.
+func deleteAgentRecord(id, host string) error {
+	_, err := db.Exec(`DELETE FROM agents WHERE id=? AND host=?`, id, host)
+	return err
+}
+
+// sweepInterruptedCreates marks any record still at BootCreating as failed —
+// called once at startup, where such a record by definition belongs to a create
+// a previous process never finished. The distinctive error keeps it adoptable
+// (workspace_id is still empty) and tells the user what happened. (If a second
+// lasso instance shares this DB — e.g. a dev run — its in-flight create could
+// be swept too; creates take seconds, so the window is negligible.)
+func sweepInterruptedCreates() {
+	res, err := db.Exec(
+		`UPDATE agents SET boot_status=?, boot_error=? WHERE boot_status=?`,
+		BootFailed, "create interrupted by a lasso restart — retrying the same create resumes it", BootCreating)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("agents:   marked %d interrupted create(s) failed (adoptable on retry)", n)
+	}
 }
 
 // updateAgentBootStatus records the outcome of an agent's async boot (see

@@ -352,6 +352,9 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := createAgent(curBackend(), req)
 	if err != nil {
+		// Log server-side too: a 502 the browser shows is otherwise invisible in
+		// lasso's own log, which made the restart-mid-create race a forensic dig.
+		log.Printf("create-agent: %v", err)
 		var ce *createErr
 		if errors.As(err, &ce) {
 			http.Error(w, ce.Error(), ce.code)
@@ -417,16 +420,13 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		BootStatus: BootBooting,
 	}
 
-	var rootPane string
-
 	switch req.Type {
 	case "git":
 		repo := expandTildeOn(b, req.Repo)
 		if repo == "" {
 			return AgentRecord{}, &createErr{http.StatusBadRequest, errors.New("repo required for a git agent")}
 		}
-		// Compose the branch from prefix + name (auto-slug fallback), then make it
-		// unique against existing branches in the repo.
+		// Compose the branch from prefix + name (auto-slug fallback).
 		name := strings.TrimSpace(req.BranchName)
 		if name == "" {
 			name = slug
@@ -436,46 +436,100 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		if prefix != "" {
 			branch = prefix + "/" + name
 		}
-		branch = uniqueBranch(b, repo, branch)
 
-		// Nest the worktree under the repo's name so worktrees from different
-		// repos don't share one flat namespace (and don't collide on slug).
-		repoSlug := slugify(filepath.Base(repo))
-		if repoSlug == "" {
-			repoSlug = "repo"
+		// Resume-or-redo: a prior create of this exact branch that never reached a
+		// workspace (lasso died mid-create, or the create RPC failed) left an
+		// interrupted record — and possibly the branch + worktree on disk, since
+		// herdr may well have finished the work before the response was lost. The
+		// modal resends the same generated branch name on retry, so instead of
+		// suffixing -2 next to an orphan, pick the interrupted attempt back up.
+		var adoptDir string
+		if old, ok := findInterruptedCreate(host, repo, branch); ok {
+			_ = deleteAgentRecord(old.ID, host) // superseded by this attempt's record
+			if branchExists(b, repo, branch) {
+				if _, err := b.Stat(old.WorkDir); old.WorkDir != "" && err == nil {
+					adoptDir = old.WorkDir // worktree already on disk: reattach, don't re-create
+				} else {
+					// Branch exists but its worktree dir is gone — not resumable;
+					// treat it like any other branch collision.
+					branch = uniqueBranch(b, repo, branch)
+				}
+			}
+			// Branch absent → herdr never ran the create; the name is free to reuse.
+		} else {
+			branch = uniqueBranch(b, repo, branch)
 		}
-		parent := filepath.Join(lassoWorktreesDirFor(b), repoSlug)
-		workDir := uniqueChildDir(parent, worktreeDirSlug(branch, slug))
+
 		base := strings.TrimSpace(req.BaseBranch)
 		if base == "" {
 			base = "HEAD"
 		}
-		res, err := b.HerdrCall("worktree.create", map[string]any{
-			"cwd":    repo,
-			"branch": branch,
-			"base":   base,
-			"path":   workDir,
-			"label":  req.Title,
-			// Focus the new worktree's pane so the user lands on the agent as it
-			// boots (the New Agent flow is an explicit "take me there"); suppressed
-			// for MCP-spawned agents so they don't yank a watching user away.
-			"focus": !req.NoFocus,
-		})
+		workDir := adoptDir
+		if workDir == "" {
+			// Nest the worktree under the repo's name so worktrees from different
+			// repos don't share one flat namespace (and don't collide on slug).
+			repoSlug := slugify(filepath.Base(repo))
+			if repoSlug == "" {
+				repoSlug = "repo"
+			}
+			parent := filepath.Join(lassoWorktreesDirFor(b), repoSlug)
+			workDir = uniqueChildDir(parent, worktreeDirSlug(branch, slug))
+		}
+		rec.Repo, rec.BaseBranch, rec.Branch, rec.WorkDir = repo, base, branch, workDir
+
+		// Write-ahead: persist the record BEFORE the herdr call, so a create that
+		// dies mid-flight (a lasso restart during `lasso update`, a dropped SSH
+		// forward) leaves a visible, resumable record instead of an untracked
+		// branch + worktree the next attempt then collides with.
+		rec.BootStatus = BootCreating
+		if err := appendAgent(host, rec); err != nil {
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
+		}
+
+		var ws, pane string
+		var err error
+		if adoptDir != "" {
+			ws, pane, err = attachWorkspaceAt(b, workDir, req.Title, !req.NoFocus)
+		} else {
+			var res json.RawMessage
+			res, err = b.HerdrCall("worktree.create", map[string]any{
+				"cwd":    repo,
+				"branch": branch,
+				"base":   base,
+				"path":   workDir,
+				"label":  req.Title,
+				// Focus the new worktree's pane so the user lands on the agent as it
+				// boots (the New Agent flow is an explicit "take me there"); suppressed
+				// for MCP-spawned agents so they don't yank a watching user away.
+				"focus": !req.NoFocus,
+			})
+			if err == nil {
+				ws, pane = parseCreateResult(res)
+			}
+		}
 		if err != nil {
+			// Keep the write-ahead record (as failed, still workspace-less) so the
+			// orphan is visible and a retry can adopt whatever herdr got done.
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("worktree.create: %v", err))
 			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("worktree.create: %w", err)}
 		}
-		ws, pane := parseCreateResult(res)
-		rec.Repo, rec.BaseBranch, rec.Branch = repo, base, branch
-		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
-		rootPane = pane
+		rec.WorkspaceID, rec.RootPane = ws, pane
 
 	case "scratch":
 		// A scratch agent has no branch to carry a random suffix, so append one to
 		// the dir itself — two same-titled scratch agents then get distinct dirs
 		// (e.g. hey-boss-a3f9), the way worktrees stay distinct via their branch.
 		// uniqueChildDir still guards the (astronomically unlikely) suffix clash.
+		// (No resume path here: each attempt gets a fresh suffix, and the most an
+		// interrupted attempt leaves behind is an empty dir + a failed record.)
 		workDir := uniqueChildDir(lassoScratchDirFor(b), slug+"-"+randSuffix())
+		rec.WorkDir = workDir
+		rec.BootStatus = BootCreating
+		if err := appendAgent(host, rec); err != nil {
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
+		}
 		if err := b.MkdirAll(workDir, 0o755); err != nil {
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("mkdir %s: %v", workDir, err))
 			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("mkdir %s: %w", workDir, err)}
 		}
 		res, err := b.HerdrCall("workspace.create", map[string]any{
@@ -484,20 +538,29 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 			"focus": !req.NoFocus, // land on the new agent's pane as it boots (web flow); suppressed for MCP
 		})
 		if err != nil {
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("workspace.create: %v", err))
 			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("workspace.create: %w", err)}
 		}
 		ws, pane := parseCreateResult(res)
-		rec.WorkDir, rec.WorkspaceID, rec.RootPane = workDir, ws, pane
-		rootPane = pane
+		rec.WorkspaceID, rec.RootPane = ws, pane
 
 	default:
 		return AgentRecord{}, &createErr{http.StatusBadRequest, errors.New(`type must be "git" or "scratch"`)}
 	}
 
-	// Persist this host's remembered selections, then append the record. The record
-	// must land BEFORE the async boot starts, so bootAgent can update its status
-	// without racing this write (and a failed boot is never lost). A save failure is
-	// fatal — an agent we can't recover from the log is worse than none.
+	rootPane := rec.RootPane
+
+	// The create's durable facts exist — flip the write-ahead record to booting
+	// (with its workspace/pane) BEFORE the async boot starts, so bootAgent can
+	// update its status without racing this write (and a failed boot is never
+	// lost). A save failure is fatal — an agent we can't recover from the log is
+	// worse than none.
+	rec.BootStatus = BootBooting
+	if err := updateAgentCreated(rec.ID, host, rec.WorkspaceID, rec.RootPane, BootBooting); err != nil {
+		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
+	}
+
+	// Persist this host's remembered selections.
 	if req.Type == "git" {
 		_ = setLastRepo(host, rec.Repo)
 		_ = setLastBaseBranch(host, rec.Repo, rec.BaseBranch)
@@ -511,9 +574,6 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// Remember the model per harness (an empty model — "use the harness
 	// default" — is itself a remembered choice, so always write it).
 	_ = setLastModel(host, rec.Agent, rec.Model)
-	if err := appendAgent(host, rec); err != nil {
-		return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("save agent: %w", err)}
-	}
 
 	// Everything past here — staging repo files/attachments/notes into the work
 	// dir, running the setup script, launching the agent CLI, and waiting for its
@@ -587,22 +647,94 @@ func parseCreateResult(res json.RawMessage) (workspaceID, rootPane string) {
 	return r.Workspace.WorkspaceID, r.RootPane.PaneID
 }
 
+// branchExists reports whether branch exists in the repo on cur's host.
+func branchExists(cur Backend, repo, branch string) bool {
+	out, err := cur.GitOut(repo, "branch", "--list", branch)
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
 // uniqueBranch returns branch, suffixing -2, -3, … until it doesn't match an
 // existing branch in the repo.
 func uniqueBranch(cur Backend, repo, branch string) string {
-	exists := func(b string) bool {
-		out, err := cur.GitOut(repo, "branch", "--list", b)
-		return err == nil && strings.TrimSpace(out) != ""
-	}
-	if !exists(branch) {
+	if !branchExists(cur, repo, branch) {
 		return branch
 	}
 	for i := 2; ; i++ {
 		cand := fmt.Sprintf("%s-%d", branch, i)
-		if !exists(cand) {
+		if !branchExists(cur, repo, cand) {
 			return cand
 		}
 	}
+}
+
+// findWorkspaceForDir looks for a live herdr workspace already rooted at
+// workDir (worktree checkout path) and returns it with one of its panes — the
+// case where an interrupted create fully completed herdr-side before the
+// response was lost. ok is false when no workspace matches or its panes can't
+// be resolved (the caller then creates a fresh workspace at the dir).
+func findWorkspaceForDir(b Backend, workDir string) (wsID, paneID string, ok bool) {
+	res, err := b.HerdrCall("workspace.list", map[string]any{})
+	if err != nil {
+		return "", "", false
+	}
+	var wl struct {
+		Workspaces []struct {
+			WorkspaceID string `json:"workspace_id"`
+			Worktree    *struct {
+				CheckoutPath string `json:"checkout_path"`
+			} `json:"worktree"`
+		} `json:"workspaces"`
+	}
+	if json.Unmarshal(res, &wl) != nil {
+		return "", "", false
+	}
+	for _, w := range wl.Workspaces {
+		if w.Worktree != nil && w.Worktree.CheckoutPath == workDir {
+			wsID = w.WorkspaceID
+			break
+		}
+	}
+	if wsID == "" {
+		return "", "", false
+	}
+	pres, err := b.HerdrCall("pane.list", map[string]any{})
+	if err != nil {
+		return "", "", false
+	}
+	var pl struct {
+		Panes []pane `json:"panes"`
+	}
+	if json.Unmarshal(pres, &pl) != nil {
+		return "", "", false
+	}
+	for _, p := range pl.Panes {
+		if p.WorkspaceID == wsID {
+			return wsID, p.PaneID, true
+		}
+	}
+	return "", "", false
+}
+
+// attachWorkspaceAt reattaches a herdr workspace to a worktree dir left by an
+// interrupted create: reuse the workspace herdr may already have for the dir,
+// else create a fresh one rooted there (mirroring serveAgentReopen).
+func attachWorkspaceAt(b Backend, workDir, label string, focus bool) (wsID, paneID string, err error) {
+	if wsID, paneID, ok := findWorkspaceForDir(b, workDir); ok {
+		if focus {
+			_, _ = b.HerdrCall("workspace.focus", map[string]any{"workspace_id": wsID})
+		}
+		return wsID, paneID, nil
+	}
+	res, err := b.HerdrCall("workspace.create", map[string]any{
+		"cwd":   workDir,
+		"label": label,
+		"focus": focus,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	wsID, paneID = parseCreateResult(res)
+	return wsID, paneID, nil
 }
 
 // copyRepoFiles copies files matching the comma/newline-separated globs from the

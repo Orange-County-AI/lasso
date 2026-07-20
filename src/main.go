@@ -122,6 +122,10 @@ func runServer() {
 		log.Fatalf("open state db: %v", err)
 	}
 	defer db.Close()
+	// A record still at BootCreating belongs to a create a previous process died
+	// in the middle of — mark it failed (but adoptable, see createAgent's resume
+	// path) so it surfaces instead of lingering as a phantom.
+	sweepInterruptedCreates()
 
 	// Auth credentials come from the environment (UI_AUTH=user:pass), never
 	// argv — so they don't leak via `ps`. Safety guard: refuse to bind to a
@@ -140,8 +144,18 @@ func runServer() {
 		log.Printf("theme:    %q -> %s", theme.Name, theme.Resolved)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Shutdown is sequenced in two stages: the signal context only *starts* a
+	// shutdown, while everything long-lived (remote backends, ttyds, reapers,
+	// the hub) hangs off ctx, which is cancelled only AFTER the HTTP server has
+	// drained in-flight requests. Deriving both from the signal used to tear
+	// down the SSH control masters the instant SIGTERM landed, guaranteeing any
+	// in-flight remote call (e.g. the New Agent modal's worktree.create riding a
+	// forwarded socket) died mid-request and surfaced as a 502 — the exact race
+	// a `lasso update` restart hits when a create is in flight.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancelBackends := context.WithCancel(context.Background())
+	defer cancelBackends()
 
 	// When we spawn ttyd ourselves, give each instance its own private unix
 	// socket (keyed by PID) instead of a shared TCP port — so a prod instance
@@ -306,11 +320,21 @@ func runServer() {
 	startHerdrSSHReaper(ctx)
 
 	srv := &http.Server{Handler: handler}
+	shutdownDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		sh, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+		defer close(shutdownDone)
+		<-sigCtx.Done()
+		stop() // restore default signal handling: a second Ctrl-C/SIGTERM force-kills
+		// Streaming handlers (SSE) watch `draining` and exit immediately, so
+		// Shutdown only waits on real work — not on the drain window per se.
+		close(draining)
+		log.Printf("shutdown: draining in-flight requests (up to %s)", drainTimeout)
+		sh, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		_ = srv.Shutdown(sh)
+		cancel()
+		// Only now tear down what in-flight requests depended on.
+		cancelBackends()
+		closeBackendsOnExit()
 	}()
 
 	switch {
@@ -332,7 +356,21 @@ func runServer() {
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	// Serve returns the moment Shutdown begins; wait for the drain + backend
+	// teardown to finish so we don't exit while a request is still completing.
+	<-shutdownDone
 }
+
+// drainTimeout bounds the graceful-shutdown drain. Long enough for the slow
+// mutations worth protecting (worktree.create runs a few seconds, more over a
+// forwarded socket), short enough to stay under both launchd's default 20s
+// ExitTimeOut and systemd's default 90s TimeoutStopSec before they SIGKILL.
+const drainTimeout = 15 * time.Second
+
+// draining is closed when shutdown begins. Long-lived streaming handlers (SSE)
+// select on it and exit promptly, so srv.Shutdown waits only on genuinely
+// in-flight request work rather than idling out the whole drain window.
+var draining = make(chan struct{})
 
 // listenWithFallback binds addr. If dev is true and the port is already in use,
 // it scans forward up to span ports (same host) and binds the first free one,
@@ -1963,6 +2001,10 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-draining:
+			// Exit at shutdown so srv.Shutdown isn't held open by idle streams;
+			// the browser's EventSource auto-reconnects to the restarted server.
 			return
 		case a := <-ch:
 			send(a)
