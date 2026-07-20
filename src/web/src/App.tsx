@@ -102,6 +102,11 @@ function FitTabs({
   return (
     <TabsList className={cn(stripClass, listClassName)}>
       {leading}
+      {/* A short vertical rule fences the leading control (host picker) off from
+          the tab group so the two idioms don't read as one jammed-together row. */}
+      {leading && (
+        <div aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-border" />
+      )}
       {/* Tabs live in their own region; the leading/trailing controls stay fixed
           on the row. no-scrollbar hides the scrollbar so it doesn't steal row
           height. */}

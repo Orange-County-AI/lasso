@@ -285,11 +285,8 @@ export function HostSwitcher({
           ) : (
             <Laptop className={iconClass} />
           )}
-          {/* The nav variant is icon-only (host name lives in the menu + tooltip);
-              the floating pill names the active host inline. */}
-          {!isNav && (
-            <span className="max-w-32 truncate font-medium">{activeLabel}</span>
-          )}
+          {/* Name the active host inline in both variants. */}
+          <span className="max-w-32 truncate font-medium">{activeLabel}</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
