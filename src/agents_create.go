@@ -618,12 +618,26 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 		_ = b.WriteFile(filepath.Join(rec.WorkDir, "NOTES.md"), []byte(rec.Notes+"\n"), 0o644)
 	}
 
-	cmd := agentCommand(rec.Agent, launchOpts{
+	opts := launchOpts{
 		planMode:  rec.PlanMode,
 		model:     rec.Model,
 		extraArgs: rec.ExtraArgs,
 		prompt:    agentPrompt(rec),
-	})
+	}
+	// A long or multi-line prompt can't ride the typed launch line (paneRun
+	// types raw bytes into the pane — see needsPromptFile), so stage it to a
+	// file the command expands at exec time. If staging fails, typing the
+	// prompt inline WOULD garble the launch, so fail the boot instead.
+	if needsPromptFile(opts.prompt, agentCommand(rec.Agent, opts)) {
+		path, err := stageAgentPrompt(b, rec.ID, opts.prompt)
+		if err != nil {
+			log.Printf("agent %s on %s: boot failed: stage prompt: %v", rec.ID, host, err)
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, "stage prompt: "+err.Error())
+			return
+		}
+		opts.prompt, opts.promptFile = "", path
+	}
+	cmd := agentCommand(rec.Agent, opts)
 	if err := launchAgentInPane(b, rec.RootPane, setup, cmd); err != nil {
 		log.Printf("agent %s on %s: boot failed: %v", rec.ID, host, err)
 		_ = updateAgentBootStatus(rec.ID, host, BootFailed, err.Error())
@@ -901,6 +915,45 @@ func agentPrompt(rec AgentRecord) string {
 	return b.String()
 }
 
+// maxTypedLaunch is the largest launch command paneRun will type inline.
+// pane.send_text delivers raw bytes to the pane's PTY, and the kernel TTY
+// input queue is small (MAX_INPUT is 1024 bytes on macOS) — bytes the shell
+// hasn't drained past that are silently dropped, which unbalances the
+// prompt's quoting and leaves the remainder executing as shell fragments.
+// 512 leaves ample headroom for echo/redraw latency while the shell drains.
+const maxTypedLaunch = 512
+
+// needsPromptFile reports whether a launch command must deliver its prompt via
+// a staged file instead of inline on the typed command line. Two typed-delivery
+// hazards force the file path: an embedded newline (each "\n"/"\r" typed at a
+// shell is an accept-line, so every prompt line would execute as its own broken
+// command) and sheer size (see maxTypedLaunch).
+func needsPromptFile(prompt, cmd string) bool {
+	return strings.ContainsAny(prompt, "\n\r") || len(cmd) > maxTypedLaunch
+}
+
+// stageAgentPrompt writes an agent's prompt to a lasso-owned file on backend b
+// — under <lasso dir>/prompts, NOT the work dir, so it never dirties the
+// agent's worktree — and returns its path for the launch line's "$(cat …)".
+// closeAgentRecord removes the file when the agent is closed.
+func stageAgentPrompt(b Backend, agentID, prompt string) (string, error) {
+	path := agentPromptPath(b, agentID)
+	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := b.WriteFile(path, []byte(prompt), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// agentPromptPath is the staged-prompt file for one agent on backend b.
+// Deterministic (lasso dir + agent id) so closeAgentRecord can remove it
+// without the path being persisted anywhere.
+func agentPromptPath(b Backend, agentID string) string {
+	return filepath.Join(lassoDirFor(b), "prompts", agentID+".md")
+}
+
 // launchAgentInPane runs the optional setup script then the agent command in a
 // freshly-created pane, then auto-accepts the agent's trust dialog. It first
 // waits for the pane's shell to settle (waitPaneReady): a new pane is still
@@ -970,7 +1023,10 @@ func waitPaneReady(b Backend, paneID string) {
 
 // paneRun sends a command line into a pane's shell (text + Enter) — the
 // pane.send_text behind `herdr pane run`. Targets a cooked-mode shell, where a
-// trailing "\n" ends the line. For submitting to an interactive agent TUI use
+// trailing "\n" ends the line. The bytes land on the PTY raw, so the command
+// must be short and single-line (see needsPromptFile) — embedded newlines
+// submit fragments, and anything past the kernel TTY input queue is dropped.
+// For submitting to an interactive agent TUI use
 // paneSubmit instead — see why there. Returns the herdr RPC error so the caller
 // (launchAgentInPane) can tell a boot that never reached the pane from one that
 // did.

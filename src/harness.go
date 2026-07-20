@@ -52,6 +52,11 @@ type launchOpts struct {
 	model     string
 	extraArgs string
 	prompt    string
+	// promptFile, when set, is a file on the target host holding the prompt;
+	// the launch line then carries `"$(cat <file>)"` in place of the inline
+	// quoted prompt and prompt is ignored. Used when the prompt is too big or
+	// multi-line to type into the pane's shell (see needsPromptFile).
+	promptFile string
 }
 
 var harnesses = []harnessDef{
@@ -196,10 +201,23 @@ func appendCommonArgs(cmd string, o launchOpts) string {
 	if e := strings.TrimSpace(o.extraArgs); e != "" {
 		cmd += " " + e
 	}
-	if o.prompt != "" {
-		cmd += " " + shellQuote(o.prompt)
+	if o.prompt != "" || o.promptFile != "" {
+		cmd += " " + promptArg(o)
 	}
 	return cmd
+}
+
+// promptArg renders the launch line's prompt operand: the shell-quoted prompt
+// itself, or — when it was staged to a file on the host (stageAgentPrompt) — a
+// double-quoted command substitution the shell expands to a single argv
+// argument at exec time. The substitution keeps the typed line short and
+// newline-free no matter how large the prompt is; the only byte-level delta is
+// that $() strips trailing newlines, which carry no meaning in a prompt.
+func promptArg(o launchOpts) string {
+	if o.promptFile != "" {
+		return `"$(cat ` + shellQuote(o.promptFile) + `)"`
+	}
+	return shellQuote(o.prompt)
 }
 
 func claudeCommand(o launchOpts) string {
@@ -260,8 +278,8 @@ func opencodeCommand(o launchOpts) string {
 	if e := strings.TrimSpace(o.extraArgs); e != "" {
 		cmd += " " + e
 	}
-	if o.prompt != "" {
-		cmd += " --prompt " + shellQuote(o.prompt)
+	if o.prompt != "" || o.promptFile != "" {
+		cmd += " --prompt " + promptArg(o)
 	}
 	return cmd
 }

@@ -90,6 +90,17 @@ func (b *memBackend) MkdirAll(p string, _ fs.FileMode) error {
 	return nil
 }
 
+func (b *memBackend) WriteFile(p string, data []byte, _ fs.FileMode) error {
+	b.addFile(p, string(data))
+	return nil
+}
+
+func (b *memBackend) RemoveAll(p string) error {
+	delete(b.files, p)
+	delete(b.dirs, p)
+	return nil
+}
+
 type memInfo struct {
 	name string
 	size int64

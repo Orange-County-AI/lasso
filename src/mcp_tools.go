@@ -758,6 +758,13 @@ func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool
 	// 1. Always kill the agent process first, so it dies even if the pane is kept.
 	out := closeAgentOut{AgentKilled: killPaneAgent(b, rec.RootPane)}
 
+	// A long/multi-line prompt was staged to a file for the launch line's
+	// "$(cat …)" (see stageAgentPrompt); it dies with the agent. Best-effort:
+	// a short-prompt agent never had one.
+	if rec.ID != "" {
+		_ = b.RemoveAll(agentPromptPath(b, rec.ID))
+	}
+
 	// 2. remove_worktree (git only) tears down the worktree, which also closes
 	//    the pane — so it supersedes the close_pane choice.
 	if removeWorktree && rec.Type == "git" {
