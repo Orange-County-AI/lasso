@@ -307,7 +307,7 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 	if host == "" {
 		host = "local"
 	}
-	root, repos, err := hostReposList(host)
+	root, repos, err := cachedHostReposList(host, false)
 	if err != nil {
 		return nil, listReposOut{}, err
 	}
@@ -341,7 +341,7 @@ func listBranchesTool(_ context.Context, _ *mcp.CallToolRequest, in listBranches
 	if err != nil {
 		return nil, listBranchesOut{}, err
 	}
-	local, remote, def := branchList(b, expandTildeOn(b, in.Repo))
+	local, remote, def := cachedBranchList(in.Host, b, expandTildeOn(b, in.Repo), false)
 	return nil, listBranchesOut{Branches: local, RemoteBranches: remote, Default: def}, nil
 }
 

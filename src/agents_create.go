@@ -243,7 +243,7 @@ func serveRepos(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not available", http.StatusBadRequest)
 		return
 	}
-	root, repos, err := hostReposList(host)
+	root, repos, err := cachedHostReposList(host, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -273,7 +273,7 @@ func serveRepoBranches(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	local, remote, def := branchList(be, path)
+	local, remote, def := cachedBranchList(host, be, path, r.URL.Query().Get("refresh") == "1")
 	writeJSON(w, map[string]any{"branches": local, "remoteBranches": remote, "default": def})
 }
 
@@ -500,6 +500,10 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	if req.Type == "git" {
 		_ = setLastRepo(host, rec.Repo)
 		_ = setLastBaseBranch(host, rec.Repo, rec.BaseBranch)
+		// The remembered base branch rides along in the repo listing, and the
+		// worktree just added a branch — both cached views are now stale.
+		invalidateRepoCache(host)
+		invalidateBranchCache(host, rec.Repo)
 	}
 	_ = setLastAgent(host, rec.Agent)
 	_ = setLastAgentType(host, rec.Type)

@@ -249,6 +249,9 @@ func hostDefaults(host string) (creatorDefaults, error) {
 
 // hostSetDefaults writes host's creator defaults to host's own lasso.db.
 func hostSetDefaults(host string, p defaultsPatch) error {
+	// repos_root decides what the repo scan finds, so any defaults write drops
+	// host's cached listing rather than serving the pre-change one for a whole TTL.
+	defer invalidateRepoCache(host)
 	if isLocalHost(host) {
 		return applyDefaults(p)
 	}
@@ -318,6 +321,8 @@ func hostRepoConfig(host, path string) (RepoConfig, error) {
 
 // hostSetRepoConfig writes one repo's per-repo settings to host's own state.
 func hostSetRepoConfig(host, path string, copyFiles, setup *string) (RepoConfig, error) {
+	// copy_files/setup are merged into each repoEntry, so the listing is now stale.
+	defer invalidateRepoCache(host)
 	if isLocalHost(host) {
 		return applyRepoConfig("local", path, copyFiles, setup)
 	}

@@ -295,6 +295,11 @@ func runServer() {
 		}
 	}
 
+	// Eagerly populate the repo/branch caches for every reachable host so the
+	// New Agent dialog opens on warm data instead of blocking on ssh. Started
+	// here — after the active backend is up — and refreshed on its own interval.
+	startCacheWarmer()
+
 	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
