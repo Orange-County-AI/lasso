@@ -328,36 +328,34 @@
 .termgrid {
   flex: 1 1 auto;
   overflow: auto;
+  /* Reserve the scrollbar gutter so a row-height clamp that adds a scrollbar
+     doesn't shrink the width and re-trigger the layout measurement. */
+  scrollbar-gutter: stable;
   padding: 14px;
-  /* Flex wrap (not CSS grid) so the cells in each row grow to fill the row's
-     full width — a CSS grid leaves empty tracks, stranding a lone last-row cell
-     at its min width. align-content: start packs rows to the top. */
-  display: flex;
-  flex-wrap: wrap;
+  /* GridTab measures the viewport and sets --grid-cols / --grid-cell-h so few
+     panes get tall full-height columns and many panes degrade to a scrolling
+     wall. Tracks are all 1fr, so a partial last row never strands a cell at
+     min width. align-content: start packs rows to the top. */
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols, 1), minmax(0, 1fr));
+  grid-auto-rows: var(--grid-cell-h, 260px);
   gap: 14px;
   align-content: start;
 }
-/* A zero-height, full-width flex item that forces a row break, so the top row
-   can hold just the remainder cells (which then grow to fill the width). The
-   negative margins cancel the extra row-gap the break would otherwise add. */
-.termbreak {
-  flex-basis: 100%;
-  width: 100%;
-  height: 0;
-  margin: -7px 0;
-}
 .termcell {
-  /* grow to share the row's width, wrapping when a cell can't keep ~360px */
-  flex: 1 1 360px;
   display: flex;
   flex-direction: column;
-  height: 260px;
+  min-height: 0;
   /* Blend the (subtle) border toward muted so each cell reads as a distinct
      tile rather than dissolving into the background. */
   border: 1px solid color-mix(in srgb, var(--h-border) 45%, var(--h-muted));
   border-radius: 6px;
   overflow: hidden;
   background: var(--h-bg);
+}
+/* Non-cell children (loading / empty / error notices) span the full row. */
+.termgrid > .empty {
+  grid-column: 1 / -1;
 }
 .termcell.focused {
   border-color: var(--h-accent);

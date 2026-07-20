@@ -46,10 +46,14 @@ const POLL_MS = 2500
 // ttyd alive (the server reaps idle attaches after ~30s). Comfortably under that.
 const KEEPALIVE_MS = 18_000
 
-// Grid layout constants — must match .termgrid in index.css (gap) and .termcell
-// (flex-basis) so the measured column count matches what flexbox actually packs.
+// Grid layout constants — gap/padding must match .termgrid in index.css. The
+// column count and row height are computed from the viewport (tall-first: as
+// many columns as fit at GRID_MIN_CELL_W, cells stretched to fill the height,
+// never shorter than GRID_MIN_CELL_H) and applied via CSS vars.
 const GRID_GAP = 14
-const GRID_MIN_CELL = 360
+const GRID_PAD = 14
+const GRID_MIN_CELL_W = 360
+const GRID_MIN_CELL_H = 260
 
 // cellKey uniquely identifies a pane across hosts (pane ids are only unique
 // within a host).
@@ -76,24 +80,15 @@ export function GridTab({
     [ui.grid_hidden_hosts]
   )
 
-  // Measure how many columns flexbox will pack so we can place the remainder
-  // (the newest panes, since they sort first) in the top row — which then grows
-  // to fill the full width — rather than leaving a stretched, oversized cell in
-  // the bottom row.
+  // Measure the grid viewport; the tall-first column/row math derives from it
+  // in render (clientHeight of the scroll container is the viewport height, not
+  // the content height, which is exactly what the row math wants).
   const gridRef = React.useRef<HTMLDivElement>(null)
-  const [cols, setCols] = React.useState(1)
+  const [box, setBox] = React.useState({ w: 0, h: 0 })
   React.useLayoutEffect(() => {
     const el = gridRef.current
     if (!el) return
-    const measure = () => {
-      const content = el.clientWidth - GRID_GAP * 2 // .termgrid horizontal padding
-      setCols(
-        Math.max(
-          1,
-          Math.floor((content + GRID_GAP) / (GRID_MIN_CELL + GRID_GAP))
-        )
-      )
-    }
+    const measure = () => setBox({ w: el.clientWidth, h: el.clientHeight })
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -148,6 +143,24 @@ export function GridTab({
         ? all.filter((p) => (!agentsOnly || p.has_agent) && !hidden.has(p.host))
         : null,
     [all, agentsOnly, hidden]
+  )
+
+  // Tall-first layout: as many columns as fit at the min cell width (so a
+  // handful of panes becomes one row of tall columns), rows stretched to fill
+  // the viewport height down to a floor — past which the grid scrolls like the
+  // old fixed-height wall.
+  const n = panes?.length ?? 0
+  const availW = box.w - GRID_PAD * 2
+  const availH = box.h - GRID_PAD * 2
+  const maxCols = Math.max(
+    1,
+    Math.floor((availW + GRID_GAP) / (GRID_MIN_CELL_W + GRID_GAP))
+  )
+  const cols = Math.max(1, Math.min(n || 1, maxCols))
+  const rows = Math.ceil(Math.max(n, 1) / cols)
+  const cellH = Math.max(
+    GRID_MIN_CELL_H,
+    Math.floor((availH - (rows - 1) * GRID_GAP) / rows)
   )
 
   const toggleAgentsOnly = () => patchUIState({ grid_agents_only: !agentsOnly })
@@ -337,7 +350,16 @@ export function GridTab({
         </div>
       )}
 
-      <div ref={gridRef} className="termgrid">
+      <div
+        ref={gridRef}
+        className="termgrid"
+        style={
+          {
+            "--grid-cols": cols,
+            "--grid-cell-h": `${cellH}px`,
+          } as React.CSSProperties
+        }
+      >
         {error ? (
           <div className="empty">
             cannot list panes
@@ -353,35 +375,25 @@ export function GridTab({
               : "no panes"}
           </div>
         ) : (
-          panes.map((p, i) => {
-            // A flex break after the first `remainder` cells puts them in the
-            // top row (where they grow to fill the full width); the older panes
-            // pack into full rows below. No break when the count divides evenly.
-            const remainder = cols > 0 ? panes.length % cols : 0
-            const breakHere =
-              remainder > 0 && remainder < panes.length && i === remainder - 1
-            return (
-              <React.Fragment key={cellKey(p)}>
-                <GridCell
-                  pane={p}
-                  active={active}
-                  selected={selected.has(cellKey(p))}
-                  selectionCount={selected.size}
-                  focused={
-                    p.host === activeHost
-                      ? activePaneID
-                        ? p.pane_id === activePaneID
-                        : !!p.focused
-                      : false
-                  }
-                  onClick={(e) => onCellClick(e, p)}
-                  onRename={() => requestRename(p)}
-                  onClose={() => requestClose(p)}
-                />
-                {breakHere && <div className="termbreak" aria-hidden="true" />}
-              </React.Fragment>
-            )
-          })
+          panes.map((p) => (
+            <GridCell
+              key={cellKey(p)}
+              pane={p}
+              active={active}
+              selected={selected.has(cellKey(p))}
+              selectionCount={selected.size}
+              focused={
+                p.host === activeHost
+                  ? activePaneID
+                    ? p.pane_id === activePaneID
+                    : !!p.focused
+                  : false
+              }
+              onClick={(e) => onCellClick(e, p)}
+              onRename={() => requestRename(p)}
+              onClose={() => requestClose(p)}
+            />
+          ))
         )}
       </div>
 
