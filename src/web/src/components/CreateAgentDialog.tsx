@@ -212,6 +212,11 @@ export function CreateAgentDialog({
   })
   const config = configQuery.data ?? null
   const repos = reposQuery.data?.repos ?? []
+  // Surface a failed repo scan (e.g. a remote host missing the sqlite3 CLI)
+  // instead of silently showing an empty picker that reads as "no repos".
+  const reposError = reposQuery.isError
+    ? (reposQuery.error as Error).message
+    : null
 
   // Form state.
   const [type, setType] = React.useState<AgentType>("git")
@@ -722,8 +727,15 @@ export function CreateAgentDialog({
                     onValueChange={setRepo}
                     placeholder="Select a repository…"
                     filterPlaceholder="Filter repositories…"
-                    emptyText="No repos found."
+                    emptyText={
+                      reposError ? "Couldn't load repos." : "No repos found."
+                    }
                   />
+                  {reposError && (
+                    <p className="mt-1 text-[11px] text-destructive">
+                      {reposError}
+                    </p>
+                  )}
                 </Field>
 
                 <Field label="Base branch" htmlFor="agent-base">

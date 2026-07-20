@@ -439,7 +439,28 @@ func remoteDB(host string, jsonRows bool, sql string) ([]byte, error) {
 	// Login shell so sqlite3 is on PATH; mkdir so a brand-new host's db opens.
 	inner := `mkdir -p "$HOME/.lasso" && sqlite3 ` + flags + ` "$HOME/.lasso/lasso.db"`
 	remoteCmd := `${SHELL:-sh} -lc ` + shellQuote(inner)
-	return rb.runStdin(remoteCmd, []byte(remoteSchemaSQL+sql))
+	out, err := rb.runStdin(remoteCmd, []byte(remoteSchemaSQL+sql))
+	if err != nil {
+		return nil, sqlite3Hint(host, err)
+	}
+	return out, nil
+}
+
+// sqlite3Hint turns the opaque shell "command not found" failure from a remote
+// that lacks the sqlite3 CLI into an actionable message. lasso drives every
+// remote host's config db through that binary (see remoteDB), so a missing
+// sqlite3 otherwise surfaces as an empty repo picker and silently-dropped
+// settings writes. Any other error passes through unchanged.
+func sqlite3Hint(host string, err error) error {
+	low := strings.ToLower(err.Error())
+	if strings.Contains(low, "sqlite3") &&
+		(strings.Contains(low, "not found") || strings.Contains(low, "no such file")) {
+		return fmt.Errorf("%s: the sqlite3 CLI is not installed, but lasso needs it "+
+			"on each remote host to read and write that host's settings. Install it "+
+			"(e.g. `sudo apt-get install -y sqlite3`, `sudo dnf install -y sqlite`, or "+
+			"`brew install sqlite`) and retry", host)
+	}
+	return err
 }
 
 // unmarshalRows decodes sqlite3 -json output into v. sqlite3 prints nothing for

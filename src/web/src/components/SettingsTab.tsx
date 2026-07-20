@@ -523,7 +523,8 @@ function AgentCreatorSettings({
       queryClient.invalidateQueries({ queryKey: qk.agentConfig(host) })
       queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
-    onError: () => toast.error("Couldn't save agent defaults"),
+    onError: (e: Error) =>
+      toast.error(`Couldn't save agent defaults: ${e.message}`),
   })
 
   const saveRepoMutation = useMutation({
@@ -536,8 +537,17 @@ function AgentCreatorSettings({
       setSavedRepo(repoPath)
       queryClient.invalidateQueries({ queryKey: qk.repos(host) })
     },
-    onError: () => toast.error("Couldn't save repository setup"),
+    onError: (e: Error) =>
+      toast.error(`Couldn't save repository setup: ${e.message}`),
   })
+
+  // A failed config/repo read (e.g. a remote host missing the sqlite3 CLI)
+  // otherwise leaves the panel showing placeholder defaults and an empty repo
+  // list — indistinguishable from a host that genuinely has none. Surface it.
+  const readError =
+    configQuery.isError || reposQuery.isError
+      ? ((configQuery.error ?? reposQuery.error) as Error).message
+      : null
 
   const dirtyDefaults =
     !!configQuery.data &&
@@ -576,140 +586,147 @@ function AgentCreatorSettings({
         : "idle"
 
   return (
-    <div className="flex @2xl:flex-row flex-col gap-4">
-      <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="font-medium text-foreground text-sm">
-            New Agent defaults
-          </h3>
-          <SaveStatus
-            state={defaultsStatus}
-            onRetry={() => saveDefaultsMutation.mutate()}
-          />
+    <div className="flex flex-col gap-4">
+      {readError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+          Couldn't load {host}'s settings: {readError}
         </div>
-
-        <Field
-          label="Git repos directories"
-          hint="One directory per line. The repo picker scans each (one level deep) for git repos."
-          htmlFor="settings-repos-root"
-        >
-          <textarea
-            id="settings-repos-root"
-            className={cn(fieldClass, "resize-none")}
-            rows={3}
-            value={reposRoot}
-            onChange={(e) => setReposRoot(e.target.value)}
-            onBlur={flushDefaults}
-            placeholder={"~/projects\n~/work"}
-          />
-        </Field>
-
-        <Field
-          label="Default agent"
-          hint="Auto remembers the agent you picked last time instead of forcing one."
-          htmlFor="settings-default-agent"
-        >
-          <select
-            id="settings-default-agent"
-            className={fieldClass}
-            value={defaultAgent}
-            onChange={(e) => setDefaultAgent(e.target.value)}
-            onBlur={flushDefaults}
-          >
-            <option value="">Auto (use last used)</option>
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-            <option value="opencode">OpenCode</option>
-          </select>
-        </Field>
-
-        <Field
-          label="Scratch setup commands"
-          hint="Run before the agent in scratch (non-git) workspaces."
-          htmlFor="settings-scratch-setup"
-        >
-          <textarea
-            id="settings-scratch-setup"
-            className={cn(fieldClass, "resize-none font-mono")}
-            rows={3}
-            value={scratchSetup}
-            onChange={(e) => setScratchSetup(e.target.value)}
-            onBlur={flushDefaults}
-            placeholder="uv venv"
-          />
-        </Field>
-      </section>
-
-      <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex flex-col gap-0.5">
+      )}
+      <div className="flex @2xl:flex-row flex-col gap-4">
+        <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-2">
             <h3 className="font-medium text-foreground text-sm">
-              Per-repository setup
+              New Agent defaults
             </h3>
-            <p className="text-[11px] text-muted-foreground">
-              Files copied into a new worktree and commands run before the agent
-              — both relative to the repo, applied to every agent created from
-              it.
-            </p>
-          </div>
-          {repoPath && (
             <SaveStatus
-              state={repoStatus}
-              onRetry={() => saveRepoMutation.mutate()}
+              state={defaultsStatus}
+              onRetry={() => saveDefaultsMutation.mutate()}
             />
-          )}
-        </div>
+          </div>
 
-        <Field label="Repository" htmlFor="settings-repo">
-          <select
-            id="settings-repo"
-            className={fieldClass}
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.target.value)}
+          <Field
+            label="Git repos directories"
+            hint="One directory per line. The repo picker scans each (one level deep) for git repos."
+            htmlFor="settings-repos-root"
           >
-            {repos.length === 0 && <option value="">No repos found</option>}
-            {repos.map((r) => (
-              <option key={r.path} value={r.path}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+            <textarea
+              id="settings-repos-root"
+              className={cn(fieldClass, "resize-none")}
+              rows={3}
+              value={reposRoot}
+              onChange={(e) => setReposRoot(e.target.value)}
+              onBlur={flushDefaults}
+              placeholder={"~/projects\n~/work"}
+            />
+          </Field>
 
-        <Field
-          label="Copy files into worktree (globs)"
-          hint="Comma- or newline-separated. Matched in the repo, copied into the new worktree (e.g. .env, .env.local)."
-          htmlFor="settings-copy-files"
-        >
-          <textarea
-            id="settings-copy-files"
-            className={cn(fieldClass, "resize-none")}
-            rows={2}
-            value={copyFiles}
-            onChange={(e) => setCopyFiles(e.target.value)}
-            onBlur={flushRepo}
-            placeholder=".env, .env.local"
-            disabled={!repoPath}
-          />
-        </Field>
+          <Field
+            label="Default agent"
+            hint="Auto remembers the agent you picked last time instead of forcing one."
+            htmlFor="settings-default-agent"
+          >
+            <select
+              id="settings-default-agent"
+              className={fieldClass}
+              value={defaultAgent}
+              onChange={(e) => setDefaultAgent(e.target.value)}
+              onBlur={flushDefaults}
+            >
+              <option value="">Auto (use last used)</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="opencode">OpenCode</option>
+            </select>
+          </Field>
 
-        <Field
-          label="Setup commands"
-          hint="Run in the worktree's shell before the agent starts."
-          htmlFor="settings-setup"
-        >
-          <textarea
-            id="settings-setup"
-            className={cn(fieldClass, "resize-none font-mono")}
-            rows={3}
-            value={setup}
-            onChange={(e) => setSetup(e.target.value)}
-            onBlur={flushRepo}
-            placeholder="bun install"
-            disabled={!repoPath}
-          />
-        </Field>
-      </section>
+          <Field
+            label="Scratch setup commands"
+            hint="Run before the agent in scratch (non-git) workspaces."
+            htmlFor="settings-scratch-setup"
+          >
+            <textarea
+              id="settings-scratch-setup"
+              className={cn(fieldClass, "resize-none font-mono")}
+              rows={3}
+              value={scratchSetup}
+              onChange={(e) => setScratchSetup(e.target.value)}
+              onBlur={flushDefaults}
+              placeholder="uv venv"
+            />
+          </Field>
+        </section>
+
+        <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex flex-col gap-0.5">
+              <h3 className="font-medium text-foreground text-sm">
+                Per-repository setup
+              </h3>
+              <p className="text-[11px] text-muted-foreground">
+                Files copied into a new worktree and commands run before the
+                agent — both relative to the repo, applied to every agent
+                created from it.
+              </p>
+            </div>
+            {repoPath && (
+              <SaveStatus
+                state={repoStatus}
+                onRetry={() => saveRepoMutation.mutate()}
+              />
+            )}
+          </div>
+
+          <Field label="Repository" htmlFor="settings-repo">
+            <select
+              id="settings-repo"
+              className={fieldClass}
+              value={repoPath}
+              onChange={(e) => setRepoPath(e.target.value)}
+            >
+              {repos.length === 0 && <option value="">No repos found</option>}
+              {repos.map((r) => (
+                <option key={r.path} value={r.path}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
+            label="Copy files into worktree (globs)"
+            hint="Comma- or newline-separated. Matched in the repo, copied into the new worktree (e.g. .env, .env.local)."
+            htmlFor="settings-copy-files"
+          >
+            <textarea
+              id="settings-copy-files"
+              className={cn(fieldClass, "resize-none")}
+              rows={2}
+              value={copyFiles}
+              onChange={(e) => setCopyFiles(e.target.value)}
+              onBlur={flushRepo}
+              placeholder=".env, .env.local"
+              disabled={!repoPath}
+            />
+          </Field>
+
+          <Field
+            label="Setup commands"
+            hint="Run in the worktree's shell before the agent starts."
+            htmlFor="settings-setup"
+          >
+            <textarea
+              id="settings-setup"
+              className={cn(fieldClass, "resize-none font-mono")}
+              rows={3}
+              value={setup}
+              onChange={(e) => setSetup(e.target.value)}
+              onBlur={flushRepo}
+              placeholder="bun install"
+              disabled={!repoPath}
+            />
+          </Field>
+        </section>
+      </div>
     </div>
   )
 }
