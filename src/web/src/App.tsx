@@ -18,7 +18,7 @@ import { BrowserTab } from "@/components/BrowserTab"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
-import { GridTab } from "@/components/GridTab"
+import { type GridFocusRequest, GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewTerminalDialog } from "@/components/NewTerminalDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
@@ -203,6 +203,10 @@ function Shell() {
   })
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
+  // A pending "focus this pane in the grid" request — set when an agent is
+  // created from the New Agent dialog while the Grid view is active.
+  const [gridFocusReq, setGridFocusReq] =
+    React.useState<GridFocusRequest | null>(null)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newTermOpen, setNewTermOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
@@ -411,11 +415,25 @@ function Shell() {
                 // New Agent sits at the far-right of the strip; when the sidebar
                 // is collapsed the git status + expand control follow it.
                 <div className="ml-2 flex items-center gap-1.5">
-                  {/* Surface the herdr terminal on create so it's visible when
-                      the dialog's close handler hands it keyboard focus. */}
+                  {/* On create: from the Herdr view, surface the herdr terminal
+                      so the close handler can hand it the keyboard. From the
+                      Grid view, stay put — GridTab picks the new pane up via
+                      focusRequest and focuses its cell instead. */}
                   <CreateAgentDialog
                     variant="header"
-                    onCreated={() => switchLeft("herdr")}
+                    onCreated={(rec, host) => {
+                      if (leftView === "grid") {
+                        setGridFocusReq({
+                          host,
+                          paneId: rec.root_pane,
+                          workspaceId: rec.workspace_id,
+                          ts: Date.now(),
+                        })
+                      } else {
+                        switchLeft("herdr")
+                      }
+                    }}
+                    onCloseFocus={leftView === "grid" ? () => {} : undefined}
                   />
                   {collapsed && (
                     <>
@@ -454,6 +472,7 @@ function Shell() {
                 <GridTab
                   active={leftView === "grid"}
                   onFocusInHerdr={() => switchLeft("herdr")}
+                  focusRequest={gridFocusReq}
                 />
               </Pane>
             </div>

@@ -16,6 +16,7 @@ import {
 import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
 import {
+  type AgentRecord,
   api,
   type CreateAgentPayload,
   type HarnessDef,
@@ -142,9 +143,14 @@ function hostUsable(h: HostInfo): boolean {
 
 export function CreateAgentDialog({
   onCreated,
+  onCloseFocus,
   variant = "button",
 }: {
-  onCreated?: () => void
+  onCreated?: (rec: AgentRecord, host: string) => void
+  // Called on a create-driven close INSTEAD of the default herdr-terminal
+  // focus — lets App keep the keyboard in the grid when that's where the new
+  // agent will surface (see GridTab's focusRequest).
+  onCloseFocus?: () => void
   // "button" — the inline outline button on the Agents tab header.
   // "floating" — a pill matching the host switcher, for the bottom-left footer.
   // "header" — a compact button for the left column's tab-strip trailing slot.
@@ -500,7 +506,7 @@ export function CreateAgentDialog({
       // so refetch them (prefix-match clears every host's cached config).
       queryClient.invalidateQueries({ queryKey: ["agent-config"] })
       queryClient.invalidateQueries({ queryKey: ["repos"] })
-      onCreated?.()
+      onCreated?.(rec, selectedHost)
     },
     onError: (err) => {
       toast.error("Failed to create agent", {
@@ -569,13 +575,15 @@ export function CreateAgentDialog({
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
         onCloseAutoFocus={(e) => {
-          // On a create-driven close, send focus to the herdr terminal so the
-          // user can type into the new agent immediately. Otherwise (cancel /
-          // Esc) let Radix restore focus to the trigger as usual.
+          // On a create-driven close, send focus to where the new agent will
+          // appear — the herdr terminal by default, or wherever onCloseFocus
+          // says (the grid). Otherwise (cancel / Esc) let Radix restore focus
+          // to the trigger as usual.
           if (createdRef.current) {
             createdRef.current = false
             e.preventDefault()
-            focusHerdrTerminal()
+            if (onCloseFocus) onCloseFocus()
+            else focusHerdrTerminal()
           }
         }}
       >

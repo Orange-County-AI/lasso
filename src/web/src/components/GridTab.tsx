@@ -68,6 +68,17 @@ const cellKey = (p: GridPane) => `${p.host}|${p.pane_id}`
 // small laptop can keep it collapsed while a big monitor leaves it open.
 const RAIL_OPEN_KEY = "lasso-grid-rail-open"
 
+// A request (from App) to focus a pane in the grid once it shows up in a grid
+// payload — e.g. an agent just created from the New Agent dialog while the
+// Grid view was active. ts makes each request distinct so the same pane can be
+// requested twice.
+export interface GridFocusRequest {
+  host: string
+  paneId?: string
+  workspaceId?: string
+  ts: number
+}
+
 // The Grid tab: a wall of live terminals, one per herdr pane, spanning every
 // reachable + protocol-compatible host. Each cell body is an interactive
 // terminal (a ttyd attached to that pane). Click a header to focus the pane in
@@ -77,9 +88,11 @@ const RAIL_OPEN_KEY = "lasso-grid-rail-open"
 export function GridTab({
   active,
   onFocusInHerdr,
+  focusRequest,
 }: {
   active: boolean
   onFocusInHerdr: () => void
+  focusRequest?: GridFocusRequest | null
 }) {
   const { activePaneID, host: activeHost } = useApp()
   const ui = useUIState()
@@ -208,14 +221,15 @@ export function GridTab({
     return Array.from(m, ([host, label]) => ({ host, label }))
   }, [all])
 
+  // Watch mode shows exactly the starred panes — the agents-only and host
+  // filters (whose toggles are hidden in Watch mode) only shape the All wall.
   const panes = React.useMemo(
     () =>
       all
-        ? all.filter(
-            (p) =>
-              (!agentsOnly || p.has_agent) &&
-              !hidden.has(p.host) &&
-              (mode !== "watch" || watched.has(cellKey(p)))
+        ? all.filter((p) =>
+            mode === "watch"
+              ? watched.has(cellKey(p))
+              : (!agentsOnly || p.has_agent) && !hidden.has(p.host)
           )
         : null,
     [all, agentsOnly, hidden, mode, watched]
@@ -306,6 +320,45 @@ export function GridTab({
       ?.scrollIntoView({ block: "nearest", behavior: "smooth" })
     focusTerminalFrame(fid)
   }
+
+  // Honor a focus request from App (an agent created from the New Agent dialog
+  // while the Grid view was active): once the new pane shows up in a payload,
+  // star it if we're in Watch mode (creating it was an explicit ask to see it),
+  // highlight it, and hand it the keyboard. Retries until a poll includes the
+  // pane; a fresh request forces one refetch so it doesn't wait a full 2.5s.
+  const handledFocusReq = React.useRef(0)
+  React.useEffect(() => {
+    if (focusRequest && focusRequest.ts !== handledFocusReq.current)
+      void reload()
+    // reload is stable (React Query refetch); keyed on the request itself.
+  }, [focusRequest, reload])
+  React.useEffect(() => {
+    const req = focusRequest
+    if (!req || req.ts === handledFocusReq.current || !all) return
+    const p = all.find(
+      (x) =>
+        x.host === req.host &&
+        ((req.paneId && x.pane_id === req.paneId) ||
+          (req.workspaceId && x.workspace_id === req.workspaceId))
+    )
+    if (!p) return // not listed yet — the next poll retries
+    handledFocusReq.current = req.ts
+    const key = cellKey(p)
+    if (mode === "watch" && !watched.has(key))
+      patchUIState({ grid_watched: [...watched, key] })
+    setFocusedKey(key)
+    // The cell may still be mounting (or just became visible via the star), and
+    // its ttyd takes a moment to attach — retry the scroll + keyboard handoff.
+    const fid = frameId(p.host, p.terminal_id)
+    for (const delay of [150, 600, 1500]) {
+      setTimeout(() => {
+        document
+          .getElementById(`cell-${fid}`)
+          ?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+        focusTerminalFrame(fid)
+      }, delay)
+    }
+  }, [focusRequest, all, mode, watched])
 
   // Header click: plain click focuses the pane here in the grid; ⌘/Ctrl/Shift-
   // click toggles selection instead. (Also fired for keyboard Enter/Space —
@@ -473,8 +526,10 @@ export function GridTab({
           </span>
         )}
 
-        {/* Per-host filter chips (only when more than one host is present). */}
-        {hosts.length > 1 &&
+        {/* Per-host filter chips (only when more than one host is present, and
+            only in All mode — Watch is already an explicit pane list). */}
+        {mode === "all" &&
+          hosts.length > 1 &&
           hosts.map((h) => {
             const on = !hidden.has(h.host)
             return (
@@ -502,26 +557,28 @@ export function GridTab({
             )
           })}
 
-        <button
-          type="button"
-          onClick={toggleAgentsOnly}
-          aria-pressed={agentsOnly}
-          className={cn(
-            "ml-auto flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
-            agentsOnly
-              ? "border-primary/40 bg-accent text-foreground"
-              : "border-border text-muted-foreground hover:text-foreground"
-          )}
-          title="Show only panes with an associated agent"
-        >
-          <span
+        {mode === "all" && (
+          <button
+            type="button"
+            onClick={toggleAgentsOnly}
+            aria-pressed={agentsOnly}
             className={cn(
-              "size-2 rounded-full",
-              agentsOnly ? "bg-primary" : "bg-muted-foreground/40"
+              "ml-auto flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+              agentsOnly
+                ? "border-primary/40 bg-accent text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground"
             )}
-          />
-          Agents only
-        </button>
+            title="Show only panes with an associated agent"
+          >
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                agentsOnly ? "bg-primary" : "bg-muted-foreground/40"
+              )}
+            />
+            Agents only
+          </button>
+        )}
       </div>
 
       {/* Per-host failures (unreachable, protocol drift) — the rest still renders. */}
@@ -573,7 +630,7 @@ export function GridTab({
                 <>
                   {watched.size === 0
                     ? "no watched panes yet — star ☆ panes to build your watch list"
-                    : "no watched panes are running (or they're hidden by filters)"}
+                    : "none of your watched panes are running"}
                   <br />
                   <button
                     type="button"
