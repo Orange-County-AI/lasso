@@ -360,9 +360,10 @@ export function GridTab({
     }
   }, [focusRequest, all, mode, watched])
 
-  // Header click: plain click focuses the pane here in the grid; ⌘/Ctrl/Shift-
-  // click toggles selection instead. (Also fired for keyboard Enter/Space —
-  // only the modifier keys are read off the event.)
+  // Header click: plain click opens the pane in Herdr (clicking into the cell
+  // BODY is the in-grid interaction — the terminal takes the keyboard right
+  // there); ⌘/Ctrl/Shift-click toggles selection instead. (Also fired for
+  // keyboard Enter/Space — only the modifier keys are read off the event.)
   const onCellClick = (
     e: React.MouseEvent | React.KeyboardEvent,
     p: GridPane
@@ -372,7 +373,7 @@ export function GridTab({
       return
     }
     clearSelection()
-    focusInGrid(p)
+    void focusPane(p)
   }
 
   // Focus a pane in the Herdr tab (see focusPaneInHerdr for the sequence; shared
@@ -676,8 +677,8 @@ export function GridTab({
       </div>
 
       <div className="hint">
-        click a header to focus its terminal · ⌘/Ctrl-click to select ·
-        right-click for watch / open in Herdr / rename / close
+        click a header to open in Herdr · click inside a cell to type there ·
+        ⌘/Ctrl-click a header to select · right-click for actions
       </div>
 
       {/* rename the workspace (relabels every pane grouped under it on that host) */}
@@ -896,7 +897,7 @@ function GridCell({
             role="button"
             tabIndex={0}
             className="termcell-head"
-            title={`${tip}\n\nclick to focus · ⌘/Ctrl-click to select`}
+            title={`${tip}\n\nclick to open in Herdr · ⌘/Ctrl-click to select`}
             onClick={onClick}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
