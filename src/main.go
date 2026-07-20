@@ -987,67 +987,6 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
 }
 
-// serveAgentClose soft-closes a single agent: it kills the agent process and
-// closes its pane (the same teardown the close_agent MCP tool performs), so a
-// lasso-spawned agent can shut *itself* down with `lasso closeme` — no MCP
-// round-trip and nothing to pass but the $HERDR_PANE_ID the pane already exports.
-// The caller identifies the agent by pane_id (its own $HERDR_PANE_ID, resolved
-// to the owning agent) or, equivalently, by agent_id. remove_worktree (git only)
-// also discards the worktree.
-func serveAgentClose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		PaneID         string `json:"pane_id"`
-		AgentID        string `json:"agent_id"`
-		RemoveWorktree bool   `json:"remove_worktree"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	agentID := strings.TrimSpace(req.AgentID)
-	paneID := strings.TrimSpace(req.PaneID)
-	if agentID == "" && paneID == "" {
-		http.Error(w, "pane_id or agent_id required", http.StatusBadRequest)
-		return
-	}
-	const host = "local"
-	b, err := resolveBackend(host)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Resolve to an agent record: prefer an explicit agent_id, else map the
-	// caller's own pane id to the agent that owns it (same logic as whoami).
-	if agentID == "" {
-		recs, lerr := listAgents(host)
-		if lerr != nil {
-			http.Error(w, lerr.Error(), http.StatusInternalServerError)
-			return
-		}
-		who := resolveWhoami(b, host, recs, paneID)
-		if !who.Found {
-			http.Error(w, who.Detail, http.StatusNotFound)
-			return
-		}
-		agentID = who.Agent.ID
-	}
-	rec, err := findAgentRecord("", agentID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	out, err := closeAgentRecord(b, rec, true, req.RemoveWorktree)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, out)
-}
-
 // serveThemeSet (Settings tab) switches the herdr/lasso theme by rewriting
 // [theme].name in the LOCAL herdr config.toml — the single source of truth both
 // already follow: the hub re-resolves the config every poll (bumping theme_rev
