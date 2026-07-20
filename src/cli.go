@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -144,8 +145,15 @@ func cliCloseMe() {
 // the process this command runs in, so the connection may drop before the
 // response arrives — only a failure to *reach* the server, or a non-200 status,
 // is reported.
+//
+// host is pinned to "local": closeme talks to the lasso on its own machine
+// (LASSO_LISTEN must stay a same-machine address), and $HERDR_PANE_ID names a
+// pane of that machine's herdr. Pane ids are only unique per host, so saying
+// where the pane lives keeps a colliding id on some other host from ever being
+// resolved instead. The agent record itself may still live on a peer lasso
+// that spawned this agent remotely — the server adopts those (see closeme.go).
 func postAgentClose(addr, paneID, user, pass string, hasAuth bool) error {
-	body, _ := json.Marshal(map[string]string{"pane_id": paneID})
+	body, _ := json.Marshal(map[string]string{"pane_id": paneID, "host": "local"})
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/agent/close", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -160,6 +168,13 @@ func postAgentClose(addr, paneID, user, pass string, hasAuth bool) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Surface the server's explanation (e.g. an ambiguous pane id, or "no
+		// reachable peer claims this pane") — the status line alone isn't
+		// actionable.
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		if d := strings.TrimSpace(string(detail)); d != "" {
+			return fmt.Errorf("server returned %s: %s", resp.Status, d)
+		}
 		return fmt.Errorf("server returned %s", resp.Status)
 	}
 	return nil

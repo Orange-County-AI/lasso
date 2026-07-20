@@ -404,11 +404,14 @@ func hostAgentConfig(host string) (*LassoConfig, error) {
 // remote sqlite3 access
 // ---------------------------------------------------------------------------
 
-// remoteSchemaSQL ensures the tables this feature touches exist before any
+// remoteSchemaSQL ensures the tables remote queries touch exist before any
 // read/write, so a host with no lasso.db yet (or one created by something else)
-// just works. Mirrors the relevant slice of db.go's dbSchema.
+// just works — a settings read or a peer agents lookup (closeme.go) then sees
+// an empty table instead of erroring. Mirrors the relevant slice of db.go's
+// dbSchema (columns the remote queries actually name).
 const remoteSchemaSQL = `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS repo_state (host TEXT NOT NULL, repo_path TEXT NOT NULL, copy_files TEXT NOT NULL DEFAULT '', setup TEXT NOT NULL DEFAULT '', last_base_branch TEXT NOT NULL DEFAULT '', PRIMARY KEY (host, repo_path));
+CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, host TEXT NOT NULL DEFAULT 'local', title TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', base_branch TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '[]', plan_mode INTEGER NOT NULL DEFAULT 0, work_dir TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL DEFAULT '', root_pane TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
 `
 
 // sqlQuote renders s as a SQLite string literal (doubling embedded single

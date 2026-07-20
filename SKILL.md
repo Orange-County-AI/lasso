@@ -32,8 +32,11 @@ lasso closeme
 ```
 
 That tells the running lasso server to kill your agent process and close your
-pane (the same soft-close the UI and the `close_agent` MCP tool perform). If the
-server runs on a non-default port, set `LASSO_LISTEN=host:port`.
+pane (the same soft-close the UI and the `close_agent` MCP tool perform). This
+works even when you were spawned by a lasso on a *different* machine: the local
+server finds the owning record on its peer and closes your pane locally. If the
+server runs on a non-default port, set `LASSO_LISTEN=host:port` — it must stay
+an address of the machine you run on.
 
 ## Acting on yourself via the lasso MCP tools
 

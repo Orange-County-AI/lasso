@@ -401,6 +401,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 
 	rec := AgentRecord{
 		ID:          strconv.FormatInt(time.Now().UnixNano(), 36),
+		Host:        host,
 		Title:       req.Title,
 		Type:        req.Type,
 		Agent:       req.Agent,

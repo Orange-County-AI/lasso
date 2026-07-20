@@ -68,7 +68,14 @@ type RepoConfig struct {
 // The yaml tags are retained only so a legacy config.yaml can be unmarshaled
 // during the one-time DB migration (see migrateFromYAML).
 type AgentRecord struct {
-	ID          string    `yaml:"id" json:"id"`
+	ID string `yaml:"id" json:"id"`
+	// Host is the host the agent runs on ("local" or an ssh-config alias) — the
+	// key the record is stored under, echoed onto the struct by listAgents /
+	// listAllAgents so a resolved record can never be silently acted on through
+	// the wrong host's backend (closeAgentRecord enforces the match). Pane and
+	// workspace ids are only unique per host, so a record without its host is
+	// ambiguous.
+	Host        string    `yaml:"-" json:"host,omitempty"`
 	Title       string    `yaml:"title" json:"title"`
 	Type        string    `yaml:"type" json:"type"` // "git" | "scratch"
 	Repo        string    `yaml:"repo,omitempty" json:"repo,omitempty"`

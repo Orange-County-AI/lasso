@@ -674,7 +674,9 @@ func closeAgentTool(_ context.Context, _ *mcp.CallToolRequest, in closeAgentIn) 
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}
-	b, err := resolveBackend(in.Host)
+	// Resolve the backend from the record's own host (not the request's), so the
+	// teardown can only ever run against the host the agent actually lives on.
+	b, err := resolveBackend(rec.Host)
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}
@@ -689,6 +691,13 @@ func closeAgentTool(_ context.Context, _ *mcp.CallToolRequest, in closeAgentIn) 
 // which also closes the pane. Shared by the close_agent MCP tool and the
 // /api/agent/close endpoint that backs `lasso closeme`.
 func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool) (closeAgentOut, error) {
+	// Pane ids are only unique per host, so a backend/host mismatch would drive
+	// the teardown at an unrelated pane on the wrong machine. Refuse outright —
+	// closing the wrong agent is worse than failing.
+	if rec.Host != "" && rec.Host != b.Name() {
+		return closeAgentOut{}, fmt.Errorf("agent %q lives on host %q but the close targets backend %q — refusing to close a pane on the wrong host", rec.ID, rec.Host, b.Name())
+	}
+
 	// 1. Always kill the agent process first, so it dies even if the pane is kept.
 	out := closeAgentOut{AgentKilled: killPaneAgent(b, rec.RootPane)}
 
