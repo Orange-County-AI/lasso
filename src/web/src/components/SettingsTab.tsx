@@ -313,8 +313,9 @@ function AppearanceToggle() {
 // which only chooses whether the chrome follows it. Saving writes [theme].name
 // in herdr's config.toml, the source of truth both already track: the herdr
 // TUI reloads it, and lasso repaints the terminals (and, in Herdr mode, the
-// chrome) off the theme_rev SSE bump. Local host only — the config lives on
-// the machine running lasso.
+// chrome) off the theme_rev SSE bump. When lasso is connected to a remote
+// host, the theme is mirrored to that host's herdr config too (see
+// syncRemoteTheme), so the remote TUI follows as well.
 function HerdrThemeSelect({ active }: { active: boolean }) {
   const { themeRev } = useApp()
   const themeQuery = useQuery({
