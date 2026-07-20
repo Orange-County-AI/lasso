@@ -797,6 +797,7 @@ function GridCell({
   onClose: () => void
 }) {
   const id = frameId(p.host, p.terminal_id)
+  const { host: activeHost } = useApp()
   const bodyRef = React.useRef<HTMLDivElement>(null)
   const [src, setSrc] = React.useState<string | null>(null)
   const [failed, setFailed] = React.useState(false)
@@ -867,6 +868,36 @@ function GridCell({
     return onTerminalFocus(id, () => onBodyFocusRef.current())
   }, [src, id])
 
+  // Drop back to the unattached state so the lazy-mount effect re-attaches (the
+  // cell is on screen, so its IntersectionObserver fires immediately). Used when
+  // the server killed our ttyd out from under us — a host switch evicts that
+  // host's backend and releases every grid terminal streaming over it.
+  const reattach = React.useCallback(() => {
+    setSrc(null)
+    setFailed(false)
+    setReady(false)
+  }, [])
+
+  // A host switch releases grid terminals on BOTH the old and new active host
+  // (their connections get replaced). Probe shortly after the active host
+  // changes and re-attach if our ttyd died — twice, since the first probe can
+  // race the switch still completing. The keepalive below is the slow backstop.
+  const prevActiveHost = React.useRef(activeHost)
+  React.useEffect(() => {
+    if (prevActiveHost.current === activeHost) return
+    prevActiveHost.current = activeHost
+    if (!src) return
+    const probe = () =>
+      api
+        .gridTermTouch(p.host, p.terminal_id)
+        .then((r) => {
+          if (!r.alive) reattach()
+        })
+        .catch(() => {})
+    const timers = [500, 2500].map((d) => setTimeout(probe, d))
+    return () => timers.forEach(clearTimeout)
+  }, [activeHost, src, p.host, p.terminal_id, reattach])
+
   // Wire xterm (shift+enter, image paste, …) once the iframe exists, and keep the
   // server-side attach alive while the cell is mounted.
   React.useEffect(() => {
@@ -879,15 +910,22 @@ function GridCell({
     // Touch-only keepalive: bumps the server idle timer but never (re)creates the
     // attach, so an in-flight keepalive landing after this cell releases can't
     // resurrect a thin attach that would clamp the pane in the wide Herdr terminal.
+    // It DOES report whether the entry is still alive — when the server released
+    // us (host switch, reap), re-attach rather than showing a dead terminal.
     const ka = setInterval(() => {
-      void api.gridTermTouch(p.host, p.terminal_id).catch(() => {})
+      api
+        .gridTermTouch(p.host, p.terminal_id)
+        .then((r) => {
+          if (!r.alive) reattach()
+        })
+        .catch(() => {})
     }, KEEPALIVE_MS)
     return () => {
       cleanup()
       cancelReady()
       clearInterval(ka)
     }
-  }, [src, id, p.host, p.terminal_id])
+  }, [src, id, p.host, p.terminal_id, reattach])
 
   const title = p.workspace_label || p.workspace_id || p.pane_id
   const tabLabel = p.tab_label && p.tab_label !== title ? p.tab_label : ""
