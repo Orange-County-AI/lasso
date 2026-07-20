@@ -587,11 +587,12 @@ type Active struct {
 	TabLabel       string `json:"tab_label"`
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
-	PanesRev       int    `json:"panes_rev"` // bumps when the pane-grid layout (workspace order/membership) changes
-	ThemeRev       int    `json:"theme_rev"` // bumps when herdr's resolved theme changes (config.toml edited)
-	HerdrUp        bool   `json:"herdr_up"`  // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
-	Host           string `json:"host"`      // active host: "local" or an ssh-config alias
-	TermRev        int    `json:"term_rev"`  // bumps on host switch so the browser reloads the terminal iframes
+	PanesRev       int    `json:"panes_rev"`    // bumps when the pane-grid layout (workspace order/membership) changes
+	ThemeRev       int    `json:"theme_rev"`    // bumps when herdr's resolved theme changes (config.toml edited)
+	HerdrUp        bool   `json:"herdr_up"`     // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
+	Host           string `json:"host"`         // active host: "local" or an ssh-config alias
+	TermRev        int    `json:"term_rev"`     // bumps on host switch so the browser reloads the terminal iframes
+	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
@@ -1768,14 +1769,15 @@ func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 // ---------------------------------------------------------------------------
 
 type hub struct {
-	mu       sync.RWMutex
-	cur      Active
-	rev      int    // pane-grid layout revision (bumped when lastSig changes)
-	lastSig  string // last seen layout signature
-	themeRev int    // theme revision (bumped when the resolved theme changes)
-	termRev  int    // host-switch revision (bumped so the browser reloads terminals)
-	curTheme resolvedTheme
-	clients  map[chan Active]struct{}
+	mu         sync.RWMutex
+	cur        Active
+	rev        int    // pane-grid layout revision (bumped when lastSig changes)
+	lastSig    string // last seen layout signature
+	themeRev   int    // theme revision (bumped when the resolved theme changes)
+	termRev    int    // host-switch revision (bumped so the browser reloads terminals)
+	uiStateRev int    // UI-prefs revision (bumped on every /api/ui-state save)
+	curTheme   resolvedTheme
+	clients    map[chan Active]struct{}
 
 	// Event subscription, restarted against the new socket on a host switch.
 	rootCtx   context.Context
@@ -1822,6 +1824,28 @@ func (h *hub) bumpTermRev() {
 	h.mu.Lock()
 	h.termRev++
 	h.mu.Unlock()
+}
+
+// bumpUIStateRev broadcasts a UI-prefs revision bump to every SSE client
+// immediately (no herdr refetch — the prefs live in lasso's own db). Tabs
+// refetch /api/ui-state when the rev moves, so starring a pane or collapsing
+// the sidebar in one tab converges every other open tab within a beat.
+func (h *hub) bumpUIStateRev() {
+	h.mu.Lock()
+	h.uiStateRev++
+	h.cur.UIStateRev = h.uiStateRev
+	cur := h.cur
+	clients := make([]chan Active, 0, len(h.clients))
+	for c := range h.clients {
+		clients = append(clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		select {
+		case c <- cur:
+		default:
+		}
+	}
 }
 
 func (h *hub) snapshot() Active             { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
@@ -1886,6 +1910,7 @@ func (h *hub) run(ctx context.Context) {
 		a.PanesRev = h.rev
 		a.ThemeRev = h.themeRev
 		a.TermRev = h.termRev
+		a.UIStateRev = h.uiStateRev
 		a.Host = curBackend().Name()
 		changed := a != h.cur
 		h.cur = a

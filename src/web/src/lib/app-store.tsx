@@ -4,6 +4,7 @@ import { type ActiveState, api } from "@/lib/api"
 import { applyMode, watchSystemMode } from "@/lib/mode"
 import { invalidateHostScoped } from "@/lib/query"
 import { refreshTheme } from "@/lib/theme"
+import { syncUIState } from "@/lib/ui-state"
 
 // App-wide state derived from herdr, kept live over the /api/events SSE stream.
 // Components read activeCwd/activePaneID/panesRev reactively and run their own
@@ -37,6 +38,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Last seen term_rev — a change means the active host switched, so terminals
   // must reload. Tracked in a ref so the SSE handler stays referentially stable.
   const lastTermRev = React.useRef<number | null>(null)
+  // Last seen ui_state_rev — a change means some tab saved the persisted UI
+  // prefs; refetch so every open tab converges (see syncUIState's echo guard).
+  const lastUIStateRev = React.useRef<number | null>(null)
 
   const apply = React.useCallback((a: ActiveState) => {
     if (typeof a.term_rev === "number") {
@@ -47,6 +51,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         invalidateHostScoped()
       }
       lastTermRev.current = a.term_rev
+    }
+    if (typeof a.ui_state_rev === "number") {
+      if (
+        lastUIStateRev.current !== null &&
+        a.ui_state_rev !== lastUIStateRev.current
+      ) {
+        syncUIState()
+      }
+      lastUIStateRev.current = a.ui_state_rev
     }
     setState((prev) => ({
       activeCwd: a.cwd || prev.activeCwd,

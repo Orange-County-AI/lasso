@@ -11,6 +11,9 @@ export interface ActiveState {
   // every host switch so the browser can reload the terminal iframes.
   host?: string
   term_rev?: number
+  // Bumps whenever the persisted UI prefs change (any tab saving /api/ui-state)
+  // so every open tab refetches and converges.
+  ui_state_rev?: number
 }
 
 // One ssh-config host as a herdr target. Selectable in the footer switcher only
@@ -96,7 +99,12 @@ export interface UIState {
   grid_mode: "all" | "watch"
   // host|pane_id keys of starred (watched) panes.
   grid_watched: string[]
+  // Filter the Grid tab's pane rail to agent panes.
+  grid_rail_agents_only: boolean
   sidebar_collapsed: boolean
+  // The sidebar's open width (% of the panel group). Synced because the
+  // sidebar's footprint sets the shared herdr pty's width. 0 = never set.
+  sidebar_pct: number
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
   files_click_navigates: boolean
@@ -464,7 +472,11 @@ export const api = {
 
   // Persisted UI prefs (grid filters + sidebar collapse).
   uiState: () => getJSON<UIState>("/api/ui-state"),
-  saveUIState: (s: UIState) => postJSON<UIState>("/api/ui-state", s),
+  // Patch semantics: send only the changed fields; the server merges into the
+  // stored state (so stale tabs can't clobber fields they didn't touch) and
+  // returns the merged whole.
+  saveUIState: (patch: Partial<UIState>) =>
+    postJSON<UIState>("/api/ui-state", patch),
   version: () => getJSON<VersionInfo>("/api/version"),
 
   files: (path: string) =>

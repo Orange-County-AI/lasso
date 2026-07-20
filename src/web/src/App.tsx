@@ -39,7 +39,7 @@ import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restorePaneFocus } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
-import { patchUIState, useUIState } from "@/lib/ui-state"
+import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
@@ -318,7 +318,10 @@ function Shell() {
   // instead. The width is persisted to localStorage (see lib/sidebar) so it also
   // survives a page reload / lasso restart, not just refreshed as the user drags.
   const expandSidebar = React.useCallback(() => {
-    rightPanel.current?.resize(`${sidebarPctNow()}%`)
+    // Prefer the synced width (shared across tabs); fall back to the device-
+    // local memory for installs that have never persisted one.
+    const synced = uiStateNow().sidebar_pct
+    rightPanel.current?.resize(`${synced >= 15 ? synced : sidebarPctNow()}%`)
   }, [])
   const collapseSidebar = React.useCallback(() => {
     const p = rightPanel.current
@@ -367,15 +370,51 @@ function Shell() {
     return () => document.removeEventListener("keydown", onKey)
   }, [switchLeft, toggleSidebar])
 
-  // Restore the persisted (SQLite-backed) collapse state once the prefs load.
-  // Applied a single time — after that the panel's own resize events are the
-  // source of truth (and persist back via onResize below).
-  const collapseApplied = React.useRef(false)
+  // Apply the synced sidebar layout continuously — including changes arriving
+  // from other tabs over SSE — not just once at load. The sidebar's footprint
+  // sets the shared herdr pty's width, so tabs must agree on it or the wider
+  // one renders a blank gutter. Value guards make the echo of this tab's own
+  // writes a no-op, and remote applies don't re-persist because the debounced
+  // persist below compares against the incoming state before writing.
   React.useEffect(() => {
-    if (collapseApplied.current || ui.sidebar_collapsed == null) return
-    collapseApplied.current = true
-    if (ui.sidebar_collapsed) collapseSidebar()
-  }, [ui.sidebar_collapsed, collapseSidebar])
+    const p = rightPanel.current
+    if (!p) return
+    if (ui.sidebar_collapsed !== p.isCollapsed()) {
+      if (ui.sidebar_collapsed) collapseSidebar()
+      else expandSidebar()
+      return // width settles via the expand; next pass reconciles if needed
+    }
+    if (!ui.sidebar_collapsed && ui.sidebar_pct >= 15) {
+      const cur = p.getSize().asPercentage
+      if (Math.abs(cur - ui.sidebar_pct) > 1) p.resize(`${ui.sidebar_pct}%`)
+    }
+  }, [ui.sidebar_collapsed, ui.sidebar_pct, collapseSidebar, expandSidebar])
+
+  // Debounced persist of the sidebar layout: onResize fires for every frame of
+  // a drag (and for programmatic applies), so wait for it to settle, then write
+  // only what actually differs from the synced state — a remote apply therefore
+  // never echoes a write back.
+  const layoutPersist = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleLayoutPersist = React.useCallback(
+    (collapsedNow: boolean, pct: number) => {
+      if (layoutPersist.current) clearTimeout(layoutPersist.current)
+      layoutPersist.current = setTimeout(() => {
+        layoutPersist.current = null
+        const cur = uiStateNow()
+        const patch: Parameters<typeof patchUIState>[0] = {}
+        if (cur.sidebar_collapsed !== collapsedNow)
+          patch.sidebar_collapsed = collapsedNow
+        if (
+          !collapsedNow &&
+          pct > 5 &&
+          Math.abs((cur.sidebar_pct || 0) - pct) > 1
+        )
+          patch.sidebar_pct = pct
+        if (Object.keys(patch).length > 0) patchUIState(patch)
+      }, 400)
+    },
+    []
+  )
 
   return (
     <div className="relative h-full w-full">
@@ -492,12 +531,13 @@ function Shell() {
           collapsible
           collapsedSize={0}
           onResize={(size) => {
-            const c = size.asPercentage < 0.05
+            const pct = size.asPercentage
+            const c = pct < 0.05
             setCollapsed((prev) => (prev === c ? prev : c))
             // Remember the open width so a later expand restores it (the panel
             // snaps to 0 below minSize, so any non-zero size is a real width).
-            if (size.asPercentage > 5) setSidebarPct(size.asPercentage)
-            patchUIState({ sidebar_collapsed: c })
+            if (pct > 5) setSidebarPct(pct)
+            scheduleLayoutPersist(c, pct)
           }}
           className={cn(
             "relative flex h-full min-h-0 flex-col border-border border-l bg-card",

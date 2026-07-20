@@ -205,8 +205,15 @@ type uiState struct {
 	// as "all" (normalized in getUIState).
 	GridMode string `json:"grid_mode"`
 	// GridWatched holds host|pane_id keys of starred (watched) panes.
-	GridWatched      []string `json:"grid_watched"`
-	SidebarCollapsed bool     `json:"sidebar_collapsed"`
+	GridWatched []string `json:"grid_watched"`
+	// GridRailAgentsOnly filters the Grid tab's pane rail to agent panes.
+	GridRailAgentsOnly bool `json:"grid_rail_agents_only"`
+	SidebarCollapsed   bool `json:"sidebar_collapsed"`
+	// SidebarPct is the right sidebar's open width as a percentage of the panel
+	// group. Synced (rather than device-local) because the sidebar's footprint
+	// sets the shared herdr pty's width — tabs disagreeing about layout render
+	// blank gutters. 0 = never set; the frontend falls back to its default.
+	SidebarPct float64 `json:"sidebar_pct"`
 	// FilesClickNavigates controls the Files tab's folder-click behavior: when
 	// true (the default) clicking a folder re-roots the tree into it; when false
 	// it expands the folder in place. Defaulted true in getUIState so a fresh

@@ -8,13 +8,9 @@ import {
 } from "@/components/ui/context-menu"
 import { Input } from "@/components/ui/input"
 import type { GridPane } from "@/lib/api"
-import { lsGet, lsSet } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
+import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
-
-// Rail-local agents-only toggle — device-local, independent of the grid's own
-// Agents-only filter (which only shapes the All wall).
-const RAIL_AGENTS_KEY = "lasso-grid-rail-agents"
 
 // Same cross-host pane identity as GridTab / PaneSwitcher (pane ids are only
 // unique within a host).
@@ -48,14 +44,11 @@ export function GridRail({
   onOpenInHerdr: (p: GridPane) => void
 }) {
   const [search, setSearch] = React.useState("")
-  const [agentsOnly, setAgentsOnly] = React.useState(
-    () => lsGet(RAIL_AGENTS_KEY) === "1"
-  )
+  // The agents-only toggle is server-synced (grid_rail_agents_only) so every
+  // tab's rail filters the same way, like the rest of the grid state.
+  const agentsOnly = useUIState().grid_rail_agents_only
   const toggleAgentsOnly = () =>
-    setAgentsOnly((cur) => {
-      lsSet(RAIL_AGENTS_KEY, cur ? "0" : "1")
-      return !cur
-    })
+    patchUIState({ grid_rail_agents_only: !agentsOnly })
   const firstNewRef = React.useRef<HTMLDivElement>(null)
 
   // Bring the first "new" row into view when the rail opens via the badge.

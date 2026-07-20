@@ -207,6 +207,10 @@ func gridHostAllowed(host string) bool {
 // GET/POST /api/ui-state — persisted browser UI prefs (grid filters + sidebar)
 // ---------------------------------------------------------------------------
 
+// uiStateMu serializes /api/ui-state read-modify-writes so two tabs patching
+// different fields at the same instant can't drop each other's write.
+var uiStateMu sync.Mutex
+
 func serveUIState(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -217,7 +221,17 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, us)
 	case http.MethodPost:
-		var us uiState
+		uiStateMu.Lock()
+		defer uiStateMu.Unlock()
+		// Patch semantics: start from the stored state and decode the request
+		// over it — only fields present in the body change, so a tab holding a
+		// stale copy can't clobber fields it didn't touch (each client sends
+		// just its patch).
+		us, err := getUIState()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&us); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -234,6 +248,10 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Nudge every open tab (including the writer) to refetch and converge.
+		if srvHub != nil {
+			srvHub.bumpUIStateRev()
 		}
 		writeJSON(w, us)
 	default:
