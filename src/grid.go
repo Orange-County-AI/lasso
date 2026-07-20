@@ -29,8 +29,9 @@ func gridTermSock(token string) string {
 // has no cross-host enumeration, so lasso aggregates it here: for each host we run
 // pane.list / workspace.list / tab.list / agent.list over that host's socket and
 // merge the rows, tagging each with its host. Per-pane terminals are individual
-// ttyds running `herdr terminal attach <terminal_id>` (or `herdr --remote <host>
-// terminal attach …`), pooled and reaped on idle.
+// ttyds running `herdr terminal attach <terminal_id>` — against the local herdr
+// socket, or a remote host's forwarded socket pair (see gridAttachCmd) — pooled
+// and reaped on idle.
 
 // ---------------------------------------------------------------------------
 // grid backend pool — herdr RPC to any compatible host without switching active
@@ -87,22 +88,40 @@ func gridHostBackend(host string) (Backend, error) {
 
 // gridPoolEvict closes and drops any pooled backend for host. Called when the
 // active host switches to host (the active backend now serves it) so we don't
-// keep a redundant second connection.
+// keep a redundant second connection. Grid cells for host stream over the
+// evicted backend's SSH master, so they are released first — the frontend
+// keepalive sees alive=false and re-attaches over the new active backend.
 func gridPoolEvict(host string) {
 	gridPool.mu.Lock()
 	e := gridPool.entries[host]
 	delete(gridPool.entries, host)
 	gridPool.mu.Unlock()
 	if e != nil {
+		releaseGridTermsForHost(host)
 		go e.backend.Close()
 	}
 }
 
 func reapGridBackends() {
 	now := time.Now()
+	// Hosts with a live grid terminal keep their backend: remote cells stream
+	// over its SSH master, so reaping it would kill them mid-view. (Snapshot
+	// under gridTerms.mu first; the two locks are never nested.)
+	inUse := map[string]bool{}
+	gridTerms.mu.Lock()
+	for key := range gridTerms.byKey {
+		if host, _, ok := strings.Cut(key, "|"); ok {
+			inUse[host] = true
+		}
+	}
+	gridTerms.mu.Unlock()
 	var dead []*remoteBackend
 	gridPool.mu.Lock()
 	for host, e := range gridPool.entries {
+		if inUse[host] {
+			e.lastUsed = now // attached cells count as use
+			continue
+		}
 		if now.Sub(e.lastUsed) > gridBackendIdle {
 			dead = append(dead, e.backend)
 			delete(gridPool.entries, host)
@@ -903,6 +922,28 @@ func serveGridTermReleaseAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// releaseGridTermsForHost kills every grid ttyd attached to one host's panes.
+// Remote cells stream over the host backend's SSH master, so they can't outlive
+// it: callers tearing down or replacing a host's connection (host switch, pool
+// evict) release its cells first, and the frontend keepalive (alive=false)
+// re-attaches visible ones over the replacement connection.
+func releaseGridTermsForHost(host string) {
+	prefix := host + "|"
+	var dead []*gridTermEntry
+	gridTerms.mu.Lock()
+	for key, e := range gridTerms.byKey {
+		if strings.HasPrefix(key, prefix) {
+			delete(gridTerms.byKey, key)
+			delete(gridTerms.byToken, e.token)
+			dead = append(dead, e)
+		}
+	}
+	gridTerms.mu.Unlock()
+	for _, e := range dead {
+		e.cancel() // SIGTERMs the ttyd process group; its socket is unlinked on exit
+	}
+}
+
 // releaseAllGridTerms kills every grid ttyd, detaching all of them from herdr so no
 // pane is held to a grid cell's width.
 func releaseAllGridTerms() {
@@ -919,17 +960,79 @@ func releaseAllGridTerms() {
 	}
 }
 
+// gridAttachCmd builds the argv and env for the ttyd that attaches one grid
+// cell. herdr's `terminal attach` always talks to a *local* socket pair (and
+// `--remote` only works with the default launch command, not subcommands), so
+// a remote pane used to be attached by SSHing into its host and running herdr
+// there — but that gave every visible cell a full SSH connection of its own,
+// and (together with the control masters `herdr --remote` leaks, see
+// reapOrphanHerdrSSH) enough of them saturated the remote sshd into resetting
+// new handshakes. Instead the *local* herdr binary now attaches through the
+// host backend's already-forwarded socket pair: HERDR_SOCKET_PATH points at
+// the forwarded RPC socket and HERDR_CLIENT_SOCKET_PATH at the forwarded
+// streaming socket, so the pty bytes multiplex over the one SSH control master
+// lasso already holds for the host — no new SSH connection, ever. A nil env
+// means "inherit lasso's environment" (the local case, unchanged).
+func gridAttachCmd(host, terminalID string) (argv, env []string, err error) {
+	argv = append(strings.Fields(herdrBinary()), "terminal", "attach", terminalID)
+	if host == "local" {
+		return argv, nil, nil
+	}
+	b, err := gridHostBackend(host)
+	if err != nil {
+		return nil, nil, err
+	}
+	rb, ok := b.(*remoteBackend)
+	if !ok {
+		return nil, nil, fmt.Errorf("host %s has no remote connection", host)
+	}
+	return argv, gridAttachEnv(outsideHerdrEnv(), rb.localSock, rb.localClientSock), nil
+}
+
+// gridAttachEnv overlays the herdr socket-path variables onto base, dropping
+// any existing values (a nested lasso inherits HERDR_SOCKET_PATH pointing at
+// the local server — the attach must see only the forwarded pair).
+func gridAttachEnv(base []string, sock, clientSock string) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "HERDR_SOCKET_PATH=") || strings.HasPrefix(kv, "HERDR_CLIENT_SOCKET_PATH=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env,
+		"HERDR_SOCKET_PATH="+sock,
+		"HERDR_CLIENT_SOCKET_PATH="+clientSock,
+	)
+}
+
 // ensureGridTerm returns the proxy base path for host's terminal, spawning a
 // dedicated ttyd (running `herdr terminal attach …`) on first use. A repeat call
 // just bumps lastUsed — so the frontend re-POSTs as a keepalive.
 func ensureGridTerm(host, terminalID string) (string, error) {
 	key := host + "|" + terminalID
 	gridTerms.mu.Lock()
+	if e := gridTerms.byKey[key]; e != nil {
+		e.lastUsed = time.Now()
+		gridTerms.mu.Unlock()
+		return e.base, nil
+	}
+	gridTerms.mu.Unlock()
+
+	// Resolve the attach command outside the lock: a remote host may need a
+	// pool backend dialed (SSH), which must not stall touch/proxy/release.
+	argv, env, err := gridAttachCmd(host, terminalID)
+	if err != nil {
+		return "", err
+	}
+
+	gridTerms.mu.Lock()
 	defer gridTerms.mu.Unlock()
 	if gridTerms.byKey == nil {
 		gridTerms.byKey = map[string]*gridTermEntry{}
 		gridTerms.byToken = map[string]*gridTermEntry{}
 	}
+	// Re-check: a concurrent request may have attached while we resolved.
 	if e := gridTerms.byKey[key]; e != nil {
 		e.lastUsed = time.Now()
 		return e.base, nil
@@ -949,30 +1052,8 @@ func ensureGridTerm(host, terminalID string) (string, error) {
 	sock := gridTermSock(token)
 	basePath := "/grid-term/" + token
 
-	// Build the attach argv. herdr's `terminal attach` always talks to a *local*
-	// herdr socket (and `--remote` only works with the default launch command, not
-	// subcommands), so a remote pane is attached by SSHing into its host and
-	// running herdr there — through a login shell so ~/.local/bin is on PATH and
-	// with `-tt` so the attach TUI gets a remote PTY, mirroring how host discovery
-	// probes hosts. The remote command must reach ssh as a single argument, which
-	// is why this uses the explicit-argv ttyd spawn rather than the whitespace-
-	// split one.
-	var argv []string
-	if host == "local" {
-		argv = append(strings.Fields(herdrBinary()), "terminal", "attach", terminalID)
-	} else {
-		argv = []string{
-			"ssh", "-tt",
-			"-o", "BatchMode=yes",
-			"-o", "ConnectTimeout=8",
-			"-o", "StrictHostKeyChecking=accept-new",
-			host,
-			"${SHELL:-sh} -lc " + shellQuote("herdr terminal attach "+terminalID),
-		}
-	}
-
 	ctx, cancel := context.WithCancel(srvCtx)
-	if err := startTtydArgv(ctx, sock, basePath, argv, nil); err != nil {
+	if err := startTtydArgv(ctx, sock, basePath, argv, env); err != nil {
 		cancel()
 		return "", err
 	}

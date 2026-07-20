@@ -398,9 +398,7 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 }
 
 // startTtydArgv is startTtyd with the child command given as an explicit argv,
-// for commands that can't survive whitespace-splitting — notably the grid's
-// remote attach (`ssh -tt <host> "$SHELL -lc 'herdr terminal attach …'"`), whose
-// final argument must reach ssh as one token.
+// for callers that build the argv themselves (the grid's per-pane attach).
 func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string, env []string) error {
 	// Bind a private unix socket (one per instance) rather than a shared TCP
 	// port, so concurrent prod/dev instances can't collide or cross-connect.

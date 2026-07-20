@@ -178,10 +178,15 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tear down the previous backend after a short grace so in-flight requests
-	// that captured it finish first. Local Close is a no-op.
+	// that captured it finish first. Local Close is a no-op. Grid cells for the
+	// previous host stream over its SSH master, so they are released alongside —
+	// the frontend keepalive re-attaches visible ones over a fresh pool backend.
 	if prev != nil {
 		go func() {
 			time.Sleep(2 * time.Second)
+			if _, ok := prev.(*remoteBackend); ok {
+				releaseGridTermsForHost(prev.Name())
+			}
 			_ = prev.Close()
 		}()
 	}
