@@ -179,6 +179,9 @@ export interface ThemePayload {
   // True when lasso was launched with a -theme override, so writing herdr's
   // config restyles herdr but this lasso instance won't follow.
   forced: boolean
+  // Whether lasso mirrors the theme into agent CLIs' theme files (opencode,
+  // Claude Code) — the "Sync agent themes" toggle.
+  sync_agent_themes: boolean
 }
 
 // httpError builds a concise Error from a non-OK response. lasso/herdr return
@@ -333,6 +336,11 @@ export const api = {
   // herdr reloads it and lasso follows via the theme_rev SSE bump.
   setTheme: (name: string) =>
     postJSON<{ ok: boolean; name: string }>("/api/theme-set", { name }),
+  // Flips the server-level "sync agent themes" toggle (no theme change).
+  setSyncAgentThemes: (enabled: boolean) =>
+    postJSON<{ ok: boolean; sync_agent_themes: boolean }>("/api/theme-set", {
+      sync_agent_themes: enabled,
+    }),
 
   // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
   // the server-side cache (the footer's manual refresh).

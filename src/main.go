@@ -92,6 +92,9 @@ type themePayload struct {
 	// config.toml restyles herdr but this lasso won't follow.
 	Themes []themeOption `json:"themes"`
 	Forced bool          `json:"forced"`
+	// SyncAgentThemes is the server-level toggle for mirroring the theme into
+	// agent CLIs' theme files (agentsync.go); flipped via POST /api/theme-set.
+	SyncAgentThemes bool `json:"sync_agent_themes"`
 }
 
 func defaultSock() string {
@@ -183,13 +186,14 @@ func runServer() {
 	mux.HandleFunc("/api/theme", func(w http.ResponseWriter, r *http.Request) {
 		rt := hub.themeSnapshot()
 		writeJSON(w, themePayload{
-			Name:       rt.Name,
-			Resolved:   rt.Resolved,
-			Customized: rt.Customized,
-			CSS:        rt.cssVars(),
-			Xterm:      json.RawMessage(rt.xtermJSON()),
-			Themes:     themeOptions,
-			Forced:     *themeName != "" && *themeName != "auto",
+			Name:            rt.Name,
+			Resolved:        rt.Resolved,
+			Customized:      rt.Customized,
+			CSS:             rt.cssVars(),
+			Xterm:           json.RawMessage(rt.xtermJSON()),
+			Themes:          themeOptions,
+			Forced:          *themeName != "" && *themeName != "auto",
+			SyncAgentThemes: syncAgentThemesEnabled(),
 		})
 	})
 	mux.HandleFunc("/api/theme-set", serveThemeSet)
@@ -1053,9 +1057,23 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Name string `json:"name"`
+		// SyncAgentThemes toggles mirroring the theme into agent CLIs' own
+		// theme files (see agentsync.go); nil leaves the setting unchanged.
+		// Sent alone (no name) it only flips the setting.
+		SyncAgentThemes *bool `json:"sync_agent_themes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.SyncAgentThemes != nil {
+		if err := setSetting(syncAgentThemesKey, strconv.FormatBool(*req.SyncAgentThemes)); err != nil {
+			http.Error(w, "save setting: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.Name == "" {
+		writeJSON(w, map[string]any{"ok": true, "sync_agent_themes": syncAgentThemesEnabled()})
 		return
 	}
 	name := normalizeThemeName(req.Name)
@@ -1074,6 +1092,10 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
 		log.Printf("theme:    herdr reload-config: %v", err)
 	}
+	// Mirror the new theme into local agents' theme files (opencode, Claude
+	// Code, …). Resolved from the config we just wrote so [theme.custom]
+	// overrides are honored.
+	syncAgentThemesVia(localFsBackend(), loadHerdrTheme(""))
 	// If we're driving a remote host, mirror the theme onto it as well.
 	if rb, ok := curBackend().(*remoteBackend); ok {
 		syncRemoteTheme(rb, name)
@@ -1909,6 +1931,10 @@ func (h *hub) run(ctx context.Context) {
 			} else {
 				log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
 			}
+			// An edit to herdr's config.toml made outside lasso (herdr's own
+			// theme popup, a hand edit) lands here — keep local agents' theme
+			// files in step too. Async so the poll loop never blocks on I/O.
+			go syncAgentThemesVia(localFsBackend(), rt)
 		}
 		a.PanesRev = h.rev
 		a.ThemeRev = h.themeRev

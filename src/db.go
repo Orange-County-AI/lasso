@@ -182,6 +182,16 @@ func setSetting(key, value string) error {
 	return err
 }
 
+// getSetting reads one settings key; "" (with nil error) when unset.
+func getSetting(key string) (string, error) {
+	var v string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if err != nil {
+		return "", nil // unset (or unreadable) reads as empty
+	}
+	return v, nil
+}
+
 // uiState is the browser's persisted, global (host-agnostic) UI preferences:
 // the Grid tab's filters and whether the right sidebar is collapsed. It's kept
 // server-side (one JSON blob in settings) rather than in localStorage so the UI

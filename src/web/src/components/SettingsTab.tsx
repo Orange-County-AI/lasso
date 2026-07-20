@@ -4,6 +4,7 @@ import * as React from "react"
 import { toast } from "sonner"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -374,7 +375,34 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
         {t?.forced &&
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
       </p>
+      <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
     </div>
+  )
+}
+
+// SyncAgentThemesToggle gates lasso's mirroring of the herdr theme into agent
+// CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json) on this
+// host and any connected remote host. Server-level setting, default on.
+function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: (on: boolean) => api.setSyncAgentThemes(on),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["theme"] }),
+    onError: (e: Error) => toast.error(`Couldn't save: ${e.message}`),
+  })
+  return (
+    <label
+      className="mt-1 flex cursor-pointer select-none items-center gap-2 text-muted-foreground text-xs"
+      htmlFor="settings-sync-agent-themes"
+    >
+      <Checkbox
+        id="settings-sync-agent-themes"
+        checked={enabled}
+        disabled={mutation.isPending}
+        onCheckedChange={(c) => mutation.mutate(c === true)}
+      />
+      Sync agent themes (Claude Code, OpenCode)
+    </label>
   )
 }
 
