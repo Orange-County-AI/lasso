@@ -8,8 +8,13 @@ import {
 } from "@/components/ui/context-menu"
 import { Input } from "@/components/ui/input"
 import type { GridPane } from "@/lib/api"
+import { lsGet, lsSet } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { cn } from "@/lib/utils"
+
+// Rail-local agents-only toggle — device-local, independent of the grid's own
+// Agents-only filter (which only shapes the All wall).
+const RAIL_AGENTS_KEY = "lasso-grid-rail-agents"
 
 // Same cross-host pane identity as GridTab / PaneSwitcher (pane ids are only
 // unique within a host).
@@ -43,6 +48,14 @@ export function GridRail({
   onOpenInHerdr: (p: GridPane) => void
 }) {
   const [search, setSearch] = React.useState("")
+  const [agentsOnly, setAgentsOnly] = React.useState(
+    () => lsGet(RAIL_AGENTS_KEY) === "1"
+  )
+  const toggleAgentsOnly = () =>
+    setAgentsOnly((cur) => {
+      lsSet(RAIL_AGENTS_KEY, cur ? "0" : "1")
+      return !cur
+    })
   const firstNewRef = React.useRef<HTMLDivElement>(null)
 
   // Bring the first "new" row into view when the rail opens via the badge.
@@ -54,10 +67,11 @@ export function GridRail({
   const groups = React.useMemo(() => {
     const q = search.trim().toLowerCase()
     const match = (p: GridPane) =>
-      !q ||
-      [p.host_label, p.workspace_label, p.tab_label, p.agent, p.cwd]
-        .filter(Boolean)
-        .some((s) => (s as string).toLowerCase().includes(q))
+      (!agentsOnly || p.has_agent) &&
+      (!q ||
+        [p.host_label, p.workspace_label, p.tab_label, p.agent, p.cwd]
+          .filter(Boolean)
+          .some((s) => (s as string).toLowerCase().includes(q)))
     const m = new Map<string, { label: string; panes: GridPane[] }>()
     for (const p of panes ?? []) {
       if (!match(p)) continue
@@ -68,8 +82,12 @@ export function GridRail({
       }
       g.panes.push(p)
     }
+    // Agent panes first within each host (stable, so payload order holds
+    // within each half) — the rows you actually scan for sit at the top.
+    for (const g of m.values())
+      g.panes.sort((a, b) => Number(b.has_agent) - Number(a.has_agent))
     return Array.from(m.values())
-  }, [panes, search])
+  }, [panes, search, agentsOnly])
 
   let sawNew = false
   return (
@@ -80,13 +98,33 @@ export function GridRail({
       )}
     >
       <div className="flex h-full w-64 flex-col">
-        <div className="shrink-0 p-2">
+        <div className="flex shrink-0 items-center gap-1.5 p-2">
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="filter panes…"
-            className="h-7 text-xs"
+            className="h-7 min-w-0 flex-1 text-xs"
           />
+          <button
+            type="button"
+            onClick={toggleAgentsOnly}
+            aria-pressed={agentsOnly}
+            className={cn(
+              "flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] transition-colors",
+              agentsOnly
+                ? "border-primary/40 bg-accent text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground"
+            )}
+            title="Show only panes with an agent"
+          >
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                agentsOnly ? "bg-primary" : "bg-muted-foreground/40"
+              )}
+            />
+            agents
+          </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
           {groups.length === 0 && (
