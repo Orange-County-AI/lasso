@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input"
 import { api, type GridPane } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
+import { loadSeen, markSeen, reconcileSeen } from "@/lib/grid-seen"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
 import { bootTermFrame, whenTerminalReady } from "@/lib/terminal"
@@ -111,6 +112,25 @@ export function GridTab({
     if (!railOpen) setRailHighlight((cur) => (cur.size ? new Set() : cur))
   }, [railOpen])
 
+  // Which panes this device has already seen (null until first reconcile on a
+  // fresh device, so the "+N new" badge can't flash before seeding). Mirrors
+  // the localStorage set (grid-seen.ts) into state so the badge is reactive.
+  const [seen, setSeen] = React.useState<Set<string> | null>(() => loadSeen())
+  const mark = React.useCallback((keys: Iterable<string>) => {
+    markSeen(keys)
+    setSeen((cur) => {
+      if (!cur) return cur
+      let next: Set<string> | null = null
+      for (const k of keys) {
+        if (!cur.has(k)) {
+          next ??= new Set(cur)
+          next.add(k)
+        }
+      }
+      return next ?? cur
+    })
+  }, [])
+
   // Measure the grid viewport; the tall-first column/row math derives from it
   // in render (clientHeight of the scroll container is the viewport height, not
   // the content height, which is exactly what the row math wants).
@@ -160,6 +180,22 @@ export function GridTab({
   const all = data?.panes ?? null
   const hostErrors = data?.errors ?? null
 
+  // Reconcile the seen set against each payload (seeds on first ever load,
+  // prunes keys for dead panes so the set stays bounded).
+  React.useEffect(() => {
+    if (!all) return
+    const next = reconcileSeen(new Set(all.map(cellKey)))
+    setSeen((cur) => {
+      if (
+        cur &&
+        cur.size === next.size &&
+        Array.from(next).every((k) => cur.has(k))
+      )
+        return cur
+      return next
+    })
+  }, [all])
+
   // The distinct hosts present, for the per-host filter chips (label kept for
   // display). Only worth showing when more than one host is in play.
   const hosts = React.useMemo(() => {
@@ -180,6 +216,29 @@ export function GridTab({
         : null,
     [all, agentsOnly, hidden, mode, watched]
   )
+
+  // A pane counts as seen once it's been on screen: rendered in All mode,
+  // listed while the rail is open, or deliberately starred.
+  React.useEffect(() => {
+    if (active && mode === "all" && panes) mark(panes.map(cellKey))
+  }, [active, mode, panes, mark])
+  React.useEffect(() => {
+    if (railOpen && all) mark(all.map(cellKey))
+  }, [railOpen, all, mark])
+  React.useEffect(() => {
+    if (watched.size) mark(watched)
+  }, [watched, mark])
+
+  // The unseen, unstarred panes backing the Watch-mode "+N new" badge.
+  const newKeys = React.useMemo(() => {
+    const s = new Set<string>()
+    if (mode !== "watch" || !all || !seen) return s
+    for (const p of all) {
+      const k = cellKey(p)
+      if (!seen.has(k) && !watched.has(k)) s.add(k)
+    }
+    return s
+  }, [mode, all, seen, watched])
 
   // Tall-first layout: as many columns as fit at the min cell width (so a
   // handful of panes becomes one row of tall columns), rows stretched to fill
@@ -336,6 +395,23 @@ export function GridTab({
             </button>
           ))}
         </div>
+
+        {/* Panes that appeared since this device last looked — Watch mode only.
+            Clicking opens the rail with the new rows highlighted (a snapshot,
+            since opening the rail immediately marks everything seen). */}
+        {newKeys.size > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              setRailHighlight(new Set(newKeys))
+              toggleRail(true)
+            }}
+            className="rounded-full border border-primary/40 bg-accent px-2 py-0.5 text-[11px] text-foreground transition-colors hover:border-primary"
+            title="Panes that appeared since you last looked — click to review"
+          >
+            +{newKeys.size} new
+          </button>
+        )}
 
         {selected.size > 0 ? (
           <>
