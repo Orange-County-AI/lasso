@@ -150,6 +150,10 @@ func runServer() {
 	} else {
 		log.Printf("theme:    %q -> %s", theme.Name, theme.Resolved)
 	}
+	// Mirror into local agents' theme files at boot too (the poll only syncs on
+	// a theme CHANGE, so without this a sync-logic upgrade — or files drifted
+	// while lasso was down — would wait for the next theme switch to converge).
+	go syncAgentThemesVia(localFsBackend(), theme)
 
 	// Shutdown is sequenced in two stages: the signal context only *starts* a
 	// shutdown, while everything long-lived (remote backends, ttyds, reapers,

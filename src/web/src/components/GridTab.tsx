@@ -308,7 +308,9 @@ export function GridTab({
 
   // Step Select mode's shown pane through the cycling list (wraps). When the
   // shown pane sits outside the list (a non-agent pane picked from the rail),
-  // stepping re-enters the list at its start.
+  // stepping re-enters the list at its start. The displayed pane switches
+  // immediately; the herdr focus (which the sidebar file viewer follows) trails
+  // asynchronously so stepping never blocks on a cross-host switch.
   const stepSelect = (delta: number) => {
     const cands = selectCandidates
     if (!cands || cands.length === 0) return
@@ -316,6 +318,7 @@ export function GridTab({
     const next =
       cands[idx < 0 ? 0 : (idx + delta + cands.length) % cands.length]
     patchUIState({ grid_select_pane: cellKey(next) })
+    focusInGridBackend(next)
   }
 
   const toggleWatch = (key: string) => {

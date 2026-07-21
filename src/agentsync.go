@@ -1,7 +1,8 @@
 // Agent theme sync: when lasso's theme changes (via /api/theme-set, a host
 // switch, or an out-of-band edit to herdr's config.toml picked up by the hub
-// poll), mirror it into the agent CLIs' own theme files — opencode's tui.json,
-// Claude Code's ~/.claude/themes/herdr.json, ghostty's themes/herdr, and
+// poll), mirror it into the agent CLIs' own theme files — opencode's tui.json
+// + state-file mode lock, Claude Code's ~/.claude/themes/herdr.json, ghostty's
+// themes/herdr, and
 // lasso's settings.json (.theme.resolved, read by claude-contextline) — so
 // agents render in step with herdr. Writes go through the Backend interface, so
 // the active remote host gets the same treatment over SFTP (see
@@ -80,26 +81,26 @@ func resolveThemeByName(name string) resolvedTheme {
 }
 
 // ---------------------------------------------------------------------------
-// opencode — ~/.config/opencode/tui.json "theme"
+// opencode — ~/.config/opencode/tui.json "theme" + state kv.json mode lock
 // ---------------------------------------------------------------------------
 
-// opencodeThemeFor maps lasso's resolved light/dark onto the opencode built-in
-// catppuccin variants (opencode can't detect the terminal background through
-// the lasso/ttyd/xterm chain, so it can't pick its own variant — see the OSC 11
-// discussion in the docs; we pin it instead). Latte is catppuccin's light
-// variant; frappé/macchiato/mocha are all dark, so light must NOT map to any
-// of them (it used to map to frappé, which painted opencode dark inside a
-// light lasso).
-func opencodeThemeFor(light bool) string {
-	if light {
-		return "catppuccin-latte"
-	}
-	return "catppuccin"
-}
+// opencodeTheme is the theme lasso pins for opencode. opencode 1.x themes are
+// adaptive — "catppuccin" renders its latte (light) variant in light mode and
+// mocha in dark — so one name covers both; the light/dark split is carried by
+// the mode lock (syncOpencodeMode), not the theme name. (The old mapping to
+// "catppuccin-latte" is gone: 1.x doesn't ship a theme by that name, so it
+// fell back to the default theme.)
+const opencodeTheme = "catppuccin"
 
 func syncOpencodeTheme(b Backend, home string, light bool) error {
+	if err := syncOpencodeTui(b, home); err != nil {
+		return err
+	}
+	return syncOpencodeMode(b, home, light)
+}
+
+func syncOpencodeTui(b Backend, home string) error {
 	path := filepath.Join(home, ".config", "opencode", "tui.json")
-	want := opencodeThemeFor(light)
 
 	root := map[string]json.RawMessage{}
 	data, err := b.ReadFile(path)
@@ -120,10 +121,10 @@ func syncOpencodeTheme(b Backend, home string, light bool) error {
 	if raw, ok := root["theme"]; ok {
 		_ = json.Unmarshal(raw, &cur)
 	}
-	if cur == want {
+	if cur == opencodeTheme {
 		return nil
 	}
-	root["theme"], _ = json.Marshal(want)
+	root["theme"], _ = json.Marshal(opencodeTheme)
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return err
@@ -132,7 +133,59 @@ func syncOpencodeTheme(b Backend, home string, light bool) error {
 	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	log.Printf("theme:    opencode theme -> %s on %s", want, b.Name())
+	log.Printf("theme:    opencode theme -> %s on %s", opencodeTheme, b.Name())
+	return b.WriteFile(path, out, 0o644)
+}
+
+// syncOpencodeMode pins opencode's light/dark mode. opencode 1.x resolves the
+// mode as: kv "theme_mode_lock" ?? the OSC 10/11-detected terminal background
+// ?? its default. Detection fails through the lasso/ttyd/xterm chain, and a
+// stale lock (e.g. locked light from another terminal session) overrides the
+// adaptive theme entirely — so the theme name in tui.json alone can't flip
+// opencode between light and dark. Pin the lock in its TUI state file. A
+// running opencode keeps its in-memory state (and may write it back over
+// ours); fresh launches read the pinned mode.
+func syncOpencodeMode(b Backend, home string, light bool) error {
+	path := filepath.Join(home, ".local", "state", "opencode", "kv.json")
+	want := "dark"
+	if light {
+		want = "light"
+	}
+
+	root := map[string]json.RawMessage{}
+	data, err := b.ReadFile(path)
+	switch {
+	case err == nil:
+		if json.Unmarshal(data, &root) != nil {
+			return nil // don't clobber what we can't parse
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// Create it — a first-ever opencode launch then starts in the right
+		// mode instead of guessing.
+	default:
+		return err
+	}
+
+	var lock, cur string
+	if raw, ok := root["theme_mode_lock"]; ok {
+		_ = json.Unmarshal(raw, &lock)
+	}
+	if raw, ok := root["theme_mode"]; ok {
+		_ = json.Unmarshal(raw, &cur)
+	}
+	if lock == want && cur == want {
+		return nil
+	}
+	root["theme_mode_lock"], _ = json.Marshal(want)
+	root["theme_mode"], _ = json.Marshal(want)
+	out, err := json.Marshal(root) // kv.json is compact single-line JSON
+	if err != nil {
+		return err
+	}
+	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	log.Printf("theme:    opencode mode -> %s on %s", want, b.Name())
 	return b.WriteFile(path, out, 0o644)
 }
 

@@ -1,7 +1,37 @@
+import * as React from "react"
 import { api, type GridPane, type GridPayload } from "@/lib/api"
 import { qk, queryClient } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { pushQueryParams } from "@/lib/url"
+
+// In-flight counter for pane focus operations, which can take seconds when
+// they switch the active host across the network. Views far from the click —
+// the sidebar Files/Diff panel, which follows the focused pane's cwd — read it
+// via usePaneFocusPending to show a loading state instead of silently keeping
+// the previous pane's data on screen (which reads as desynchronized).
+let focusInFlight = 0
+const focusListeners = new Set<() => void>()
+function trackFocusWork<T>(work: Promise<T>): Promise<T> {
+  focusInFlight++
+  for (const l of focusListeners) l()
+  return work.finally(() => {
+    focusInFlight--
+    for (const l of focusListeners) l()
+  })
+}
+
+// usePaneFocusPending reports whether any pane focus is currently in flight.
+export function usePaneFocusPending(): boolean {
+  return React.useSyncExternalStore(
+    (cb) => {
+      focusListeners.add(cb)
+      return () => {
+        focusListeners.delete(cb)
+      }
+    },
+    () => focusInFlight > 0
+  )
+}
 
 // focusPaneCore opens + focuses a pane in the Herdr tab, without touching
 // browser history. If it's on another host, switch there first (which reloads
@@ -11,16 +41,20 @@ import { pushQueryParams } from "@/lib/url"
 // grid cell's narrow width and a full-screen TUI renders thin. surfaceHerdr()
 // switches the left view to the Herdr tab. Finally hand the keyboard to xterm so
 // the user can type without clicking first.
-async function focusPaneCore(
+function focusPaneCore(
   p: GridPane,
   activeHost: string | null,
   surfaceHerdr: () => void
 ) {
-  if (p.host !== activeHost) await api.switchHost(p.host)
-  if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
-  await api.gridTermRelease(p.host, p.terminal_id)
-  surfaceHerdr()
-  focusHerdrTerminal()
+  return trackFocusWork(
+    (async () => {
+      if (p.host !== activeHost) await api.switchHost(p.host)
+      if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
+      await api.gridTermRelease(p.host, p.terminal_id)
+      surfaceHerdr()
+      focusHerdrTerminal()
+    })()
+  )
 }
 
 // focusPaneInPlace makes a pane herdr's focused pane WITHOUT leaving the
@@ -28,9 +62,13 @@ async function focusPaneCore(
 // push no history, release no grid terminal, and surface nothing. Used by the
 // Grid tab so clicking a cell highlights it (via the SSE focus state) and the
 // sidebar file viewer follows its cwd/host, while the user stays in the grid.
-export async function focusPaneInPlace(p: GridPane, activeHost: string | null) {
-  if (p.host !== activeHost) await api.switchHost(p.host)
-  if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
+export function focusPaneInPlace(p: GridPane, activeHost: string | null) {
+  return trackFocusWork(
+    (async () => {
+      if (p.host !== activeHost) await api.switchHost(p.host)
+      if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
+    })()
+  )
 }
 
 // focusPaneInHerdr is the user-initiated focus path, shared by the Grid tab
@@ -76,6 +114,6 @@ export async function restorePaneFocus(
   if (p) {
     await focusPaneCore(p, activeHost, surfaceHerdr)
   } else if (host !== activeHost) {
-    await api.switchHost(host)
+    await trackFocusWork(api.switchHost(host))
   }
 }

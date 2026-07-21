@@ -8,25 +8,18 @@ import (
 	"testing"
 )
 
-// The opencode theme pins catppuccin for dark herdr themes and
-// catppuccin-latte (the one light catppuccin variant) for light ones
-// (opencode can't detect the terminal background through the lasso/ttyd
-// chain, so we choose for it).
-func TestOpencodeThemeFor(t *testing.T) {
-	if got := opencodeThemeFor(false); got != "catppuccin" {
-		t.Errorf("dark = %q, want catppuccin", got)
-	}
-	if got := opencodeThemeFor(true); got != "catppuccin-latte" {
-		t.Errorf("light = %q, want catppuccin-latte", got)
-	}
-}
-
+// The opencode sync pins the adaptive "catppuccin" theme in tui.json and
+// carries light vs dark via the mode lock in opencode's state kv.json —
+// opencode can't detect the terminal background through the lasso/ttyd chain,
+// so we choose for it.
 func TestSyncOpencodeTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
 	path := filepath.Join(home, ".config", "opencode", "tui.json")
+	kvPath := filepath.Join(home, ".local", "state", "opencode", "kv.json")
 
-	// Fresh write: creates the file with schema + theme.
+	// Fresh write: creates tui.json with schema + theme and kv.json with the
+	// mode pinned dark.
 	if err := syncOpencodeTheme(b, home, false); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -38,9 +31,19 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	if got["theme"] != "catppuccin" || got["$schema"] == nil {
 		t.Fatalf("created file: %s", data)
 	}
+	var kv map[string]any
+	data, _ = os.ReadFile(kvPath)
+	if err := json.Unmarshal(data, &kv); err != nil {
+		t.Fatalf("written kv isn't json: %v", err)
+	}
+	if kv["theme_mode_lock"] != "dark" || kv["theme_mode"] != "dark" {
+		t.Fatalf("created kv: %s", data)
+	}
 
-	// Existing keys survive a flip to light.
+	// Existing keys in both files survive a flip to light; the theme name
+	// stays adaptive catppuccin while the mode lock flips.
 	os.WriteFile(path, []byte(`{"theme": "catppuccin", "keybinds": {"leader": "ctrl+x"}}`), 0o644)
+	os.WriteFile(kvPath, []byte(`{"sidebar":"auto","theme_mode_lock":"dark","theme_mode":"dark"}`), 0o644)
 	if err := syncOpencodeTheme(b, home, true); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
@@ -48,29 +51,48 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("after flip: %v", err)
 	}
-	if got["theme"] != "catppuccin-latte" {
-		t.Errorf("theme = %v, want catppuccin-latte", got["theme"])
+	if got["theme"] != "catppuccin" {
+		t.Errorf("theme = %v, want catppuccin", got["theme"])
 	}
 	if _, ok := got["keybinds"]; !ok {
 		t.Errorf("existing keys dropped: %s", data)
 	}
+	data, _ = os.ReadFile(kvPath)
+	if err := json.Unmarshal(data, &kv); err != nil {
+		t.Fatalf("kv after flip: %v", err)
+	}
+	if kv["theme_mode_lock"] != "light" || kv["theme_mode"] != "light" {
+		t.Errorf("kv mode not flipped: %s", data)
+	}
+	if kv["sidebar"] != "auto" {
+		t.Errorf("existing kv keys dropped: %s", data)
+	}
 
-	// No-op when already in step: mtime/content untouched.
+	// No-op when already in step: content untouched.
 	before, _ := os.ReadFile(path)
+	kvBefore, _ := os.ReadFile(kvPath)
 	if err := syncOpencodeTheme(b, home, true); err != nil {
 		t.Fatalf("noop: %v", err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
-		t.Errorf("no-op sync rewrote the file")
+		t.Errorf("no-op sync rewrote tui.json")
+	}
+	if after, _ := os.ReadFile(kvPath); string(after) != string(kvBefore) {
+		t.Errorf("no-op sync rewrote kv.json")
 	}
 
-	// Unparseable (e.g. jsonc with comments) is left alone, not clobbered.
+	// Unparseable files (e.g. jsonc with comments) are left alone, not
+	// clobbered.
 	os.WriteFile(path, []byte("{\n  // comment\n}\n"), 0o644)
+	os.WriteFile(kvPath, []byte("not json"), 0o644)
 	if err := syncOpencodeTheme(b, home, false); err != nil {
 		t.Fatalf("malformed: %v", err)
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "// comment") {
-		t.Errorf("malformed file was clobbered: %s", data)
+		t.Errorf("malformed tui.json was clobbered: %s", data)
+	}
+	if data, _ := os.ReadFile(kvPath); string(data) != "not json" {
+		t.Errorf("malformed kv.json was clobbered: %s", data)
 	}
 }
 

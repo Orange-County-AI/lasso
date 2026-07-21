@@ -3,6 +3,7 @@ import { DiffTab } from "@/components/DiffTab"
 import { type FileChange, FilesTab } from "@/components/FilesTab"
 import { useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { usePaneFocusPending } from "@/lib/pane-focus"
 import { cn } from "@/lib/utils"
 
 // The file viewer pulls in CodeMirror + react-markdown; load it only on first
@@ -39,6 +40,10 @@ export function FilesPanel() {
   const { activeCwd } = useApp()
   const [sub, setSub] = React.useState<SubView>("files")
   const [viewerPath, setViewerPath] = React.useState<string | null>(null)
+  // A pane focus (possibly a multi-second cross-host switch) is in flight —
+  // this panel follows the focused pane's cwd, so veil the stale content with
+  // a loading state until the switch lands rather than looking desynchronized.
+  const focusing = usePaneFocusPending()
 
   // The changed-file metadata is fetched + polled app-wide via the shared
   // useDiff query (so the top-level tab badge stays live even while this panel
@@ -107,6 +112,17 @@ export function FilesPanel() {
           <React.Suspense fallback={null}>
             <FileViewer path={viewerPath} onClose={() => setViewerPath(null)} />
           </React.Suspense>
+        )}
+
+        {focusing && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background/70 text-muted-foreground text-xs">
+            <span
+              className="termcell-spinner"
+              role="status"
+              aria-label="loading"
+            />
+            following pane…
+          </div>
         )}
       </div>
     </div>
