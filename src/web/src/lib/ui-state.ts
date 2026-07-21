@@ -13,7 +13,7 @@ const DEFAULTS: UIState = {
   grid_agents_only: false,
   grid_hidden_hosts: [],
   grid_selected: [],
-  grid_mode: "all",
+  grid_mode: "watch",
   grid_watched: [],
   grid_select_pane: "",
   grid_rail_agents_only: false,

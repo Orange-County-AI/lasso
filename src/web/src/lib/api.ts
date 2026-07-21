@@ -94,11 +94,12 @@ export interface UIState {
   // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
   // survives navigating away and back (or reloading).
   grid_selected: string[]
-  // Grid tab visibility mode: "all" shows every pane (minus filters), "watch"
-  // shows only the starred panes in grid_watched, "select" shows one pane at
-  // a time (grid_select_pane).
-  grid_mode: "all" | "watch" | "select"
-  // host|pane_id keys of starred (watched) panes.
+  // Grid tab visibility mode: "watch" (Multi) shows the panes toggled on in
+  // grid_watched, "select" (Single) shows one pane at a time
+  // (grid_select_pane). Legacy stored values (the retired "all" wall)
+  // normalize to "watch" server-side.
+  grid_mode: "watch" | "select"
+  // host|pane_id keys of the panes shown in Multi mode.
   grid_watched: string[]
   // host|pane_id of the pane shown in Select mode ("" = auto: first candidate).
   grid_select_pane: string

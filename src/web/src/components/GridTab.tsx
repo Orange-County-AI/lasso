@@ -85,10 +85,11 @@ export interface GridFocusRequest {
 
 // The Grid tab: a wall of live terminals, one per herdr pane, spanning every
 // reachable + protocol-compatible host. Each cell body is an interactive
-// terminal (a ttyd attached to that pane). Click a header to focus the pane in
-// the Herdr tab (switching host first when it lives elsewhere); ⌘/Ctrl-click to
-// multi-select; right-click for rename / close. Filters (agents-only, per-host)
-// are persisted server-side so the view is the same every visit.
+// terminal (a ttyd attached to that pane). Multi mode shows the panes toggled
+// on in the rail; Single shows one at a time. Click a header to focus the pane
+// in the Herdr tab (switching host first when it lives elsewhere);
+// ⌘/Ctrl-click to multi-select; right-click for rename / close. The mode and
+// pane picks are persisted server-side so the view is the same every visit.
 export function GridTab({
   active,
   onFocusInHerdr,
@@ -100,13 +101,9 @@ export function GridTab({
 }) {
   const { activePaneID, host: activeHost } = useApp()
   const ui = useUIState()
-  const agentsOnly = ui.grid_agents_only
   const mode = ui.grid_mode
-  const hidden = React.useMemo(
-    () => new Set(ui.grid_hidden_hosts),
-    [ui.grid_hidden_hosts]
-  )
-  // Starred panes (host|pane_id keys) — the only panes shown in Watch mode.
+  // Toggled-on panes (host|pane_id keys) — the panes shown in Multi mode.
+  // (Stored under the historical grid_watched name.)
   const watched = React.useMemo(
     () => new Set(ui.grid_watched),
     [ui.grid_watched]
@@ -219,14 +216,6 @@ export function GridTab({
     })
   }, [all])
 
-  // The distinct hosts present, for the per-host filter chips (label kept for
-  // display). Only worth showing when more than one host is in play.
-  const hosts = React.useMemo(() => {
-    const m = new Map<string, string>()
-    for (const p of all ?? []) if (!m.has(p.host)) m.set(p.host, p.host_label)
-    return Array.from(m, ([host, label]) => ({ host, label }))
-  }, [all])
-
   // Select mode's cycling list: agent panes when any exist, else every pane.
   // An explicitly picked pane (from the rail) still shows even when it falls
   // outside the list.
@@ -243,25 +232,22 @@ export function GridTab({
     return first ? cellKey(first) : null
   }, [all, selectCandidates, selectPane])
 
-  // Watch mode shows exactly the starred panes; Select mode shows exactly one.
-  // The agents-only and host filters (whose toggles are hidden outside All
-  // mode) only shape the All wall.
+  // Multi mode shows exactly the toggled-on panes; Single mode shows exactly
+  // one.
   const panes = React.useMemo(
     () =>
       all
         ? all.filter((p) =>
-            mode === "watch"
-              ? watched.has(cellKey(p))
-              : mode === "select"
-                ? cellKey(p) === selectShownKey
-                : (!agentsOnly || p.has_agent) && !hidden.has(p.host)
+            mode === "select"
+              ? cellKey(p) === selectShownKey
+              : watched.has(cellKey(p))
           )
         : null,
-    [all, agentsOnly, hidden, mode, watched, selectShownKey]
+    [all, mode, watched, selectShownKey]
   )
 
-  // A pane counts as seen once it's been on screen: rendered in All or Select
-  // mode, listed while the rail is open, or deliberately starred.
+  // A pane counts as seen once it's been on screen: rendered in Single mode,
+  // listed while the rail is open, or deliberately toggled on.
   React.useEffect(() => {
     if (active && mode !== "watch" && panes) mark(panes.map(cellKey))
   }, [active, mode, panes, mark])
@@ -272,7 +258,7 @@ export function GridTab({
     if (watched.size) mark(watched)
   }, [watched, mark])
 
-  // The unseen, unstarred panes backing the Watch-mode "+N new" badge.
+  // The unseen, untoggled panes backing the Multi-mode "+N new" badge.
   const newKeys = React.useMemo(() => {
     const s = new Set<string>()
     if (mode !== "watch" || !all || !seen) return s
@@ -301,10 +287,7 @@ export function GridTab({
     Math.floor((availH - (rows - 1) * GRID_GAP) / rows)
   )
 
-  const toggleAgentsOnly = () => patchUIState({ grid_agents_only: !agentsOnly })
-
-  const setMode = (m: "all" | "watch" | "select") =>
-    patchUIState({ grid_mode: m })
+  const setMode = (m: "watch" | "select") => patchUIState({ grid_mode: m })
 
   // Step Select mode's shown pane through the cycling list (wraps). When the
   // shown pane sits outside the list (a non-agent pane picked from the rail),
@@ -326,13 +309,6 @@ export function GridTab({
     if (next.has(key)) next.delete(key)
     else next.add(key)
     patchUIState({ grid_watched: Array.from(next) })
-  }
-
-  const toggleHost = (host: string) => {
-    const next = new Set(hidden)
-    if (next.has(host)) next.delete(host)
-    else next.add(host)
-    patchUIState({ grid_hidden_hosts: Array.from(next) })
   }
 
   const clearSelection = () => patchUIState({ grid_selected: [] })
@@ -396,8 +372,8 @@ export function GridTab({
       // In Select mode, picking a pane (from the rail) makes it THE pane.
       if (key !== selectShownKey) patchUIState({ grid_select_pane: key })
     } else if (panes && !panes.some((x) => cellKey(x) === key)) {
-      // Filtered out of the current view (e.g. unstarred in Watch mode).
-      toast(`${p.host_label} pane isn't shown — star it or switch to All`)
+      // Not part of the current view (toggled off in Multi mode).
+      toast(`${p.host_label} pane isn't shown — toggle it on in the pane list`)
       return
     }
     focusInGridBackend(p)
@@ -410,8 +386,8 @@ export function GridTab({
 
   // Honor a focus request from App (an agent created from the New Agent dialog
   // while the Grid view was active): once the new pane shows up in a payload,
-  // star it if we're in Watch mode (creating it was an explicit ask to see it),
-  // highlight it, and hand it the keyboard. Retries until a poll includes the
+  // toggle it on if we're in Multi mode (creating it was an explicit ask to
+  // see it), highlight it, and hand it the keyboard. Retries until a poll includes the
   // pane; a fresh request forces one refetch so it doesn't wait a full 2.5s.
   const handledFocusReq = React.useRef(0)
   React.useEffect(() => {
@@ -540,12 +516,12 @@ export function GridTab({
           Panes
         </button>
 
-        {/* All / Multi / Single segmented toggle: All is the classic every-pane
-            wall, Multi shows only starred panes (the watch list), Single shows
-            one pane at a time (all persisted server-side — the stored mode
-            values keep their original "watch"/"select" names). */}
+        {/* Multi / Single segmented toggle: Multi shows the panes toggled on
+            in the rail, Single shows one pane at a time (persisted
+            server-side — the stored mode values keep their original
+            "watch"/"select" names). */}
         <div className="flex overflow-hidden rounded-full border border-border text-[11px]">
-          {(["all", "watch", "select"] as const).map((m) => (
+          {(["watch", "select"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -558,14 +534,12 @@ export function GridTab({
                   : "text-muted-foreground hover:text-foreground"
               )}
               title={
-                m === "all"
-                  ? "Show every pane"
-                  : m === "watch"
-                    ? "Show only watched panes"
-                    : "Show one pane at a time"
+                m === "watch"
+                  ? "Show the panes you've toggled on"
+                  : "Show one pane at a time"
               }
             >
-              {m === "all" ? "All" : m === "watch" ? "Multi" : "Single"}
+              {m === "watch" ? "Multi" : "Single"}
             </button>
           ))}
         </div>
@@ -603,7 +577,7 @@ export function GridTab({
           </div>
         )}
 
-        {/* Panes that appeared since this device last looked — Watch mode only.
+        {/* Panes that appeared since this device last looked — Multi mode only.
             Clicking opens the rail with the new rows highlighted (a snapshot,
             since opening the rail immediately marks everything seen). */}
         {newKeys.size > 0 && (
@@ -645,70 +619,12 @@ export function GridTab({
           </>
         ) : (
           <span className="text-muted-foreground text-xs">
-            {panes && mode !== "select"
-              ? mode === "watch"
-                ? `${panes.length} watched`
-                : `${panes.length} pane${panes.length === 1 ? "" : "s"}${
-                    panes.length !== (all?.length ?? 0)
-                      ? ` of ${all?.length}`
-                      : ""
-                  }`
+            {panes && mode === "watch"
+              ? `${panes.length} viewed${
+                  all?.length ? ` of ${all.length}` : ""
+                }`
               : ""}
           </span>
-        )}
-
-        {/* Per-host filter chips (only when more than one host is present, and
-            only in All mode — Watch is already an explicit pane list). */}
-        {mode === "all" &&
-          hosts.length > 1 &&
-          hosts.map((h) => {
-            const on = !hidden.has(h.host)
-            return (
-              <button
-                key={h.host}
-                type="button"
-                onClick={() => toggleHost(h.host)}
-                aria-pressed={on}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
-                  on
-                    ? "border-primary/40 bg-accent text-foreground"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                )}
-                title={on ? `Hide ${h.label} panes` : `Show ${h.label} panes`}
-              >
-                <span
-                  className={cn(
-                    "size-2 rounded-full",
-                    on ? "bg-primary" : "bg-muted-foreground/40"
-                  )}
-                />
-                {h.label}
-              </button>
-            )
-          })}
-
-        {mode === "all" && (
-          <button
-            type="button"
-            onClick={toggleAgentsOnly}
-            aria-pressed={agentsOnly}
-            className={cn(
-              "ml-auto flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
-              agentsOnly
-                ? "border-primary/40 bg-accent text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground"
-            )}
-            title="Show only panes with an associated agent"
-          >
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                agentsOnly ? "bg-primary" : "bg-muted-foreground/40"
-              )}
-            />
-            Agents only
-          </button>
         )}
       </div>
 
@@ -763,8 +679,8 @@ export function GridTab({
               {mode === "watch" ? (
                 <>
                   {watched.size === 0
-                    ? "no watched panes yet — star ☆ panes to build your watch list"
-                    : "none of your watched panes are running"}
+                    ? "no panes viewed yet — toggle panes on in the pane list"
+                    : "none of your viewed panes are running"}
                   <br />
                   <button
                     type="button"
@@ -774,10 +690,6 @@ export function GridTab({
                     browse panes
                   </button>
                 </>
-              ) : mode === "select" ? (
-                "no panes"
-              ) : agentsOnly || hidden.size ? (
-                "no panes match the filters"
               ) : (
                 "no panes"
               )}
@@ -916,7 +828,7 @@ function GridCell({
   selectionCount: number
   focused: boolean
   watched: boolean
-  /** Whether to offer the watch star at all (hidden in Select mode). */
+  /** Whether to offer the view toggle at all (hidden in Single mode). */
   watchable: boolean
   /** A focus (in-grid or into Herdr) for this cell is in flight — show a spinner. */
   pending: boolean
@@ -1127,7 +1039,7 @@ function GridCell({
                 type="button"
                 className={cn("termcell-star", watched && "watched")}
                 aria-pressed={watched}
-                title={watched ? "Stop watching" : "Watch this pane"}
+                title={watched ? "Hide from the grid" : "View in the grid"}
                 onClick={(e) => {
                   e.stopPropagation()
                   onToggleWatch()
@@ -1144,7 +1056,7 @@ function GridCell({
           </ContextMenuItem>
           {watchable && (
             <ContextMenuItem onSelect={onToggleWatch}>
-              {watched ? "Unwatch ☆" : "Watch ★"}
+              {watched ? "Hide from grid" : "Show in grid"}
             </ContextMenuItem>
           )}
           <ContextMenuItem onSelect={onRename}>
