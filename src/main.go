@@ -112,6 +112,13 @@ func defaultSock() string {
 func runServer() {
 	flag.Parse()
 
+	// In dev, tee the standard logger to a stable file and interleave
+	// browser-posted events into it (see devlog.go / serveClientLog), so backend
+	// and frontend logs form one time-ordered stream for debugging.
+	if *devMode {
+		setupDevLog()
+	}
+
 	// Start out driving the local herdr daemon. The footer's host switcher swaps
 	// this for a remoteBackend (and back) at runtime via /api/host.
 	setBackend(&localBackend{sock: *herdrSock})
@@ -271,6 +278,8 @@ func runServer() {
 	mux.Handle("/", serveDist(dist))
 	if *devMode {
 		log.Printf("dev:      ON — backend only; run the Vite dev server in web/ for the frontend (mise run dev)")
+		// Browser log sink — only mounted in dev (unified log; see devlog.go).
+		mux.HandleFunc("/api/log", serveClientLog)
 	}
 
 	// /mcp is intentionally unauthenticated (see CLAUDE.md security note); the rest

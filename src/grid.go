@@ -69,9 +69,21 @@ const gridBackendIdle = 5 * time.Minute
 const gridHealthEvery = 10 * time.Second
 
 // gridHostBackend returns a Backend for RPC against host without disturbing the
-// active backend: "local" → a localBackend on the local socket; the active host →
-// the live active backend (reuses its already-forwarded socket, no new SSH); any
-// other compatible remote → a lazily-created, idle-reaped remoteBackend.
+// active backend: "local" → a localBackend on the local socket; any compatible
+// remote (INCLUDING whichever host is currently active) → a lazily-created,
+// idle-reaped remoteBackend from the grid pool, on its own socket-tagged SSH
+// master (…-grid.sock), distinct from the active backend's (…-<host>.sock).
+//
+// The grid pool is deliberately kept SEPARATE from the active backend even for
+// the active host. Reusing the active backend here saved one SSH connection, but
+// it chained every grid terminal's lifetime to the active backend's: a host
+// switch tears the active backend down and rebuilds it, which yanked the pty out
+// from under every grid cell on both the host you left and the one you switched
+// to — they went dead ("Press ⏎ to Reconnect") and had to re-attach on each
+// click. Streaming grid cells over their own pool master instead makes them
+// survive host switches untouched (the two masters coexist by design — different
+// socket tags), at the cost of one extra, idle-reaped connection to the active
+// remote host while the Grid tab is open.
 //
 // A cached backend is liveness-checked (throttled by gridHealthEvery) before
 // being handed out: its SSH master can die out from under it — network drop,
@@ -83,9 +95,6 @@ const gridHealthEvery = 10 * time.Second
 func gridHostBackend(host string) (Backend, error) {
 	if host == "local" {
 		return &localBackend{sock: *herdrSock}, nil
-	}
-	if cur := curBackend(); host == cur.Name() {
-		return cur, nil
 	}
 	gridPool.mu.Lock()
 	if gridPool.entries == nil {
@@ -210,30 +219,6 @@ func gridPoolHosts() []string {
 	return hosts
 }
 
-// gridPoolEvict closes and drops any pooled backend for host. Called when the
-// active host switches to host (the active backend now serves it) so we don't
-// keep a redundant second connection. Grid cells for host stream over the
-// evicted backend's SSH master, so they are released first — the frontend
-// keepalive sees alive=false and re-attaches over the new active backend.
-func gridPoolEvict(host string) {
-	gridPool.mu.Lock()
-	e := gridPool.entries[host]
-	delete(gridPool.entries, host)
-	gridPool.mu.Unlock()
-	if e != nil {
-		releaseGridTermsForHost(host)
-		// Close under the host's dial mutex so a redial (which reuses the same
-		// socket paths) can't start until this teardown's `ssh -O exit` and
-		// socket removal have finished.
-		go func() {
-			mu := gridDialMu(host)
-			mu.Lock()
-			_ = e.backend.Close()
-			mu.Unlock()
-		}()
-	}
-}
-
 // closeBackendsOnExit synchronously closes the active backend and every pooled
 // grid backend so their SSH control masters and forwarded sockets are cleaned
 // up before the process exits. Teardown is otherwise async (a goroutine per
@@ -281,7 +266,7 @@ func reapGridBackends() {
 	}
 	gridPool.mu.Unlock()
 	for _, d := range dead {
-		// Same dial-mutex discipline as gridPoolEvict: a concurrent redial
+		// Same dial-mutex discipline as gridPoolDrop: a concurrent redial
 		// reuses this host's socket paths and must not race the teardown.
 		mu := gridDialMu(d.host)
 		mu.Lock()
@@ -1025,7 +1010,21 @@ var gridTerms struct {
 }
 
 const (
-	gridTermIdle = 30 * time.Second
+	// gridTermIdle: how long a grid terminal survives without a keepalive touch
+	// or proxied traffic before the reaper kills it. This is only a BACKSTOP for a
+	// cell whose explicit release was dropped — the normal teardown paths (per-cell
+	// release on unmount, releaseAll when the Grid tab is left) fire promptly. It
+	// must sit comfortably above the keepalive interval (KEEPALIVE_MS, 18s) with
+	// enough headroom to survive the two things that legitimately stall keepalives
+	// on a live, still-visible cell: (1) a backgrounded browser tab, where the
+	// browser throttles the keepalive timer (Chrome clamps hidden-tab timers and,
+	// after ~5 min hidden, to ~once/minute), and (2) a host-switch storm that
+	// briefly saturates the browser's request pipeline. At the old 30s — barely
+	// 1.6× the keepalive — either stall reaped every visible cell, and returning to
+	// the tab (or the next click) then showed a full "Press ⏎ to Reconnect"
+	// reconnect storm. 120s gives ~6× headroom; a truly-abandoned cell still lingers
+	// only ~2 min, and its ttyd is cheap.
+	gridTermIdle = 120 * time.Second
 	gridTermMax  = 24 // backstop; lazy viewport-mounting keeps the real count low
 )
 

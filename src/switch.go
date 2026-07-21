@@ -152,18 +152,27 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, wantProto := localProtocol()
-		gridPoolEvict(target) // drop any grid-pool connection; the active backend serves it now
+		// NB: we deliberately do NOT evict target's grid-pool connection here.
+		// Grid cells stream over the grid pool (see gridHostBackend), which is
+		// independent of the active backend — dropping it would kill every visible
+		// grid cell for the host we're switching to and force a reconnect. The two
+		// connections coexist by design (different socket tags); the pool is idle-
+		// reaped once the Grid tab closes.
 		rb, err := newRemoteBackend(srvCtx, target, hi.Socket, wantProto, "")
 		if err != nil {
 			http.Error(w, "connect "+target+": "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		newB = rb
-		// Make the target host's herdr theme match the local machine's before its
-		// terminals attach, so they render in the same palette lasso's chrome
-		// shows (lasso always resolves its own theme from the LOCAL config).
+		// Mirror the local machine's theme onto the target host's herdr — but in
+		// the BACKGROUND, off the switch's critical path. It's ~2 SSH round trips
+		// (write config + reload_config), and blocking on it made every cross-host
+		// focus feel ~2s slower for a purely cosmetic change: the ttyd palette comes
+		// from lasso's LOCAL resolved theme (startTtyd's -t theme=), not from the
+		// remote herdr, so terminals already render correctly; this only repaints
+		// the remote herdr TUI's own chrome, which can lag a beat harmlessly.
 		if srvHub != nil {
-			syncRemoteTheme(rb, srvHub.themeSnapshot().Resolved)
+			go syncRemoteTheme(rb, srvHub.themeSnapshot().Resolved)
 		}
 	}
 
@@ -179,14 +188,11 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 
 	// Tear down the previous backend after a short grace so in-flight requests
 	// that captured it finish first. Local Close is a no-op. Grid cells for the
-	// previous host stream over its SSH master, so they are released alongside —
-	// the frontend keepalive re-attaches visible ones over a fresh pool backend.
+	// previous host stream over the grid pool, NOT this active backend, so they
+	// are untouched by its teardown — no release, no reconnect flash on switch.
 	if prev != nil {
 		go func() {
 			time.Sleep(2 * time.Second)
-			if _, ok := prev.(*remoteBackend); ok {
-				releaseGridTermsForHost(prev.Name())
-			}
 			_ = prev.Close()
 		}()
 	}

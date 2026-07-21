@@ -365,6 +365,33 @@
   outline-offset: -2px;
   border-color: var(--h-accent);
 }
+/* A focus (especially a cross-host one) can take a few seconds to land; while it
+   is in flight the cell's accent border pulses so the click reads as accepted
+   and being processed, discouraging the impatient re-clicks that pile up host
+   switches. */
+.termcell.focusing {
+  border-color: var(--h-accent);
+  animation: termcell-focus-pulse 1s ease-in-out infinite;
+}
+@keyframes termcell-focus-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--h-accent) 45%, transparent);
+  }
+}
+/* A small spinner shown in the cell header while a focus is in flight. */
+.termcell-headspin {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--h-border);
+  border-top-color: var(--h-accent);
+  animation: termcell-spin 0.7s linear infinite;
+}
 .termcell-head {
   flex: 0 0 auto;
   display: flex;

@@ -49,7 +49,10 @@ import { cn } from "@/lib/utils"
 const POLL_MS = 2500
 
 // How often a mounted cell re-pings its terminal endpoint so the server keeps the
-// ttyd alive (the server reaps idle attaches after ~30s). Comfortably under that.
+// ttyd alive. The server reaps idle attaches after gridTermIdle (120s) — kept well
+// above this interval so a backgrounded tab (whose timers the browser throttles)
+// or a host-switch request storm can miss a few keepalives without the cell being
+// reaped out from under the still-visible grid.
 const KEEPALIVE_MS = 18_000
 
 // Grid layout constants — gap/padding must match .termgrid in index.css. The
@@ -303,6 +306,36 @@ export function GridTab({
     patchUIState({ grid_selected: Array.from(next) })
   }
 
+  // Focusing a pane can take a few seconds when it switches the active host
+  // across the network (SSH connect + terminal respawn). Track the cell whose
+  // focus is in flight so it can show a spinner — the click reads as accepted
+  // even before the switch lands, which also curbs the impatient re-clicks that
+  // pile up host switches. A safety timeout clears it so a hung switch can't
+  // strand the spinner forever.
+  const [focusPending, setFocusPending] = React.useState<string | null>(null)
+  const focusTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackFocus = React.useCallback(
+    (key: string, work: Promise<unknown>) => {
+      setFocusPending(key)
+      if (focusTimer.current) clearTimeout(focusTimer.current)
+      focusTimer.current = setTimeout(
+        () => setFocusPending((cur) => (cur === key ? null : cur)),
+        20_000
+      )
+      void work.finally(() => {
+        setFocusPending((cur) => (cur === key ? null : cur))
+        if (focusTimer.current) clearTimeout(focusTimer.current)
+      })
+    },
+    []
+  )
+  React.useEffect(
+    () => () => {
+      if (focusTimer.current) clearTimeout(focusTimer.current)
+    },
+    []
+  )
+
   // In-grid focus: make the pane herdr's focused pane WITHOUT leaving the grid
   // (no history push, no grid-terminal release, no view switch). The cell's
   // border highlight and the sidebar file viewer both key off the SSE focus
@@ -311,11 +344,14 @@ export function GridTab({
   const focusInGridBackend = React.useCallback(
     (p: GridPane) => {
       if (p.host === activeHost && p.pane_id === activePaneID) return
-      focusPaneInPlace(p, activeHost).catch((e) =>
-        toast.error(`focus failed: ${(e as Error).message}`)
+      trackFocus(
+        cellKey(p),
+        focusPaneInPlace(p, activeHost).catch((e) =>
+          toast.error(`focus failed: ${(e as Error).message}`)
+        )
       )
     },
-    [activeHost, activePaneID]
+    [activeHost, activePaneID, trackFocus]
   )
   const focusInGrid = (p: GridPane) => {
     const key = cellKey(p)
@@ -388,13 +424,16 @@ export function GridTab({
   }
 
   // Focus a pane in the Herdr tab (see focusPaneInHerdr for the sequence; shared
-  // with the Cmd+U pane switcher).
-  const focusPane = async (p: GridPane) => {
-    try {
-      await focusPaneInHerdr(p, activeHost, onFocusInHerdr)
-    } catch (e) {
-      toast.error(`focus failed: ${(e as Error).message}`)
-    }
+  // with the Cmd+U pane switcher). Tracked so the cell shows a spinner while the
+  // (possibly cross-host, multi-second) switch + focus is in flight, before the
+  // view surfaces Herdr.
+  const focusPane = (p: GridPane) => {
+    trackFocus(
+      cellKey(p),
+      focusPaneInHerdr(p, activeHost, onFocusInHerdr).catch((e) => {
+        toast.error(`focus failed: ${(e as Error).message}`)
+      })
+    )
   }
 
   // Close targets: the whole selection if the right-clicked pane is part of it,
@@ -674,10 +713,11 @@ export function GridTab({
                     : false
                 }
                 watched={watched.has(cellKey(p))}
+                pending={focusPending === cellKey(p)}
                 onToggleWatch={() => toggleWatch(cellKey(p))}
                 onClick={(e) => onCellClick(e, p)}
                 onBodyFocus={() => focusInGridBackend(p)}
-                onOpenInHerdr={() => void focusPane(p)}
+                onOpenInHerdr={() => focusPane(p)}
                 onRename={() => requestRename(p)}
                 onClose={() => requestClose(p)}
               />
@@ -775,6 +815,7 @@ function GridCell({
   selectionCount,
   focused,
   watched,
+  pending,
   onToggleWatch,
   onClick,
   onBodyFocus,
@@ -788,6 +829,8 @@ function GridCell({
   selectionCount: number
   focused: boolean
   watched: boolean
+  /** A focus (in-grid or into Herdr) for this cell is in flight — show a spinner. */
+  pending: boolean
   onToggleWatch: () => void
   onClick: (e: React.MouseEvent | React.KeyboardEvent) => void
   /** The user clicked into this cell's terminal (its iframe took focus). */
@@ -948,7 +991,12 @@ function GridCell({
   return (
     <div
       id={`cell-${id}`}
-      className={cn("termcell", focused && "focused", selected && "selected")}
+      className={cn(
+        "termcell",
+        focused && "focused",
+        selected && "selected",
+        pending && "focusing"
+      )}
     >
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -968,6 +1016,14 @@ function GridCell({
             }}
           >
             <span className="termcell-host">{p.host_label}</span>
+            {pending && (
+              <span
+                className="termcell-headspin"
+                role="status"
+                aria-label="focusing"
+                title="focusing…"
+              />
+            )}
             <span className="termcell-title">
               {title}
               {tabLabel ? ` · ${tabLabel}` : ""}
