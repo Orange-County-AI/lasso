@@ -1077,21 +1077,33 @@ func serveGridTermRelease(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Host       string `json:"host"`
 		TerminalID string `json:"terminal_id"`
+		// Token (optional) scopes the release to the specific attach the caller
+		// created. Cell releases are fire-and-forget, so one issued at unmount can
+		// land AFTER a quick remount already re-attached the same pane — without
+		// the token check it would kill the fresh attach out from under the new
+		// cell, whose iframe then 404s until the next keepalive notices.
+		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	releaseGridTerm(req.Host, req.TerminalID)
+	releaseGridTerm(req.Host, req.TerminalID, req.Token)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
 // releaseGridTerm kills the ttyd attached to one pane (if any), which detaches it
-// from herdr so the pane is no longer held to this terminal's width.
-func releaseGridTerm(host, terminalID string) {
+// from herdr so the pane is no longer held to this terminal's width. A non-empty
+// token releases only that specific attach: when the key's current entry is a
+// newer one (the pane was re-attached after this release was issued), it's left
+// alone.
+func releaseGridTerm(host, terminalID, token string) {
 	key := host + "|" + terminalID
 	gridTerms.mu.Lock()
 	e := gridTerms.byKey[key]
+	if e != nil && token != "" && e.token != token {
+		e = nil // a newer attach owns this pane now — don't kill it
+	}
 	if e != nil {
 		delete(gridTerms.byKey, key)
 		delete(gridTerms.byToken, e.token)

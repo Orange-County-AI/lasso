@@ -474,9 +474,11 @@ function termHasRendered(term: XTerm): boolean {
 
 // whenTerminalReady calls onReady once the terminal iframe's xterm exists and has
 // rendered real content — requiring two consecutive observations a frame apart so
-// we reveal after the first paint settles rather than mid-redraw — or after a hard
-// timeout as a backstop (a genuinely blank pane, or an xterm whose buffer we can't
-// read, must not strand the loader forever). Returns a canceller; mirrors the
+// we reveal after the first paint settles rather than mid-redraw. Two backstops
+// keep the loader from stranding: once xterm is booted but the buffer stays blank
+// (a genuinely empty pane — an idle prompt has nothing to paint), reveal after a
+// short hold rather than sitting on a spinner; and a hard overall deadline covers
+// an xterm whose buffer we can't read at all. Returns a canceller; mirrors the
 // retry cadence of the other terminal helpers.
 export function whenTerminalReady(id: string, onReady: () => void): () => void {
   let done = false
@@ -490,6 +492,7 @@ export function whenTerminalReady(id: string, onReady: () => void): () => void {
   }
   const deadline = setTimeout(finish, 6000)
   let sawContent = false
+  let blankSince = 0
   const poll = () => {
     if (done) return
     let ready = false
@@ -500,6 +503,14 @@ export function whenTerminalReady(id: string, onReady: () => void): () => void {
         else sawContent = true
       } else {
         sawContent = false
+        if (term) {
+          // xterm is up but nothing has painted — an empty pane. Don't hold
+          // the overlay for the full deadline; it would read as a slow switch.
+          if (!blankSince) blankSince = Date.now()
+          else if (Date.now() - blankSince > 1500) ready = true
+        } else {
+          blankSince = 0
+        }
       }
     } catch {
       /* same-origin; ignore */

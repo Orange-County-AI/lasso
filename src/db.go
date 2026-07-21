@@ -201,12 +201,12 @@ type uiState struct {
 	GridAgentsOnly  bool     `json:"grid_agents_only"`
 	GridHiddenHosts []string `json:"grid_hidden_hosts"`
 	GridSelected    []string `json:"grid_selected"`
-	// GridMode is the Grid tab's visibility mode: "all" shows every pane (minus
-	// filters), "watch" shows only the panes in GridWatched, "select" shows one
-	// pane at a time (GridSelectPane). Anything else reads as "all" (normalized
-	// in getUIState).
+	// GridMode is the Grid tab's visibility mode: "watch" (Multi) shows the
+	// panes toggled on in GridWatched, "select" (Single) shows one pane at a
+	// time (GridSelectPane). Anything else — including the retired "all" wall —
+	// reads as "watch" (normalized in getUIState).
 	GridMode string `json:"grid_mode"`
-	// GridWatched holds host|pane_id keys of starred (watched) panes.
+	// GridWatched holds host|pane_id keys of the panes shown in Multi mode.
 	GridWatched []string `json:"grid_watched"`
 	// GridSelectPane is the host|pane_id shown in Select mode ("" = auto: the
 	// first candidate).
@@ -233,7 +233,7 @@ func getUIState() (uiState, error) {
 	us := uiState{
 		GridHiddenHosts:     []string{},
 		GridSelected:        []string{},
-		GridMode:            "all",
+		GridMode:            "watch",
 		GridWatched:         []string{},
 		FilesClickNavigates: true,
 	}
@@ -256,7 +256,7 @@ func getUIState() (uiState, error) {
 		us.GridWatched = []string{}
 	}
 	if us.GridMode != "watch" && us.GridMode != "select" {
-		us.GridMode = "all"
+		us.GridMode = "watch"
 	}
 	return us, nil
 }

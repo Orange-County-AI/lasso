@@ -94,11 +94,12 @@ export interface UIState {
   // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
   // survives navigating away and back (or reloading).
   grid_selected: string[]
-  // Grid tab visibility mode: "all" shows every pane (minus filters), "watch"
-  // shows only the starred panes in grid_watched, "select" shows one pane at
-  // a time (grid_select_pane).
-  grid_mode: "all" | "watch" | "select"
-  // host|pane_id keys of starred (watched) panes.
+  // Grid tab visibility mode: "watch" (Multi) shows the panes toggled on in
+  // grid_watched, "select" (Single) shows one pane at a time
+  // (grid_select_pane). Legacy stored values (the retired "all" wall)
+  // normalize to "watch" server-side.
+  grid_mode: "watch" | "select"
+  // host|pane_id keys of the panes shown in Multi mode.
   grid_watched: string[]
   // host|pane_id of the pane shown in Select mode ("" = auto: first candidate).
   grid_select_pane: string
@@ -360,6 +361,12 @@ function withHost(url: string, host?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}host=${encodeURIComponent(host)}`
 }
 
+// The host switch currently in flight (if any) — see api.switchHost.
+let hostSwitch: {
+  host: string
+  promise: Promise<{ active: string; version: string; protocol: number }>
+} | null = null
+
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
   theme: () => getJSON<ThemePayload>("/api/theme"),
@@ -380,11 +387,31 @@ export const api = {
 
   // Switch the active host ("local" or an alias). The backend re-points herdr
   // RPC, file/diff ops, and respawns the terminals at the new host.
-  switchHost: (host: string) =>
-    postJSON<{ active: string; version: string; protocol: number }>(
-      "/api/host",
-      { host }
-    ),
+  //
+  // Client-side, switches are coalesced: a same-host request while one is in
+  // flight shares its promise, and a different-host request queues behind it.
+  // The server allows only one switch at a time (409 "a host switch is already
+  // in progress"), and focus paths judge "already there?" from SSE state that
+  // lags an in-flight switch by seconds — so without this, clicking into a
+  // cell mid-switch fired a duplicate switch whose 409 surfaced as a
+  // scary-but-harmless "focus failed" toast.
+  switchHost: (host: string) => {
+    if (hostSwitch?.host === host) return hostSwitch.promise
+    const prev = hostSwitch?.promise.catch(() => {}) ?? Promise.resolve()
+    const promise = prev.then(() =>
+      postJSON<{ active: string; version: string; protocol: number }>(
+        "/api/host",
+        { host }
+      )
+    )
+    const entry = { host, promise }
+    hostSwitch = entry
+    const clear = () => {
+      if (hostSwitch === entry) hostSwitch = null
+    }
+    promise.then(clear, clear)
+    return promise
+  },
 
   // Run `herdr update` on a remote host that's behind this lasso's protocol,
   // auto-answering its interactive prompts (stop the old server = yes, which
@@ -453,12 +480,14 @@ export const api = {
   // Detach a pane's grid terminal (kills its ttyd). Called when a cell leaves
   // the grid so the pane isn't held to the cell's narrow width while it's viewed
   // full-size in the Herdr terminal. `keepalive` lets it complete even when fired
-  // from a React unmount/teardown. Best-effort — failures are ignored.
-  gridTermRelease: (host: string, terminal_id: string) =>
+  // from a React unmount/teardown. Best-effort — failures are ignored. `token`
+  // scopes the release to the attach this cell created, so a stale unmount
+  // release can't race a quick remount and kill the newer attach.
+  gridTermRelease: (host: string, terminal_id: string, token = "") =>
     fetch("/api/grid/term-release", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host, terminal_id }),
+      body: JSON.stringify({ host, terminal_id, token }),
       keepalive: true,
     }).catch(() => {}),
 

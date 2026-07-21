@@ -17,11 +17,12 @@ import { cn } from "@/lib/utils"
 const railKey = (p: GridPane) => `${p.host}|${p.pane_id}`
 
 // GridRail is the Grid tab's collapsible pane picker: every pane on every
-// host, grouped by host, each row with a watch star and an agent status dot.
-// It's the roster view — including panes hidden from the grid — so starring
-// and un-starring never requires leaving Watch mode. Collapsed it renders
-// zero width (the parent animates the container); content keeps a fixed width
-// so text doesn't reflow mid-transition.
+// host, grouped by host, each row with an agent status dot. In Multi mode
+// it's a multi-select: every row starts greyed out and clicking a row toggles
+// that pane in or out of the grid. In Single mode clicking a row shows that
+// one pane. Collapsed it renders zero width (the parent animates the
+// container); content keeps a fixed width so text doesn't reflow
+// mid-transition.
 export function GridRail({
   open,
   panes,
@@ -37,15 +38,17 @@ export function GridRail({
   open: boolean
   /** ALL panes across hosts, unfiltered — the rail is the full roster. */
   panes: GridPane[] | null
+  /** Multi mode's toggled-on panes — these rows render at full strength. */
   watched: Set<string>
   /** Keys to highlight as new (snapshotted by GridTab when the badge opens the rail). */
   newKeys: Set<string>
-  /** Select mode: no watch stars — clicking a row shows that one pane. */
+  /** Single mode: clicking a row shows that one pane instead of toggling. */
   selectMode: boolean
-  /** The pane currently shown in Select mode (highlighted); null otherwise. */
+  /** The pane currently shown in Single mode (highlighted); null otherwise. */
   selectedKey: string | null
+  /** Multi mode row click: toggle the pane in/out of the grid. */
   onToggleWatch: (key: string) => void
-  /** Click: focus the pane's cell here in the grid (no navigation). */
+  /** Single mode row click: show this pane in the grid (no navigation). */
   onFocusPane: (p: GridPane) => void
   /** Context menu: deliberately leave the grid for the Herdr tab. */
   onOpenInHerdr: (p: GridPane) => void
@@ -147,6 +150,7 @@ export function GridRail({
                 const title = p.workspace_label || p.workspace_id || p.pane_id
                 const tabLabel =
                   p.tab_label && p.tab_label !== title ? p.tab_label : ""
+                const viewed = watched.has(key)
                 return (
                   <div
                     key={key}
@@ -154,32 +158,23 @@ export function GridRail({
                     className={cn(
                       "group flex w-full items-center gap-1.5 px-2 py-1 text-xs hover:bg-accent/50",
                       (isNew || (selectMode && key === selectedKey)) &&
-                        "bg-accent"
+                        "bg-accent",
+                      // Multi mode: rows start greyed out; toggled-on rows
+                      // render at full strength with a selected background.
+                      !selectMode &&
+                        (viewed
+                          ? "bg-accent"
+                          : !isNew && "opacity-50 hover:opacity-100")
                     )}
                   >
-                    {!selectMode && (
-                      <button
-                        type="button"
-                        aria-pressed={watched.has(key)}
-                        title={
-                          watched.has(key) ? "Stop watching" : "Watch this pane"
-                        }
-                        onClick={() => onToggleWatch(key)}
-                        className={cn(
-                          "shrink-0 text-[13px] leading-none transition-colors",
-                          watched.has(key)
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        {watched.has(key) ? "★" : "☆"}
-                      </button>
-                    )}
                     <ContextMenu>
                       <ContextMenuTrigger asChild>
                         <button
                           type="button"
-                          onClick={() => onFocusPane(p)}
+                          aria-pressed={selectMode ? undefined : viewed}
+                          onClick={() =>
+                            selectMode ? onFocusPane(p) : onToggleWatch(key)
+                          }
                           title={[
                             p.host_label,
                             p.workspace_label,
@@ -189,11 +184,13 @@ export function GridRail({
                             "",
                             selectMode
                               ? "click to show this pane"
-                              : "click to focus in the grid",
+                              : viewed
+                                ? "click to hide from the grid"
+                                : "click to view in the grid",
                           ]
                             .filter((s) => s !== undefined && s !== null)
                             .join("\n")}
-                          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                         >
                           <span className="truncate text-foreground">
                             {title}
@@ -226,7 +223,7 @@ export function GridRail({
                         </ContextMenuItem>
                         {!selectMode && (
                           <ContextMenuItem onSelect={() => onToggleWatch(key)}>
-                            {watched.has(key) ? "Unwatch ☆" : "Watch ★"}
+                            {viewed ? "Hide from grid" : "Show in grid"}
                           </ContextMenuItem>
                         )}
                         <ContextMenuItem
