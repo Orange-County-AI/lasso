@@ -1215,7 +1215,14 @@ func outsideHerdrEnv() []string {
 // popup panes, and copy-mode search, and its socket-API additions (pane/workspace
 // metadata reporting) don't touch the methods lasso calls, so adopting it needs
 // no constant change — only the pins below track the release.
-const lassoHerdrProtocol = 16
+// Bumped 16→17 for herdr 0.7.5 (verified by pinging the 0.7.5 binary on an
+// isolated socket — it pongs protocol 17, session_snapshot works). 0.7.5 only
+// *adds* to the socket API (the live-agent CLI facade start/prompt/send-keys,
+// declarative agent.view.set/clear queries, plugin [[startup]] hooks) and its
+// breaking change is plugin-registry scoping, not the wire — no method lasso
+// calls (ping, events.subscribe, foreground_cwd, terminal input/resize/scroll/
+// release) changed shape, so adopting it is value-only, the same as prior bumps.
+const lassoHerdrProtocol = 17
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
 // build targets, the protocol the installed herdr daemon reports over its socket,
