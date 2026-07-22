@@ -27,7 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { api, type GridPane } from "@/lib/api"
+import { api, type GridPane, type UIState } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { loadSeen, markSeen, reconcileSeen } from "@/lib/grid-seen"
@@ -40,7 +40,7 @@ import {
   whenTerminalReady,
 } from "@/lib/terminal"
 import { GRID_FRAME_CLASS } from "@/lib/theme"
-import { patchUIState, useUIState } from "@/lib/ui-state"
+import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // How often the grid re-lists panes across hosts while the tab is open. The
@@ -257,6 +257,47 @@ export function GridTab({
         return cur
       return next
     })
+  }, [all])
+
+  // Drop a pane from the grid the moment its terminal is replaced. herdr gives a
+  // pane a NEW terminal_id when the process running in it exits and herdr
+  // respawns a bare shell (pane_history / remain-on-exit) — e.g. an agent that
+  // finished or crashed WITHOUT calling `lasso closeme` (which would pane.close
+  // the pane, dropping it from the grid outright). A mounted cell stays pinned to
+  // the now-dead terminal (it never re-attaches on a terminal_id change), so it
+  // would otherwise sit forever on ttyd's "Press ⏎ to Reconnect". Treat the swap
+  // as the pane being closed and remove it: un-watch it (Multi), un-select it,
+  // and unpin it from Select mode. Non-destructive — the pane still lives in
+  // herdr and can be re-added from the rail.
+  const lastTermRef = React.useRef<Map<string, string>>(new Map())
+  React.useEffect(() => {
+    if (!all) return
+    const map = lastTermRef.current
+    const live = new Set<string>()
+    const retired = new Set<string>()
+    for (const p of all) {
+      const k = cellKey(p)
+      live.add(k)
+      const prev = map.get(k)
+      // Seed on first sight (a pane already on its current terminal is a live
+      // shell, not a swap) — only a change from a known terminal retires.
+      if (prev !== undefined && prev !== p.terminal_id) retired.add(k)
+      map.set(k, p.terminal_id)
+    }
+    // Prune vanished panes so the map stays bounded and a pane that reappears
+    // later seeds fresh instead of falsely retiring.
+    for (const k of map.keys()) if (!live.has(k)) map.delete(k)
+    if (retired.size === 0) return
+    const ui = uiStateNow()
+    const patch: Partial<UIState> = {}
+    const nextWatched = ui.grid_watched.filter((k) => !retired.has(k))
+    if (nextWatched.length !== ui.grid_watched.length)
+      patch.grid_watched = nextWatched
+    const nextSelected = ui.grid_selected.filter((k) => !retired.has(k))
+    if (nextSelected.length !== ui.grid_selected.length)
+      patch.grid_selected = nextSelected
+    if (retired.has(ui.grid_select_pane)) patch.grid_select_pane = ""
+    if (Object.keys(patch).length) patchUIState(patch)
   }, [all])
 
   // Select mode's cycling list: agent panes when any exist, else every pane.
