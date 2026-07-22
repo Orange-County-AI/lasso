@@ -29,6 +29,7 @@ export const qk = {
   uiState: ["ui-state"] as const,
   sidebarPct: ["sidebar-pct"] as const,
   version: ["version"] as const,
+  usage: ["usage"] as const,
   // The herdr theme picker's payload — refetched keyed on the live theme_rev
   // so the dropdown follows external config.toml edits too.
   theme: (rev: number) => ["theme", rev] as const,

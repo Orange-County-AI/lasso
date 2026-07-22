@@ -25,6 +25,7 @@ import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
+import { UsageFooter } from "@/components/UsageFooter"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -463,241 +464,248 @@ function Shell() {
   )
 
   return (
-    <div className="relative h-full w-full">
-      <ResizablePanelGroup
-        orientation="horizontal"
-        defaultLayout={savedLayout}
-        onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
-        className="h-full w-full"
-      >
-        <ResizablePanel
-          id="left"
-          defaultSize={60}
-          minSize={15}
-          className="flex h-full min-h-0 flex-col"
+    <div className="relative flex h-full w-full flex-col">
+      <div className="relative min-h-0 flex-1">
+        <ResizablePanelGroup
+          orientation="horizontal"
+          defaultLayout={savedLayout}
+          onLayoutChanged={(l) => lsSet("lasso-layout", JSON.stringify(l))}
+          className="h-full w-full"
         >
-          <Tabs
-            value={effectiveLeftView}
-            onValueChange={(v) => switchLeft(v as LeftView)}
-            className="flex h-full flex-col gap-0"
+          <ResizablePanel
+            id="left"
+            defaultSize={60}
+            minSize={15}
+            className="flex h-full min-h-0 flex-col"
           >
-            <FitTabs
-              onWidth={setNavWidth}
-              // When the strip is too narrow for Grid, Herdr is the only view —
-              // so drop the whole tab strip (a lone always-active "Herdr" tab is
-              // just noise) and give that room to the search bar.
-              tabs={
-                hideGrid
-                  ? []
-                  : [
-                      { value: "herdr", label: "Herdr", icon: Terminal },
-                      { value: "grid", label: "Grid", icon: LayoutGrid },
-                    ]
-              }
-              leading={<HostSwitcher variant="nav" />}
-              center={
-                <HeaderSearch
-                  onOpen={() => {
-                    setPaletteFromTerm(false)
-                    setPaletteOpen(true)
-                  }}
-                />
-              }
-              // `@container/lnav` makes this strip the container the search /
-              // New-Agent labels shrink against (see their `@min-[…]/lnav:`
-              // classes). pr-2 keeps the trailing control off the edge.
-              listClassName="@container/lnav pr-2"
-              trailing={
-                // New Agent sits at the far-right of the strip; when the sidebar
-                // is collapsed the git status + expand control follow it.
-                <div className="ml-2 flex items-center gap-1.5">
-                  {/* On create: from the Herdr view, surface the herdr terminal
+            <Tabs
+              value={effectiveLeftView}
+              onValueChange={(v) => switchLeft(v as LeftView)}
+              className="flex h-full flex-col gap-0"
+            >
+              <FitTabs
+                onWidth={setNavWidth}
+                // When the strip is too narrow for Grid, Herdr is the only view —
+                // so drop the whole tab strip (a lone always-active "Herdr" tab is
+                // just noise) and give that room to the search bar.
+                tabs={
+                  hideGrid
+                    ? []
+                    : [
+                        { value: "herdr", label: "Herdr", icon: Terminal },
+                        { value: "grid", label: "Grid", icon: LayoutGrid },
+                      ]
+                }
+                leading={<HostSwitcher variant="nav" />}
+                center={
+                  <HeaderSearch
+                    onOpen={() => {
+                      setPaletteFromTerm(false)
+                      setPaletteOpen(true)
+                    }}
+                  />
+                }
+                // `@container/lnav` makes this strip the container the search /
+                // New-Agent labels shrink against (see their `@min-[…]/lnav:`
+                // classes). pr-2 keeps the trailing control off the edge.
+                listClassName="@container/lnav pr-2"
+                trailing={
+                  // New Agent sits at the far-right of the strip; when the sidebar
+                  // is collapsed the git status + expand control follow it.
+                  <div className="ml-2 flex items-center gap-1.5">
+                    {/* On create: from the Herdr view, surface the herdr terminal
                       so the close handler can hand it the keyboard. From the
                       Grid view, stay put — GridTab picks the new pane up via
                       focusRequest and focuses its cell instead. */}
-                  <CreateAgentDialog
-                    variant="header"
-                    onCreated={(rec, host) => {
-                      if (leftView === "grid") {
-                        setGridFocusReq({
-                          host,
-                          paneId: rec.root_pane,
-                          workspaceId: rec.workspace_id,
-                          ts: Date.now(),
-                        })
-                      } else {
-                        switchLeft("herdr")
-                      }
-                    }}
-                    onCloseFocus={leftView === "grid" ? () => {} : undefined}
-                  />
-                  {collapsed && (
-                    <>
-                      {/* Git status at a glance while the file viewer is hidden:
+                    <CreateAgentDialog
+                      variant="header"
+                      onCreated={(rec, host) => {
+                        if (leftView === "grid") {
+                          setGridFocusReq({
+                            host,
+                            paneId: rec.root_pane,
+                            workspaceId: rec.workspace_id,
+                            ts: Date.now(),
+                          })
+                        } else {
+                          switchLeft("herdr")
+                        }
+                      }}
+                      onCloseFocus={leftView === "grid" ? () => {} : undefined}
+                    />
+                    {collapsed && (
+                      <>
+                        {/* Git status at a glance while the file viewer is hidden:
                           the uncommitted-change count (or a green dot when clean),
                           mirroring the Files tab's badge. */}
+                        <GitStatusBadge
+                          dirty={diffDirty}
+                          ready={gitReady}
+                          textClassName="self-center text-[13px]"
+                        />
+                        <button
+                          type="button"
+                          className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                          title="show file viewer"
+                          onClick={expandSidebar}
+                        >
+                          <ChevronLeft className="size-4" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                }
+              />
+              <div className="relative min-h-0 flex-1">
+                <Pane show={effectiveLeftView === "herdr"}>
+                  <TerminalFrame
+                    id="term"
+                    src="/terminal/"
+                    title="Herdr terminal"
+                    suppressContext
+                    hidden={effectiveLeftView !== "herdr"}
+                  />
+                </Pane>
+                <Pane show={effectiveLeftView === "grid"}>
+                  <GridTab
+                    active={effectiveLeftView === "grid"}
+                    onFocusInHerdr={() => switchLeft("herdr")}
+                    focusRequest={gridFocusReq}
+                  />
+                </Pane>
+              </div>
+            </Tabs>
+          </ResizablePanel>
+
+          <ResizableHandle
+            withHandle
+            className={cn(collapsed && "hidden", "max-md:hidden")}
+          />
+
+          <ResizablePanel
+            id="right"
+            panelRef={rightPanel}
+            defaultSize={40}
+            minSize={15}
+            collapsible
+            collapsedSize={0}
+            onResize={(size) => {
+              const pct = size.asPercentage
+              const c = pct < 0.05
+              setCollapsed((prev) => (prev === c ? prev : c))
+              // Remember the open width so a later expand restores it (the panel
+              // snaps to 0 below minSize, so any non-zero size is a real width).
+              if (pct > 5) setSidebarPct(pct)
+              scheduleLayoutPersist(c, pct)
+            }}
+            className={cn(
+              "relative flex h-full min-h-0 flex-col border-border border-l bg-card",
+              // On phones there isn't room to split the screen, so an open sidebar
+              // takes it over entirely: lift it out of the flex flow and overlay the
+              // left panel full-screen. Drops back to an in-flow resizable panel at
+              // md+. Gated on !collapsed so a collapsed sidebar stays hidden (0-width)
+              // rather than overlaying everything.
+              !collapsed &&
+                "max-md:absolute max-md:inset-0 max-md:z-30 max-md:w-full max-md:border-l-0"
+            )}
+          >
+            <Tabs
+              value={rightView}
+              onValueChange={(v) => setRightView(v as RightView)}
+              className="flex h-full flex-col gap-0"
+            >
+              <FitTabs
+                tabs={[
+                  {
+                    value: "files",
+                    label: "Files",
+                    icon: Files,
+                    badge: (
                       <GitStatusBadge
                         dirty={diffDirty}
                         ready={gitReady}
-                        textClassName="self-center text-[13px]"
+                        className="ml-1.5"
+                        textClassName="text-[13px]"
                       />
-                      <button
-                        type="button"
-                        className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                        title="show file viewer"
-                        onClick={expandSidebar}
-                      >
-                        <ChevronLeft className="size-4" />
-                      </button>
-                    </>
-                  )}
-                </div>
-              }
-            />
-            <div className="relative min-h-0 flex-1">
-              <Pane show={effectiveLeftView === "herdr"}>
-                <TerminalFrame
-                  id="term"
-                  src="/terminal/"
-                  title="Herdr terminal"
-                  suppressContext
-                  hidden={effectiveLeftView !== "herdr"}
-                />
-              </Pane>
-              <Pane show={effectiveLeftView === "grid"}>
-                <GridTab
-                  active={effectiveLeftView === "grid"}
-                  onFocusInHerdr={() => switchLeft("herdr")}
-                  focusRequest={gridFocusReq}
-                />
-              </Pane>
-            </div>
-          </Tabs>
-        </ResizablePanel>
+                    ),
+                  },
+                  { value: "scratch", label: "Scratch", icon: NotebookPen },
+                  { value: "browser", label: "Browser", icon: Globe },
+                  {
+                    value: "terminal",
+                    label: "Terminal",
+                    icon: SquareTerminal,
+                  },
+                  { value: "settings", label: "Settings", icon: Settings },
+                ]}
+                trailing={
+                  // Styled like the tab icons (same box model) rather than a
+                  // bordered box, so it sits on the same baseline as them.
+                  <button
+                    type="button"
+                    className={cn(
+                      tabClass,
+                      "flex items-center hover:text-primary"
+                    )}
+                    title="collapse sidebar"
+                    onClick={collapseSidebar}
+                  >
+                    <ChevronRight className="size-4" />
+                  </button>
+                }
+              />
 
-        <ResizableHandle
-          withHandle
-          className={cn(collapsed && "hidden", "max-md:hidden")}
-        />
-
-        <ResizablePanel
-          id="right"
-          panelRef={rightPanel}
-          defaultSize={40}
-          minSize={15}
-          collapsible
-          collapsedSize={0}
-          onResize={(size) => {
-            const pct = size.asPercentage
-            const c = pct < 0.05
-            setCollapsed((prev) => (prev === c ? prev : c))
-            // Remember the open width so a later expand restores it (the panel
-            // snaps to 0 below minSize, so any non-zero size is a real width).
-            if (pct > 5) setSidebarPct(pct)
-            scheduleLayoutPersist(c, pct)
-          }}
-          className={cn(
-            "relative flex h-full min-h-0 flex-col border-border border-l bg-card",
-            // On phones there isn't room to split the screen, so an open sidebar
-            // takes it over entirely: lift it out of the flex flow and overlay the
-            // left panel full-screen. Drops back to an in-flow resizable panel at
-            // md+. Gated on !collapsed so a collapsed sidebar stays hidden (0-width)
-            // rather than overlaying everything.
-            !collapsed &&
-              "max-md:absolute max-md:inset-0 max-md:z-30 max-md:w-full max-md:border-l-0"
-          )}
-        >
-          <Tabs
-            value={rightView}
-            onValueChange={(v) => setRightView(v as RightView)}
-            className="flex h-full flex-col gap-0"
-          >
-            <FitTabs
-              tabs={[
-                {
-                  value: "files",
-                  label: "Files",
-                  icon: Files,
-                  badge: (
-                    <GitStatusBadge
-                      dirty={diffDirty}
-                      ready={gitReady}
-                      className="ml-1.5"
-                      textClassName="text-[13px]"
-                    />
-                  ),
-                },
-                { value: "scratch", label: "Scratch", icon: NotebookPen },
-                { value: "browser", label: "Browser", icon: Globe },
-                { value: "terminal", label: "Terminal", icon: SquareTerminal },
-                { value: "settings", label: "Settings", icon: Settings },
-              ]}
-              trailing={
-                // Styled like the tab icons (same box model) rather than a
-                // bordered box, so it sits on the same baseline as them.
-                <button
-                  type="button"
-                  className={cn(
-                    tabClass,
-                    "flex items-center hover:text-primary"
-                  )}
-                  title="collapse sidebar"
-                  onClick={collapseSidebar}
-                >
-                  <ChevronRight className="size-4" />
-                </button>
-              }
-            />
-
-            <div className="relative min-h-0 flex-1">
-              <Pane show={rightView === "files"}>
-                <FilesPanel />
-              </Pane>
-              <Pane show={rightView === "scratch"}>
-                <ScratchTab />
-              </Pane>
-              <Pane show={rightView === "browser"}>
-                <BrowserTab />
-              </Pane>
-              <Pane show={rightView === "terminal"}>
-                <TerminalFrame
-                  id="shellframe"
-                  src="/shell/"
-                  title="Terminal (outside herdr)"
-                  suppressContext={false}
-                  hidden={rightView !== "terminal"}
-                />
-              </Pane>
-              <Pane show={rightView === "settings"}>
-                <SettingsTab
-                  active={rightView === "settings"}
-                  onOpenShortcuts={() => setShortcutsOpen(true)}
-                />
-              </Pane>
-            </div>
-          </Tabs>
-        </ResizablePanel>
-      </ResizablePanelGroup>
-      {/* ⌘K pane switcher — searches every pane on every host, opens the chosen
+              <div className="relative min-h-0 flex-1">
+                <Pane show={rightView === "files"}>
+                  <FilesPanel />
+                </Pane>
+                <Pane show={rightView === "scratch"}>
+                  <ScratchTab />
+                </Pane>
+                <Pane show={rightView === "browser"}>
+                  <BrowserTab />
+                </Pane>
+                <Pane show={rightView === "terminal"}>
+                  <TerminalFrame
+                    id="shellframe"
+                    src="/shell/"
+                    title="Terminal (outside herdr)"
+                    suppressContext={false}
+                    hidden={rightView !== "terminal"}
+                  />
+                </Pane>
+                <Pane show={rightView === "settings"}>
+                  <SettingsTab
+                    active={rightView === "settings"}
+                    onOpenShortcuts={() => setShortcutsOpen(true)}
+                  />
+                </Pane>
+              </div>
+            </Tabs>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+        {/* ⌘K pane switcher — searches every pane on every host, opens the chosen
           one in the Herdr tab. focusPaneInHerdr pushes a history entry naming
           the pane, so Back re-focuses the pane you came from (see the popstate
           handler above). */}
-      <PaneSwitcher
-        open={paletteOpen}
-        onOpenChange={setPaletteOpen}
-        onFocusInHerdr={() => switchLeft("herdr")}
-        termWasFocused={paletteFromTerm}
-      />
-      {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
+        <PaneSwitcher
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          onFocusInHerdr={() => switchLeft("herdr")}
+          termWasFocused={paletteFromTerm}
+        />
+        {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
           agent) and drops the user into its shell in the Herdr tab. */}
-      <NewTerminalDialog
-        open={newTermOpen}
-        onOpenChange={setNewTermOpen}
-        surfaceHerdr={() => switchLeft("herdr")}
-      />
-      {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
+        <NewTerminalDialog
+          open={newTermOpen}
+          onOpenChange={setNewTermOpen}
+          surfaceHerdr={() => switchLeft("herdr")}
+        />
+        {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
-      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      </div>
+      <UsageFooter />
     </div>
   )
 }

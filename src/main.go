@@ -255,6 +255,7 @@ func runServer() {
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
+	mux.HandleFunc("/api/usage", serveUsage)
 	mux.HandleFunc("/api/hosts", serveHosts)
 	mux.HandleFunc("/api/host", serveHostSwitch)
 	mux.HandleFunc("/api/agent-config", serveAgentConfig)

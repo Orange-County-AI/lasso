@@ -35,6 +35,31 @@ export interface HostsPayload {
   hosts: HostInfo[]
 }
 
+// One usage quota window (5-hour block, weekly rolling, …). `percent` is 0–100.
+// `resetsAt` is RFC3339 (the frontend formats it relative to now so countdowns
+// stay live between polls). `countdown` marks short windows shown as "18m left"
+// vs a reset date. `elapsedPct` is 0–100 for how far through the window we are
+// (the pace notch on the usage bar), or -1 if the window length is unknown.
+export interface UsageLimit {
+  label: string
+  percent: number
+  resetsAt?: string
+  countdown?: boolean
+  elapsedPct: number
+}
+
+export interface UsageProvider {
+  name: string
+  plan?: string
+  limits: UsageLimit[]
+  err?: string
+}
+
+export interface UsagePayload {
+  providers: UsageProvider[]
+  updatedAt: string
+}
+
 export interface Pane {
   pane_id: string
   workspace_id?: string
@@ -525,6 +550,9 @@ export const api = {
   saveUIState: (patch: Partial<UIState>) =>
     postJSON<UIState>("/api/ui-state", patch),
   version: () => getJSON<VersionInfo>("/api/version"),
+  // Subscription usage limits (Claude Code / Kimi Code / Codex), the same data
+  // the `clui` TUI shows — rendered in the bottom UsageFooter.
+  usage: () => getJSON<UsagePayload>("/api/usage"),
 
   files: (path: string) =>
     getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
