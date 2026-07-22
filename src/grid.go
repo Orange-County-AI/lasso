@@ -443,6 +443,9 @@ func serveGridRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	// Keep the agent record's title — the address list_agents and message_agent
+	// surface over MCP — in step with what the grid now shows.
+	_ = updateAgentTitleByWorkspace(b.Name(), req.WorkspaceID, req.Label)
 	invalidateGridCache()
 	writeJSON(w, map[string]any{"ok": true})
 }

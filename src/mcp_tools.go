@@ -17,6 +17,8 @@ import (
 //   - spawning:    create_agent (loop it for the bulk "one per repo" case)
 //   - interaction: list_agents, get_agent, send_agent, read_agent, wait_agent,
 //                  close_agent  (the herdr pane is the stateful conversation)
+//   - messaging:   message_agent (queued, sender-enveloped, multi-recipient
+//                  agent-to-agent messages, delivered when the recipient idles)
 //   - introspection: whoami (an agent maps its own $HERDR_PANE_ID back to its
 //                  lasso record, typically to then close_agent itself)
 
@@ -61,8 +63,13 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_agent",
-		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply.",
+		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
 	}, sendAgentTool)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "message_agent",
+		Description: "Send one message to one or MORE lasso agents (multi-recipient = broadcast), with a sender envelope and store-and-forward delivery. Unlike send_agent — which types into the pane immediately and suits driving an agent you spawned — message_agent queues the message in lasso and delivers it only when the recipient goes idle, so it never interleaves with an in-flight turn and concurrent senders never race in the composer; everything queued for a recipient arrives together, in order, as one turn. Address recipients by agent title or agent id, optionally host-qualified (\"clem\", \"clem@gigachad\", \"<id>@titan\") — a title must resolve to exactly one live agent, else that recipient is refused with the candidates listed. Identify yourself with from_pane (your $HERDR_PANE_ID) so recipients can reply to your id, or with a free-text `from` label if you are not a lasso agent. Delivery is asynchronous: the call returns per-recipient queued/error results immediately; messages for an agent that stays busy wait, and messages whose agent exits are marked failed rather than delivered to a later occupant of the pane.",
+	}, messageAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_agent",
@@ -609,6 +616,107 @@ func sendAgentTool(_ context.Context, _ *mcp.CallToolRequest, in sendAgentIn) (*
 	}
 	paneSubmit(b, rec.RootPane, in.Text)
 	return nil, sendAgentOut{Sent: true}, nil
+}
+
+// ---------------------------------------------------------------------------
+// message_agent
+// ---------------------------------------------------------------------------
+
+type messageAgentIn struct {
+	To       []string `json:"to" jsonschema:"Recipients. Each entry is an agent title or agent id, optionally host-qualified with @ (\"clem\", \"clem@gigachad\", \"<id>@titan\"). A title must resolve to exactly one LIVE agent; ambiguous or dead matches are refused per-recipient with the candidates listed. The same text goes to every recipient."`
+	Text     string   `json:"text" jsonschema:"The message body. Delivered verbatim under an envelope header naming the sender, the message id, and (when the sender is a lasso agent) the reply address."`
+	FromPane string   `json:"from_pane,omitempty" jsonschema:"If you are a lasso agent: your own $HERDR_PANE_ID, so the envelope identifies you and recipients can reply to your id. Resolved exactly like whoami (searching every host unless from_host narrows it)."`
+	FromHost string   `json:"from_host,omitempty" jsonschema:"Host your own pane runs on, to disambiguate from_pane when the same pane id exists on several hosts."`
+	From     string   `json:"from,omitempty" jsonschema:"Free-text sender label for non-agent callers (e.g. \"user\", \"ci\"). Ignored when from_pane resolves."`
+}
+
+type messageResult struct {
+	To          string `json:"to"`                     // the recipient spec as given
+	Host        string `json:"host,omitempty"`         // resolved host
+	AgentID     string `json:"agent_id,omitempty"`     // resolved agent id
+	Title       string `json:"title,omitempty"`        // resolved agent title
+	AgentStatus string `json:"agent_status,omitempty"` // recipient's live status at enqueue time
+	MessageID   string `json:"message_id,omitempty"`
+	Queued      bool   `json:"queued"`
+	Detail      string `json:"detail,omitempty"` // why the message was not queued
+}
+
+type messageAgentOut struct {
+	Sender  string          `json:"sender"` // the identity recipients will see in the envelope
+	Results []messageResult `json:"results"`
+}
+
+func messageAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in messageAgentIn) (*mcp.CallToolResult, messageAgentOut, error) {
+	if strings.TrimSpace(in.Text) == "" {
+		return nil, messageAgentOut{}, fmt.Errorf("text is required")
+	}
+	if len(in.To) == 0 {
+		return nil, messageAgentOut{}, fmt.Errorf("at least one recipient is required")
+	}
+	label, addr, err := resolveMessageSender(ctx, in.FromPane, in.FromHost, in.From)
+	if err != nil {
+		return nil, messageAgentOut{}, err
+	}
+	records, err := listAllAgents()
+	if err != nil {
+		return nil, messageAgentOut{}, err
+	}
+	// One pane.list per involved host for the whole call; a host that failed
+	// once is not re-dialed per recipient.
+	cache := map[string]map[string]pane{}
+	lookup := func(host string) (map[string]pane, error) {
+		if m, ok := cache[host]; ok {
+			if m == nil {
+				return nil, fmt.Errorf("unreachable")
+			}
+			return m, nil
+		}
+		b, err := resolveBackend(host)
+		if err == nil {
+			var m map[string]pane
+			if m, err = hostPanes(b); err == nil {
+				cache[host] = m
+				return m, nil
+			}
+		}
+		cache[host] = nil
+		return nil, err
+	}
+	out := messageAgentOut{Sender: label}
+	if addr != "" {
+		out.Sender = fmt.Sprintf("%s (%s)", label, addr)
+	}
+	queued := map[string]bool{} // host|id → already queued in this call
+	for _, spec := range in.To {
+		res := messageResult{To: spec}
+		rec, status, err := resolveRecipient(spec, records, lookup)
+		if err != nil {
+			res.Detail = err.Error()
+			out.Results = append(out.Results, res)
+			continue
+		}
+		res.Host, res.AgentID, res.Title, res.AgentStatus = rec.Host, rec.ID, rec.Title, status
+		key := rec.Host + "|" + rec.ID
+		if queued[key] {
+			res.Detail = "duplicate recipient (already queued in this call)"
+			out.Results = append(out.Results, res)
+			continue
+		}
+		m := AgentMessage{
+			ID: newMessageID(), Host: rec.Host, AgentID: rec.ID,
+			SenderLabel: label, SenderAddr: addr, Body: in.Text, CreatedAt: time.Now(),
+		}
+		if err := enqueueAgentMessage(m); err != nil {
+			res.Detail = "enqueue failed: " + err.Error()
+			out.Results = append(out.Results, res)
+			continue
+		}
+		queued[key] = true
+		res.MessageID, res.Queued = m.ID, true
+		out.Results = append(out.Results, res)
+	}
+	kickMessageDispatch()
+	return nil, out, nil
 }
 
 // ---------------------------------------------------------------------------

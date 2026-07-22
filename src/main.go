@@ -191,6 +191,10 @@ func runServer() {
 	srvCtx = ctx
 	go hub.run(ctx)
 
+	// Drain the agent-to-agent message queue (message_agent MCP tool) for the
+	// life of the server, delivering into recipient panes as they go idle.
+	go messageDispatchLoop(ctx)
+
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
@@ -927,6 +931,9 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	// Keep the agent record's title — the address list_agents and message_agent
+	// surface over MCP — in step with what the grid now shows.
+	_ = updateAgentTitleByWorkspace(curBackend().Name(), req.WorkspaceID, req.Label)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
