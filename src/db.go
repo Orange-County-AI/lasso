@@ -82,6 +82,18 @@ CREATE TABLE IF NOT EXISTS agents (
   boot_status  TEXT NOT NULL DEFAULT '',
   boot_error   TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id           TEXT PRIMARY KEY,
+  host         TEXT NOT NULL DEFAULT 'local',
+  agent_id     TEXT NOT NULL,
+  sender_label TEXT NOT NULL DEFAULT '',
+  sender_addr  TEXT NOT NULL DEFAULT '',
+  body         TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  error        TEXT NOT NULL DEFAULT '',
+  created_at   TEXT NOT NULL DEFAULT '',
+  delivered_at TEXT NOT NULL DEFAULT ''
+);
 `
 
 // openDB opens (creating if absent) ~/.lasso/lasso.db, applies pragmas, creates
@@ -549,6 +561,89 @@ func updateAgentPane(id, host, workspaceID, rootPane string) error {
 	_, err := db.Exec(
 		`UPDATE agents SET workspace_id=?, root_pane=? WHERE id=? AND host=?`,
 		workspaceID, rootPane, id, host)
+	return err
+}
+
+// updateAgentTitleByWorkspace re-titles the agent living in a workspace, keeping
+// the record's title — the address list_agents and message_agent surface — in
+// step with a workspace rename from the UI. Scoped by host since workspace ids
+// are only unique per host.
+func updateAgentTitleByWorkspace(host, workspaceID, title string) error {
+	if db == nil || workspaceID == "" || strings.TrimSpace(title) == "" {
+		return nil
+	}
+	_, err := db.Exec(
+		`UPDATE agents SET title=? WHERE host=? AND workspace_id=?`,
+		strings.TrimSpace(title), host, workspaceID)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// agent_messages — the store-and-forward queue behind the message_agent MCP
+// tool. Rows are appended by message_agent and drained by the message
+// dispatcher (messages.go), which submits into the recipient's pane only when
+// herdr reports its agent idle.
+// ---------------------------------------------------------------------------
+
+// enqueueAgentMessage appends one pending message to the queue.
+func enqueueAgentMessage(m AgentMessage) error {
+	_, err := db.Exec(
+		`INSERT INTO agent_messages(id, host, agent_id, sender_label, sender_addr, body, status, created_at)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		m.ID, m.Host, m.AgentID, m.SenderLabel, m.SenderAddr, m.Body, msgPending,
+		m.CreatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+// listPendingMessages returns every undelivered message across all hosts,
+// oldest first — the dispatcher's work list. A nil db (tests, shutdown) reads
+// as an empty queue.
+func listPendingMessages() ([]AgentMessage, error) {
+	if db == nil {
+		return nil, nil
+	}
+	rows, err := db.Query(
+		`SELECT id, host, agent_id, sender_label, sender_addr, body, created_at
+		 FROM agent_messages WHERE status=? ORDER BY created_at`, msgPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AgentMessage
+	for rows.Next() {
+		var m AgentMessage
+		var created string
+		if err := rows.Scan(&m.ID, &m.Host, &m.AgentID, &m.SenderLabel, &m.SenderAddr,
+			&m.Body, &created); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// markMessageDelivered flips one message to delivered, stamping when.
+func markMessageDelivered(id string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(
+		`UPDATE agent_messages SET status=?, delivered_at=? WHERE id=?`,
+		msgDelivered, time.Now().Format(time.RFC3339Nano), id)
+	return err
+}
+
+// markMessageFailed flips one message to failed with the reason (the recipient
+// died before delivery). Failed messages are never retried — a pane that later
+// hosts a different agent must not receive them.
+func markMessageFailed(id, detail string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(
+		`UPDATE agent_messages SET status=?, error=? WHERE id=?`,
+		msgFailed, detail, id)
 	return err
 }
 
