@@ -796,6 +796,60 @@ func gridLastGoodFor(host string) ([]gridPane, bool) {
 	return e.panes, true
 }
 
+// gridErrGrace suppresses a host's Errors entry until the host has been
+// failing continuously for this long. Remote grid sockets ride SSH masters
+// over flaky links (sleeping laptops, tailscale path changes): a one-poll
+// read timeout is routine, self-heals on the next poll, and the grid serves
+// the host's last-good panes meanwhile — flashing the raw error at the user
+// for every blip is pure noise. A host still broken past the grace surfaces,
+// so real outages aren't hidden.
+const gridErrGrace = 30 * time.Second
+
+var gridFirstFail = struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}{at: map[string]time.Time{}}
+
+// gridErrSurfaced records a failed host poll and reports whether the failure
+// has persisted past the grace window (and so should be shown to the user).
+func gridErrSurfaced(host string, now time.Time) bool {
+	gridFirstFail.mu.Lock()
+	defer gridFirstFail.mu.Unlock()
+	first, ok := gridFirstFail.at[host]
+	if !ok {
+		gridFirstFail.at[host] = now
+		return false
+	}
+	return now.Sub(first) >= gridErrGrace
+}
+
+// gridErrClear forgets a host's failure streak after a successful poll.
+func gridErrClear(host string) {
+	gridFirstFail.mu.Lock()
+	defer gridFirstFail.mu.Unlock()
+	delete(gridFirstFail.at, host)
+}
+
+// gridErrText condenses a host-poll error for the grid banner. Transport-level
+// failures (timeouts, refused/reset connections, dead sockets) all mean the
+// same thing to the user — the host can't be reached right now — so they
+// render as a short "unreachable" note instead of a raw dial/read error chain.
+// Anything else (protocol drift, herdr refusals) keeps its message.
+func gridErrText(err error) string {
+	s := firstLine(err.Error())
+	lower := strings.ToLower(s)
+	for _, m := range []string{
+		"i/o timeout", "connection refused", "connection reset",
+		"broken pipe", "no such file or directory",
+		"no route to host", "network is unreachable", "eof",
+	} {
+		if strings.Contains(lower, m) {
+			return "unreachable (" + m + ")"
+		}
+	}
+	return s
+}
+
 // fetchGridPanes queries every compatible host concurrently and merges their
 // panes. A host that can't be listed serves its last-known panes (if fresh)
 // alongside an Errors entry rather than vanishing — or failing the whole grid.
@@ -846,15 +900,18 @@ func fetchGridPanes(ctx context.Context) gridPayload {
 	out := gridPayload{Panes: []gridPane{}}
 	for _, r := range results {
 		if r.err != nil {
-			if out.Errors == nil {
-				out.Errors = map[string]string{}
+			if gridErrSurfaced(r.host, time.Now()) {
+				if out.Errors == nil {
+					out.Errors = map[string]string{}
+				}
+				out.Errors[r.host] = gridErrText(r.err)
 			}
-			out.Errors[r.host] = firstLine(r.err.Error())
 			if panes, ok := gridLastGoodFor(r.host); ok {
 				out.Panes = append(out.Panes, panes...)
 			}
 			continue
 		}
+		gridErrClear(r.host)
 		gridLastGoodSet(r.host, r.panes)
 		out.Panes = append(out.Panes, r.panes...)
 	}
