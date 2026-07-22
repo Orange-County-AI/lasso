@@ -102,13 +102,19 @@ func resolveRecipient(spec string, records []hostAgent, panes paneLookup) (Agent
 	if found {
 		return rec, status, nil
 	}
+	// Trim around the split so "fix login flow @gigachad" addresses the same
+	// agent as "fix login flow@gigachad" — titles keep their interior spaces,
+	// but whitespace against the separator is never meaningful.
 	if i := strings.LastIndex(spec, "@"); i > 0 {
-		rec, status, found, err2 := matchRecipient(spec[:i], spec[i+1:], records, panes)
-		if found {
-			return rec, status, nil
-		}
-		if err2 != nil {
-			return AgentRecord{}, "", err2
+		needle, host := strings.TrimSpace(spec[:i]), strings.TrimSpace(spec[i+1:])
+		if needle != "" && host != "" {
+			rec, status, found, err2 := matchRecipient(needle, host, records, panes)
+			if found {
+				return rec, status, nil
+			}
+			if err2 != nil {
+				return AgentRecord{}, "", err2
+			}
 		}
 	}
 	if err1 != nil {

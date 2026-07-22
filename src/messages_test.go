@@ -30,6 +30,7 @@ func msgRecords() []hostAgent {
 		{Host: "local", Agent: AgentRecord{ID: "a2", Title: "stub", RootPane: "w2-1"}},
 		{Host: "gigachad", Agent: AgentRecord{ID: "b1", Title: "clem", RootPane: "w9-1"}},
 		{Host: "local", Agent: AgentRecord{ID: "a3", Title: "dead", RootPane: "w3-1"}},
+		{Host: "local", Agent: AgentRecord{ID: "a4", Title: "fix login flow", RootPane: "w4-1"}},
 	}
 }
 
@@ -39,6 +40,7 @@ func msgPanes() map[string][]pane {
 			{PaneID: "w1-1", Agent: "claude", AgentStatus: "idle"},
 			{PaneID: "w2-1", Agent: "codex", AgentStatus: "working"},
 			{PaneID: "w3-1"}, // agent exited: pane is a bare shell
+			{PaneID: "w4-1", Agent: "claude", AgentStatus: "idle"},
 		},
 		"gigachad": {
 			{PaneID: "w9-1", Agent: "claude", AgentStatus: "idle"},
@@ -76,6 +78,27 @@ func TestResolveRecipientHostQualification(t *testing.T) {
 	}
 	if rec, _, err = resolveRecipient("a1@local", msgRecords(), panes); err != nil || rec.ID != "a1" {
 		t.Fatalf("a1@local -> (%q, %v), want a1", rec.ID, err)
+	}
+}
+
+func TestResolveRecipientTitlesWithSpaces(t *testing.T) {
+	panes := fixedPanes(msgPanes())
+	// A multi-word title works bare, host-qualified, and with whitespace
+	// around the "@" separator.
+	for _, spec := range []string{
+		"fix login flow",
+		"fix login flow@local",
+		"fix login flow @local",
+		"fix login flow @ local",
+	} {
+		rec, _, err := resolveRecipient(spec, msgRecords(), panes)
+		if err != nil || rec.ID != "a4" {
+			t.Errorf("%q -> (%q, %v), want a4", spec, rec.ID, err)
+		}
+	}
+	// Interior spaces stay significant: a truncated title is not a match.
+	if _, _, err := resolveRecipient("fix login", msgRecords(), panes); err == nil {
+		t.Error("truncated title resolved, want error")
 	}
 }
 
