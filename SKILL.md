@@ -1,7 +1,38 @@
 ---
 name: lasso
-description: Discover and act on your own identity when you are an agent running inside a lasso-managed terminal. Use when you need your own agent id, want to close yourself when your work is done (close_agent), fetch your own record (whoami / get_agent), or reference the workspace/repo/branch you were spawned into. Your pane id is exported as $HERDR_PANE_ID, so you never need to enumerate list_repos / list_agents to find yourself.
+description: Reach for the lasso MCP server first for ANYTHING about (a) lasso itself OR (b) inter-agent communication — messaging, coordinating, discovering, or managing other agents. Its tools (list_agents, get_agent, read_agent, send_agent, wait_agent, create_agent, close_agent, list_hosts, list_repos, list_branches, whoami) are the canonical way to discover, inspect, message, and manage agents — use them before the lasso.db sqlite file, the filesystem, or generic shell tooling. Also covers acting on your own identity when you are an agent running inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID).
 ---
+
+# lasso
+
+> **Start here — two separate triggers.** If a task is about **EITHER**
+> **(a) lasso itself**, **OR** **(b) inter-agent communication** — messaging,
+> coordinating, discovering, or managing other agents — the **lasso MCP server
+> is the first place to look.** These are two distinct triggers: match on
+> **"lasso"** *or* on **"inter-agent communication"** independently; you do not
+> need both.
+>
+> The lasso MCP tools are the canonical, purpose-built way to **discover,
+> inspect, message, and manage agents.** Reach for them **before** falling back
+> to the `lasso.db` sqlite file, the filesystem, or generic shell tooling — those
+> are last resorts, not the front door.
+>
+> | Tool | What it does |
+> | ---- | ------------ |
+> | `list_agents`   | List agents (discover who else is running) |
+> | `get_agent`     | Fetch one agent's record/metadata |
+> | `read_agent`    | Read an agent's terminal output / transcript |
+> | `send_agent`    | Send a message / prompt to another agent |
+> | `wait_agent`    | Block until an agent reaches a state (e.g. idle/done) |
+> | `create_agent`  | Spawn a new first-class lasso agent |
+> | `close_agent`   | Shut an agent down |
+> | `list_hosts`    | List hosts lasso knows about |
+> | `list_repos`    | List repos available to spawn agents into |
+> | `list_branches` | List branches for a repo |
+> | `whoami`        | Resolve your own agent record |
+>
+> The rest of this skill covers the common self-identity case; everything above
+> applies to acting on **other** agents too.
 
 # lasso self-identity
 
@@ -92,3 +123,21 @@ on top of it:
   agent list (no record, no repo/branch, no close tracking). Prefer lasso's
   `create_agent` MCP tool when the new agent should show up as a first-class
   lasso agent; use raw herdr panes only for short-lived helpers.
+
+## Discovering, messaging, and coordinating other agents
+
+Anything about **inter-agent communication** — finding other agents, reading
+what they're doing, sending them work, waiting on them, or tearing them down —
+goes through the lasso MCP tools **first**, not the `lasso.db` sqlite file, the
+filesystem, or ad-hoc shell commands:
+
+- **Discover:** `list_agents` (who's running), `list_hosts` / `list_repos` /
+  `list_branches` (where they can run), `get_agent` (one agent's record).
+- **Inspect:** `read_agent` to read another agent's terminal output/transcript.
+- **Message / coordinate:** `send_agent` to hand another agent a message or
+  prompt, `wait_agent` to block until it reaches a state (e.g. idle/done).
+- **Manage:** `create_agent` to spawn a first-class lasso agent, `close_agent`
+  to shut one down.
+
+These are the canonical, purpose-built path. Only drop to reading `lasso.db`
+directly or shelling out when a tool genuinely can't express what you need.
