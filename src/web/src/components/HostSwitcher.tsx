@@ -260,6 +260,160 @@ export function HostSwitcher({
   }, [data, active, switchTo])
 
   const remotes = data?.hosts ?? []
+  const localUser = data?.local?.user || "local"
+
+  // Group aliases by the physical box each resolves to, so several accounts on
+  // one host cluster together instead of scattering alphabetically. Loopback
+  // aliases (HostName localhost/127.*/::1) are the very machine lasso runs on,
+  // so they fold under the local host rather than forming their own group.
+  const LOCAL_KEY = " local"
+  const isLoopback = (host?: string) => {
+    if (!host) return false
+    const h = host.toLowerCase()
+    return h === "localhost" || h === "::1" || h.startsWith("127.")
+  }
+  const groupOrder: string[] = []
+  const groups = new Map<string, HostInfo[]>()
+  for (const h of remotes) {
+    // Fall back to the alias as its own key when the resolver returned no
+    // hostname, so an unresolved alias still renders (as a lone flat row).
+    const key = isLoopback(h.hostname) ? LOCAL_KEY : h.hostname || h.alias
+    const g = groups.get(key)
+    if (g) {
+      g.push(h)
+    } else {
+      groups.set(key, [h])
+      groupOrder.push(key)
+    }
+  }
+  const localMates = groups.get(LOCAL_KEY) ?? []
+  const remoteKeys = groupOrder.filter((k) => k !== LOCAL_KEY)
+
+  // A non-interactive header naming a physical host, shown only when that host
+  // groups more than one entry (so single-user hosts stay as plain rows).
+  const hostHeader = (key: string, label: string, local: boolean) => (
+    <div
+      key={`hdr:${key}`}
+      className="flex items-center gap-1.5 px-2 pt-1.5 pb-0.5 font-medium text-[10px] text-muted-foreground/80 uppercase tracking-wide"
+    >
+      {local ? <Laptop className="size-3" /> : <Server className="size-3" />}
+      <span className="truncate">{label}</span>
+    </div>
+  )
+
+  // The local session row (direct herdr socket, no ssh). `label` is the machine
+  // hostname when shown standalone, or the local username when nested under a
+  // host header alongside loopback aliases.
+  const localRow = (indent = false, label = localLabel) => (
+    <DropdownMenuItem
+      key="__local"
+      onSelect={() => void switchTo("local")}
+      className={cn(indent && "pl-7")}
+    >
+      <Laptop className="size-3.5" />
+      <span className="flex-1 truncate">{label}</span>
+      {data?.local?.version && (
+        <span className="text-[10px] text-muted-foreground">
+          {data.local.version}
+        </span>
+      )}
+      {active === "local" && <Check className="size-3.5" />}
+    </DropdownMenuItem>
+  )
+
+  // One remote (ssh alias) row: switch when usable, else show its status and an
+  // update/set-up action. `label` overrides the alias with the account name when
+  // the row is nested under a shared-host header; `indent` insets it there.
+  const remoteRow = (h: HostInfo, indent = false, label?: string) => {
+    const localProto = data?.local?.protocol ?? 0
+    const localVer = data?.local?.version
+    const ok = usable(h)
+    // A compatible host on an older herdr can still be updated in place; an
+    // incompatible host that's behind must be updated to be usable.
+    const canUpgrade = upgradable(h, localVer)
+    const canUpdate = canUpgrade || (!ok && behind(h, localProto))
+    const canProvision = !ok && !canUpdate && provisionable(h)
+    const action = canUpdate
+      ? ("update" as const)
+      : canProvision
+        ? ("provision" as const)
+        : null
+    const busy = busyHosts.has(h.alias)
+    const err = actionErrors.get(h.alias)
+    const actionButton = action && (
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
+        title={
+          action === "update"
+            ? canUpgrade
+              ? `Update herdr on ${h.alias} (${h.version} → ${localVer}; protocol unchanged)`
+              : `Run \`herdr update\` on ${h.alias} (protocol ${h.protocol} → ${localProto}; stops its running sessions)`
+            : `Install herdr on ${h.alias} and supervise it with systemd`
+        }
+        disabled={busy}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          void runHostAction(h.alias, action)
+        }}
+      >
+        {busy ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : action === "update" ? (
+          <RefreshCw className="size-3" />
+        ) : (
+          <Download className="size-3" />
+        )}
+        {busy
+          ? action === "update"
+            ? "updating…"
+            : "setting up…"
+          : action === "update"
+            ? "update"
+            : "set up"}
+      </button>
+    )
+    const errBadge = err && (
+      <span className="shrink-0 text-[10px] text-warn" title={err}>
+        failed
+      </span>
+    )
+    return (
+      <DropdownMenuItem
+        key={h.alias}
+        disabled={!ok && !action}
+        // Non-selectable hosts with an action keep the menu open so the action
+        // button stays clickable instead of switching.
+        onSelect={(e) => (ok ? void switchTo(h.alias) : e.preventDefault())}
+        className={cn(!ok && !action && "opacity-60", indent && "pl-7")}
+        // Tooltip carries the alias when the visible label is the account name.
+        title={label ? h.alias : undefined}
+      >
+        <Server className="size-3.5" />
+        <span className="flex-1 truncate">{label ?? h.alias}</span>
+        {ok ? (
+          <span className="flex items-center gap-1.5">
+            <span className="text-[10px] text-muted-foreground">
+              {h.version}
+            </span>
+            {errBadge}
+            {canUpgrade && actionButton}
+          </span>
+        ) : action ? (
+          <span className="flex items-center gap-1.5">
+            {errBadge}
+            {actionButton}
+          </span>
+        ) : (
+          <span className="truncate text-[10px] text-warn">
+            {h.err || "unavailable"}
+          </span>
+        )}
+        {active === h.alias && <Check className="size-3.5" />}
+      </DropdownMenuItem>
+    )
+  }
 
   const iconClass = isNav ? "size-3.5" : "size-3"
   return (
@@ -310,111 +464,30 @@ export function HostSwitcher({
             </button>
           </DropdownMenuLabel>
 
-          <DropdownMenuItem onSelect={() => void switchTo("local")}>
-            <Laptop className="size-3.5" />
-            <span className="flex-1 truncate">{localLabel}</span>
-            {data?.local?.version && (
-              <span className="text-[10px] text-muted-foreground">
-                {data.local.version}
-              </span>
-            )}
-            {active === "local" && <Check className="size-3.5" />}
-          </DropdownMenuItem>
+          {/* Local host block: the machine lasso runs on. When ssh aliases
+              resolve back to this same box (loopback), a header names the host
+              and each account nests beneath it; otherwise it's a lone row. */}
+          {localMates.length === 0
+            ? localRow()
+            : [
+                hostHeader(LOCAL_KEY, localLabel, true),
+                localRow(true, localUser),
+                ...localMates.map((h) => remoteRow(h, true, h.user || h.alias)),
+              ]}
 
-          {remotes.length > 0 && <DropdownMenuSeparator />}
+          {remoteKeys.length > 0 && <DropdownMenuSeparator />}
 
-          {remotes.map((h) => {
-            const localProto = data?.local?.protocol ?? 0
-            const localVer = data?.local?.version
-            const ok = usable(h)
-            // A compatible host on an older herdr can still be updated in place;
-            // an incompatible host that's behind must be updated to be usable.
-            const canUpgrade = upgradable(h, localVer)
-            const canUpdate = canUpgrade || (!ok && behind(h, localProto))
-            const canProvision = !ok && !canUpdate && provisionable(h)
-            const action = canUpdate
-              ? ("update" as const)
-              : canProvision
-                ? ("provision" as const)
-                : null
-            const busy = busyHosts.has(h.alias)
-            const err = actionErrors.get(h.alias)
-            // The update/setup button; shared by the not-yet-usable rows and the
-            // usable-but-outdated rows (where it sits next to the version).
-            const actionButton = action && (
-              <button
-                type="button"
-                className="flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent disabled:opacity-60"
-                title={
-                  action === "update"
-                    ? canUpgrade
-                      ? `Update herdr on ${h.alias} (${h.version} → ${localVer}; protocol unchanged)`
-                      : `Run \`herdr update\` on ${h.alias} (protocol ${h.protocol} → ${localProto}; stops its running sessions)`
-                    : `Install herdr on ${h.alias} and supervise it with systemd`
-                }
-                disabled={busy}
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void runHostAction(h.alias, action)
-                }}
-              >
-                {busy ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : action === "update" ? (
-                  <RefreshCw className="size-3" />
-                ) : (
-                  <Download className="size-3" />
-                )}
-                {busy
-                  ? action === "update"
-                    ? "updating…"
-                    : "setting up…"
-                  : action === "update"
-                    ? "update"
-                    : "set up"}
-              </button>
-            )
-            // A persistent "failed" badge (full error on hover) so a failed
-            // action doesn't just silently revert to the same button.
-            const errBadge = err && (
-              <span className="shrink-0 text-[10px] text-warn" title={err}>
-                failed
-              </span>
-            )
+          {/* Remote hosts, grouped by physical box: a host with a single account
+              stays a plain row (labeled by alias, as before); a host with several
+              accounts gets a header and one nested row per account. */}
+          {remoteKeys.map((key) => {
+            const members = groups.get(key) ?? []
+            if (members.length === 1) return remoteRow(members[0])
             return (
-              <DropdownMenuItem
-                key={h.alias}
-                disabled={!ok && !action}
-                // Non-selectable hosts with an action keep the menu open so the
-                // action button stays clickable instead of switching.
-                onSelect={(e) =>
-                  ok ? void switchTo(h.alias) : e.preventDefault()
-                }
-                className={cn(!ok && !action && "opacity-60")}
-              >
-                <Server className="size-3.5" />
-                <span className="flex-1 truncate">{h.alias}</span>
-                {ok ? (
-                  <span className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground">
-                      {h.version}
-                    </span>
-                    {errBadge}
-                    {canUpgrade && actionButton}
-                  </span>
-                ) : action ? (
-                  <span className="flex items-center gap-1.5">
-                    {errBadge}
-                    {actionButton}
-                  </span>
-                ) : (
-                  <span className="truncate text-[10px] text-warn">
-                    {h.err || "unavailable"}
-                  </span>
-                )}
-                {active === h.alias && <Check className="size-3.5" />}
-              </DropdownMenuItem>
+              <React.Fragment key={`grp:${key}`}>
+                {hostHeader(key, key, false)}
+                {members.map((h) => remoteRow(h, true, h.user || h.alias))}
+              </React.Fragment>
             )
           })}
 

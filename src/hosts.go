@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,6 +22,8 @@ import (
 // Compatible; otherwise the UI greys it out and shows Err.
 type HostInfo struct {
 	Alias      string `json:"alias"`
+	Hostname   string `json:"hostname"`   // effective ssh HostName (for grouping aliases on one box)
+	User       string `json:"user"`       // effective ssh User (distinguishes users on one host)
 	Reachable  bool   `json:"reachable"`  // ssh connected and ran the probe
 	Running    bool   `json:"running"`    // herdr server is up on the host
 	Version    string `json:"version"`    // remote herdr version
@@ -36,6 +40,7 @@ type hostsPayload struct {
 		Version  string `json:"version"`
 		Protocol int    `json:"protocol"`
 		Hostname string `json:"hostname"` // machine hostname, shown in place of "local"
+		User     string `json:"user"`     // the user lasso runs as (labels the local row when a host groups >1 user)
 	} `json:"local"`
 	Hosts []HostInfo `json:"hosts"`
 }
@@ -51,6 +56,45 @@ func localHostname() string {
 		h = h[:i] // strip any domain suffix for a compact label
 	}
 	return h
+}
+
+// localUsername returns the name of the user lasso runs as, used to label the
+// local row when a physical host groups more than one user (e.g. the local
+// session alongside a loopback ssh alias for another account). Falls back to
+// the $USER env var, then "local", if the OS lookup fails.
+func localUsername() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "local"
+}
+
+// resolveSSHTarget returns the effective HostName and User ssh would use for an
+// alias, via `ssh -G` (which expands the full config — Host/Match blocks,
+// defaults, includes — without connecting). The frontend groups aliases whose
+// HostName is the same physical box (and folds loopback aliases under the local
+// host), so two accounts on one machine cluster together. Best-effort: on any
+// failure the fields stay empty and the frontend falls back to the alias.
+func resolveSSHTarget(alias string) (hostname, username string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ssh", "-G", alias).Output()
+	if err != nil {
+		return "", ""
+	}
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := sc.Text()
+		if v, ok := strings.CutPrefix(line, "hostname "); ok {
+			hostname = strings.TrimSpace(v)
+		} else if v, ok := strings.CutPrefix(line, "user "); ok {
+			username = strings.TrimSpace(v)
+		}
+	}
+	return hostname, username
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +295,11 @@ func discoverHosts(ctx context.Context, force bool) []HostInfo {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = probeHost(ctx, alias, wantProto)
+			hi := probeHost(ctx, alias, wantProto)
+			// Resolve where the alias points (HostName/User) so the UI can group
+			// aliases that share a physical box. Cheap and connectionless (`ssh -G`).
+			hi.Hostname, hi.User = resolveSSHTarget(alias)
+			results[i] = hi
 		}(i, alias)
 	}
 	wg.Wait()
@@ -299,6 +347,7 @@ func serveHosts(w http.ResponseWriter, r *http.Request) {
 	p.Local.Version = ver
 	p.Local.Protocol = proto
 	p.Local.Hostname = localHostname()
+	p.Local.User = localUsername()
 	p.Hosts = hosts
 	writeJSON(w, p)
 }

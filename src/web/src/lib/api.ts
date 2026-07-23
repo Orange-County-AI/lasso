@@ -20,6 +20,11 @@ export interface ActiveState {
 // when reachable && running && compatible; otherwise greyed out with `err`.
 export interface HostInfo {
   alias: string
+  // Effective ssh HostName / User the alias resolves to. hostname lets the UI
+  // group aliases that point at one physical box (and fold loopback aliases
+  // under the local host); user distinguishes multiple accounts on that box.
+  hostname: string
+  user: string
   reachable: boolean
   running: boolean
   version: string
@@ -31,7 +36,7 @@ export interface HostInfo {
 
 export interface HostsPayload {
   active: string
-  local: { version: string; protocol: number; hostname: string }
+  local: { version: string; protocol: number; hostname: string; user: string }
   hosts: HostInfo[]
 }
 
