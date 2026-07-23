@@ -176,6 +176,7 @@ function hostUsable(h: HostInfo): boolean {
 export function CreateAgentDialog({
   onCreated,
   onCloseFocus,
+  switchActiveHost = true,
   variant = "button",
 }: {
   onCreated?: (rec: AgentRecord, host: string) => void
@@ -183,6 +184,12 @@ export function CreateAgentDialog({
   // focus — lets App keep the keyboard in the grid when that's where the new
   // agent will surface (see GridTab's focusRequest).
   onCloseFocus?: () => void
+  // Whether to switch the UI's active host to the picked host before creating,
+  // so the Herdr terminal lands on the new agent. True from the Herdr view;
+  // false from the Grid view, where the create targets the picked host directly
+  // (the agent surfaces as its own grid cell) and switching would needlessly
+  // yank the active host — the very thing that made grid creates flaky.
+  switchActiveHost?: boolean
   // "button" — the inline outline button on the Agents tab header.
   // "floating" — a pill matching the host switcher, for the bottom-left footer.
   // "header" — a compact button for the left column's tab-strip trailing slot.
@@ -234,7 +241,51 @@ export function CreateAgentDialog({
     enabled: open,
   })
   const localLabel = hostsQuery.data?.local?.hostname || "local"
+  const localUser = hostsQuery.data?.local?.user || ""
   const remoteHosts = hostsQuery.data?.hosts ?? []
+
+  // Group the host options by the physical box each alias resolves to (folding
+  // loopback aliases under the local machine), mirroring the navbar HostSwitcher.
+  // A box with a single account renders as one flat option (host + user); a box
+  // with several accounts becomes an optgroup named for the host, each option
+  // named for its account — which is what "distinguishes host & user" here.
+  const hostGroups = React.useMemo(() => {
+    const isLoopback = (h?: string) => {
+      if (!h) return false
+      const s = h.toLowerCase()
+      return s === "localhost" || s === "::1" || s.startsWith("127.")
+    }
+    type Opt = { value: string; alias: string; user: string; disabled: boolean }
+    const groups: { box: string; opts: Opt[] }[] = []
+    const byBox = new Map<string, Opt[]>()
+    const LOCAL_KEY = " local"
+    const push = (box: string, opt: Opt) => {
+      let g = byBox.get(box)
+      if (!g) {
+        g = []
+        byBox.set(box, g)
+        groups.push({ box: box === LOCAL_KEY ? localLabel : box, opts: g })
+      }
+      g.push(opt)
+    }
+    // The local session always leads its box (the machine lasso runs on).
+    push(LOCAL_KEY, {
+      value: "local",
+      alias: localLabel,
+      user: localUser,
+      disabled: false,
+    })
+    for (const h of remoteHosts) {
+      const box = isLoopback(h.hostname) ? LOCAL_KEY : h.hostname || h.alias
+      push(box, {
+        value: h.alias,
+        alias: h.alias,
+        user: h.user,
+        disabled: !hostUsable(h),
+      })
+    }
+    return groups
+  }, [remoteHosts, localLabel, localUser])
 
   // Server state via TanStack Query, fetched while the dialog is open, scoped to
   // selectedHost (each host's data comes from its own lasso.db / filesystem).
@@ -491,11 +542,14 @@ export function CreateAgentDialog({
       // host, rewriting their paths in the prompt we submit, so the agent on that
       // host can actually read them. No-op when they're already there.
       const finalPrompt = await rehomePastedImages(prompt, selectedHost)
-      // Commit the host choice now: switch the active backend so the agent is
-      // created on it, attachments land there, and the terminal points at it for
-      // focus. Deferred to here (not on dropdown change) so previewing a host's
-      // repos while editing doesn't yank the Herdr tab onto another host.
-      if (selectedHost !== (activeHost ?? "local")) {
+      // Land the user on the new agent by switching the active backend to the
+      // picked host (Herdr-view create) — the terminal then points at it. Grid
+      // creates skip this (switchActiveHost=false): the agent is created on the
+      // picked host DIRECTLY via the payload's `host`, so no switch is needed and
+      // the create no longer rides whatever host the grid last focused. Deferred
+      // to here (not on dropdown change) so previewing a host's repos while
+      // editing doesn't yank the Herdr tab onto another host.
+      if (switchActiveHost && selectedHost !== (activeHost ?? "local")) {
         await api.switchHost(selectedHost)
       }
       let uploadDir: string | undefined
@@ -506,6 +560,9 @@ export function CreateAgentDialog({
         attachments = up.files
       }
       const payload: CreateAgentPayload = {
+        // Target the picked host's backend directly (server resolves it via
+        // gridHostBackend), independent of the UI's active host.
+        host: selectedHost,
         type,
         prompt: finalPrompt.trim(),
         agent,
@@ -745,16 +802,50 @@ export function CreateAgentDialog({
                   value={selectedHost}
                   onChange={(e) => setSelectedHost(e.target.value)}
                 >
-                  <option value="local">{localLabel}</option>
-                  {remoteHosts.map((h) => (
-                    <option
-                      key={h.alias}
-                      value={h.alias}
-                      disabled={!hostUsable(h)}
-                    >
-                      {hostUsable(h) ? h.alias : `${h.alias} (unavailable)`}
-                    </option>
-                  ))}
+                  {hostGroups.map((g) => {
+                    // Flat "<host> · <user>" for a single-account box; inside an
+                    // optgroup the host is the group label, so options lead with
+                    // the account name (alias in parens when it differs).
+                    const text = (
+                      o: { alias: string; user: string; disabled: boolean },
+                      inGroup: boolean
+                    ) => {
+                      const name = inGroup ? o.user || o.alias : o.alias
+                      const extra = inGroup
+                        ? o.alias && o.alias !== o.user
+                          ? ` (${o.alias})`
+                          : ""
+                        : o.user
+                          ? ` · ${o.user}`
+                          : ""
+                      return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
+                    }
+                    if (g.opts.length === 1) {
+                      const o = g.opts[0]
+                      return (
+                        <option
+                          key={o.value}
+                          value={o.value}
+                          disabled={o.disabled}
+                        >
+                          {text(o, false)}
+                        </option>
+                      )
+                    }
+                    return (
+                      <optgroup key={g.box} label={g.box}>
+                        {g.opts.map((o) => (
+                          <option
+                            key={o.value}
+                            value={o.value}
+                            disabled={o.disabled}
+                          >
+                            {text(o, true)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )
+                  })}
                 </select>
               </div>
             </div>

@@ -293,6 +293,13 @@ func reapGridBackends() {
 type gridPane struct {
 	Host           string `json:"host"`       // "local" or ssh-config alias (focus/attach key)
 	HostLabel      string `json:"host_label"` // display name (hostname for local)
+	// HostHostname / HostUser resolve the alias to its physical box + account (via
+	// `ssh -G`, or the local machine's own hostname/user for "local"). They let the
+	// pane rail group panes by host and user the way the navbar host switcher does
+	// — several aliases pointing at one box (or several accounts on it) cluster
+	// together instead of scattering by alias. Empty when the alias doesn't resolve.
+	HostHostname   string `json:"host_hostname,omitempty"`
+	HostUser       string `json:"host_user,omitempty"`
 	PaneID         string `json:"pane_id"`
 	TerminalID     string `json:"terminal_id"`
 	WorkspaceID    string `json:"workspace_id"`
@@ -541,9 +548,12 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 		if ha.Host == "local" {
 			label = local
 		}
+		hostname, user := hostIdent(ha.Host)
 		out = append(out, gridPane{
 			Host:           ha.Host,
 			HostLabel:      label,
+			HostHostname:   hostname,
+			HostUser:       user,
 			PaneID:         ha.Agent.RootPane,
 			WorkspaceID:    ha.Agent.WorkspaceID,
 			WorkspaceLabel: ha.Agent.Title,
@@ -579,6 +589,7 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 // They carry no AgentID — reopen lands by raw path. A tree that can't be read just
 // yields no rows.
 func scanOrphanWorkDirs(b Backend, host, hostLabel string, known map[string]bool) []gridPane {
+	hostname, user := hostIdent(host)
 	var out []gridPane
 	add := func(dir string) {
 		if known[dir] {
@@ -587,6 +598,8 @@ func scanOrphanWorkDirs(b Backend, host, hostLabel string, known map[string]bool
 		out = append(out, gridPane{
 			Host:           host,
 			HostLabel:      hostLabel,
+			HostHostname:   hostname,
+			HostUser:       user,
 			WorkspaceLabel: humanizeSlug(filepath.Base(dir)),
 			Cwd:            dir,
 		})
@@ -743,6 +756,22 @@ func hostLabelFor(host string) string {
 		return localHostname()
 	}
 	return host
+}
+
+// hostIdent resolves a host key ("local" or an ssh-config alias) to the physical
+// box + account it points at, so grid rows can be grouped by host and user the
+// way the navbar host switcher groups aliases. Local is the machine lasso runs
+// on; a remote alias resolves via the (cached) host probe. Both fields are empty
+// when an alias hasn't been probed (or `ssh -G` couldn't resolve it), and the
+// rail then falls back to the alias/label.
+func hostIdent(host string) (hostname, user string) {
+	if host == "local" {
+		return localHostname(), localUsername()
+	}
+	if hi, ok := findHost(host); ok {
+		return hi.Hostname, hi.User
+	}
+	return "", ""
 }
 
 func serveGrid(w http.ResponseWriter, r *http.Request) {
@@ -1013,6 +1042,7 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 		}
 	}
 
+	hostname, user := hostIdent(host)
 	out := make([]gridPane, 0, len(pl.Panes))
 	for _, p := range pl.Panes {
 		kind, isAgent := agentKind[p.PaneID]
@@ -1023,6 +1053,8 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 		out = append(out, gridPane{
 			Host:           host,
 			HostLabel:      hostLabel,
+			HostHostname:   hostname,
+			HostUser:       user,
 			PaneID:         p.PaneID,
 			TerminalID:     p.TerminalID,
 			WorkspaceID:    p.WorkspaceID,

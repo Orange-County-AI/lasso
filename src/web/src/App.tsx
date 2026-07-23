@@ -532,6 +532,11 @@ function Shell() {
                         }
                       }}
                       onCloseFocus={leftView === "grid" ? () => {} : undefined}
+                      // From the Grid view, create on the picked host directly
+                      // without switching the UI's active host (the agent shows
+                      // up as its own grid cell); from Herdr, switch so the
+                      // terminal lands on the new agent.
+                      switchActiveHost={leftView !== "grid"}
                     />
                     {collapsed && (
                       <>

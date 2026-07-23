@@ -85,6 +85,12 @@ export interface Pane {
 export interface GridPane {
   host: string
   host_label: string
+  // The physical box + account the host resolves to (via `ssh -G`; the local
+  // machine's own hostname/user for "local"). The pane rail groups by these so
+  // aliases pointing at one box — or several accounts on it — cluster together,
+  // mirroring the navbar host switcher. Absent when the alias didn't resolve.
+  host_hostname?: string
+  host_user?: string
   pane_id: string
   terminal_id: string
   workspace_id?: string
@@ -349,6 +355,10 @@ export interface RepoBranches {
 
 // The body POSTed to /api/create-agent.
 export interface CreateAgentPayload {
+  // Host to create on ("local" or an ssh-config alias); omit for the active
+  // host. Sent so the create targets the picked host's backend directly instead
+  // of depending on the UI's active host having been switched there first.
+  host?: string
   type: "git" | "scratch"
   // The agent's instruction; its first line becomes the title (branch/dir name,
   // workspace label, list/toast headline).

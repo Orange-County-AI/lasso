@@ -312,6 +312,14 @@ func gitDefaultBranch(cur Backend, repo string) string {
 // ---------------------------------------------------------------------------
 
 type createAgentReq struct {
+	// Host is the box to create the agent on ("local" or an ssh-config alias);
+	// empty means the active host. The web flow sends the host picked in the
+	// dialog so the create targets it DIRECTLY (via its own backend) rather than
+	// depending on the UI's active host having been switched there first — in the
+	// Grid view the active host is often a remote you merely navigated to, whose
+	// herdr connection may be flaky, and creating against it produced spurious
+	// "server unreachable" retry loops.
+	Host         string `json:"host"`
 	Type         string `json:"type"`   // "git" | "scratch"
 	Prompt       string `json:"prompt"` // the agent's instruction; its first line is the title
 	Title        string `json:"title"`  // optional explicit title override; defaults to the prompt's first line
@@ -350,7 +358,33 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rec, err := createAgent(curBackend(), req)
+	// Create on the requested host (default: active). When it's the active host we
+	// use the active backend as before; when it's a DIFFERENT host we target that
+	// host's own backend directly (like the MCP create_agent tool + the
+	// upload/paste handlers), so the agent lands where the user picked without the
+	// UI having to switch its active host there first. That switch requirement is
+	// what let a Grid-view create ride whatever (possibly dead/remote) host the
+	// grid last focused and 502-loop; picking the backend from the request removes
+	// the dependency entirely.
+	host := req.Host
+	if host == "" {
+		host = curBackend().Name()
+	}
+	if !gridHostAllowed(host) {
+		// Not a transient-tunnel failure — surface it (a retry can't help), so the
+		// browser shows a real error instead of the "resubmitting…" spinner.
+		http.Error(w, "host not available", http.StatusBadRequest)
+		return
+	}
+	be := curBackend()
+	if host != be.Name() {
+		var err error
+		if be, err = gridHostBackend(host); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	rec, err := createAgent(be, req)
 	if err != nil {
 		// Log server-side too: a 502 the browser shows is otherwise invisible in
 		// lasso's own log, which made the restart-mid-create race a forensic dig.
@@ -511,7 +545,12 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 			// Keep the write-ahead record (as failed, still workspace-less) so the
 			// orphan is visible and a retry can adopt whatever herdr got done.
 			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("worktree.create: %v", err))
-			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("worktree.create: %w", err)}
+			// 500, not 502/503/504: those codes signal "the browser couldn't reach
+			// lasso, resubmitting the same branch is safe" (see the client's
+			// isTransientCreateError + the resume-or-redo path above). A herdr RPC
+			// that lasso DID reach and that failed is a definitive error — retrying
+			// it just loops, so keep it out of the transient set.
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("worktree.create: %w", err)}
 		}
 		rec.WorkspaceID, rec.RootPane = ws, pane
 
@@ -539,7 +578,10 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		})
 		if err != nil {
 			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("workspace.create: %v", err))
-			return AgentRecord{}, &createErr{http.StatusBadGateway, fmt.Errorf("workspace.create: %w", err)}
+			// 500, not 502: a reached-but-failed herdr call is definitive, not the
+			// "lost response, safe to resubmit" case the client retries (see the
+			// matching note in the git branch above).
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("workspace.create: %w", err)}
 		}
 		ws, pane := parseCreateResult(res)
 		rec.WorkspaceID, rec.RootPane = ws, pane
