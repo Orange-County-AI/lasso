@@ -48,7 +48,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents lasso has created on a host, each with its live status (working/idle/blocked/unknown) when the agent is running.",
+		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind.",
 	}, listAgentsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -58,12 +58,12 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_agent",
-		Description: "Get one agent's details, its live status, and a tail of its recent terminal output.",
+		Description: "Get one agent's details, its live status, and a tail of its recent terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be inspected too.",
 	}, getAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_agent",
-		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
+		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Target it by lasso agent id, by its sidebar/display name (the name in the herdr pane switcher — the handle a human is most likely to use), or by herdr pane id, so this reaches a foreign herdr session lasso did not create (e.g. a bot like \"Clem (OCAI)\") as well as lasso's own agents. A name matching more than one agent/session on the host is refused with the candidates listed rather than guessed — names are only unique per host, so pass `host` (or an id/pane id) to disambiguate. Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
 	}, sendAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -73,7 +73,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_agent",
-		Description: "Read an agent's terminal output. source 'recent' returns scrollback (default), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
+		Description: "Read an agent's terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be read too. source 'recent' returns scrollback (default), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
 	}, readAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -92,10 +92,19 @@ func registerMCPTools(s *mcp.Server) {
 // ---------------------------------------------------------------------------
 
 // agentInfo is the MCP-facing view of an agent: the persisted record fields a
-// caller needs to drive it, plus live status when known.
+// caller needs to drive it, plus live status when known. It doubles as the view
+// of a herdr session lasso did NOT create (a long-lived bot in a pane lasso
+// never spawned): those carry LassoCreated=false, no lasso id, and are
+// addressed by SidebarName / RootPane instead.
 type agentInfo struct {
-	ID          string `json:"id"`
-	Host        string `json:"host"`
+	ID   string `json:"id"`
+	Host string `json:"host"`
+	// SidebarName is the display name a human sees for this agent in the herdr
+	// sidebar/pane switcher (herdr's workspace label). It is the handle a user is
+	// most likely to reference — send_agent/get_agent/read_agent accept it as the
+	// target. For a lasso agent it tracks Title; for a foreign session it is the
+	// only human-facing name.
+	SidebarName string `json:"sidebar_name,omitempty"`
 	Title       string `json:"title"`
 	Type        string `json:"type"`
 	Agent       string `json:"agent"`
@@ -109,6 +118,10 @@ type agentInfo struct {
 	Status      string `json:"status,omitempty"`
 	BootError   string `json:"boot_error,omitempty"`
 	CreatedAt   string `json:"created_at"`
+	// LassoCreated distinguishes agents lasso spawned (true — addressable by id,
+	// closeable, full record) from foreign herdr sessions it merely surfaces
+	// (false — address by sidebar_name or root_pane; no lasso id to close).
+	LassoCreated bool `json:"lasso_created"`
 }
 
 func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
@@ -117,8 +130,193 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 		Model: rec.Model, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
 		Status: surfacedStatus(rec, status), BootError: rec.BootError,
-		CreatedAt: rec.CreatedAt.Format(time.RFC3339),
+		CreatedAt: rec.CreatedAt.Format(time.RFC3339), LassoCreated: true,
 	}
+}
+
+// agentInfoFromPane is the agentInfo view of a foreign herdr session — a pane
+// lasso did not create (e.g. a long-lived bot). It has no lasso record, so only
+// the herdr-known fields are populated; SidebarName/RootPane are its address.
+func agentInfoFromPane(host string, gp gridPane) agentInfo {
+	name := sidebarName(gp)
+	return agentInfo{
+		Host: host, SidebarName: name, Title: name, Agent: gp.Agent,
+		WorkspaceID: gp.WorkspaceID, RootPane: gp.PaneID, Status: gp.AgentStatus,
+		LassoCreated: false,
+	}
+}
+
+// sidebarName is the human-facing name a herdr pane shows in the sidebar / pane
+// switcher: the workspace label, falling back to the pane's own label then the
+// tab label when a workspace is unnamed.
+func sidebarName(gp gridPane) string {
+	if gp.WorkspaceLabel != "" {
+		return gp.WorkspaceLabel
+	}
+	if gp.PaneLabel != "" {
+		return gp.PaneLabel
+	}
+	return gp.TabLabel
+}
+
+// ---------------------------------------------------------------------------
+// target resolution: id / pane id / sidebar name → one addressable pane
+// ---------------------------------------------------------------------------
+
+// resolvedTarget is one addressable pane the interaction tools can drive: either
+// a lasso agent (Record set) or a foreign herdr session (Pane set). Both carry
+// the Host and the PaneID to send_text / read from.
+type resolvedTarget struct {
+	Host   string
+	PaneID string
+	Record *AgentRecord // set when the target is a lasso-created agent
+	Pane   *gridPane    // set when the target is a foreign herdr session
+}
+
+// info projects the target into the MCP-facing agentInfo, preferring the given
+// live status over whatever the enumeration snapshot held.
+func (t resolvedTarget) info(host, status string) agentInfo {
+	if t.Record != nil {
+		ai := agentInfoFrom(host, *t.Record, status)
+		if t.Pane != nil {
+			ai.SidebarName = sidebarName(*t.Pane)
+		}
+		return ai
+	}
+	ai := agentInfoFromPane(host, *t.Pane)
+	if status != "" {
+		ai.Status = status
+	}
+	return ai
+}
+
+// resolveTarget maps needle to exactly one addressable pane on host. needle may
+// be a lasso agent id, a herdr pane id, or a display name (a lasso agent's title
+// OR a foreign session's sidebar name). Precedence resolves the unambiguous
+// forms first — exact lasso id, then exact pane id — before names, which can
+// collide: a name matching more than one agent/session is refused with the
+// candidates listed rather than guessed (names are only unique per host). recs
+// are the host's lasso agents; panes are its live herdr panes.
+func resolveTarget(host, needle string, recs []AgentRecord, panes []gridPane) (resolvedTarget, error) {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return resolvedTarget{}, fmt.Errorf("a target (agent id, pane id, or name) is required")
+	}
+	// Exact lasso id — a primary key, so unique and highest precedence (this is
+	// the pre-existing id-based addressing, preserved unchanged).
+	for i := range recs {
+		if recs[i].ID == needle {
+			r := recs[i]
+			r.Host = host
+			return resolvedTarget{Host: host, PaneID: r.RootPane, Record: &r}, nil
+		}
+	}
+	lassoByPane := map[string]int{} // pane id → index into recs
+	for i := range recs {
+		if recs[i].RootPane != "" {
+			lassoByPane[recs[i].RootPane] = i
+		}
+	}
+	// Exact herdr pane id — also unique per host. Resolves to the owning lasso
+	// agent if lasso created that pane, else to the foreign session.
+	for i := range panes {
+		if panes[i].PaneID == needle {
+			if ri, ok := lassoByPane[needle]; ok {
+				r := recs[ri]
+				r.Host = host
+				return resolvedTarget{Host: host, PaneID: needle, Record: &r}, nil
+			}
+			return resolvedTarget{Host: host, PaneID: needle, Pane: &panes[i]}, nil
+		}
+	}
+	// Name — a lasso agent title or a foreign session's sidebar name, matched
+	// case-insensitively. Gather every match; insist on exactly one.
+	var matches []resolvedTarget
+	var cands []string
+	for i := range recs {
+		if strings.EqualFold(recs[i].Title, needle) {
+			r := recs[i]
+			r.Host = host
+			matches = append(matches, resolvedTarget{Host: host, PaneID: r.RootPane, Record: &r})
+			cands = append(cands, fmt.Sprintf("lasso agent %s@%s (title %q)", r.ID, host, r.Title))
+		}
+	}
+	for i := range panes {
+		if _, isLasso := lassoByPane[panes[i].PaneID]; isLasso {
+			continue // already offered above via its lasso title
+		}
+		if !panes[i].HasAgent {
+			continue // only agent sessions are addressable, not bare shells
+		}
+		if strings.EqualFold(sidebarName(panes[i]), needle) {
+			matches = append(matches, resolvedTarget{Host: host, PaneID: panes[i].PaneID, Pane: &panes[i]})
+			cands = append(cands, fmt.Sprintf("herdr session %q (pane %s@%s)", sidebarName(panes[i]), panes[i].PaneID, host))
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return resolvedTarget{}, fmt.Errorf("no agent, pane, or session named %q on host %q — call list_agents to see the addressable names and pane ids", needle, host)
+	default:
+		return resolvedTarget{}, fmt.Errorf("%q is ambiguous on host %q — it matches %d: %s; re-target by lasso agent id or herdr pane id", needle, host, len(matches), strings.Join(cands, "; "))
+	}
+}
+
+// hostHerdrPanes lists a host's live herdr panes with their sidebar labels and
+// agent detection, best effort — an unreachable herdr yields nil, so id-based
+// resolution still works against the lasso records alone.
+func hostHerdrPanes(b Backend, host string) []gridPane {
+	gps, err := gridHostPanes(b, host, host)
+	if err != nil {
+		return nil
+	}
+	return gps
+}
+
+// findGridPane returns the enumerated pane with the given id.
+func findGridPane(panes []gridPane, paneID string) (gridPane, bool) {
+	for i := range panes {
+		if panes[i].PaneID == paneID {
+			return panes[i], true
+		}
+	}
+	return gridPane{}, false
+}
+
+// resolveAgentTarget is the tool-facing resolver behind get_agent/read_agent/
+// send_agent: it maps needle (id, pane id, or name) to one addressable pane on
+// host and hands back the backend to drive it. An exact lasso id resolves
+// without touching herdr (preserving the old id-only cost); anything else
+// enumerates the host's panes so names and foreign sessions resolve.
+func resolveAgentTarget(host, needle string) (resolvedTarget, Backend, error) {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return resolvedTarget{}, nil, fmt.Errorf("a target (agent id, pane id, or name) is required")
+	}
+	if host == "" {
+		host = "local"
+	}
+	b, err := resolveBackend(host)
+	if err != nil {
+		return resolvedTarget{}, nil, err
+	}
+	recs, err := listAgents(host)
+	if err != nil {
+		return resolvedTarget{}, nil, err
+	}
+	for i := range recs {
+		if recs[i].ID == needle { // fast path: exact id needs no herdr enumeration
+			r := recs[i]
+			r.Host = host
+			return resolvedTarget{Host: host, PaneID: r.RootPane, Record: &r}, b, nil
+		}
+	}
+	t, err := resolveTarget(host, needle, recs, hostHerdrPanes(b, host))
+	if err != nil {
+		return resolvedTarget{}, nil, err
+	}
+	return t, b, nil
 }
 
 // surfacedStatus reconciles an agent's live herdr pane status with the outcome
@@ -422,24 +620,36 @@ func listAgentsTool(_ context.Context, _ *mcp.CallToolRequest, in listAgentsIn) 
 	if err != nil {
 		return nil, listAgentsOut{}, err
 	}
-	// One pane.list for the whole host, so status enrichment is a single RPC.
+	// One herdr enumeration for the whole host: pane statuses + sidebar names, and
+	// the foreign sessions (panes lasso did not create) to surface alongside.
 	b, berr := resolveBackend(host)
-	statuses := map[string]string{}
+	var panes []gridPane
 	if berr == nil {
-		if res, e := b.HerdrCall("pane.list", map[string]any{}); e == nil {
-			var pl struct {
-				Panes []pane `json:"panes"`
-			}
-			if json.Unmarshal(res, &pl) == nil {
-				for _, p := range pl.Panes {
-					statuses[p.PaneID] = p.AgentStatus
-				}
-			}
-		}
+		panes = hostHerdrPanes(b, host)
+	}
+	byPane := map[string]gridPane{}
+	for _, gp := range panes {
+		byPane[gp.PaneID] = gp
 	}
 	out := listAgentsOut{Host: host}
+	lassoPanes := map[string]bool{}
 	for _, rec := range recs {
-		out.Agents = append(out.Agents, agentInfoFrom(host, rec, statuses[rec.RootPane]))
+		gp := byPane[rec.RootPane]
+		ai := agentInfoFrom(host, rec, gp.AgentStatus)
+		ai.SidebarName = sidebarName(gp)
+		out.Agents = append(out.Agents, ai)
+		if rec.RootPane != "" {
+			lassoPanes[rec.RootPane] = true
+		}
+	}
+	// Foreign herdr sessions — panes running an agent that lasso never created
+	// (long-lived bots like "Clem (OCAI)"). Surfaced so they're discoverable and
+	// addressable by their sidebar name, flagged lasso_created:false.
+	for _, gp := range panes {
+		if lassoPanes[gp.PaneID] || !gp.HasAgent {
+			continue
+		}
+		out.Agents = append(out.Agents, agentInfoFromPane(host, gp))
 	}
 	return nil, out, nil
 }
@@ -558,7 +768,8 @@ func resolveWhoamiAcrossHosts(ctx context.Context, paneID string) whoamiOut {
 
 type getAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit for the local box."`
-	AgentID string `json:"agent_id" jsonschema:"The agent's id (from create_agent / list_agents)."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id (from create_agent / list_agents). Alternatively use 'to' to target by sidebar name or herdr pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
 	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines of recent output to include (default 50)."`
 }
 
@@ -568,11 +779,11 @@ type getAgentOut struct {
 }
 
 func getAgentTool(_ context.Context, _ *mcp.CallToolRequest, in getAgentIn) (*mcp.CallToolResult, getAgentOut, error) {
-	rec, err := findAgentRecord(in.Host, in.AgentID)
-	if err != nil {
-		return nil, getAgentOut{}, err
+	needle := in.To
+	if needle == "" {
+		needle = in.AgentID
 	}
-	b, err := resolveBackend(in.Host)
+	t, b, err := resolveAgentTarget(in.Host, needle)
 	if err != nil {
 		return nil, getAgentOut{}, err
 	}
@@ -580,9 +791,15 @@ func getAgentTool(_ context.Context, _ *mcp.CallToolRequest, in getAgentIn) (*mc
 	if lines == 0 {
 		lines = 50
 	}
-	status := paneAgentStatus(b, rec.RootPane)
-	output, _ := paneReadText(b, rec.RootPane, "recent", lines)
-	return nil, getAgentOut{Agent: agentInfoFrom(b.Name(), rec, status), Output: output}, nil
+	// Re-enumerate so the returned agent carries a live status and sidebar name
+	// even when it resolved by id (the fast path skips herdr).
+	gp, ok := findGridPane(hostHerdrPanes(b, b.Name()), t.PaneID)
+	if ok {
+		t.Pane = &gp
+	}
+	status := gp.AgentStatus
+	output, _ := paneReadText(b, t.PaneID, "recent", lines)
+	return nil, getAgentOut{Agent: t.info(b.Name(), status), Output: output}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -590,8 +807,9 @@ func getAgentTool(_ context.Context, _ *mcp.CallToolRequest, in getAgentIn) (*mc
 // ---------------------------------------------------------------------------
 
 type sendAgentIn struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit for the local box."`
-	AgentID string `json:"agent_id" jsonschema:"The agent's id."`
+	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit for the local box. Names are only unique per host — set this when a name exists on more than one host."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Who to send to: a lasso agent id, its sidebar/display name (the name shown in the herdr pane switcher), or a herdr pane id — including a foreign herdr session lasso did not create (a long-lived bot). A name that matches more than one agent/session is refused with the candidates listed, so re-target by id or pane id. Given instead of, or as well as, agent_id."`
 	Text    string `json:"text" jsonschema:"Message to send; it is typed into the agent's pane and submitted with Enter."`
 }
 
@@ -603,18 +821,18 @@ func sendAgentTool(_ context.Context, _ *mcp.CallToolRequest, in sendAgentIn) (*
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, sendAgentOut{}, fmt.Errorf("text is required")
 	}
-	rec, err := findAgentRecord(in.Host, in.AgentID)
+	needle := in.To
+	if needle == "" {
+		needle = in.AgentID
+	}
+	t, b, err := resolveAgentTarget(in.Host, needle)
 	if err != nil {
 		return nil, sendAgentOut{}, err
 	}
-	b, err := resolveBackend(in.Host)
-	if err != nil {
-		return nil, sendAgentOut{}, err
+	if t.PaneID == "" {
+		return nil, sendAgentOut{}, fmt.Errorf("target %q has no pane to send to", needle)
 	}
-	if rec.RootPane == "" {
-		return nil, sendAgentOut{}, fmt.Errorf("agent %q has no pane to send to", in.AgentID)
-	}
-	paneSubmit(b, rec.RootPane, in.Text)
+	paneSubmit(b, t.PaneID, in.Text)
 	return nil, sendAgentOut{Sent: true}, nil
 }
 
@@ -725,7 +943,8 @@ func messageAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in messageAge
 
 type readAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit for the local box."`
-	AgentID string `json:"agent_id" jsonschema:"The agent's id."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
 	Source  string `json:"source,omitempty" jsonschema:"\"recent\" (scrollback, default) or \"visible\" (current screen)."`
 	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines to return (default 100)."`
 }
@@ -735,11 +954,11 @@ type readAgentOut struct {
 }
 
 func readAgentTool(_ context.Context, _ *mcp.CallToolRequest, in readAgentIn) (*mcp.CallToolResult, readAgentOut, error) {
-	rec, err := findAgentRecord(in.Host, in.AgentID)
-	if err != nil {
-		return nil, readAgentOut{}, err
+	needle := in.To
+	if needle == "" {
+		needle = in.AgentID
 	}
-	b, err := resolveBackend(in.Host)
+	t, b, err := resolveAgentTarget(in.Host, needle)
 	if err != nil {
 		return nil, readAgentOut{}, err
 	}
@@ -751,7 +970,7 @@ func readAgentTool(_ context.Context, _ *mcp.CallToolRequest, in readAgentIn) (*
 	if lines == 0 {
 		lines = 100
 	}
-	text, err := paneReadText(b, rec.RootPane, source, lines)
+	text, err := paneReadText(b, t.PaneID, source, lines)
 	if err != nil {
 		return nil, readAgentOut{}, err
 	}
