@@ -69,10 +69,32 @@ const (
 // BatchMode makes anything that would prompt (password, unknown host key) fail
 // fast instead of hanging the server. accept-new trusts a first-seen host key
 // (the master command records it) without prompting.
+//
+// ControlMaster=auto matters for what happens when the master ISN'T up. The
+// default (no) reuses a live socket but silently opens a full handshake when
+// there's none — so a dead master turns one warm cycle into a burst of
+// independent dials (warmHost fans out warmRepoConcurrency branch listings at
+// once, on top of the repo listing and any probe). Whichever of those get
+// cancelled die mid-authentication, and OpenSSH >= 9.8 scores an aborted
+// handshake as authfail under PerSourcePenalties: the remote then drops every
+// new connection from this IP for 15-600s, which surfaces as herdr's "remote
+// platform detection failed: Connection closed by <ip> port 22" and a grid full
+// of "Press ⏎ to Reconnect". With auto, the first op to find no master becomes
+// one and the rest of the cycle rides it.
+//
+// ControlPersist is bounded here, unlike the yes on the forward-carrying master
+// in newRemoteBackend: a master created by this path has no -L forwards, so it
+// can't serve the backend. The health check (herdrPing over the forwarded
+// socket, see gridHostBackend) fails against it and redials, and newRemoteBackend
+// unlinks the socket before dialing — leaving the ad-hoc master orphaned with no
+// socket for -O exit to reach. A timed persist bounds that to a minute instead
+// of leaking it until the sshreap loop or process exit.
 func (b *remoteBackend) ctlOpts() []string {
 	return []string{
 		"-o", "BatchMode=yes",
 		"-o", "ControlPath=" + b.ctlPath,
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPersist=60",
 	}
 }
 
