@@ -68,9 +68,11 @@ const ATTACH_RETRY_MS = 5_000
 // grace: re-mounting within it finds the attach still live (ensureGridTerm
 // returns the existing entry) and the terminal reconnects near-instantly. The
 // deferred release is token-scoped, so if a newer attach claimed the pane in
-// the meantime it's a no-op. Leaving the Grid view still tears everything down
-// immediately (gridTermReleaseAll), so no thin attach lingers to clamp a pane
-// being viewed full-size in Herdr.
+// the meantime it's a no-op — and if-idle scoped, so it also can't kill an
+// attach another tab or device is still watching (attaches are a server-wide
+// pool, and every viewer shows the same server-persisted panes). Leaving the
+// Grid view still tears everything down immediately (gridTermReleaseAll), so no
+// thin attach lingers to clamp a pane being viewed full-size in Herdr.
 const RELEASE_GRACE_MS = 30_000
 const pendingReleases = new Map<string, ReturnType<typeof setTimeout>>()
 function scheduleGridTermRelease(
@@ -85,7 +87,7 @@ function scheduleGridTermRelease(
     key,
     setTimeout(() => {
       pendingReleases.delete(key)
-      void api.gridTermRelease(host, terminalId, token)
+      void api.gridTermRelease(host, terminalId, token, true)
     }, RELEASE_GRACE_MS)
   )
 }
@@ -1023,6 +1025,40 @@ function GridCell({
     setReady(false)
   }, [])
 
+  // Recovery from a frame that loaded something other than a terminal: the attach
+  // behind our /grid-term/<token>/ is gone, so the proxy served a bare "404 page
+  // not found". Left alone the cell displayed that 404 indefinitely. Re-attach —
+  // immediately the first time, then backing off, so a pane whose ttyd genuinely
+  // won't come up doesn't spin. The dead token is released first (token-scoped, so
+  // a newer attach that already claimed the pane is untouched): if the server still
+  // considers it current, its ttyd is wedged and must be replaced rather than
+  // handed back to us by ensureGridTerm.
+  const deadTries = React.useRef(0)
+  const deadTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onLiveFrame = React.useCallback(() => {
+    deadTries.current = 0
+    setReady(true)
+  }, [])
+  const onDeadFrame = React.useCallback(() => {
+    const dead = tokenRef.current
+    const delay = Math.min(deadTries.current++, 3) * ATTACH_RETRY_MS
+    const again = () => {
+      deadTimer.current = setTimeout(() => {
+        deadTimer.current = null
+        reattach()
+      }, delay)
+    }
+    if (dead)
+      void api.gridTermRelease(p.host, p.terminal_id, dead).finally(again)
+    else again()
+  }, [p.host, p.terminal_id, reattach])
+  React.useEffect(
+    () => () => {
+      if (deadTimer.current) clearTimeout(deadTimer.current)
+    },
+    []
+  )
+
   // A host switch releases grid terminals on BOTH the old and new active host
   // (their connections get replaced). Probe shortly after the active host
   // changes and re-attach if our ttyd died — twice, since the first probe can
@@ -1034,7 +1070,7 @@ function GridCell({
     if (!src) return
     const probe = () =>
       api
-        .gridTermTouch(p.host, p.terminal_id)
+        .gridTermTouch(p.host, p.terminal_id, tokenRef.current)
         .then((r) => {
           if (!r.alive) reattach()
         })
@@ -1050,16 +1086,30 @@ function GridCell({
     setReady(false)
     const cleanup = bootTermFrame(id, true)
     // Hold the loading overlay until xterm has painted real pane content, so the
-    // ttyd connect/reconnect flash never shows through.
-    const cancelReady = whenTerminalReady(id, () => setReady(true))
+    // ttyd connect/reconnect flash never shows through — and never reveal a frame
+    // that isn't a terminal at all (a 404 from a dead attach): re-attach instead.
+    //
+    // Re-armed on every (re)load, because a frame that was fine can come back as
+    // the proxy's 404: ttyd's "Press ⏎ to Reconnect" reloads the page, and if the
+    // attach behind this token died meanwhile, that reload fetches the 404. The
+    // check is one-shot per load, so without re-arming only the keepalive would
+    // notice — up to KEEPALIVE_MS later, with the 404 on screen the whole time.
+    let cancelReady = whenTerminalReady(id, onLiveFrame, onDeadFrame)
+    const frame = document.getElementById(id)
+    const rearm = () => {
+      cancelReady()
+      cancelReady = whenTerminalReady(id, onLiveFrame, onDeadFrame)
+    }
+    frame?.addEventListener("load", rearm)
     // Touch-only keepalive: bumps the server idle timer but never (re)creates the
     // attach, so an in-flight keepalive landing after this cell releases can't
     // resurrect a thin attach that would clamp the pane in the wide Herdr terminal.
-    // It DOES report whether the entry is still alive — when the server released
-    // us (host switch, reap), re-attach rather than showing a dead terminal.
+    // It DOES report whether OUR attach (by token) is still the live one — when the
+    // server released us (host switch, reap) or another viewer's re-attach replaced
+    // it, re-attach rather than streaming from a ttyd that no longer exists.
     const ka = setInterval(() => {
       api
-        .gridTermTouch(p.host, p.terminal_id)
+        .gridTermTouch(p.host, p.terminal_id, tokenRef.current)
         .then((r) => {
           if (!r.alive) reattach()
         })
@@ -1067,10 +1117,11 @@ function GridCell({
     }, KEEPALIVE_MS)
     return () => {
       cleanup()
+      frame?.removeEventListener("load", rearm)
       cancelReady()
       clearInterval(ka)
     }
-  }, [src, id, p.host, p.terminal_id, reattach])
+  }, [src, id, p.host, p.terminal_id, reattach, onLiveFrame, onDeadFrame])
 
   const title = p.workspace_label || p.workspace_id || p.pane_id
   const tabLabel = p.tab_label && p.tab_label !== title ? p.tab_label : ""

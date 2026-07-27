@@ -1183,26 +1183,47 @@ func serveGridTermRelease(w http.ResponseWriter, r *http.Request) {
 		// the token check it would kill the fresh attach out from under the new
 		// cell, whose iframe then 404s until the next keepalive notices.
 		Token string `json:"token"`
+		// IfIdle (optional) makes the release conditional on nobody else still
+		// using the attach — see releaseGridTerm.
+		IfIdle bool `json:"if_idle"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	releaseGridTerm(req.Host, req.TerminalID, req.Token)
+	releaseGridTerm(req.Host, req.TerminalID, req.Token, req.IfIdle)
 	writeJSON(w, map[string]any{"ok": true})
 }
+
+// gridTermActive is how recently an attach must have been touched to count as
+// still-in-use by some viewer. It sits just above the frontend keepalive
+// (KEEPALIVE_MS, 18s), so any cell that's actually mounted somewhere keeps its
+// attach inside the window.
+const gridTermActive = 25 * time.Second
 
 // releaseGridTerm kills the ttyd attached to one pane (if any), which detaches it
 // from herdr so the pane is no longer held to this terminal's width. A non-empty
 // token releases only that specific attach: when the key's current entry is a
 // newer one (the pane was re-attached after this release was issued), it's left
 // alone.
-func releaseGridTerm(host, terminalID, token string) {
+//
+// ifIdle additionally spares an attach that some other viewer is still
+// keepaliving (touched within gridTermActive). Attaches are a server-wide pool
+// and viewers generally show the same panes, so one browser's deferred
+// unmount release used to kill a cell another browser was actively watching —
+// which is precisely how a live cell ended up on ttyd's 404 page. Only the
+// grace-deferred unmount release sets it; the authoritative teardowns (tab
+// hidden, leaving the Grid, host switch) still release unconditionally, since
+// there the point is that NO thin attach may survive to clamp the pane.
+func releaseGridTerm(host, terminalID, token string, ifIdle bool) {
 	key := host + "|" + terminalID
 	gridTerms.mu.Lock()
 	e := gridTerms.byKey[key]
 	if e != nil && token != "" && e.token != token {
 		e = nil // a newer attach owns this pane now — don't kill it
+	}
+	if e != nil && ifIdle && time.Since(e.lastUsed) < gridTermActive {
+		e = nil // another viewer still has this cell mounted
 	}
 	if e != nil {
 		delete(gridTerms.byKey, key)
@@ -1229,6 +1250,10 @@ func serveGridTermTouch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Host       string `json:"host"`
 		TerminalID string `json:"terminal_id"`
+		// Token (optional) is the attach the caller is actually streaming from.
+		// See touchGridTerm: without it a cell whose own attach was killed and
+		// replaced is told "alive" and sits on a 404 forever.
+		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1238,20 +1263,37 @@ func serveGridTermTouch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host and a valid terminal_id required", http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, map[string]any{"alive": touchGridTerm(req.Host, req.TerminalID)})
+	writeJSON(w, map[string]any{"alive": touchGridTerm(req.Host, req.TerminalID, req.Token)})
 }
 
-// touchGridTerm bumps lastUsed for a live grid terminal and reports whether it
-// existed. It never creates one, so a keepalive can't undo a release.
-func touchGridTerm(host, terminalID string) bool {
+// touchGridTerm bumps lastUsed for a live grid terminal and reports whether the
+// caller's attach is still the live one. It never creates one, so a keepalive
+// can't undo a release.
+//
+// A non-empty token scopes the answer to that specific attach. Grid attaches are
+// a server-wide pool shared by every viewer, and the panes shown are persisted
+// server-side — so two tabs (or a laptop and a phone) generally hold the SAME
+// cells. When one of them tears its cells down (releaseAll on leaving the Grid, a
+// host switch, a deferred unmount release) and re-attaches, the pane's key is live
+// again under a NEW token while the other viewer's iframe is still streaming from
+// the dead one, whose /grid-term/<token>/ requests now 404. A key-only liveness
+// check answered "alive" there, so that cell never re-attached and sat on ttyd's
+// 404 page indefinitely. Reporting the caller's own token dead makes it re-attach
+// onto whatever is live now (ensureGridTerm hands back the existing entry, so it's
+// a near-instant reconnect, not a cold start).
+func touchGridTerm(host, terminalID, token string) bool {
 	key := host + "|" + terminalID
 	gridTerms.mu.Lock()
 	defer gridTerms.mu.Unlock()
-	if e := gridTerms.byKey[key]; e != nil {
-		e.lastUsed = time.Now()
-		return true
+	e := gridTerms.byKey[key]
+	if e == nil {
+		return false
 	}
-	return false
+	if token != "" && e.token != token {
+		return false // a different attach owns this pane now — the caller's is dead
+	}
+	e.lastUsed = time.Now()
+	return true
 }
 
 // serveGridTermReleaseAll tears down every live grid terminal at once. The frontend
