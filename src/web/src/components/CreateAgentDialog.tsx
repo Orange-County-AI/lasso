@@ -69,12 +69,14 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     id: "claude",
     label: "Claude Code",
     supports_plan_mode: true,
+    effort_levels: ["low", "medium", "high", "xhigh", "max"],
     model_suggestions: [],
   },
   {
     id: "codex",
     label: "Codex",
     supports_plan_mode: false,
+    effort_levels: ["minimal", "low", "medium", "high", "xhigh"],
     model_suggestions: [],
   },
   {
@@ -317,6 +319,9 @@ export function CreateAgentDialog({
   const [autoBranch, setAutoBranch] = React.useState("")
   const [agent, setAgent] = React.useState("claude")
   const [model, setModel] = React.useState("")
+  // "" = don't pass an effort flag, letting the harness's CLI use its own
+  // default (what launching by hand does).
+  const [effort, setEffort] = React.useState("")
   const [extraArgs, setExtraArgs] = React.useState("")
   const [pastingImage, setPastingImage] = React.useState(false)
   const [planMode, setPlanMode] = React.useState(false)
@@ -382,13 +387,13 @@ export function CreateAgentDialog({
     setPrefix(config.branch_prefix || "")
     const seededAgent = config.default_agent || config.last_agent || "claude"
     setAgent(seededAgent)
-    // Default the model to whatever the harness's CLI is itself configured with
-    // (Claude Code's configured model). When the CLI has no model pinned in any
-    // of its config files the field stays blank — the placeholder "default" then
-    // reads as "let the CLI pick", which is exactly what launching with no
-    // --model does.
-    const seededDef = config.harnesses?.find((h) => h.id === seededAgent)
-    setModel(seededDef?.default_model || "")
+    // Model and thinking effort deliberately start unset on every open: their
+    // blank state means "pass no flag", so the harness's CLI applies whatever
+    // it's configured with — the same thing launching it by hand does. Carrying
+    // a previous pick (or the CLI's currently-configured model) forward would
+    // silently pin a choice the user never made this time.
+    setModel("")
+    setEffort("")
     setExtraArgs("")
     const last = config.last_repo
     setRepo(
@@ -532,6 +537,7 @@ export function CreateAgentDialog({
     setFiles([])
     setPastedImages([])
     setPlanMode(false)
+    setEffort("")
     setExtraArgs("")
     setShowAdvanced(false)
   }
@@ -567,6 +573,10 @@ export function CreateAgentDialog({
         prompt: finalPrompt.trim(),
         agent,
         model: model.trim() || undefined,
+        // Effort levels differ per harness, so send it only when the picked
+        // harness actually offers the selected one (the select is reset on a
+        // harness switch, but this keeps a stale value from ever riding along).
+        effort: harness.effort_levels?.includes(effort) ? effort : undefined,
         extra_args: extraArgs.trim() || undefined,
         // The checkbox is hidden for harnesses without a plan mode, but its
         // state survives harness switches — gate it so a codex agent never
@@ -879,13 +889,13 @@ export function CreateAgentDialog({
                       className={fieldClass}
                       value={agent}
                       onChange={(e) => {
-                        const next = e.target.value
-                        setAgent(next)
-                        // Swap in the newly-selected harness's configured default
-                        // model (e.g. Claude Code's), or blank when its CLI has no
-                        // model pinned in its config.
-                        const nextDef = harnesses.find((h) => h.id === next)
-                        setModel(nextDef?.default_model || "")
+                        setAgent(e.target.value)
+                        // Model names and effort levels are both harness-specific
+                        // (claude's "opus"/"max" mean nothing to codex), so a
+                        // switch clears them back to "pass no flag" rather than
+                        // carrying over a value the new CLI can't take.
+                        setModel("")
+                        setEffort("")
                       }}
                     >
                       {harnesses.map((h) => (
@@ -910,6 +920,28 @@ export function CreateAgentDialog({
                     />
                   </Field>
                 </div>
+                {/* Only harnesses whose CLI takes an effort knob list levels
+                    (claude, codex); elsewhere the select is hidden rather than
+                    offering a setting that goes nowhere. */}
+                {!!harness.effort_levels?.length && (
+                  <Field label="Thinking effort" htmlFor="agent-effort">
+                    <select
+                      id="agent-effort"
+                      className={fieldClass}
+                      value={effort}
+                      onChange={(e) => setEffort(e.target.value)}
+                    >
+                      {/* Blank = pass no flag, so the CLI applies its own
+                          default — same wording as the Model placeholder. */}
+                      <option value="">default</option>
+                      {harness.effort_levels.map((lvl) => (
+                        <option key={lvl} value={lvl}>
+                          {lvl}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 {/* Plan mode only exists on harnesses that support it (claude);
                     hide the toggle elsewhere rather than offering a no-op. */}
                 {harness.supports_plan_mode && (

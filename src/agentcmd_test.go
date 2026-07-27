@@ -132,6 +132,53 @@ func TestAgentCommandModelAndExtraArgs(t *testing.T) {
 	}
 }
 
+// Thinking effort is harness-specific: claude takes a --effort flag, codex has
+// none and needs the config key overridden with -c. Either way it lands before
+// the prompt, and an empty effort emits nothing.
+func TestAgentCommandEffort(t *testing.T) {
+	cmd := agentCommand("claude", launchOpts{model: "opus", effort: "xhigh", prompt: "do it"})
+	if !strings.Contains(cmd, "--effort 'xhigh'") {
+		t.Errorf("claude command missing effort flag: %q", cmd)
+	}
+	if strings.Index(cmd, "--effort") > strings.Index(cmd, "'do it'") {
+		t.Errorf("effort must precede the prompt: %q", cmd)
+	}
+
+	codex := agentCommand("codex", launchOpts{effort: "high", prompt: "do it"})
+	if !strings.Contains(codex, "-c 'model_reasoning_effort=high'") {
+		t.Errorf("codex command missing reasoning-effort override: %q", codex)
+	}
+
+	for _, agent := range []string{"claude", "codex", "opencode"} {
+		bare := agentCommand(agent, launchOpts{prompt: "do it"})
+		if strings.Contains(bare, "effort") {
+			t.Errorf("empty effort must not emit a flag for %s: %q", agent, bare)
+		}
+	}
+}
+
+// Effort is a closed set per harness: a level the CLI doesn't know would abort
+// the launch, so anything unlisted (including a level from another harness) is
+// dropped rather than passed through. Case and padding are forgiving.
+func TestNormalizeEffort(t *testing.T) {
+	cases := []struct{ agent, in, want string }{
+		{"claude", "high", "high"},
+		{"claude", " High ", "high"},
+		{"claude", "max", "max"},
+		{"claude", "minimal", ""}, // codex-only level
+		{"codex", "minimal", "minimal"},
+		{"codex", "max", ""},     // claude-only level
+		{"opencode", "high", ""}, // no effort knob at all
+		{"claude", "", ""},
+		{"claude", "turbo", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeEffort(c.agent, c.in); got != c.want {
+			t.Errorf("normalizeEffort(%q, %q) = %q, want %q", c.agent, c.in, got, c.want)
+		}
+	}
+}
+
 // opencode must auto-approve permissions (--auto, its analog of claude's
 // skip-permissions) so it runs autonomously, take its prompt via --prompt
 // (the TUI has no positional prompt arg), and select plan mode via its
