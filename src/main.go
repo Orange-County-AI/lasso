@@ -1,7 +1,9 @@
 // Command lasso serves a two-column web UI:
 //
 //	left  = herdr running inside a ttyd terminal (embedded in an iframe)
-//	right = a file viewer that follows herdr's *focused pane* cwd, live
+//	right = a file viewer that follows the *focused pane's* working directory,
+//	        live — the harness's own cwd when an agent owns the pane (see
+//	        agentcwd.go), the pane's otherwise
 //
 // It talks to the herdr server over its newline-delimited JSON unix socket
 // (subscribe to focus events + poll pane.list for cwd changes) and pushes
@@ -547,22 +549,30 @@ type pane struct {
 	WorkspaceID   string `json:"workspace_id"`
 	TabID         string `json:"tab_id"`
 	Label         string `json:"label"`          // herdr's per-pane title; "" when the pane is unnamed
-	Cwd           string `json:"cwd"`            // the shell's launch dir — stale once an agent owns the pane
+	Cwd           string `json:"cwd"`            // the shell's cwd as it last reported it (OSC 7), so stale mid-command
 	ForegroundCwd string `json:"foreground_cwd"` // herdr-resolved cwd of the pane's foreground process; "" when unresolvable
 	Focused       bool   `json:"focused"`
 	Agent         string `json:"agent"`
 	AgentStatus   string `json:"agent_status"`
+	// AgentSession is the harness session herdr would resume this pane with —
+	// the handle on the agent's *own* working directory (see agentcwd.go).
+	AgentSession *agentSession `json:"agent_session"`
 }
 
-// paneCwd is the best cwd for a pane. For a plain shell, herdr's foreground_cwd
-// (the live cwd of whatever process owns the terminal) tracks the user's cd's
-// and wins. For an AGENT pane, the shell launch dir is the agent's project root
-// and is what the file viewer should follow: the agent's foreground process is
-// often a transient subprocess (e.g. a plugin under ~/.claude/plugins/cache)
-// whose cwd would otherwise drag the viewer away from the worktree. So agents
-// prefer the launch cwd, using foreground_cwd only when herdr reports none.
-// (herdr added foreground_cwd in 0.6.5, superseding the viewer's old
-// /proc-scraping workaround.)
+// paneCwd is the best cwd herdr's pane.list alone can give for a pane. For a
+// plain shell, foreground_cwd (the live cwd of whatever process owns the
+// terminal) tracks the user's cd's and wins. For an AGENT pane, the shell's
+// reported cwd is the agent's project root and is the safer of the two: the
+// agent's foreground process is often a transient subprocess (e.g. a plugin
+// under ~/.claude/plugins/cache) whose cwd would otherwise drag the viewer away
+// from the worktree. So agents prefer the shell cwd, using foreground_cwd only
+// when herdr reports none. (herdr added foreground_cwd in 0.6.5, superseding the
+// viewer's old /proc-scraping workaround.)
+//
+// The focused pane — the one the file viewer follows — gets a better answer
+// from activeCwd, which asks the harness and the foreground process-group
+// leader before falling back here. This stays the cheap per-pane answer for the
+// grid, where a per-pane RPC and transcript read would be paid N times over.
 func paneCwd(p pane) string {
 	if p.Agent != "" {
 		if p.Cwd != "" {
@@ -636,7 +646,7 @@ type workspace struct {
 type Active struct {
 	PaneID         string `json:"pane_id"`
 	Cwd            string `json:"cwd"`
-	CwdSource      string `json:"cwd_source"` // "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell launch cwd, used when foreground is unresolvable)
+	CwdSource      string `json:"cwd_source"` // which resolver answered: "harness" (the agent's own cwd, from its session transcript) | "leader" (the foreground process-group leader's cwd) | "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell-reported cwd)
 	WorkspaceID    string `json:"workspace_id"`
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
@@ -695,12 +705,10 @@ func fetchActive() (Active, string, error) {
 		return Active{}, sig, nil
 	}
 	a := Active{
-		PaneID: fp.PaneID, Cwd: paneCwd(*fp), CwdSource: "shell", WorkspaceID: fp.WorkspaceID,
+		PaneID: fp.PaneID, WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: fp.Agent, AgentStatus: fp.AgentStatus,
 	}
-	if paneCwdUsesForeground(*fp) {
-		a.CwdSource = "foreground"
-	}
+	a.Cwd, a.CwdSource = activeCwd(*fp)
 	a.TabLabel = tabLabel(fp.TabID)
 	for _, w := range wl.Workspaces {
 		if w.WorkspaceID == a.WorkspaceID {
