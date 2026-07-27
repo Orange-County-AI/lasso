@@ -179,6 +179,61 @@ func TestNormalizeEffort(t *testing.T) {
 	}
 }
 
+// A plan request for a harness with no plan mode must be DROPPED, not recorded.
+// codexCommand builds no plan flag, so persisting plan_mode:true would make the
+// creator's badge, get_agent and list_agents all report planning that never
+// happened — with the launch line long gone by the time anyone doubts it.
+func TestNormalizePlanMode(t *testing.T) {
+	cases := []struct {
+		agent string
+		in    bool
+		want  bool
+	}{
+		{"claude", true, true},
+		{"opencode", true, true},
+		{"codex", true, false}, // codex has no plan mode: drop it
+		{"codex", false, false},
+		{"claude", false, false},
+		{"", true, true}, // unknown ids default to claude, per harnessByID
+		{"nonesuch", true, true},
+	}
+	for _, c := range cases {
+		if got := normalizePlanMode(c.agent, c.in); got != c.want {
+			t.Errorf("normalizePlanMode(%q, %v) = %v, want %v", c.agent, c.in, got, c.want)
+		}
+	}
+}
+
+// The drop has to happen where the record is built, not just in the helper —
+// otherwise the launch is right and the persisted row still lies.
+func TestCreateAgentDropsPlanModeForHarnessWithoutOne(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() {
+		if db != nil {
+			db.Close()
+			db = nil
+		}
+	})
+	b := &createAgentBackend{memBackend: newMemBackend()}
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	rec, err := createAgent(b, createAgentReq{
+		Type: "scratch", Title: "codex planner", Prompt: "plan it",
+		Agent: "codex", PlanMode: true, NoFocus: true,
+	})
+	if err != nil {
+		t.Fatalf("createAgent: %v", err)
+	}
+	if rec.PlanMode {
+		t.Error("codex agent persisted plan_mode:true, but codexCommand builds no plan flag — the record claims planning that never happened")
+	}
+}
+
 // opencode must auto-approve permissions (--auto, its analog of claude's
 // skip-permissions) so it runs autonomously, take its prompt via --prompt
 // (the TUI has no positional prompt arg), and select plan mode via its

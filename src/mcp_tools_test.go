@@ -233,3 +233,49 @@ func TestMCPCreateAgentDropsEffortTheHarnessDoesNotKnow(t *testing.T) {
 		t.Errorf("normalizeEffort(claude, xhigh) = %q, want xhigh", got)
 	}
 }
+
+// Plan mode was withheld from MCP from the day after the tool shipped, on the
+// presumption that a spawned agent would strand itself at an approval gate
+// nobody watches. It doesn't — the agent answers normally and only blocks when
+// it wants to execute — so the parameter is exposed. It still has to actually
+// reach the launch line.
+func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() {
+		if db != nil {
+			db.Close()
+			db = nil
+		}
+	})
+
+	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	in := createAgentIn{Type: "scratch", Title: "planner", Prompt: "plan it", Agent: "claude", PlanMode: true}
+	rec, err := createAgent(b, in.toCreateReq())
+	if err != nil {
+		t.Fatalf("createAgent: %v", err)
+	}
+	if !rec.PlanMode {
+		t.Error("plan_mode:true did not reach the persisted record")
+	}
+	select {
+	case <-b.launched:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+	}
+	line := b.launchLine()
+	if !strings.Contains(line, "--permission-mode plan") {
+		t.Errorf("launch line is not in plan mode:\n  %s", line)
+	}
+	// The plain bypass flag would silently override plan mode (see claudeCommand),
+	// so a plan launch must carry only the --allow- variant.
+	if strings.Contains(line, " --dangerously-skip-permissions") {
+		t.Errorf("plan launch forces bypass mode, which overrides plan:\n  %s", line)
+	}
+}

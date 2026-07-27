@@ -43,7 +43,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -592,6 +592,7 @@ type createAgentIn struct {
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude and opencode only — dropped for codex, which has no plan mode, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE, at which point its status goes \"blocked\" and its pane shows a numbered \"Would you like to proceed?\" prompt. Wait for it with wait_agent status=blocked, read the plan with read_agent, then approve by sending the option number with send_agent (\"1\" accepts). A human watching the pane can approve it instead — the gate is a real prompt, not a formality, so leaving an agent parked on it is a valid way to keep a plan under review."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
@@ -622,7 +623,9 @@ func (in createAgentIn) toCreateReq() createAgentReq {
 		// Default to NOT focusing: an MCP-spawned agent shouldn't switch a watching
 		// user away from their current pane. Opt in with focus:true.
 		NoFocus: !in.Focus,
-		// PlanMode intentionally omitted: agents started via MCP never run in plan mode.
+		// createAgent drops this for a harness with no plan mode (normalizePlanMode),
+		// so an MCP caller can't record planning that never happened either.
+		PlanMode: in.PlanMode,
 	}
 }
 

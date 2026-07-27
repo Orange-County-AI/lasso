@@ -86,10 +86,16 @@ var createParams = map[string]createParam{
 		// a long machine-written prompt has no useful first line to fall back on.
 		TSSkip: "the creator form derives the title from the prompt's first line and offers no override",
 	},
-	"PlanMode": {
-		MCPSkip: "agents started via MCP never run in plan mode",
-		TS:      "plan_mode",
-	},
+	// Withheld from MCP since the day after the tool shipped ("MCP: don't allow
+	// starting agents in plan mode", 3a103ce9) with no recorded reason. The
+	// presumed one — a spawned agent would strand itself at an approval gate
+	// nobody is watching — turned out not to hold: a plan agent answers
+	// normally and only blocks when it wants to EXECUTE, at which point its
+	// status is "blocked" (so wait_agent finds it) and the numbered prompt takes
+	// a send_agent "1" (so an orchestrator can approve it), while a human
+	// watching the pane still gets the real dialog. Verified end to end before
+	// exposing it; see the jsonschema description on createAgentIn.PlanMode.
+	"PlanMode": {MCP: "PlanMode", TS: "plan_mode"},
 	"Attachments": {
 		MCPSkip: "part of the browser upload-staging flow (/api/agent-upload), which has no MCP equivalent",
 		TS:      "attachments",
