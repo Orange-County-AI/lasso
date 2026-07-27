@@ -373,6 +373,17 @@ export function GridTab({
     Math.floor((availH - (rows - 1) * GRID_GAP) / rows)
   )
 
+  // A partial last row leaves holes in its trailing columns — with 3 panes in
+  // 2 columns that stranded a quarter of the viewport. The cells directly
+  // above the holes span both rows instead, so those columns stay full height
+  // and the grid always fills the space it occupies.
+  const holes = rows > 1 && n % cols !== 0 ? cols - (n % cols) : 0
+  const tallCells = React.useMemo(() => {
+    const s = new Set<number>()
+    for (let c = cols - holes; c < cols; c++) s.add((rows - 2) * cols + c)
+    return s
+  }, [cols, rows, holes])
+
   const setMode = (m: "watch" | "select") => patchUIState({ grid_mode: m })
 
   // Step Select mode's shown pane through the cycling list (wraps). When the
@@ -781,11 +792,12 @@ export function GridTab({
               )}
             </div>
           ) : (
-            panes.map((p) => (
+            panes.map((p, i) => (
               <GridCell
                 key={cellKey(p)}
                 pane={p}
                 active={active}
+                tall={tallCells.has(i)}
                 selected={selected.has(cellKey(p))}
                 selectionCount={selected.size}
                 focused={
@@ -890,6 +902,7 @@ function frameId(host: string, terminalID: string) {
 function GridCell({
   pane: p,
   active,
+  tall,
   selected,
   selectionCount,
   focused,
@@ -905,6 +918,8 @@ function GridCell({
 }: {
   pane: GridPane
   active: boolean
+  /** Stretch over two grid rows to soak up a hole in the partial last row. */
+  tall: boolean
   selected: boolean
   selectionCount: number
   focused: boolean
@@ -1146,6 +1161,7 @@ function GridCell({
       id={`cell-${id}`}
       className={cn(
         "termcell",
+        tall && "tall",
         focused && "focused",
         selected && "selected",
         pending && "focusing"

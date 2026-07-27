@@ -348,6 +348,10 @@
 .termgrid > .empty {
   grid-column: 1 / -1;
 }
+/* Cells GridTab marked to absorb the empty tail of a partial last row. */
+.termcell.tall {
+  grid-row: span 2;
+}
 .termcell.focused {
   border-color: var(--h-accent);
 }
