@@ -43,7 +43,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model (omit for its default) and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -564,6 +564,7 @@ type createAgentIn struct {
 	BranchPrefix string `json:"branch_prefix,omitempty" jsonschema:"Optional prefix for the new branch, e.g. \"worktree\" -> worktree/<name>."`
 	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default), \"codex\", or \"opencode\"."`
 	Model        string `json:"model,omitempty" jsonschema:"Model for the agent's CLI (passed to its --model flag), e.g. \"opus\", \"sonnet\", \"haiku\" for claude, \"gpt-5.1-codex\" for codex, or \"anthropic/claude-sonnet-4-5\" for opencode (provider/model). Omit for the harness default."`
+	Effort       string `json:"effort,omitempty" jsonschema:"Thinking/reasoning effort for the agent's CLI. The levels are harness-dependent — claude: \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; codex: \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"; opencode has no effort knob. A level the chosen harness doesn't list is DROPPED (the agent launches at the CLI's own default) rather than passed through, because an unknown level makes the CLI exit at launch and would fail the whole boot. Omit for the CLI's default."`
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
@@ -584,6 +585,7 @@ func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn
 		BranchName:   in.BranchName,
 		Agent:        in.Agent,
 		Model:        in.Model,
+		Effort:       in.Effort,
 		ExtraArgs:    in.ExtraArgs,
 		Prompt:       in.Prompt, // the prompt rides into agentCommand via agentPrompt; its first line is the title
 		Notes:        in.Notes,
