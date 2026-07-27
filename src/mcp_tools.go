@@ -571,12 +571,18 @@ type createAgentIn struct {
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
-func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn) (*mcp.CallToolResult, agentInfo, error) {
-	b, err := resolveBackend(in.Host)
-	if err != nil {
-		return nil, agentInfo{}, err
-	}
-	rec, err := createAgent(b, createAgentReq{
+// toCreateReq maps the MCP tool's input onto the HTTP create payload. Split out
+// of createAgentTool so the parity test can drive the mapping directly — with no
+// backend and no herdr — and prove that every field createAgentIn advertises
+// actually lands in the req. A field declared in the schema but forgotten in
+// this literal would drop exactly as silently as one never declared at all,
+// which is the failure mode createParams exists to rule out.
+//
+// Host is deliberately absent: createAgentTool resolves it to a Backend and
+// createAgent takes the host from that backend, so copying it here would record
+// an intent nothing reads. Every other omission is declared in createParams.
+func (in createAgentIn) toCreateReq() createAgentReq {
+	return createAgentReq{
 		Type:         in.Type,
 		Title:        in.Title,
 		Repo:         in.Repo,
@@ -593,7 +599,15 @@ func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn
 		// user away from their current pane. Opt in with focus:true.
 		NoFocus: !in.Focus,
 		// PlanMode intentionally omitted: agents started via MCP never run in plan mode.
-	})
+	}
+}
+
+func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn) (*mcp.CallToolResult, agentInfo, error) {
+	b, err := resolveBackend(in.Host)
+	if err != nil {
+		return nil, agentInfo{}, err
+	}
+	rec, err := createAgent(b, in.toCreateReq())
 	if err != nil {
 		return nil, agentInfo{}, err
 	}
