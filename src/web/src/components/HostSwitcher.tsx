@@ -266,7 +266,9 @@ export function HostSwitcher({
   // one host cluster together instead of scattering alphabetically. Loopback
   // aliases (HostName localhost/127.*/::1) are the very machine lasso runs on,
   // so they fold under the local host rather than forming their own group.
-  const LOCAL_KEY = " local"
+  // NUL-prefixed so this synthetic key can never collide with a real hostname
+  // (which cannot contain one) — it shares `groups` with resolved hostnames.
+  const LOCAL_KEY = "\u0000local"
   const isLoopback = (host?: string) => {
     if (!host) return false
     const h = host.toLowerCase()

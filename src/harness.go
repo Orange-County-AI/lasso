@@ -16,8 +16,9 @@ type harnessDef struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	// SupportsPlanMode gates the "Start in plan mode" checkbox — claude and
-	// opencode have a plan mode today; on other harnesses the flag is silently
-	// ignored.
+	// opencode have a plan mode today. It is also the server-side gate: a plan
+	// request for a harness without one is dropped by normalizePlanMode rather
+	// than persisted, so the record can't claim an agent planned when it didn't.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
 	// EffortLevels are the thinking/reasoning-effort levels this harness's CLI
 	// accepts, cheapest first — they populate the creator's "Thinking effort"
@@ -110,6 +111,19 @@ func normalizeEffort(agent, effort string) string {
 		}
 	}
 	return ""
+}
+
+// normalizePlanMode keeps a plan-mode request only when the harness actually
+// has a plan mode. The failure it prevents is quieter than normalizeEffort's:
+// an unknown --effort kills the CLI at launch, whereas a plan request codex
+// can't honor is harmless AT BOOT — codexCommand simply builds no plan flag.
+// The damage is to the record. Persisting plan_mode:true for an agent that
+// launched in the default mode makes the creator's badge, get_agent and
+// list_agents all report planning that never happened, and the launch line is
+// long gone by the time anyone doubts it. Drop it so the record matches what
+// actually ran.
+func normalizePlanMode(agent string, planMode bool) bool {
+	return planMode && harnessByID(agent).SupportsPlanMode
 }
 
 // agentCommand builds the shell command that launches the chosen agent. A

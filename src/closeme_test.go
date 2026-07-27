@@ -356,12 +356,34 @@ func TestCloseAgentToolExplicitHostWithPaneCollision(t *testing.T) {
 	}
 }
 
-// close_agent needs an agent_id — an empty one must not fall through to pane
-// resolution and its confusing not-found message.
-func TestCloseAgentToolRequiresAgentID(t *testing.T) {
+// An agent closing ITSELF knows only its $HERDR_PANE_ID. close_agent takes that
+// directly, so it no longer has to call whoami purely to translate the pane into
+// an id — the HTTP endpoint behind `lasso closeme` always could, and both now
+// run through the same resolveCloseTarget with the same cross-host guards.
+func TestCloseAgentToolByPaneID(t *testing.T) {
+	openTestDB(t)
+	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "wR:p1",
+		WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
+	stubCloseBackends(t, map[string]Backend{"local": local})
+
+	_, out, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "wR:p1"})
+	if err != nil {
+		t.Fatalf("closeAgentTool by pane id: %v", err)
+	}
+	if !out.PaneClosed || len(local.closed) != 1 || local.closed[0] != "wR:p1" {
+		t.Errorf("local closed = %v (out %+v), want [wR:p1]", local.closed, out)
+	}
+}
+
+// close_agent needs a target — neither id nor pane must not fall through to
+// pane resolution and its confusing not-found message.
+func TestCloseAgentToolRequiresATarget(t *testing.T) {
 	_, _, err := closeAgentTool(context.Background(), nil, closeAgentIn{})
-	if err == nil || !strings.Contains(err.Error(), "agent_id") {
-		t.Fatalf("expected an agent_id-required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "agent_id") || !strings.Contains(err.Error(), "pane_id") {
+		t.Fatalf("expected an error naming both ways to target an agent, got %v", err)
 	}
 }
 

@@ -453,7 +453,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		Description: req.Prompt,
 		Notes:       strings.TrimSpace(req.Notes),
 		Attachments: req.Attachments,
-		PlanMode:    req.PlanMode,
+		PlanMode:    normalizePlanMode(req.Agent, req.PlanMode),
 		CreatedAt:   time.Now(),
 		// The agent's CLI is launched asynchronously by bootAgent after we return,
 		// so the record starts life "booting"; bootAgent flips it to ready/failed.

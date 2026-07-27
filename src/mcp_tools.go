@@ -43,7 +43,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model (omit for its default) and `extra_args` appends verbatim CLI flags. Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, or opencode) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -83,7 +83,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "close_agent",
-		Description: "Stop an agent: first kill the agent process (claude/codex/opencode) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Pass the `host` whoami/list_agents returned alongside the id; with no host every known host is searched, and an agent id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
+		Description: "Stop an agent: first kill the agent process (claude/codex/opencode) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Target it by `agent_id`, or by `pane_id` — pass your own $HERDR_PANE_ID to close YOURSELF without resolving your id via whoami first. Pass the `host` whoami/list_agents returned alongside the id; with no host every known host is searched, and an id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
 	}, closeAgentTool)
 }
 
@@ -109,6 +109,16 @@ type agentInfo struct {
 	Type        string `json:"type"`
 	Agent       string `json:"agent"`
 	Model       string `json:"model,omitempty"`
+	// Effort is the thinking level the agent launched at, after normalizeEffort
+	// dropped anything its harness doesn't offer — so a caller that passed one
+	// can see whether it actually took, which is the whole failure mode that
+	// made create_agent's missing effort parameter invisible.
+	Effort string `json:"effort,omitempty"`
+	// ExtraArgs and PlanMode complete the "how was this agent configured" set
+	// alongside Agent/Model/Effort: every knob create_agent accepts reads back,
+	// so a caller can confirm what actually took.
+	ExtraArgs   string `json:"extra_args,omitempty"`
+	PlanMode    bool   `json:"plan_mode"`
 	Repo        string `json:"repo,omitempty"`
 	Branch      string `json:"branch,omitempty"`
 	BaseBranch  string `json:"base_branch,omitempty"`
@@ -116,8 +126,13 @@ type agentInfo struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	RootPane    string `json:"root_pane,omitempty"`
 	Status      string `json:"status,omitempty"`
-	BootError   string `json:"boot_error,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	// BootStatus is the async boot's own phase (booting/ready/failed). Status
+	// only folds in a FAILED boot — a still-booting agent otherwise looks exactly
+	// like one that is up and idle, which a caller polling after create_agent
+	// cannot tell apart. BootError carries the reason when this is failed.
+	BootStatus string `json:"boot_status,omitempty"`
+	BootError  string `json:"boot_error,omitempty"`
+	CreatedAt  string `json:"created_at"`
 	// LassoCreated distinguishes agents lasso spawned (true — addressable by id,
 	// closeable, full record) from foreign herdr sessions it merely surfaces
 	// (false — address by sidebar_name or root_pane; no lasso id to close).
@@ -127,9 +142,10 @@ type agentInfo struct {
 func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 	return agentInfo{
 		ID: rec.ID, Host: host, Title: rec.Title, Type: rec.Type, Agent: rec.Agent,
-		Model: rec.Model, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
+		Model: rec.Model, Effort: rec.Effort, ExtraArgs: rec.ExtraArgs, PlanMode: rec.PlanMode,
+		Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
-		Status: surfacedStatus(rec, status), BootError: rec.BootError,
+		Status: surfacedStatus(rec, status), BootStatus: rec.BootStatus, BootError: rec.BootError,
 		CreatedAt: rec.CreatedAt.Format(time.RFC3339), LassoCreated: true,
 	}
 }
@@ -454,7 +470,13 @@ func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
 // list_hosts
 // ---------------------------------------------------------------------------
 
-type listHostsIn struct{}
+// Refresh mirrors the ?refresh=1 the HTTP endpoints behind the web UI take.
+// Without it an MCP caller could only ever read the cache — so a host just
+// brought up, a repo just cloned, or a branch just pushed stayed invisible
+// until the TTL expired, with no way to ask for a re-probe.
+type listHostsIn struct {
+	Refresh bool `json:"refresh,omitempty" jsonschema:"Re-probe the hosts instead of answering from the cache. Slower (it dials every configured SSH host); use it when a host you just brought up is missing."`
+}
 
 type hostEntry struct {
 	Host       string `json:"host"`       // value to pass as `host` ("local" or an alias)
@@ -470,7 +492,7 @@ type listHostsOut struct {
 	Hosts  []hostEntry `json:"hosts"`
 }
 
-func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
+func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, in listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
 	ver, _ := localProtocol()
 	out := listHostsOut{
 		Active: curBackend().Name(),
@@ -479,7 +501,7 @@ func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (
 			Running: true, Compatible: true, Version: ver,
 		}},
 	}
-	for _, h := range discoverHosts(ctx, false) {
+	for _, h := range discoverHosts(ctx, in.Refresh) {
 		out.Hosts = append(out.Hosts, hostEntry{
 			Host: h.Alias, Label: h.Alias, Reachable: h.Reachable,
 			Running: h.Running, Compatible: h.Compatible, Version: h.Version,
@@ -493,7 +515,8 @@ func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (
 // ---------------------------------------------------------------------------
 
 type listReposIn struct {
-	Host string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Host    string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-scan the repo roots instead of answering from the cache. Use it when a repo you just cloned is missing."`
 }
 
 type repoBrief struct {
@@ -512,7 +535,7 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 	if host == "" {
 		host = "local"
 	}
-	root, repos, err := cachedHostReposList(host, false)
+	root, repos, err := cachedHostReposList(host, in.Refresh)
 	if err != nil {
 		return nil, listReposOut{}, err
 	}
@@ -528,8 +551,9 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 // ---------------------------------------------------------------------------
 
 type listBranchesIn struct {
-	Host string `json:"host,omitempty" jsonschema:"Host the repo lives on; omit for the local box."`
-	Repo string `json:"repo" jsonschema:"Absolute path to the git repository."`
+	Host    string `json:"host,omitempty" jsonschema:"Host the repo lives on; omit for the local box."`
+	Repo    string `json:"repo" jsonschema:"Absolute path to the git repository."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-read the branches instead of answering from the cache. Use it when a branch you just created or fetched is missing."`
 }
 
 type listBranchesOut struct {
@@ -546,7 +570,7 @@ func listBranchesTool(_ context.Context, _ *mcp.CallToolRequest, in listBranches
 	if err != nil {
 		return nil, listBranchesOut{}, err
 	}
-	local, remote, def := cachedBranchList(in.Host, b, expandTildeOn(b, in.Repo), false)
+	local, remote, def := cachedBranchList(in.Host, b, expandTildeOn(b, in.Repo), in.Refresh)
 	return nil, listBranchesOut{Branches: local, RemoteBranches: remote, Default: def}, nil
 }
 
@@ -564,18 +588,26 @@ type createAgentIn struct {
 	BranchPrefix string `json:"branch_prefix,omitempty" jsonschema:"Optional prefix for the new branch, e.g. \"worktree\" -> worktree/<name>."`
 	Agent        string `json:"agent,omitempty" jsonschema:"Which agent to launch: \"claude\" (default), \"codex\", or \"opencode\"."`
 	Model        string `json:"model,omitempty" jsonschema:"Model for the agent's CLI (passed to its --model flag), e.g. \"opus\", \"sonnet\", \"haiku\" for claude, \"gpt-5.1-codex\" for codex, or \"anthropic/claude-sonnet-4-5\" for opencode (provider/model). Omit for the harness default."`
+	Effort       string `json:"effort,omitempty" jsonschema:"Thinking/reasoning effort for the agent's CLI. The levels are harness-dependent — claude: \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; codex: \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"; opencode has no effort knob. A level the chosen harness doesn't list is DROPPED (the agent launches at the CLI's own default) rather than passed through, because an unknown level makes the CLI exit at launch and would fail the whole boot. Omit for the CLI's default."`
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude and opencode only — dropped for codex, which has no plan mode, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE, at which point its status goes \"blocked\" and its pane shows a numbered \"Would you like to proceed?\" prompt. Wait for it with wait_agent status=blocked, read the plan with read_agent, then approve by sending the option number with send_agent (\"1\" accepts). A human watching the pane can approve it instead — the gate is a real prompt, not a formality, so leaving an agent parked on it is a valid way to keep a plan under review."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
-func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn) (*mcp.CallToolResult, agentInfo, error) {
-	b, err := resolveBackend(in.Host)
-	if err != nil {
-		return nil, agentInfo{}, err
-	}
-	rec, err := createAgent(b, createAgentReq{
+// toCreateReq maps the MCP tool's input onto the HTTP create payload. Split out
+// of createAgentTool so the parity test can drive the mapping directly — with no
+// backend and no herdr — and prove that every field createAgentIn advertises
+// actually lands in the req. A field declared in the schema but forgotten in
+// this literal would drop exactly as silently as one never declared at all,
+// which is the failure mode createParams exists to rule out.
+//
+// Host is deliberately absent: createAgentTool resolves it to a Backend and
+// createAgent takes the host from that backend, so copying it here would record
+// an intent nothing reads. Every other omission is declared in createParams.
+func (in createAgentIn) toCreateReq() createAgentReq {
+	return createAgentReq{
 		Type:         in.Type,
 		Title:        in.Title,
 		Repo:         in.Repo,
@@ -584,14 +616,25 @@ func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn
 		BranchName:   in.BranchName,
 		Agent:        in.Agent,
 		Model:        in.Model,
+		Effort:       in.Effort,
 		ExtraArgs:    in.ExtraArgs,
 		Prompt:       in.Prompt, // the prompt rides into agentCommand via agentPrompt; its first line is the title
 		Notes:        in.Notes,
 		// Default to NOT focusing: an MCP-spawned agent shouldn't switch a watching
 		// user away from their current pane. Opt in with focus:true.
 		NoFocus: !in.Focus,
-		// PlanMode intentionally omitted: agents started via MCP never run in plan mode.
-	})
+		// createAgent drops this for a harness with no plan mode (normalizePlanMode),
+		// so an MCP caller can't record planning that never happened either.
+		PlanMode: in.PlanMode,
+	}
+}
+
+func createAgentTool(_ context.Context, _ *mcp.CallToolRequest, in createAgentIn) (*mcp.CallToolResult, agentInfo, error) {
+	b, err := resolveBackend(in.Host)
+	if err != nil {
+		return nil, agentInfo{}, err
+	}
+	rec, err := createAgent(b, in.toCreateReq())
 	if err != nil {
 		return nil, agentInfo{}, err
 	}
@@ -1031,8 +1074,13 @@ func waitAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in waitAgentIn) 
 // ---------------------------------------------------------------------------
 
 type closeAgentIn struct {
-	Host           string `json:"host,omitempty" jsonschema:"Host the agent is on — pass the host field whoami/list_agents returned with the agent. Omit to search every host this lasso knows: an id that exists on exactly one host is closed there; an id that exists on several hosts is refused so the wrong host's agent is never killed."`
-	AgentID        string `json:"agent_id" jsonschema:"The agent's id."`
+	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on — pass the host field whoami/list_agents returned with the agent. Omit to search every host this lasso knows: an id that exists on exactly one host is closed there; an id that exists on several hosts is refused so the wrong host's agent is never killed."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Either this or pane_id is required."`
+	// The HTTP endpoint behind `lasso closeme` has always accepted a pane id —
+	// resolveCloseTarget takes both — but the tool only offered agent_id, so an
+	// agent closing ITSELF had to round-trip through whoami first purely to
+	// translate its own $HERDR_PANE_ID into an id. Same resolver, same guards.
+	PaneID         string `json:"pane_id,omitempty" jsonschema:"A herdr pane id instead of an agent id — pass your own $HERDR_PANE_ID to close yourself without looking your id up via whoami first. The raw env form and the public \"w<workspace>-<n>\" form are both accepted."`
 	ClosePane      *bool  `json:"close_pane,omitempty" jsonschema:"Close the agent's herdr pane after killing the process. Defaults to true; set false to leave the pane open as a bare shell."`
 	RemoveWorktree bool   `json:"remove_worktree,omitempty" jsonschema:"For a git agent, also delete its git worktree (discards uncommitted work). Defaults to false. Implies closing the pane."`
 }
@@ -1044,9 +1092,9 @@ type closeAgentOut struct {
 }
 
 func closeAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in closeAgentIn) (*mcp.CallToolResult, closeAgentOut, error) {
-	agentID := strings.TrimSpace(in.AgentID)
-	if agentID == "" {
-		return nil, closeAgentOut{}, fmt.Errorf("agent_id is required")
+	agentID, paneID := strings.TrimSpace(in.AgentID), strings.TrimSpace(in.PaneID)
+	if agentID == "" && paneID == "" {
+		return nil, closeAgentOut{}, fmt.Errorf("agent_id or pane_id is required (pass your own $HERDR_PANE_ID as pane_id to close yourself)")
 	}
 	// Resolve the id the same way /api/agent/close does: an explicit host scopes
 	// the lookup to that host's records; without one every host's records are
@@ -1054,7 +1102,7 @@ func closeAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in closeAgentIn
 	// another host unusable — and an id that somehow exists on several hosts is
 	// refused rather than guessed, since acting on the wrong host's record
 	// would kill an unrelated agent.
-	rec, _, err := resolveCloseTarget(ctx, in.Host, agentID, "")
+	rec, _, err := resolveCloseTarget(ctx, in.Host, agentID, paneID)
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}
