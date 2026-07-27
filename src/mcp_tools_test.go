@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // targetRecords are the host's lasso-created agents.
@@ -118,5 +121,115 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	}
 	if ai.SidebarName != "Clem (OCAI)" || ai.Title != "Clem (OCAI)" || ai.RootPane != "w9-1" || ai.ID != "" {
 		t.Errorf("foreign pane info = %+v, want name/pane populated and no lasso id", ai)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// create_agent: MCP input -> launch line
+// ---------------------------------------------------------------------------
+
+// launchFake records the command lines herdr is asked to type into a pane, so a
+// test can assert on the launch line an agent's boot actually produced.
+type launchFake struct {
+	*memBackend
+	mu       sync.Mutex
+	sent     []string
+	launched chan struct{} // closed once a line invoking the agent CLI lands
+	once     sync.Once
+}
+
+func (b *launchFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+	switch method {
+	case "worktree.create", "workspace.create":
+		return json.RawMessage(`{"workspace":{"workspace_id":"ws"},"root_pane":{"pane_id":"p1"}}`), nil
+	case "pane.read":
+		// Stable non-empty text so waitPaneReady settles on the first two polls.
+		return json.RawMessage(`{"read":{"text":"$ "}}`), nil
+	case "pane.send_text":
+		p, _ := params.(map[string]any)
+		text, _ := p["text"].(string)
+		b.mu.Lock()
+		b.sent = append(b.sent, text)
+		b.mu.Unlock()
+		if strings.Contains(text, "claude ") {
+			b.once.Do(func() { close(b.launched) })
+		}
+	}
+	return json.RawMessage(`{}`), nil
+}
+
+func (b *launchFake) GitOut(string, ...string) (string, error) { return "", nil }
+
+// launchLine returns the recorded line that invokes the agent CLI.
+func (b *launchFake) launchLine() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range b.sent {
+		if strings.Contains(s, "claude ") {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+// TestMCPCreateAgentEffortReachesLaunchCommand walks the whole MCP create path
+// for the field that silently went missing — the tool's input struct, the
+// mapping onto createAgentReq, normalizeEffort's harness check, and the command
+// herdr is asked to type — and proves effort:"xhigh" comes out as
+// `--effort xhigh` on the launch line. The parity tests in create_params_test.go
+// prove no field can go undeclared; this proves this one actually arrives.
+//
+// Only host resolution is skipped (createAgentTool's resolveBackend hands
+// createAgent a real herdr connection; the fake stands in for it).
+func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() {
+		if db != nil {
+			db.Close()
+			db = nil
+		}
+	})
+
+	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	in := createAgentIn{
+		Type:   "scratch",
+		Title:  "effort probe",
+		Prompt: "say hi",
+		Agent:  "claude",
+		Effort: "xhigh",
+	}
+	if _, err := createAgent(b, in.toCreateReq()); err != nil {
+		t.Fatalf("createAgent: %v", err)
+	}
+	select {
+	case <-b.launched:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+	}
+	// The value rides the line shell-quoted, so build the expectation with the
+	// same quoter rather than hard-coding today's quoting.
+	want := "--effort " + shellQuote("xhigh")
+	if line := b.launchLine(); !strings.Contains(line, want) {
+		t.Errorf("launch line does not carry the requested effort:\n  %s\nwant it to contain %s", line, want)
+	}
+}
+
+// An effort level the chosen harness doesn't list must be DROPPED, not passed
+// through: an unknown --effort makes the CLI exit at launch, which would fail
+// the whole boot (see normalizeEffort). "max" is a claude level; codex has no
+// such level, so a codex agent asking for it launches with no effort flag.
+func TestMCPCreateAgentDropsEffortTheHarnessDoesNotKnow(t *testing.T) {
+	if got := normalizeEffort("codex", "max"); got != "" {
+		t.Errorf("normalizeEffort(codex, max) = %q, want \"\" — an unknown level must be dropped, not forwarded", got)
+	}
+	if got := normalizeEffort("claude", "xhigh"); got != "xhigh" {
+		t.Errorf("normalizeEffort(claude, xhigh) = %q, want xhigh", got)
 	}
 }
