@@ -109,6 +109,11 @@ type agentInfo struct {
 	Type        string `json:"type"`
 	Agent       string `json:"agent"`
 	Model       string `json:"model,omitempty"`
+	// Effort is the thinking level the agent launched at, after normalizeEffort
+	// dropped anything its harness doesn't offer — so a caller that passed one
+	// can see whether it actually took, which is the whole failure mode that
+	// made create_agent's missing effort parameter invisible.
+	Effort      string `json:"effort,omitempty"`
 	Repo        string `json:"repo,omitempty"`
 	Branch      string `json:"branch,omitempty"`
 	BaseBranch  string `json:"base_branch,omitempty"`
@@ -127,7 +132,7 @@ type agentInfo struct {
 func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 	return agentInfo{
 		ID: rec.ID, Host: host, Title: rec.Title, Type: rec.Type, Agent: rec.Agent,
-		Model: rec.Model, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
+		Model: rec.Model, Effort: rec.Effort, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
 		Status: surfacedStatus(rec, status), BootError: rec.BootError,
 		CreatedAt: rec.CreatedAt.Format(time.RFC3339), LassoCreated: true,
