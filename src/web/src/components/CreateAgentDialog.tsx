@@ -260,7 +260,9 @@ export function CreateAgentDialog({
     type Opt = { value: string; alias: string; user: string; disabled: boolean }
     const groups: { box: string; opts: Opt[] }[] = []
     const byBox = new Map<string, Opt[]>()
-    const LOCAL_KEY = " local"
+    // NUL-prefixed so this synthetic key can never collide with a real
+    // hostname (which cannot contain one) — it shares byBox with resolved ones.
+    const LOCAL_KEY = "\u0000local"
     const push = (box: string, opt: Opt) => {
       let g = byBox.get(box)
       if (!g) {
