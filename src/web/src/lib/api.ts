@@ -293,6 +293,7 @@ export interface AgentRecord {
   branch?: string
   agent: string
   model?: string
+  effort?: string
   extra_args?: string
   description?: string
   notes?: string
@@ -315,10 +316,8 @@ export interface AgentConfig {
   default_agent: string
   last_repo?: string
   last_agent?: string
-  // Model chosen last time on this host, per harness id ("" = harness default).
-  last_models?: Record<string, string>
   // The server's compiled-in agent registry — drives the creator's AI-agent
-  // dropdown, plan-mode visibility, and model suggestions.
+  // dropdown, plan-mode visibility, effort levels, and model suggestions.
   harnesses?: HarnessDef[]
   last_agent_type?: "git" | "scratch"
   scratch_setup?: string
@@ -331,11 +330,10 @@ export interface HarnessDef {
   id: string
   label: string
   supports_plan_mode: boolean
+  // Thinking/reasoning-effort levels this harness's CLI accepts, cheapest
+  // first. Absent/empty = no effort knob, so the creator hides the select.
+  effort_levels?: string[] | null
   model_suggestions: string[] | null
-  // The model this harness's CLI is itself configured to use on the target host
-  // (e.g. Claude Code's configured model). The creator seeds its model field
-  // with it. Empty/absent = no pinned model (the CLI picks its own default).
-  default_model?: string
 }
 
 // One git repo discovered under repos_root, with its remembered per-repo state.
@@ -370,6 +368,9 @@ export interface CreateAgentPayload {
   agent: string
   // Model for the agent's CLI (its --model flag); omit for the harness default.
   model?: string
+  // Thinking effort level, one of the harness's effort_levels; omit for the
+  // CLI's own default. The server drops anything the harness doesn't list.
+  effort?: string
   // Free-form CLI flags appended verbatim to the launch command.
   extra_args?: string
   notes?: string

@@ -333,6 +333,11 @@ type createAgentReq struct {
 	// CLI's --model flag, never validated against a list (model names churn
 	// faster than lasso releases).
 	Model string `json:"model"`
+	// Effort is the harness's thinking/reasoning-effort level (e.g. "high").
+	// Unlike Model it IS validated — against the harness's EffortLevels — since
+	// a level the CLI doesn't know kills the launch (see normalizeEffort).
+	// Empty means the CLI's own default.
+	Effort string `json:"effort"`
 	// ExtraArgs are free-form CLI flags appended verbatim to the launch
 	// command, after the flags lasso builds and before the prompt. The escape
 	// hatch for any harness knob lasso doesn't model.
@@ -443,6 +448,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		Type:        req.Type,
 		Agent:       req.Agent,
 		Model:       strings.TrimSpace(req.Model),
+		Effort:      normalizeEffort(req.Agent, req.Effort),
 		ExtraArgs:   strings.TrimSpace(req.ExtraArgs),
 		Description: req.Prompt,
 		Notes:       strings.TrimSpace(req.Notes),
@@ -613,9 +619,6 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	}
 	_ = setLastAgent(host, rec.Agent)
 	_ = setLastAgentType(host, rec.Type)
-	// Remember the model per harness (an empty model — "use the harness
-	// default" — is itself a remembered choice, so always write it).
-	_ = setLastModel(host, rec.Agent, rec.Model)
 
 	// Everything past here — staging repo files/attachments/notes into the work
 	// dir, running the setup script, launching the agent CLI, and waiting for its
@@ -663,6 +666,7 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 	opts := launchOpts{
 		planMode:  rec.PlanMode,
 		model:     rec.Model,
+		effort:    rec.Effort,
 		extraArgs: rec.ExtraArgs,
 		prompt:    agentPrompt(rec),
 	}

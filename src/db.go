@@ -49,8 +49,7 @@ CREATE TABLE IF NOT EXISTS host_state (
   host            TEXT PRIMARY KEY,
   last_repo       TEXT NOT NULL DEFAULT '',
   last_agent      TEXT NOT NULL DEFAULT '',
-  last_agent_type TEXT NOT NULL DEFAULT '',
-  last_models     TEXT NOT NULL DEFAULT '{}'
+  last_agent_type TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS repo_state (
   host             TEXT NOT NULL,
@@ -70,6 +69,7 @@ CREATE TABLE IF NOT EXISTS agents (
   branch       TEXT NOT NULL DEFAULT '',
   agent        TEXT NOT NULL DEFAULT '',
   model        TEXT NOT NULL DEFAULT '',
+  effort       TEXT NOT NULL DEFAULT '',
   extra_args   TEXT NOT NULL DEFAULT '',
   description  TEXT NOT NULL DEFAULT '',
   notes        TEXT NOT NULL DEFAULT '',
@@ -126,9 +126,9 @@ func openDB() error {
 	// is real. Additive-only keeps the db forward AND backward compatible (an
 	// older lasso reading the same db names its columns explicitly).
 	for _, alter := range []string{
-		`ALTER TABLE host_state ADD COLUMN last_models TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN extra_args TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN boot_status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN boot_error TEXT NOT NULL DEFAULT ''`,
 	} {
@@ -291,22 +291,16 @@ type hostState struct {
 	LastRepo      string
 	LastAgent     string
 	LastAgentType string
-	// LastModels maps harness id -> the model chosen last time (may be "",
-	// meaning "the harness default"). Stored as one JSON object column so new
-	// harnesses need no schema change.
-	LastModels map[string]string
 }
 
 func getHostState(host string) (hostState, error) {
 	var hs hostState
-	var models string
 	err := db.QueryRow(
-		`SELECT last_repo, last_agent, last_agent_type, last_models FROM host_state WHERE host=?`, host).
-		Scan(&hs.LastRepo, &hs.LastAgent, &hs.LastAgentType, &models)
+		`SELECT last_repo, last_agent, last_agent_type FROM host_state WHERE host=?`, host).
+		Scan(&hs.LastRepo, &hs.LastAgent, &hs.LastAgentType)
 	if err == sql.ErrNoRows {
 		return hostState{}, nil
 	}
-	_ = json.Unmarshal([]byte(models), &hs.LastModels)
 	return hs, err
 }
 
@@ -323,25 +317,6 @@ func upsertHostField(host, column, value string) error {
 func setLastRepo(host, repo string) error     { return upsertHostField(host, "last_repo", repo) }
 func setLastAgent(host, agent string) error   { return upsertHostField(host, "last_agent", agent) }
 func setLastAgentType(host, typ string) error { return upsertHostField(host, "last_agent_type", typ) }
-
-// setLastModel records the model last used with one harness on a host,
-// read-modify-writing the JSON map (safe: SetMaxOpenConns(1) serializes all
-// db access, so there is no concurrent-writer window to race).
-func setLastModel(host, agent, model string) error {
-	hs, err := getHostState(host)
-	if err != nil {
-		return err
-	}
-	if hs.LastModels == nil {
-		hs.LastModels = map[string]string{}
-	}
-	hs.LastModels[agent] = model
-	b, err := json.Marshal(hs.LastModels)
-	if err != nil {
-		return err
-	}
-	return upsertHostField(host, "last_models", string(b))
-}
 
 // ---------------------------------------------------------------------------
 // repo_state — per-host, per-repo settings + memory
@@ -406,12 +381,12 @@ func appendAgent(host string, rec AgentRecord) error {
 		att = []byte("[]")
 	}
 	_, err := db.Exec(
-		`INSERT INTO agents(id, host, title, type, repo, base_branch, branch, agent, model, extra_args,
+		`INSERT INTO agents(id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args,
 			description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at,
 			boot_status, boot_error)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.ID, host, rec.Title, rec.Type, rec.Repo, rec.BaseBranch, rec.Branch, rec.Agent,
-		rec.Model, rec.ExtraArgs, rec.Description, rec.Notes, string(att), boolToInt(rec.PlanMode),
+		rec.Model, rec.Effort, rec.ExtraArgs, rec.Description, rec.Notes, string(att), boolToInt(rec.PlanMode),
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.BootStatus, rec.BootError)
 	return err
@@ -490,7 +465,7 @@ func updateAgentBootStatus(id, host, status, bootErr string) error {
 // listAgents returns the agents created on a host, oldest first (append order).
 func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
-		`SELECT id, title, type, repo, base_branch, branch, agent, model, extra_args, description, notes,
+		`SELECT id, title, type, repo, base_branch, branch, agent, model, effort, extra_args, description, notes,
 			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
 		 FROM agents WHERE host=? ORDER BY created_at`, host)
 	if err != nil {
@@ -503,7 +478,7 @@ func listAgents(host string) ([]AgentRecord, error) {
 		var att, created string
 		var plan int
 		if err := rows.Scan(&rec.ID, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
-			&rec.Branch, &rec.Agent, &rec.Model, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
+			&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
 			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
 			return nil, err
 		}
@@ -528,7 +503,7 @@ type hostAgent struct {
 // whose pane was closed can still be found (and reopened) by its work dir/prompt.
 func listAllAgents() ([]hostAgent, error) {
 	rows, err := db.Query(
-		`SELECT id, host, title, type, repo, base_branch, branch, agent, model, extra_args, description, notes,
+		`SELECT id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args, description, notes,
 			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
 		 FROM agents ORDER BY created_at`)
 	if err != nil {
@@ -541,7 +516,7 @@ func listAllAgents() ([]hostAgent, error) {
 		var host, att, created string
 		var plan int
 		if err := rows.Scan(&rec.ID, &host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
-			&rec.Branch, &rec.Agent, &rec.Model, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
+			&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
 			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
 			return nil, err
 		}
