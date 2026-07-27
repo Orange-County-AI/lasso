@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests are the enforcement half of createParams (see create_params.go
@@ -192,6 +193,12 @@ func probeValue(f reflect.StructField) (reflect.Value, error) {
 	case reflect.Slice:
 		if f.Type.Elem().Kind() == reflect.String {
 			return reflect.ValueOf([]string{"probe-" + f.Name}), nil
+		}
+	case reflect.Struct:
+		if f.Type == reflect.TypeOf(time.Time{}) {
+			// A fixed instant, not time.Now(): the probe must be comparable
+			// across the two structs, and a rendered timestamp must be stable.
+			return reflect.ValueOf(time.Date(2026, 7, 27, 5, 43, 29, 0, time.UTC)), nil
 		}
 	}
 	return reflect.Value{}, fmt.Errorf("the parity test has no probe value for type %s — teach probeValue about it so the field is still checked", f.Type)

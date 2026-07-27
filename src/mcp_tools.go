@@ -83,7 +83,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "close_agent",
-		Description: "Stop an agent: first kill the agent process (claude/codex/opencode) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Pass the `host` whoami/list_agents returned alongside the id; with no host every known host is searched, and an agent id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
+		Description: "Stop an agent: first kill the agent process (claude/codex/opencode) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Target it by `agent_id`, or by `pane_id` — pass your own $HERDR_PANE_ID to close YOURSELF without resolving your id via whoami first. Pass the `host` whoami/list_agents returned alongside the id; with no host every known host is searched, and an id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
 	}, closeAgentTool)
 }
 
@@ -113,7 +113,12 @@ type agentInfo struct {
 	// dropped anything its harness doesn't offer — so a caller that passed one
 	// can see whether it actually took, which is the whole failure mode that
 	// made create_agent's missing effort parameter invisible.
-	Effort      string `json:"effort,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// ExtraArgs and PlanMode complete the "how was this agent configured" set
+	// alongside Agent/Model/Effort: every knob create_agent accepts reads back,
+	// so a caller can confirm what actually took.
+	ExtraArgs   string `json:"extra_args,omitempty"`
+	PlanMode    bool   `json:"plan_mode"`
 	Repo        string `json:"repo,omitempty"`
 	Branch      string `json:"branch,omitempty"`
 	BaseBranch  string `json:"base_branch,omitempty"`
@@ -121,8 +126,13 @@ type agentInfo struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	RootPane    string `json:"root_pane,omitempty"`
 	Status      string `json:"status,omitempty"`
-	BootError   string `json:"boot_error,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	// BootStatus is the async boot's own phase (booting/ready/failed). Status
+	// only folds in a FAILED boot — a still-booting agent otherwise looks exactly
+	// like one that is up and idle, which a caller polling after create_agent
+	// cannot tell apart. BootError carries the reason when this is failed.
+	BootStatus string `json:"boot_status,omitempty"`
+	BootError  string `json:"boot_error,omitempty"`
+	CreatedAt  string `json:"created_at"`
 	// LassoCreated distinguishes agents lasso spawned (true — addressable by id,
 	// closeable, full record) from foreign herdr sessions it merely surfaces
 	// (false — address by sidebar_name or root_pane; no lasso id to close).
@@ -132,9 +142,10 @@ type agentInfo struct {
 func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 	return agentInfo{
 		ID: rec.ID, Host: host, Title: rec.Title, Type: rec.Type, Agent: rec.Agent,
-		Model: rec.Model, Effort: rec.Effort, Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
+		Model: rec.Model, Effort: rec.Effort, ExtraArgs: rec.ExtraArgs, PlanMode: rec.PlanMode,
+		Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
-		Status: surfacedStatus(rec, status), BootError: rec.BootError,
+		Status: surfacedStatus(rec, status), BootStatus: rec.BootStatus, BootError: rec.BootError,
 		CreatedAt: rec.CreatedAt.Format(time.RFC3339), LassoCreated: true,
 	}
 }
@@ -459,7 +470,13 @@ func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
 // list_hosts
 // ---------------------------------------------------------------------------
 
-type listHostsIn struct{}
+// Refresh mirrors the ?refresh=1 the HTTP endpoints behind the web UI take.
+// Without it an MCP caller could only ever read the cache — so a host just
+// brought up, a repo just cloned, or a branch just pushed stayed invisible
+// until the TTL expired, with no way to ask for a re-probe.
+type listHostsIn struct {
+	Refresh bool `json:"refresh,omitempty" jsonschema:"Re-probe the hosts instead of answering from the cache. Slower (it dials every configured SSH host); use it when a host you just brought up is missing."`
+}
 
 type hostEntry struct {
 	Host       string `json:"host"`       // value to pass as `host` ("local" or an alias)
@@ -475,7 +492,7 @@ type listHostsOut struct {
 	Hosts  []hostEntry `json:"hosts"`
 }
 
-func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
+func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, in listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
 	ver, _ := localProtocol()
 	out := listHostsOut{
 		Active: curBackend().Name(),
@@ -484,7 +501,7 @@ func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (
 			Running: true, Compatible: true, Version: ver,
 		}},
 	}
-	for _, h := range discoverHosts(ctx, false) {
+	for _, h := range discoverHosts(ctx, in.Refresh) {
 		out.Hosts = append(out.Hosts, hostEntry{
 			Host: h.Alias, Label: h.Alias, Reachable: h.Reachable,
 			Running: h.Running, Compatible: h.Compatible, Version: h.Version,
@@ -498,7 +515,8 @@ func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, _ listHostsIn) (
 // ---------------------------------------------------------------------------
 
 type listReposIn struct {
-	Host string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Host    string `json:"host,omitempty" jsonschema:"Host to list repos on; omit for the local box."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-scan the repo roots instead of answering from the cache. Use it when a repo you just cloned is missing."`
 }
 
 type repoBrief struct {
@@ -517,7 +535,7 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 	if host == "" {
 		host = "local"
 	}
-	root, repos, err := cachedHostReposList(host, false)
+	root, repos, err := cachedHostReposList(host, in.Refresh)
 	if err != nil {
 		return nil, listReposOut{}, err
 	}
@@ -533,8 +551,9 @@ func listReposTool(_ context.Context, _ *mcp.CallToolRequest, in listReposIn) (*
 // ---------------------------------------------------------------------------
 
 type listBranchesIn struct {
-	Host string `json:"host,omitempty" jsonschema:"Host the repo lives on; omit for the local box."`
-	Repo string `json:"repo" jsonschema:"Absolute path to the git repository."`
+	Host    string `json:"host,omitempty" jsonschema:"Host the repo lives on; omit for the local box."`
+	Repo    string `json:"repo" jsonschema:"Absolute path to the git repository."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-read the branches instead of answering from the cache. Use it when a branch you just created or fetched is missing."`
 }
 
 type listBranchesOut struct {
@@ -551,7 +570,7 @@ func listBranchesTool(_ context.Context, _ *mcp.CallToolRequest, in listBranches
 	if err != nil {
 		return nil, listBranchesOut{}, err
 	}
-	local, remote, def := cachedBranchList(in.Host, b, expandTildeOn(b, in.Repo), false)
+	local, remote, def := cachedBranchList(in.Host, b, expandTildeOn(b, in.Repo), in.Refresh)
 	return nil, listBranchesOut{Branches: local, RemoteBranches: remote, Default: def}, nil
 }
 
@@ -1052,8 +1071,13 @@ func waitAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in waitAgentIn) 
 // ---------------------------------------------------------------------------
 
 type closeAgentIn struct {
-	Host           string `json:"host,omitempty" jsonschema:"Host the agent is on — pass the host field whoami/list_agents returned with the agent. Omit to search every host this lasso knows: an id that exists on exactly one host is closed there; an id that exists on several hosts is refused so the wrong host's agent is never killed."`
-	AgentID        string `json:"agent_id" jsonschema:"The agent's id."`
+	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on — pass the host field whoami/list_agents returned with the agent. Omit to search every host this lasso knows: an id that exists on exactly one host is closed there; an id that exists on several hosts is refused so the wrong host's agent is never killed."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Either this or pane_id is required."`
+	// The HTTP endpoint behind `lasso closeme` has always accepted a pane id —
+	// resolveCloseTarget takes both — but the tool only offered agent_id, so an
+	// agent closing ITSELF had to round-trip through whoami first purely to
+	// translate its own $HERDR_PANE_ID into an id. Same resolver, same guards.
+	PaneID         string `json:"pane_id,omitempty" jsonschema:"A herdr pane id instead of an agent id — pass your own $HERDR_PANE_ID to close yourself without looking your id up via whoami first. The raw env form and the public \"w<workspace>-<n>\" form are both accepted."`
 	ClosePane      *bool  `json:"close_pane,omitempty" jsonschema:"Close the agent's herdr pane after killing the process. Defaults to true; set false to leave the pane open as a bare shell."`
 	RemoveWorktree bool   `json:"remove_worktree,omitempty" jsonschema:"For a git agent, also delete its git worktree (discards uncommitted work). Defaults to false. Implies closing the pane."`
 }
@@ -1065,9 +1089,9 @@ type closeAgentOut struct {
 }
 
 func closeAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in closeAgentIn) (*mcp.CallToolResult, closeAgentOut, error) {
-	agentID := strings.TrimSpace(in.AgentID)
-	if agentID == "" {
-		return nil, closeAgentOut{}, fmt.Errorf("agent_id is required")
+	agentID, paneID := strings.TrimSpace(in.AgentID), strings.TrimSpace(in.PaneID)
+	if agentID == "" && paneID == "" {
+		return nil, closeAgentOut{}, fmt.Errorf("agent_id or pane_id is required (pass your own $HERDR_PANE_ID as pane_id to close yourself)")
 	}
 	// Resolve the id the same way /api/agent/close does: an explicit host scopes
 	// the lookup to that host's records; without one every host's records are
@@ -1075,7 +1099,7 @@ func closeAgentTool(ctx context.Context, _ *mcp.CallToolRequest, in closeAgentIn
 	// another host unusable — and an id that somehow exists on several hosts is
 	// refused rather than guessed, since acting on the wrong host's record
 	// would kill an unrelated agent.
-	rec, _, err := resolveCloseTarget(ctx, in.Host, agentID, "")
+	rec, _, err := resolveCloseTarget(ctx, in.Host, agentID, paneID)
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}

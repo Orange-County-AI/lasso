@@ -36,6 +36,12 @@ func serveAgentClose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	// This shape and the close_agent MCP tool's input are now the same set minus
+	// one field, deliberately: the tool has close_pane (leave the pane open as a
+	// bare shell) and this does not. `lasso closeme` is an agent ending itself,
+	// where a surviving pane is just an orphan nobody asked for — so the pane
+	// always goes. If a caller ever needs the choice here, add the field rather
+	// than assuming the omission was an oversight.
 	var req struct {
 		PaneID         string `json:"pane_id"`
 		AgentID        string `json:"agent_id"`
