@@ -515,20 +515,35 @@ export const api = {
   // attach the cell just released, which is what kept a thin grid attach clamping
   // the focused pane's width in the wide Herdr terminal. `alive` is false if the
   // entry was reaped (the caller can re-attach via gridTerm while still visible).
-  gridTermTouch: (host: string, terminal_id: string) =>
-    postJSON<{ alive: boolean }>("/api/grid/term-touch", { host, terminal_id }),
+  // Always pass the `token` the caller's iframe is streaming from: attaches are
+  // shared across viewers, so the pane can be live under a NEWER token while this
+  // cell's own attach is dead and 404ing — `alive` reflects that only with a token.
+  gridTermTouch: (host: string, terminal_id: string, token = "") =>
+    postJSON<{ alive: boolean }>("/api/grid/term-touch", {
+      host,
+      terminal_id,
+      token,
+    }),
 
   // Detach a pane's grid terminal (kills its ttyd). Called when a cell leaves
   // the grid so the pane isn't held to the cell's narrow width while it's viewed
   // full-size in the Herdr terminal. `keepalive` lets it complete even when fired
   // from a React unmount/teardown. Best-effort — failures are ignored. `token`
   // scopes the release to the attach this cell created, so a stale unmount
-  // release can't race a quick remount and kill the newer attach.
-  gridTermRelease: (host: string, terminal_id: string, token = "") =>
+  // release can't race a quick remount and kill the newer attach. `ifIdle` also
+  // spares an attach another viewer is still keepaliving — set it for the
+  // grace-deferred unmount release, whose whole risk is landing on a cell that
+  // some other tab/device is actively watching.
+  gridTermRelease: (
+    host: string,
+    terminal_id: string,
+    token = "",
+    ifIdle = false
+  ) =>
     fetch("/api/grid/term-release", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host, terminal_id, token }),
+      body: JSON.stringify({ host, terminal_id, token, if_idle: ifIdle }),
       keepalive: true,
     }).catch(() => {}),
 

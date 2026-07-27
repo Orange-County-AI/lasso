@@ -88,3 +88,85 @@ func TestGridErrText(t *testing.T) {
 		}
 	}
 }
+
+// seedGridTerm installs a fake attach for one pane, as if a ttyd had been
+// spawned for it, and reports whether its cancel (the ttyd kill) ran.
+func seedGridTerm(t *testing.T, host, terminalID, token string, lastUsed time.Time) *bool {
+	t.Helper()
+	killed := false
+	e := &gridTermEntry{
+		token:    token,
+		base:     "/grid-term/" + token + "/",
+		cancel:   func() { killed = true },
+		lastUsed: lastUsed,
+	}
+	gridTerms.mu.Lock()
+	if gridTerms.byKey == nil {
+		gridTerms.byKey = map[string]*gridTermEntry{}
+		gridTerms.byToken = map[string]*gridTermEntry{}
+	}
+	gridTerms.byKey[host+"|"+terminalID] = e
+	gridTerms.byToken[token] = e
+	gridTerms.mu.Unlock()
+	t.Cleanup(func() { releaseGridTerm(host, terminalID, "", false) })
+	return &killed
+}
+
+func TestTouchGridTermTokenScoped(t *testing.T) {
+	const host, term = "titan", "t1"
+	seedGridTerm(t, host, term, "tokenB", time.Now().Add(-time.Minute))
+
+	// A cell still streaming from the attach that owned this pane BEFORE it was
+	// re-attached (another viewer's releaseAll, a host switch) must be told it's
+	// dead — its /grid-term/tokenA/ requests 404, so answering "alive" left it
+	// parked on ttyd's 404 page forever.
+	if touchGridTerm(host, term, "tokenA") {
+		t.Error("a superseded token should read as dead")
+	}
+	if touchGridTerm(host, term, "tokenB") != true {
+		t.Error("the current token should read as alive")
+	}
+	if !touchGridTerm(host, term, "") {
+		t.Error("an empty token should fall back to key-only liveness")
+	}
+	// The live touch bumped the idle timer.
+	gridTerms.mu.Lock()
+	age := time.Since(gridTerms.byKey[host+"|"+term].lastUsed)
+	gridTerms.mu.Unlock()
+	if age > time.Second {
+		t.Errorf("lastUsed not bumped by a live touch (age %v)", age)
+	}
+	if touchGridTerm(host, "nosuch", "") {
+		t.Error("an unknown pane should read as dead")
+	}
+}
+
+func TestReleaseGridTermIfIdle(t *testing.T) {
+	const host, term = "titan", "t2"
+
+	// A grace-deferred unmount release must spare an attach some other viewer is
+	// still keepaliving — killing it is what dropped a live cell onto a 404.
+	killed := seedGridTerm(t, host, term, "tok", time.Now())
+	releaseGridTerm(host, term, "tok", true)
+	if *killed {
+		t.Error("if-idle release killed an attach that is still being touched")
+	}
+
+	// Once nobody has touched it for longer than the keepalive window, the same
+	// release goes through.
+	gridTerms.mu.Lock()
+	gridTerms.byKey[host+"|"+term].lastUsed = time.Now().Add(-2 * gridTermActive)
+	gridTerms.mu.Unlock()
+	releaseGridTerm(host, term, "tok", true)
+	if !*killed {
+		t.Error("if-idle release spared an attach nobody is using")
+	}
+
+	// Unconditional releases (tab hidden, leaving the Grid) ignore recency: no
+	// thin attach may survive to clamp a pane viewed full-size in Herdr.
+	killed = seedGridTerm(t, host, term, "tok2", time.Now())
+	releaseGridTerm(host, term, "tok2", false)
+	if !*killed {
+		t.Error("unconditional release should kill a freshly-touched attach")
+	}
+}

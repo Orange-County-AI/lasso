@@ -472,6 +472,28 @@ function termHasRendered(term: XTerm): boolean {
   return false
 }
 
+// frameIsNotATerminal reports that a terminal iframe has loaded a document that
+// plainly isn't ttyd — the proxy's plain-text "404 page not found" (the attach
+// behind this iframe's /grid-term/<token>/ was killed server-side), or any other
+// error page the origin served in its place.
+//
+// The test is the absence of a <script>: ttyd's page is a JS app and always ships
+// one, while Go's http.NotFound / http.Error bodies are text/plain, which the
+// browser wraps in a bare <pre>. Deliberately NOT keyed on window.term being
+// undefined — a real ttyd sets that only once its bundle runs and the terminal is
+// constructed, so a slow remote attach would look "dead" and get needlessly
+// recycled. A fresh iframe also reads as complete-but-empty at about:blank before
+// its src lands, so a real document URL is required too.
+function frameIsNotATerminal(win: TermWindow | null): boolean {
+  const doc = win?.document
+  if (doc?.readyState !== "complete" || doc.URL === "about:blank") return false
+  return !doc.querySelector("script")
+}
+
+// How long a frame must keep looking like a non-terminal before we act on it —
+// slack against a document observed mid-parse (scripts not yet in the tree).
+const DEAD_HOLD_MS = 1000
+
 // whenTerminalReady calls onReady once the terminal iframe's xterm exists and has
 // rendered real content — requiring two consecutive observations a frame apart so
 // we reveal after the first paint settles rather than mid-redraw. Two backstops
@@ -480,24 +502,46 @@ function termHasRendered(term: XTerm): boolean {
 // short hold rather than sitting on a spinner; and a hard overall deadline covers
 // an xterm whose buffer we can't read at all. Returns a canceller; mirrors the
 // retry cadence of the other terminal helpers.
-export function whenTerminalReady(id: string, onReady: () => void): () => void {
+//
+// onDead (optional) is called INSTEAD of onReady when the frame turns out not to
+// be a terminal at all (see frameIsNotATerminal). Without it such a frame was
+// revealed at the deadline, which is how a grid cell ended up displaying a bare
+// "404 page not found"; callers that can re-attach should pass it and do so.
+export function whenTerminalReady(
+  id: string,
+  onReady: () => void,
+  onDead?: () => void
+): () => void {
   let done = false
   let tick: ReturnType<typeof setTimeout> | undefined
-  const finish = () => {
-    if (done) return
+  const stop = () => {
     done = true
     if (tick) clearTimeout(tick)
     clearTimeout(deadline)
+  }
+  const finish = () => {
+    if (done) return
+    stop()
     onReady()
   }
+  const die = () => {
+    if (done) return
+    stop()
+    ;(onDead ?? onReady)()
+  }
+  // The hard deadline reveals whatever is there, as before: a terminal that's
+  // merely slow (or whose buffer we can't read) must not be recycled. Only a
+  // positively-identified non-terminal document goes down the dead path.
   const deadline = setTimeout(finish, 6000)
   let sawContent = false
   let blankSince = 0
+  let deadSince = 0
   const poll = () => {
     if (done) return
     let ready = false
     try {
-      const term = frameWindow(id)?.term
+      const win = frameWindow(id)
+      const term = win?.term
       if (term && termHasRendered(term)) {
         if (sawContent) ready = true
         else sawContent = true
@@ -506,24 +550,32 @@ export function whenTerminalReady(id: string, onReady: () => void): () => void {
         if (term) {
           // xterm is up but nothing has painted — an empty pane. Don't hold
           // the overlay for the full deadline; it would read as a slow switch.
+          deadSince = 0
           if (!blankSince) blankSince = Date.now()
           else if (Date.now() - blankSince > 1500) ready = true
         } else {
           blankSince = 0
+          // No xterm yet: usually still loading, but it may be a document that
+          // will never become a terminal (see frameIsNotATerminal).
+          if (!onDead || !frameIsNotATerminal(win)) {
+            deadSince = 0
+          } else if (!deadSince) {
+            deadSince = Date.now()
+          } else if (Date.now() - deadSince > DEAD_HOLD_MS) {
+            die()
+            return
+          }
         }
       }
     } catch {
       /* same-origin; ignore */
+      deadSince = 0
     }
     if (ready) finish()
     else tick = setTimeout(poll, 120)
   }
   poll()
-  return () => {
-    done = true
-    if (tick) clearTimeout(tick)
-    clearTimeout(deadline)
-  }
+  return stop
 }
 
 // Invoke cb whenever a terminal iframe's window gains keyboard focus (the user
