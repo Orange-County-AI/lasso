@@ -17,10 +17,14 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { api, type HostInfo, type HostsPayload } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
+import { groupHosts, type HostGroup, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -262,37 +266,15 @@ export function HostSwitcher({
   const remotes = data?.hosts ?? []
   const localUser = data?.local?.user || "local"
 
-  // Group aliases by the physical box each resolves to, so several accounts on
-  // one host cluster together instead of scattering alphabetically. Loopback
-  // aliases (HostName localhost/127.*/::1) are the very machine lasso runs on,
-  // so they fold under the local host rather than forming their own group.
-  // NUL-prefixed so this synthetic key can never collide with a real hostname
-  // (which cannot contain one) — it shares `groups` with resolved hostnames.
-  const LOCAL_KEY = "\u0000local"
-  const isLoopback = (host?: string) => {
-    if (!host) return false
-    const h = host.toLowerCase()
-    return h === "localhost" || h === "::1" || h.startsWith("127.")
-  }
-  const groupOrder: string[] = []
-  const groups = new Map<string, HostInfo[]>()
-  for (const h of remotes) {
-    // Fall back to the alias as its own key when the resolver returned no
-    // hostname, so an unresolved alias still renders (as a lone flat row).
-    const key = isLoopback(h.hostname) ? LOCAL_KEY : h.hostname || h.alias
-    const g = groups.get(key)
-    if (g) {
-      g.push(h)
-    } else {
-      groups.set(key, [h])
-      groupOrder.push(key)
-    }
-  }
-  const localMates = groups.get(LOCAL_KEY) ?? []
-  const remoteKeys = groupOrder.filter((k) => k !== LOCAL_KEY)
+  // Group aliases into families (`visiquate-stephan` / `visiquate-jessica`
+  // cluster under "visiquate") and otherwise by the physical box each resolves
+  // to, so several accounts on one host never scatter alphabetically. Loopback
+  // aliases fold under the local host instead of forming their own group.
+  const { groups, localMates, families } = groupHosts(remotes)
 
-  // A non-interactive header naming a physical host, shown only when that host
-  // groups more than one entry (so single-user hosts stay as plain rows).
+  // A non-interactive header naming a physical host. Used for the local block,
+  // which stays inline (its rows must remain one click away) where remote groups
+  // collapse into a submenu.
   const hostHeader = (key: string, label: string, local: boolean) => (
     <div
       key={`hdr:${key}`}
@@ -417,6 +399,46 @@ export function HostSwitcher({
     )
   }
 
+  // A group of aliases on one line: the family (or box) name opens a submenu
+  // holding one row per account. The trigger carries what you'd otherwise lose
+  // by collapsing them — the selected account when the active host lives in
+  // here, else how many are inside (amber when some need attention).
+  const groupMenu = (g: HostGroup) => {
+    const activeMember = g.hosts.find((h) => h.alias === active)
+    const attention = g.hosts.some((h) => !usable(h))
+    return (
+      <DropdownMenuSub key={`grp:${g.key}`}>
+        <DropdownMenuSubTrigger>
+          <Server className="size-3.5" />
+          <span className="flex-1 truncate">{g.label}</span>
+          {activeMember ? (
+            <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              {memberLabel(activeMember, families)}
+              <Check className="size-3.5 text-foreground" />
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "text-[10px]",
+                attention ? "text-warn" : "text-muted-foreground"
+              )}
+              title={
+                attention
+                  ? `${g.hosts.length} accounts — some need attention`
+                  : `${g.hosts.length} accounts`
+              }
+            >
+              {g.hosts.length}
+            </span>
+          )}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-44">
+          {g.hosts.map((h) => remoteRow(h, false, memberLabel(h, families)))}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    )
+  }
+
   const iconClass = isNav ? "size-3.5" : "size-3"
   return (
     <div className="relative">
@@ -472,26 +494,22 @@ export function HostSwitcher({
           {localMates.length === 0
             ? localRow()
             : [
-                hostHeader(LOCAL_KEY, localLabel, true),
+                hostHeader("local", localLabel, true),
                 localRow(true, localUser),
-                ...localMates.map((h) => remoteRow(h, true, h.user || h.alias)),
+                ...localMates.map((h) =>
+                  remoteRow(h, true, memberLabel(h, families))
+                ),
               ]}
 
-          {remoteKeys.length > 0 && <DropdownMenuSeparator />}
+          {groups.length > 0 && <DropdownMenuSeparator />}
 
-          {/* Remote hosts, grouped by physical box: a host with a single account
-              stays a plain row (labeled by alias, as before); a host with several
-              accounts gets a header and one nested row per account. */}
-          {remoteKeys.map((key) => {
-            const members = groups.get(key) ?? []
-            if (members.length === 1) return remoteRow(members[0])
-            return (
-              <React.Fragment key={`grp:${key}`}>
-                {hostHeader(key, key, false)}
-                {members.map((h) => remoteRow(h, true, h.user || h.alias))}
-              </React.Fragment>
-            )
-          })}
+          {/* Remote hosts: a group of one stays a plain row (labeled by alias,
+              as before); a group of several collapses into a submenu named for
+              the family/box, one row per account inside — so a fleet of
+              per-user aliases costs one line here instead of one each. */}
+          {groups.map((g) =>
+            g.hosts.length === 1 ? remoteRow(g.hosts[0]) : groupMenu(g)
+          )}
 
           {!loading && remotes.length === 0 && (
             <div className="px-2 py-1.5 text-[11px] text-muted-foreground">

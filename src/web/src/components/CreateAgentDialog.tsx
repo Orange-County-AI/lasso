@@ -24,6 +24,7 @@ import {
   type HostInfo,
 } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
+import { groupHosts, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
@@ -246,49 +247,46 @@ export function CreateAgentDialog({
   const localUser = hostsQuery.data?.local?.user || ""
   const remoteHosts = hostsQuery.data?.hosts ?? []
 
-  // Group the host options by the physical box each alias resolves to (folding
-  // loopback aliases under the local machine), mirroring the navbar HostSwitcher.
-  // A box with a single account renders as one flat option (host + user); a box
-  // with several accounts becomes an optgroup named for the host, each option
-  // named for its account — which is what "distinguishes host & user" here.
+  // Group the host options the way the navbar HostSwitcher does: by alias
+  // family (`visiquate-stephan` / `visiquate-jessica`), else by the physical
+  // box each alias resolves to, folding loopback aliases under the local
+  // machine. A group of one renders as a flat option (host + user); a group of
+  // several becomes an optgroup named for the family/host, each option named
+  // for its account — which is what "distinguishes host & user" here.
   const hostGroups = React.useMemo(() => {
-    const isLoopback = (h?: string) => {
-      if (!h) return false
-      const s = h.toLowerCase()
-      return s === "localhost" || s === "::1" || s.startsWith("127.")
+    type Opt = {
+      value: string
+      label: string
+      alias: string
+      user: string
+      disabled: boolean
     }
-    type Opt = { value: string; alias: string; user: string; disabled: boolean }
-    const groups: { box: string; opts: Opt[] }[] = []
-    const byBox = new Map<string, Opt[]>()
-    // NUL-prefixed so this synthetic key can never collide with a real
-    // hostname (which cannot contain one) — it shares byBox with resolved ones.
-    const LOCAL_KEY = "\u0000local"
-    const push = (box: string, opt: Opt) => {
-      let g = byBox.get(box)
-      if (!g) {
-        g = []
-        byBox.set(box, g)
-        groups.push({ box: box === LOCAL_KEY ? localLabel : box, opts: g })
-      }
-      g.push(opt)
-    }
-    // The local session always leads its box (the machine lasso runs on).
-    push(LOCAL_KEY, {
-      value: "local",
-      alias: localLabel,
-      user: localUser,
-      disabled: false,
+    const { groups, localMates, families } = groupHosts(remoteHosts)
+    const opt = (h: HostInfo): Opt => ({
+      value: h.alias,
+      label: memberLabel(h, families),
+      alias: h.alias,
+      user: h.user,
+      disabled: !hostUsable(h),
     })
-    for (const h of remoteHosts) {
-      const box = isLoopback(h.hostname) ? LOCAL_KEY : h.hostname || h.alias
-      push(box, {
-        value: h.alias,
-        alias: h.alias,
-        user: h.user,
-        disabled: !hostUsable(h),
-      })
-    }
-    return groups
+    // The local session always leads its box (the machine lasso runs on).
+    const out: { box: string; opts: Opt[] }[] = [
+      {
+        box: localLabel,
+        opts: [
+          {
+            value: "local",
+            label: localUser || localLabel,
+            alias: localLabel,
+            user: localUser,
+            disabled: false,
+          },
+          ...localMates.map(opt),
+        ],
+      },
+    ]
+    for (const g of groups) out.push({ box: g.label, opts: g.hosts.map(opt) })
+    return out
   }, [remoteHosts, localLabel, localUser])
 
   // Server state via TanStack Query, fetched while the dialog is open, scoped to
@@ -787,15 +785,21 @@ export function CreateAgentDialog({
               >
                 {hostGroups.map((g) => {
                   // Flat "<host> · <user>" for a single-account box; inside an
-                  // optgroup the host is the group label, so options lead with
-                  // the account name (alias in parens when it differs).
+                  // optgroup the family/host is the group label, so options lead
+                  // with the account name — the alias follows in parens unless
+                  // it's just the group name plus that account.
                   const text = (
-                    o: { alias: string; user: string; disabled: boolean },
+                    o: {
+                      alias: string
+                      label: string
+                      user: string
+                      disabled: boolean
+                    },
                     inGroup: boolean
                   ) => {
-                    const name = inGroup ? o.user || o.alias : o.alias
+                    const name = inGroup ? o.label : o.alias
                     const extra = inGroup
-                      ? o.alias && o.alias !== o.user
+                      ? o.alias !== o.label && !o.alias.endsWith(`-${o.label}`)
                         ? ` (${o.alias})`
                         : ""
                       : o.user
