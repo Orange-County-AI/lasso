@@ -58,7 +58,7 @@ var harnesses = []harnessDef{
 		Label:            "Claude Code",
 		SupportsPlanMode: true,
 		EffortLevels:     []string{"low", "medium", "high", "xhigh", "max"},
-		ModelSuggestions: []string{"opus", "sonnet", "haiku", "fable"},
+		ModelSuggestions: []string{"fable", "opus", "sonnet", "haiku"},
 		buildCmd:         claudeCommand,
 	},
 	{
@@ -170,14 +170,20 @@ func claudeCommand(o launchOpts) string {
 	// Scrubbing them per-launch restores normal transcript writing. This is
 	// claude-specific (the codex builder needs no scrub); do not "clean it up".
 	//
-	// --dangerously-skip-permissions forces bypass mode and silently overrides
-	// --permission-mode plan, so plan agents never actually plan. In plan mode
-	// use --allow-dangerously-skip-permissions instead, which only *enables*
-	// bypassing and coexists with plan. Mirrors fulcrum's agent-commands.ts.
+	// No --dangerously-skip-permissions: bypass mode is the host's setting, not
+	// ours to force. It comes from ~/.claude/settings.json — permissions
+	// .defaultMode "bypassPermissions" for the mode itself, and
+	// skipDangerousModePermissionPrompt for the accepted-disclaimer gate that
+	// the flag used to satisfy. Leaving it off the launch line also retires a
+	// footgun: the flag forced bypass mode and silently overrode
+	// --permission-mode plan, so plan agents never actually planned, which is
+	// why the two modes needed different launch lines at all. The tradeoff is
+	// that a host whose settings lack those keys gets agents parked on
+	// permission prompts instead of running autonomously.
 	const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "
-	cmd := envScrub + "claude --dangerously-skip-permissions"
+	cmd := envScrub + "claude"
 	if o.planMode {
-		cmd = envScrub + "claude --allow-dangerously-skip-permissions --permission-mode plan"
+		cmd += " --permission-mode plan"
 	}
 	if m := strings.TrimSpace(o.model); m != "" {
 		cmd += " --model " + shellQuote(m)
