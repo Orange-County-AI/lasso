@@ -17,9 +17,27 @@ import (
 	"time"
 )
 
+// Host probe states, carried in HostInfo.State. The zero value (empty string)
+// means the probe COMPLETED and the Reachable/Running/Compatible booleans are
+// authoritative — so old clients that don't know the field see exactly what
+// they saw before. A non-empty state marks a row whose booleans are *not* a
+// verdict, only a default:
+//
+//	hostProbing — a probe is in flight and has never completed for this host.
+//	hostTimedOut — the probe hit its deadline; reachability is unknown.
+//
+// Keeping "we don't know yet" distinct from "we asked and it's down" is the
+// point: a sleeping laptop and a laptop that merely answers slowly used to be
+// indistinguishable in this payload, and a slow host got libelled as broken.
+const (
+	hostProbing  = "probing"
+	hostTimedOut = "timeout"
+)
+
 // HostInfo describes one ssh-config host as a candidate herdr target. A host is
 // usable (selectable in the footer switcher) when Reachable && Running &&
-// Compatible; otherwise the UI greys it out and shows Err.
+// Compatible; otherwise the UI greys it out and shows Err (or, for a non-empty
+// State, a pending/unknown affordance rather than a failure).
 type HostInfo struct {
 	Alias      string `json:"alias"`
 	Hostname   string `json:"hostname"`   // effective ssh HostName (for grouping aliases on one box)
@@ -31,9 +49,17 @@ type HostInfo struct {
 	Socket     string `json:"socket"`     // absolute remote herdr socket path
 	Compatible bool   `json:"compatible"` // Protocol == local protocol
 	Err        string `json:"err,omitempty"`
+	// State is "" once a probe has completed (booleans authoritative), else
+	// hostProbing / hostTimedOut. CheckedAt is when the last probe COMPLETED
+	// (RFC3339), so a caller can judge staleness itself; it is absent for a host
+	// that has never finished one.
+	State     string `json:"state,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
-// hostsPayload is the body served at GET /api/hosts.
+// hostsPayload is the body served at GET /api/hosts. Probing reports whether any
+// host in Hosts is still being probed — the signal for a client to poll again
+// shortly rather than treat this snapshot as final.
 type hostsPayload struct {
 	Active string `json:"active"` // currently driven host ("local" or an alias)
 	Local  struct {
@@ -42,7 +68,8 @@ type hostsPayload struct {
 		Hostname string `json:"hostname"` // machine hostname, shown in place of "local"
 		User     string `json:"user"`     // the user lasso runs as (labels the local row when a host groups >1 user)
 	} `json:"local"`
-	Hosts []HostInfo `json:"hosts"`
+	Hosts   []HostInfo `json:"hosts"`
+	Probing bool       `json:"probing"`
 }
 
 // localHostname is the short machine hostname (first label) used as the display
@@ -181,12 +208,44 @@ func remoteHerdrShell(herdrCmd string) string {
 	return `${SHELL:-sh} -lc 'export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"; ` + herdrCmd + `'`
 }
 
+// Probe budget. hostProbeTimeout bounds one host's whole probe and
+// probeConnectTimeout is handed to ssh as ConnectTimeout (which bounds the TCP
+// connect AND the banner exchange, so a host that accepts but never speaks
+// still fails inside it).
+//
+// Both are far more generous than the 8s/4s they replace, because probing no
+// longer sits on the request path: /api/hosts answers from the store within
+// hostProbeGrace and probes land afterwards (see discoverHosts). A cold connect
+// to a sleeping tailscale Mac genuinely costs 10-20s+ — under the old budget
+// such a host was killed mid-handshake and reported as broken every single
+// time, which is exactly the "healthy machine silently dropped" symptom. The
+// only thing a tight budget bought was a faster wrong answer.
+var (
+	hostProbeTimeout = 30 * time.Second
+	// Seams for tests, mirroring closeme.go's peerHostsFn: they let the sweep be
+	// driven with synthetic hosts and synthetic probe latency, so the timing
+	// behaviour can be asserted without real ssh.
+	probeHostFn      = probeHost
+	sshConfigHostsFn = sshConfigHosts
+)
+
+const (
+	probeConnectTimeout = "10"
+	// probeWaitDelay bounds how long Output() may keep waiting AFTER the context
+	// kills ssh. Without it, Wait() blocks until every process holding the
+	// inherited stdout pipe exits — and ssh forks a ControlMaster that outlives
+	// the client (ControlPersist), so a probe could hang far past its deadline
+	// regardless of the context. Measured: a killed command with a backgrounded
+	// child returned only when the CHILD exited, 60s past a 2s deadline.
+	probeWaitDelay = 2 * time.Second
+)
+
 // probeHost asks a host whether it has a compatible herdr server running by
 // running `herdr status server --json` over ssh. BatchMode makes hosts that
 // would prompt (password / unknown key) fail fast rather than hang.
 func probeHost(ctx context.Context, alias string, wantProto int) HostInfo {
 	hi := HostInfo{Alias: alias}
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, hostProbeTimeout)
 	defer cancel()
 	// ClearAllForwardings drops any LocalForward/RemoteForward the user's config
 	// attaches to this host (e.g. a tunnel that conflicts with a busy port) — the
@@ -195,15 +254,27 @@ func probeHost(ctx context.Context, alias string, wantProto int) HostInfo {
 	cmd := exec.CommandContext(cctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ClearAllForwardings=yes",
-		"-o", "ConnectTimeout=4",
+		"-o", "ConnectTimeout="+probeConnectTimeout,
 		"-o", "StrictHostKeyChecking=accept-new",
 		alias, remoteHerdrShell("herdr status server --json"))
+	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		ee, isExit := err.(*exec.ExitError)
 		stderr := ""
 		if isExit {
 			stderr = firstLine(strings.TrimSpace(string(ee.Stderr)))
+		}
+		// We ran out of budget rather than getting an answer. This MUST be checked
+		// before the exit-code branches below: a context kill surfaces as an
+		// ExitError whose ExitCode() is -1 (killed by signal), which is neither
+		// "not an ExitError" nor 255 — so it used to fall through to "reachable,
+		// herdr not installed" and the UI offered to *install herdr* on a box we
+		// never reached. Report the honest thing instead: unknown, timed out.
+		if cctx.Err() != nil {
+			hi.State = hostTimedOut
+			hi.Err = "timed out probing (no answer in " + hostProbeTimeout.String() + ")"
+			return hi
 		}
 		// ssh itself failed to connect (exit 255), or the process couldn't run at
 		// all → unreachable. Any other exit code means the remote ran the command
@@ -263,74 +334,290 @@ func firstLine(s string) string {
 // discovery cache
 // ---------------------------------------------------------------------------
 
-var hostCache struct {
-	mu    sync.Mutex
-	at    time.Time
-	hosts []HostInfo
+// The store holds one entry per ssh-config alias, updated INDEPENDENTLY as each
+// probe lands. That independence is the whole design: the old cache was a
+// single []HostInfo published only after wg.Wait(), so the switcher showed
+// nothing until the slowest host resolved — nine healthy hosts sat probed and
+// undelivered behind one sleeping laptop. Now a slow host degrades its own row
+// and nothing else.
+//
+// Reads (discoverHosts) never wait for a sweep to finish; they wait at most
+// hostProbeGrace for whatever is in flight and then serve the snapshot, rows
+// still outstanding marked hostProbing. Correctness catches up in the
+// background: results keep landing after the response is written, and the
+// refresher (startHostRefresher) keeps the store warm so the common read is a
+// map lookup.
+var hostStore struct {
+	mu      sync.Mutex
+	entries map[string]HostInfo // alias -> latest known row
+	order   []string            // aliases in ssh-config order (authoritative membership)
+	sweep   chan struct{}       // non-nil while a sweep runs; closed when it ends
+	at      time.Time           // when the last sweep COMPLETED
 }
 
-const hostCacheTTL = 30 * time.Second
+const (
+	// hostProbeGrace bounds how long a plain read blocks on an in-flight sweep
+	// before serving what it has. Warm hosts answer in ~0.1-0.9s, so a 2s grace
+	// usually returns a complete list anyway; a slow host just isn't allowed to
+	// hold the response hostage.
+	hostProbeGrace = 2 * time.Second
+	// hostForceGrace is the same bound for an explicit re-probe (the footer's
+	// refresh button, list_hosts refresh:true). Longer, because the caller asked
+	// for fresh data and an MCP client has no polling UI to catch up with — but
+	// still bounded, and still returns partial results rather than nothing.
+	hostForceGrace = 10 * time.Second
+	// hostStaleAfter is when a plain read kicks a new sweep. Comfortably longer
+	// than a cold sweep costs, so the cache can actually be refilled before it
+	// expires — the old 30s TTL expired faster than a 16s+ sweep could refill it,
+	// so every switcher open a minute apart paid full freight. In practice the
+	// background refresher re-probes well before this.
+	hostStaleAfter = 2 * time.Minute
+	// hostRefreshInterval is the background refresher's period.
+	hostRefreshInterval = 45 * time.Second
+	// hostProbeConcurrency bounds concurrent ssh probes. Above the fleet size we
+	// see in practice, so a typical sweep is one wave rather than two — under the
+	// old semaphore of 8, an 11-host config needed two waves and the second wave
+	// could not even start until the slowest host of the first finished.
+	hostProbeConcurrency = 16
+)
 
-// discoverHosts probes every ssh-config host concurrently and caches the
-// result. A fresh cache (within hostCacheTTL) is returned as-is unless force is
-// set (the footer's refresh button).
-func discoverHosts(ctx context.Context, force bool) []HostInfo {
-	hostCache.mu.Lock()
-	if !force && !hostCache.at.IsZero() && time.Since(hostCache.at) < hostCacheTTL {
-		h := hostCache.hosts
-		hostCache.mu.Unlock()
-		return h
+// hostSnapshot returns the current rows in display order, plus whether any is
+// still probing. Never blocks on the network.
+func hostSnapshot() ([]HostInfo, bool) {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	out := make([]HostInfo, 0, len(hostStore.order))
+	probing := false
+	for _, alias := range hostStore.order {
+		hi, ok := hostStore.entries[alias]
+		if !ok {
+			continue
+		}
+		if hi.State == hostProbing {
+			probing = true
+		}
+		out = append(out, hi)
 	}
-	hostCache.mu.Unlock()
-
-	_, wantProto := localProtocol()
-	aliases := sshConfigHosts()
-
-	results := make([]HostInfo, len(aliases))
-	sem := make(chan struct{}, 8) // bound concurrent ssh processes
-	var wg sync.WaitGroup
-	for i, alias := range aliases {
-		wg.Add(1)
-		go func(i int, alias string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			hi := probeHost(ctx, alias, wantProto)
-			// Resolve where the alias points (HostName/User) so the UI can group
-			// aliases that share a physical box. Cheap and connectionless (`ssh -G`).
-			hi.Hostname, hi.User = resolveSSHTarget(alias)
-			results[i] = hi
-		}(i, alias)
-	}
-	wg.Wait()
-
-	// Stable order: usable hosts first, then by alias.
-	sort.SliceStable(results, func(i, j int) bool {
-		ui := results[i].Reachable && results[i].Running && results[i].Compatible
-		uj := results[j].Reachable && results[j].Running && results[j].Compatible
+	// Stable order: usable hosts first, then by alias. Hosts still probing sort
+	// with the not-yet-usable ones rather than jumping to the top and then
+	// dropping down when their result lands.
+	sort.SliceStable(out, func(i, j int) bool {
+		ui := out[i].Reachable && out[i].Running && out[i].Compatible
+		uj := out[j].Reachable && out[j].Running && out[j].Compatible
 		if ui != uj {
 			return ui
 		}
-		return results[i].Alias < results[j].Alias
+		return out[i].Alias < out[j].Alias
 	})
+	return out, probing
+}
 
-	hostCache.mu.Lock()
-	hostCache.at = time.Now()
-	hostCache.hosts = results
-	hostCache.mu.Unlock()
-	return results
+// anyHostSettled reports whether at least one host has ever completed a probe,
+// i.e. whether the store holds anything worth serving without waiting.
+func anyHostSettled() bool {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	for _, hi := range hostStore.entries {
+		if hi.State == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// putHost publishes one host's row, making it visible to every subsequent read
+// immediately — this is what "hosts appear as they resolve" comes down to.
+func putHost(hi HostInfo) {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	if hostStore.entries == nil {
+		hostStore.entries = map[string]HostInfo{}
+	}
+	hostStore.entries[hi.Alias] = hi
+}
+
+// beginSweep claims the right to run a sweep. It returns the channel that
+// closes when the sweep in flight ends, and whether the caller owns it. Only
+// one sweep runs at a time, so a burst of readers (mount + menu open + MCP
+// call) shares one round of probes instead of forking a herd of ssh processes.
+func beginSweep(force bool) (done chan struct{}, mine bool) {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	if hostStore.sweep != nil {
+		return hostStore.sweep, false // one already running — wait on it
+	}
+	fresh := !hostStore.at.IsZero() && time.Since(hostStore.at) < hostStaleAfter
+	if fresh && !force {
+		return nil, false // cache is good; no sweep needed
+	}
+	hostStore.sweep = make(chan struct{})
+	return hostStore.sweep, true
+}
+
+// endSweep marks the sweep complete and wakes everyone waiting on it.
+func endSweep(done chan struct{}) {
+	hostStore.mu.Lock()
+	hostStore.at = time.Now()
+	hostStore.sweep = nil
+	hostStore.mu.Unlock()
+	close(done)
+}
+
+// runSweep re-reads the ssh config and probes every alias, publishing each row
+// as it resolves. It returns only when every probe has landed — callers that
+// must not block use waitFor/discoverHosts instead of calling this directly.
+func runSweep(ctx context.Context, done chan struct{}) {
+	defer endSweep(done)
+
+	_, wantProto := localProtocol()
+	aliases := sshConfigHostsFn()
+
+	// Membership comes from the config, so an alias deleted from ~/.ssh/config
+	// stops being reported. Rows already known are kept (and refreshed in place)
+	// so a re-sweep never blanks the list it is refreshing.
+	hostStore.mu.Lock()
+	if hostStore.entries == nil {
+		hostStore.entries = map[string]HostInfo{}
+	}
+	next := make(map[string]HostInfo, len(aliases))
+	for _, alias := range aliases {
+		if prev, ok := hostStore.entries[alias]; ok {
+			next[alias] = prev
+		} else {
+			next[alias] = HostInfo{Alias: alias, State: hostProbing}
+		}
+	}
+	hostStore.entries = next
+	hostStore.order = aliases
+	hostStore.mu.Unlock()
+
+	// Phase 1 — resolve each alias's effective HostName/User. `ssh -G` only
+	// expands config (no connection, no DNS), so this is cheap, and doing it up
+	// front means a row that is still probing already groups under the right
+	// physical box instead of appearing standalone and then jumping.
+	var rwg sync.WaitGroup
+	rsem := make(chan struct{}, hostProbeConcurrency)
+	for _, alias := range aliases {
+		rwg.Add(1)
+		go func(alias string) {
+			defer rwg.Done()
+			rsem <- struct{}{}
+			defer func() { <-rsem }()
+			host, user := resolveSSHTarget(alias)
+			hostStore.mu.Lock()
+			if hi, ok := hostStore.entries[alias]; ok {
+				hi.Hostname, hi.User = host, user
+				hostStore.entries[alias] = hi
+			}
+			hostStore.mu.Unlock()
+		}(alias)
+	}
+	rwg.Wait()
+
+	// Phase 2 — probe. Each result is published the moment it lands.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, hostProbeConcurrency)
+	for _, alias := range aliases {
+		wg.Add(1)
+		go func(alias string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			hi := probeHostFn(ctx, alias, wantProto)
+			hostStore.mu.Lock()
+			prev := hostStore.entries[alias]
+			hostStore.mu.Unlock()
+			// Carry the resolved target forward; the probe doesn't know it.
+			hi.Hostname, hi.User = prev.Hostname, prev.User
+			hi.CheckedAt = time.Now().Format(time.RFC3339)
+			putHost(hi)
+		}(alias)
+	}
+	wg.Wait()
+}
+
+// discoverHosts returns what is known about every ssh-config host, kicking a
+// background sweep when the data is stale (or when force is set) and waiting at
+// most a grace period for it. It never blocks until the slowest host answers:
+// rows whose probe is still outstanding come back marked hostProbing, and the
+// caller can read again in a moment for the rest.
+func discoverHosts(ctx context.Context, force bool) []HostInfo {
+	hosts, _ := discoverHostsState(ctx, force)
+	return hosts
+}
+
+// discoverHostsState is discoverHosts plus whether any row is still probing.
+func discoverHostsState(ctx context.Context, force bool) (hosts []HostInfo, probing bool) {
+	done, mine := beginSweep(force)
+	if mine {
+		// Run the sweep detached from this request: it must keep going (and keep
+		// publishing rows) after we answer, and it must not be cancelled when the
+		// client that happened to trigger it disconnects.
+		go runSweep(sweepCtx(), done)
+	}
+	// Only ever block when waiting could change the answer: on an explicit
+	// refresh, or when nothing has completed a probe yet and returning now would
+	// mean returning an all-"probing" list. Once the store holds real results a
+	// read is a map lookup — so the background refresher's sweeps never tax the
+	// callers that poll discovery (the grid, the repo warmer) with a grace period
+	// for data they already have.
+	if done != nil && (force || !anyHostSettled()) {
+		grace := hostProbeGrace
+		if force {
+			grace = hostForceGrace
+		}
+		t := time.NewTimer(grace)
+		defer t.Stop()
+		select {
+		case <-done: // whole sweep finished inside the grace — full answer
+		case <-t.C: // out of grace — serve what has landed so far
+		case <-ctx.Done(): // caller gave up
+		}
+	}
+	return hostSnapshot()
+}
+
+// sweepCtx is the context sweeps run under: the server's lifetime, so a sweep
+// outlives the request that triggered it. Falls back to Background in tests and
+// CLI paths where the server context was never set.
+func sweepCtx() context.Context {
+	if srvCtx != nil {
+		return srvCtx
+	}
+	return context.Background()
+}
+
+// startHostRefresher launches (once) the background re-probe loop, so the
+// switcher reads a warm store instead of paying for a sweep on open. It runs a
+// sweep immediately at startup, which is what makes the first switcher open of
+// a fresh lasso fast.
+var hostRefresherOnce sync.Once
+
+func startHostRefresher() {
+	hostRefresherOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(hostRefreshInterval)
+			defer t.Stop()
+			for {
+				if done, mine := beginSweep(true); mine {
+					runSweep(sweepCtx(), done)
+				}
+				select {
+				case <-sweepCtx().Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	})
 }
 
 // findHost returns the cached HostInfo for alias, if present.
 func findHost(alias string) (HostInfo, bool) {
-	hostCache.mu.Lock()
-	defer hostCache.mu.Unlock()
-	for _, h := range hostCache.hosts {
-		if h.Alias == alias {
-			return h, true
-		}
-	}
-	return HostInfo{}, false
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	hi, ok := hostStore.entries[alias]
+	return hi, ok
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +626,7 @@ func findHost(alias string) (HostInfo, bool) {
 
 func serveHosts(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("refresh") == "1"
-	hosts := discoverHosts(r.Context(), force)
+	hosts, probing := discoverHostsState(r.Context(), force)
 	ver, proto := localProtocol()
 
 	var p hostsPayload
@@ -349,15 +636,16 @@ func serveHosts(w http.ResponseWriter, r *http.Request) {
 	p.Local.Hostname = localHostname()
 	p.Local.User = localUsername()
 	p.Hosts = hosts
+	p.Probing = probing
 	writeJSON(w, p)
 }
 
 // invalidateHostCache forces the next discoverHosts to re-probe (used after an
 // action that changes a host's herdr — e.g. a remote update).
 func invalidateHostCache() {
-	hostCache.mu.Lock()
-	hostCache.at = time.Time{}
-	hostCache.mu.Unlock()
+	hostStore.mu.Lock()
+	hostStore.at = time.Time{}
+	hostStore.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------

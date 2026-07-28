@@ -18,6 +18,13 @@ export interface ActiveState {
 
 // One ssh-config host as a herdr target. Selectable in the footer switcher only
 // when reachable && running && compatible; otherwise greyed out with `err`.
+// A host row whose probe hasn't produced a verdict. Absent `state` means the
+// probe completed and reachable/running/compatible are authoritative;
+// "probing" means one is still in flight and "timeout" means it ran out of
+// budget. Neither says the host is down — rendering them as failures is how a
+// healthy-but-slow machine used to get dropped from the switcher.
+export type HostState = "probing" | "timeout"
+
 export interface HostInfo {
   alias: string
   // Effective ssh HostName / User the alias resolves to. hostname lets the UI
@@ -32,12 +39,18 @@ export interface HostInfo {
   socket: string
   compatible: boolean
   err?: string
+  state?: HostState
+  // RFC3339 timestamp of the last COMPLETED probe; absent until one finishes.
+  checked_at?: string
 }
 
 export interface HostsPayload {
   active: string
   local: { version: string; protocol: number; hostname: string; user: string }
   hosts: HostInfo[]
+  // True while at least one host is still being probed — the cue to poll again
+  // shortly, since the list is a partial answer that will fill in.
+  probing: boolean
 }
 
 // One usage quota window (5-hour block, weekly rolling, …). `percent` is 0–100.

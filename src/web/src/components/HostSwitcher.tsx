@@ -31,6 +31,14 @@ function usable(h: HostInfo): boolean {
   return h.reachable && h.running && h.compatible
 }
 
+// pending reports whether the backend has no verdict for this host yet — its
+// probe is still in flight, or it ran out of budget. Such a row must render as
+// "we don't know" rather than as a failure, and must never offer a remote
+// action: a host we couldn't reach is not a host to install herdr onto.
+function pending(h: HostInfo): boolean {
+  return h.state === "probing" || h.state === "timeout"
+}
+
 // behind reports whether a reachable host runs an older herdr protocol than the
 // local one — the case a remote `herdr update` can fix (an ahead host can't be
 // helped by updating it; you'd update locally instead).
@@ -55,9 +63,12 @@ function formatBehind(n: number | undefined): string {
 
 // provisionable reports whether a reachable host has no herdr server running
 // (missing entirely, or installed but stopped) — the case a fresh
-// install-and-supervise (via systemd --user) can fix.
+// install-and-supervise (via systemd --user) can fix. Explicitly excludes
+// pending rows: a probe that timed out used to be misreported as "reachable,
+// herdr not installed", which put a "set up" button on a machine lasso had
+// never actually reached.
 function provisionable(h: HostInfo): boolean {
-  return h.reachable && !h.running
+  return !pending(h) && h.reachable && !h.running
 }
 
 // versionOlder reports whether herdr version a is strictly older than b
@@ -156,6 +167,17 @@ export function HostSwitcher({
   React.useEffect(() => {
     void load()
   }, [load])
+
+  // /api/hosts answers immediately with whatever has resolved, so a response
+  // carrying probing:true is a partial picture — the remaining hosts land in the
+  // server's store as their probes finish. Poll until it settles so a slow host
+  // fills itself in instead of sitting as "probing…" until the user reopens the
+  // menu. Self-limiting: the backend bounds every probe, so probing goes false.
+  React.useEffect(() => {
+    if (!data?.probing) return
+    const t = setTimeout(() => void load(), 1500)
+    return () => clearTimeout(t)
+  }, [data, load])
 
   const switchTo = React.useCallback(
     async (alias: string) => {
@@ -330,10 +352,12 @@ export function HostSwitcher({
     const localProto = data?.local?.protocol ?? 0
     const localVer = data?.local?.version
     const ok = usable(h)
+    const waiting = pending(h)
     // A compatible host on an older herdr can still be updated in place; an
-    // incompatible host that's behind must be updated to be usable.
+    // incompatible host that's behind must be updated to be usable. Neither is
+    // offered while the host's probe has no verdict.
     const canUpgrade = upgradable(h, localVer)
-    const canUpdate = canUpgrade || (!ok && behind(h, localProto))
+    const canUpdate = !waiting && (canUpgrade || (!ok && behind(h, localProto)))
     const canProvision = !ok && !canUpdate && provisionable(h)
     const action = canUpdate
       ? ("update" as const)
@@ -389,8 +413,13 @@ export function HostSwitcher({
         // button stays clickable instead of switching.
         onSelect={(e) => (ok ? void switchTo(h.alias) : e.preventDefault())}
         className={cn(!ok && !action && "opacity-60", indent && "pl-7")}
-        // Tooltip carries the alias when the visible label is the account name.
-        title={label ? h.alias : undefined}
+        // Tooltip carries the alias when the visible label is the account name,
+        // and the probe detail for a host that has no verdict yet.
+        title={
+          [label ? h.alias : "", waiting ? h.err : ""]
+            .filter(Boolean)
+            .join(" — ") || undefined
+        }
       >
         <Server className="size-3.5" />
         <span className="flex-1 truncate">{label ?? h.alias}</span>
@@ -406,6 +435,19 @@ export function HostSwitcher({
           <span className="flex items-center gap-1.5">
             {errBadge}
             {actionButton}
+          </span>
+        ) : waiting ? (
+          // No verdict yet — pending, not failed. Muted (not warn) so a slow
+          // host doesn't read as a broken one, and a spinner while it's live.
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            {h.state === "probing" ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                probing…
+              </>
+            ) : (
+              "timed out"
+            )}
           </span>
         ) : (
           <span className="truncate text-[10px] text-warn">
