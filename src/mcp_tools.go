@@ -28,7 +28,7 @@ import (
 func registerMCPTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_hosts",
-		Description: "List the hosts lasso can drive (the local box plus reachable, protocol-compatible SSH hosts). Use the returned alias as the `host` argument of the other tools; omit `host` to target the local box.",
+		Description: "List the hosts lasso can drive (the local box plus reachable, protocol-compatible SSH hosts). Use the returned alias as the `host` argument of the other tools; omit `host` to target the local box. Answers immediately from lasso's background host probe, so it may be a PARTIAL picture: an entry with state \"probing\" has not finished being probed and one with state \"timeout\" did not answer in time — neither means the host is down, so call again in a second or two (or with refresh:true) instead of reporting those hosts as unavailable. Top-level `probing:true` says at least one entry is still filling in.",
 	}, listHostsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -485,26 +485,40 @@ type hostEntry struct {
 	Running    bool   `json:"running"`    // herdr server up on the host
 	Compatible bool   `json:"compatible"` // herdr protocol matches this lasso
 	Version    string `json:"version,omitempty"`
+	// State is empty when the probe completed and the booleans above are
+	// authoritative; "probing" when a probe is still in flight (never yet
+	// completed for this host) and "timeout" when it ran out of budget. Both
+	// mean "not known to be down" — do NOT read them as unreachable.
+	State string `json:"state,omitempty"`
+	// Err is the probe's failure detail, when there is one.
+	Err string `json:"err,omitempty"`
 }
 
 type listHostsOut struct {
 	Active string      `json:"active"` // the host the lasso UI currently drives
 	Hosts  []hostEntry `json:"hosts"`
+	// Probing reports that at least one host has state "probing", i.e. this list
+	// is a partial answer that will fill in. Call again in a second or two for
+	// the rest rather than concluding those hosts are unavailable.
+	Probing bool `json:"probing,omitempty"`
 }
 
 func listHostsTool(ctx context.Context, _ *mcp.CallToolRequest, in listHostsIn) (*mcp.CallToolResult, listHostsOut, error) {
 	ver, _ := localProtocol()
+	hosts, probing := discoverHostsState(ctx, in.Refresh)
 	out := listHostsOut{
-		Active: curBackend().Name(),
+		Active:  curBackend().Name(),
+		Probing: probing,
 		Hosts: []hostEntry{{
 			Host: "local", Label: localHostname(), Reachable: true,
 			Running: true, Compatible: true, Version: ver,
 		}},
 	}
-	for _, h := range discoverHosts(ctx, in.Refresh) {
+	for _, h := range hosts {
 		out.Hosts = append(out.Hosts, hostEntry{
 			Host: h.Alias, Label: h.Alias, Reachable: h.Reachable,
 			Running: h.Running, Compatible: h.Compatible, Version: h.Version,
+			State: h.State, Err: h.Err,
 		})
 	}
 	return nil, out, nil

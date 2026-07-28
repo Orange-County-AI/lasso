@@ -329,6 +329,11 @@ func runServer() {
 		}
 	}
 
+	// Probe the ssh-config hosts in the background from startup and keep
+	// re-probing on an interval, so the host switcher reads a warm store rather
+	// than paying for a cold sweep the first time someone opens it.
+	startHostRefresher()
+
 	// Eagerly populate the repo/branch caches for every reachable host so the
 	// New Agent dialog opens on warm data instead of blocking on ssh. Started
 	// here — after the active backend is up — and refreshed on its own interval.
