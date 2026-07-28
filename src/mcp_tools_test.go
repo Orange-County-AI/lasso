@@ -273,9 +273,9 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	if !strings.Contains(line, "--permission-mode plan") {
 		t.Errorf("launch line is not in plan mode:\n  %s", line)
 	}
-	// The plain bypass flag would silently override plan mode (see claudeCommand),
-	// so a plan launch must carry only the --allow- variant.
-	if strings.Contains(line, " --dangerously-skip-permissions") {
+	// A skip-permissions flag would silently override plan mode (see
+	// claudeCommand); bypass is the host's settings.json call, not the line's.
+	if strings.Contains(line, "dangerously-skip-permissions") {
 		t.Errorf("plan launch forces bypass mode, which overrides plan:\n  %s", line)
 	}
 }

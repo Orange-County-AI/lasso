@@ -46,9 +46,9 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 	}
 }
 
-// In plan mode claude must get --allow-dangerously-skip-permissions, NOT the
-// plain --dangerously-skip-permissions: the latter forces bypass mode and
-// silently overrides --permission-mode plan, so the agent never plans.
+// Neither claude launch line carries a skip-permissions flag: bypass mode is
+// the host's ~/.claude/settings.json setting. Plan mode is therefore the only
+// thing that distinguishes the two, via --permission-mode plan.
 func TestAgentCommandPlanModeFlags(t *testing.T) {
 	// Both claude variants must scrub the leaked CLAUDE_CODE_* session markers so
 	// 2.1.193+ doesn't treat the interactive agent as a child session and suppress
@@ -63,12 +63,9 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	if !strings.Contains(plan, "--permission-mode plan") {
 		t.Errorf("plan command missing --permission-mode plan: %q", plan)
 	}
-	if !strings.Contains(plan, "--allow-dangerously-skip-permissions") {
-		t.Errorf("plan command must use --allow-dangerously-skip-permissions: %q", plan)
-	}
-	// The bypass-forcing flag would override plan mode; it must not appear as a
-	// standalone token (it's a prefix of the --allow- variant, so match a space).
-	if strings.Contains(plan, " --dangerously-skip-permissions") {
+	// Either skip-permissions variant on the line would override plan mode and
+	// leave the agent bypassing instead of planning.
+	if strings.Contains(plan, "dangerously-skip-permissions") {
 		t.Errorf("plan command must not force bypass mode: %q", plan)
 	}
 
@@ -76,9 +73,11 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	if !strings.HasPrefix(def, envScrub) {
 		t.Errorf("default command must scrub child-session env: %q", def)
 	}
-	if !strings.Contains(def, "--dangerously-skip-permissions") ||
+	// The default line carries no permission flags at all — bypass comes from
+	// the host's settings.json, and plan mode is the only flagged variant.
+	if strings.Contains(def, "dangerously-skip-permissions") ||
 		strings.Contains(def, "--permission-mode") {
-		t.Errorf("default command should bypass permissions without plan: %q", def)
+		t.Errorf("default command should carry no permission flags: %q", def)
 	}
 }
 
