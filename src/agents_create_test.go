@@ -41,12 +41,7 @@ func TestCreateGitAgentUsesUniqueBranchLeafForWorktreeDir(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	b := &createAgentBackend{memBackend: newMemBackend()}
 	existing := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2")
@@ -132,12 +127,7 @@ func TestCreateAgentReturnsBeforeBootAndRecordsBootFailure(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	b := &bootFake{
 		memBackend: newMemBackend(),
@@ -274,12 +264,7 @@ func TestCreateAgentResumesInterruptedCreate(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	branch := "feature/fix-login-a1b2"
 	workDir := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2")

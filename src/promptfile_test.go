@@ -174,12 +174,7 @@ func TestBootAgentStagesLongPromptAndCloseCleansUp(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	b := &promptBootFake{memBackend: newMemBackend()}
 	rec := AgentRecord{

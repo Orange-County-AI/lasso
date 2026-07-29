@@ -158,12 +158,7 @@ func TestAutoTitleAgentRenamesWorkspaceAndRecordButNotTheTab(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 	titlerRunner = func(titler, string) (string, error) { return "Fix the SSO loop\n", nil }
 	t.Cleanup(func() { titlerRunner = runTitler })
 
@@ -204,12 +199,7 @@ func TestAutoTitleToggleDefaultsOnAndRoundTrips(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	get := func() bool {
 		rec := httptest.NewRecorder()
@@ -299,12 +289,7 @@ func newTitlerSpy(t *testing.T, title string) <-chan struct{} {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 	called := make(chan struct{}, len(titlers))
 	titlerRunner = func(titler, string) (string, error) {
 		called <- struct{}{}

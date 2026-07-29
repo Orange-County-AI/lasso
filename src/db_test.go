@@ -15,12 +15,24 @@ func openTestDB(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
+}
+
+// closeTestDB tears the state db down between tests. It closes the handle but
+// deliberately does NOT set db back to nil: createAgent leaves background
+// goroutines running (bootAgent, autoTitleAgent) that outlive the test, and
+// they read the global. Nilling it turned a benign teardown into a segfault —
+// a goroutine that passed a `db == nil` guard (or, like getRepoState, has
+// none) then dereferenced the nil handle, failing the whole package from
+// whichever test happened to still be in flight.
+//
+// A closed *sql.DB is safe to keep calling — every query returns
+// "sql: database is closed" — which is exactly what those goroutines see in
+// production, where the db is closed at shutdown and never nilled.
+func closeTestDB() {
+	if db != nil {
+		db.Close()
+	}
 }
 
 func TestFreshDefaults(t *testing.T) {
@@ -229,12 +241,7 @@ agents:
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	if s, _ := getSettings(); s.ReposRoot != "~/code" || s.BranchPrefix != "feat/" || s.DefaultAgent != "codex" {
 		t.Errorf("settings not migrated: %+v", s)
