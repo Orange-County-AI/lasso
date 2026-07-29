@@ -186,12 +186,7 @@ func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
 	prev := curBackend()
@@ -244,12 +239,7 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	t.Cleanup(func() {
-		if db != nil {
-			db.Close()
-			db = nil
-		}
-	})
+	t.Cleanup(closeTestDB)
 
 	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
 	prev := curBackend()

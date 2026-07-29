@@ -434,6 +434,14 @@ export const api = {
       sync_agent_themes: enabled,
     }),
 
+  // Whether new agents are re-titled from their prompt by a local agent CLI
+  // (autotitle.go). A server-level setting of the box lasso runs on — the CLI
+  // runs there, not on the host the agent was created on — so unlike the
+  // creator defaults it isn't host-scoped.
+  autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
+  setAutoTitle: (enabled: boolean) =>
+    postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),
+
   // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
   // the server-side cache (the footer's manual refresh).
   hosts: (refresh = false) =>

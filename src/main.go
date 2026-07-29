@@ -269,6 +269,7 @@ func runServer() {
 	mux.HandleFunc("/api/repos", serveRepos)
 	mux.HandleFunc("/api/repo-branches", serveRepoBranches)
 	mux.HandleFunc("/api/create-agent", serveCreateAgent)
+	mux.HandleFunc("/api/auto-title", serveAutoTitle)
 	mux.HandleFunc("/api/create-terminal", serveCreateTerminal)
 	mux.HandleFunc("/api/agent-upload", serveAgentUpload)
 	mux.HandleFunc("/api/host-update", serveHostUpdate)
@@ -1878,6 +1879,25 @@ func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 // SSE hub
 // ---------------------------------------------------------------------------
 
+// notice is a one-shot, user-facing message pushed to every open tab over the
+// SSE stream, where the browser raises it as a toast. It exists for work that
+// outlives the request that started it — auto-titling runs long after
+// /api/create-agent has answered 200, so a failure there has no response left
+// to ride home on and would otherwise only ever reach lasso's log.
+type notice struct {
+	Level  string `json:"level"` // "error" | "info" | "success"
+	Title  string `json:"title"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// notifyUI raises a notice on every connected tab. A no-op before the server is
+// up (CLI subcommands, tests), so background code can call it unconditionally.
+func notifyUI(n notice) {
+	if srvHub != nil {
+		srvHub.notify(n)
+	}
+}
+
 type hub struct {
 	mu         sync.RWMutex
 	cur        Active
@@ -1888,6 +1908,12 @@ type hub struct {
 	uiStateRev int    // UI-prefs revision (bumped on every /api/ui-state save)
 	curTheme   resolvedTheme
 	clients    map[chan Active]struct{}
+	// noticeClients is the same client set as clients, subscribed to one-shot
+	// notices. Kept as its own channel per client rather than folded into Active
+	// because a notice is an EVENT, not state: Active is snapshot-replaced on
+	// every poll and re-sent on connect, which would replay (or silently drop) a
+	// toast instead of delivering it exactly once.
+	noticeClients map[chan notice]struct{}
 
 	// Event subscription, restarted against the new socket on a host switch.
 	rootCtx   context.Context
@@ -1901,7 +1927,30 @@ type hub struct {
 func newHub() *hub {
 	// Seed HerdrUp=true so a browser connecting before the first poll doesn't
 	// briefly flash the "herdr disconnected" state.
-	return &hub{cur: Active{HerdrUp: true}, curTheme: theme, clients: map[chan Active]struct{}{}}
+	return &hub{
+		cur:           Active{HerdrUp: true},
+		curTheme:      theme,
+		clients:       map[chan Active]struct{}{},
+		noticeClients: map[chan notice]struct{}{},
+	}
+}
+
+// notify fans a notice out to every connected tab. Non-blocking per client (a
+// stalled reader drops the toast rather than wedging the caller), matching how
+// state frames are pushed.
+func (h *hub) notify(n notice) {
+	h.mu.RLock()
+	clients := make([]chan notice, 0, len(h.noticeClients))
+	for c := range h.noticeClients {
+		clients = append(clients, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		select {
+		case c <- n:
+		default:
+		}
+	}
 }
 
 // startSub (re)starts the herdr event subscription under a fresh child of the
@@ -2080,15 +2129,27 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	ch := make(chan Active, 4)
+	nch := make(chan notice, 8)
 	h.mu.Lock()
 	h.clients[ch] = struct{}{}
+	h.noticeClients[nch] = struct{}{}
 	cur := h.cur
 	h.mu.Unlock()
-	defer func() { h.mu.Lock(); delete(h.clients, ch); h.mu.Unlock() }()
+	defer func() {
+		h.mu.Lock()
+		delete(h.clients, ch)
+		delete(h.noticeClients, nch)
+		h.mu.Unlock()
+	}()
 
 	send := func(a Active) {
 		b, _ := json.Marshal(a)
 		fmt.Fprintf(w, "event: active\ndata: %s\n\n", b)
+		fl.Flush()
+	}
+	sendNotice := func(n notice) {
+		b, _ := json.Marshal(n)
+		fmt.Fprintf(w, "event: notice\ndata: %s\n\n", b)
 		fl.Flush()
 	}
 	send(cur) // prime with current state
@@ -2105,6 +2166,8 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case a := <-ch:
 			send(a)
+		case n := <-nch:
+			sendNotice(n)
 		case <-keep.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			fl.Flush()

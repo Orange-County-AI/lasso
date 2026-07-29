@@ -540,6 +540,20 @@ func updateAgentPane(id, host, workspaceID, rootPane string) error {
 	return err
 }
 
+// updateAgentTitle re-titles one agent by id, keeping the record's title — the
+// address list_agents and message_agent surface — in step with the workspace
+// label auto-titling just changed. Scoped by id+host since ids are only unique
+// within a host.
+func updateAgentTitle(id, host, title string) error {
+	if db == nil || strings.TrimSpace(title) == "" {
+		return nil
+	}
+	_, err := db.Exec(
+		`UPDATE agents SET title=? WHERE id=? AND host=?`,
+		strings.TrimSpace(title), id, host)
+	return err
+}
+
 // updateAgentTitleByWorkspace re-titles the agent living in a workspace, keeping
 // the record's title — the address list_agents and message_agent surface — in
 // step with a workspace rename from the UI. Scoped by host since workspace ids
