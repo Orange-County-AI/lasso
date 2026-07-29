@@ -48,7 +48,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind.",
+		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing and the host may well have agents this call cannot see.",
 	}, listAgentsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -155,8 +155,15 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 // the herdr-known fields are populated; SidebarName/RootPane are its address.
 func agentInfoFromPane(host string, gp gridPane) agentInfo {
 	name := sidebarName(gp)
+	// A foreign session has no lasso record to take a title from, so its terminal
+	// title — what the agent says it is working on — is the closest thing, and
+	// far more informative than repeating a workspace label like "norm".
+	title := gp.TerminalTitle
+	if title == "" {
+		title = name
+	}
 	return agentInfo{
-		Host: host, SidebarName: name, Title: name, Agent: gp.Agent,
+		Host: host, SidebarName: name, Title: title, Agent: gp.Agent,
 		WorkspaceID: gp.WorkspaceID, RootPane: gp.PaneID, Status: gp.AgentStatus,
 		LassoCreated: false,
 	}
@@ -164,7 +171,9 @@ func agentInfoFromPane(host string, gp gridPane) agentInfo {
 
 // sidebarName is the human-facing name a herdr pane shows in the sidebar / pane
 // switcher: the workspace label, falling back to the pane's own label then the
-// tab label when a workspace is unnamed.
+// tab label when a workspace is unnamed, and last to the terminal title — which
+// for an agent pane is what it is working on, and the only name left when
+// nothing along the way was ever labelled.
 func sidebarName(gp gridPane) string {
 	if gp.WorkspaceLabel != "" {
 		return gp.WorkspaceLabel
@@ -172,7 +181,10 @@ func sidebarName(gp gridPane) string {
 	if gp.PaneLabel != "" {
 		return gp.PaneLabel
 	}
-	return gp.TabLabel
+	if gp.TabLabel != "" {
+		return gp.TabLabel
+	}
+	return gp.TerminalTitle
 }
 
 // ---------------------------------------------------------------------------
@@ -281,13 +293,22 @@ func resolveTarget(host, needle string, recs []AgentRecord, panes []gridPane) (r
 
 // hostHerdrPanes lists a host's live herdr panes with their sidebar labels and
 // agent detection, best effort — an unreachable herdr yields nil, so id-based
-// resolution still works against the lasso records alone.
+// resolution still works against the lasso records alone. Callers that report
+// to a user should take hostHerdrPanesErr instead and say so: with no panes,
+// every live detail (status, sidebar name, foreign sessions) is silently
+// missing, which reads exactly like a host that simply has no agents.
 func hostHerdrPanes(b Backend, host string) []gridPane {
+	gps, _ := hostHerdrPanesErr(b, host)
+	return gps
+}
+
+// hostHerdrPanesErr is hostHerdrPanes with the enumeration failure kept.
+func hostHerdrPanesErr(b Backend, host string) ([]gridPane, error) {
 	gps, err := gridHostPanes(b, host, host)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return gps
+	return gps, nil
 }
 
 // findGridPane returns the enumerated pane with the given id.
@@ -347,47 +368,52 @@ func surfacedStatus(rec AgentRecord, herdrStatus string) string {
 	return herdrStatus
 }
 
-// paneAgentStatus returns the herdr agent_status for a pane (working/idle/
-// blocked/unknown), or "" if the pane is gone or carries no agent.
+// paneAgentStatus returns the agent status for a pane (working/idle/blocked/
+// unknown), or "" if the pane is gone or carries no agent. This is what
+// wait_agent polls, so it goes through paneAgentPresence: on a host where herdr
+// cannot identify the agent its status would otherwise be "unknown" forever, and
+// a wait for "idle" could never be satisfied.
 func paneAgentStatus(b Backend, paneID string) string {
-	res, err := b.HerdrCall("pane.list", map[string]any{})
-	if err != nil {
+	p, ok := paneListEntry(b, paneID)
+	if !ok {
 		return ""
 	}
-	var pl struct {
-		Panes []pane `json:"panes"`
-	}
-	if json.Unmarshal(res, &pl) != nil {
-		return ""
-	}
-	for _, p := range pl.Panes {
-		if p.PaneID == paneID {
-			return p.AgentStatus
-		}
-	}
-	return ""
+	_, status := paneAgentPresence(p)
+	return status
 }
 
-// paneHasAgent reports whether herdr still sees an agent running in the pane. It
-// returns false once the agent process has exited (the pane's agent field
-// clears) or the pane is gone — the signal killPaneAgent waits on.
+// paneHasAgent reports whether an agent is still running in the pane. It returns
+// false once the agent process has exited (herdr's agent field clears, and the
+// harness's title chrome goes with it) or the pane is gone — the signal
+// killPaneAgent waits on.
 func paneHasAgent(b Backend, paneID string) bool {
+	p, ok := paneListEntry(b, paneID)
+	if !ok {
+		return false // pane gone → no agent left to kill
+	}
+	kind, _ := paneAgentPresence(p)
+	return kind != ""
+}
+
+// paneListEntry finds one pane in herdr's pane.list. ok is false when herdr is
+// unreachable or the pane is gone.
+func paneListEntry(b Backend, paneID string) (pane, bool) {
 	res, err := b.HerdrCall("pane.list", map[string]any{})
 	if err != nil {
-		return false
+		return pane{}, false
 	}
 	var pl struct {
 		Panes []pane `json:"panes"`
 	}
 	if json.Unmarshal(res, &pl) != nil {
-		return false
+		return pane{}, false
 	}
 	for _, p := range pl.Panes {
 		if p.PaneID == paneID {
-			return p.Agent != ""
+			return p, true
 		}
 	}
-	return false // pane gone → no agent left to kill
+	return pane{}, false
 }
 
 // killPaneAgent terminates the agent process running in a pane without closing
@@ -438,11 +464,12 @@ func paneReadText(b Backend, paneID, source string, lines int) (string, error) {
 	return r.Read.Text, nil
 }
 
-// herdrPaneInfo is the slice of herdr's pane.get response whoami needs: the
-// canonical public pane id and the live agent status.
+// herdrPaneInfo is herdr's pane.get response: the canonical public pane id and
+// the live agent status are all whoami reads, but pane.get returns the same
+// shape as pane.list, so embedding pane keeps the rest — session, terminal
+// title — available for paneAgentPresence to work from.
 type herdrPaneInfo struct {
-	PaneID      string `json:"pane_id"`
-	AgentStatus string `json:"agent_status"`
+	pane
 }
 
 // paneGet resolves a pane id via herdr's pane.get. herdr accepts BOTH the raw
@@ -451,7 +478,9 @@ type herdrPaneInfo struct {
 // root_pane (e.g. "w<workspace>-<n>"), and echoes back the public id either way —
 // so this is how whoami translates the env-reported pane id into the key it
 // matches agents on. ok is false if herdr can't resolve the id (pane gone, or
-// herdr unreachable).
+// herdr unreachable). AgentStatus comes back resolved through paneAgentPresence,
+// so a caller sees the same status list_agents would show rather than the
+// "unknown" herdr reports for an agent it could not identify.
 func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
 	res, err := b.HerdrCall("pane.get", map[string]any{"pane_id": paneID})
 	if err != nil {
@@ -463,6 +492,7 @@ func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
 	if json.Unmarshal(res, &r) != nil || r.Pane.PaneID == "" {
 		return herdrPaneInfo{}, false
 	}
+	_, r.Pane.AgentStatus = paneAgentPresence(r.Pane.pane)
 	return r.Pane, true
 }
 
@@ -664,8 +694,16 @@ type listAgentsIn struct {
 }
 
 type listAgentsOut struct {
-	Host   string      `json:"host"`
+	Host string `json:"host"`
+	// Agents is never null: a host with nothing running answers with an empty
+	// array, so "no agents" and "the question could not be answered" stay
+	// distinguishable — the latter is what HerdrError is for.
 	Agents []agentInfo `json:"agents"`
+	// HerdrError explains a herdr enumeration that failed. The listing is then
+	// partial by construction: it can still show the agents lasso *recorded* on
+	// this host, but nothing live — no statuses, no sidebar names, and no
+	// foreign sessions lasso never created. Absent when enumeration succeeded.
+	HerdrError string `json:"herdr_error,omitempty"`
 }
 
 func listAgentsTool(_ context.Context, _ *mcp.CallToolRequest, in listAgentsIn) (*mcp.CallToolResult, listAgentsOut, error) {
@@ -679,16 +717,23 @@ func listAgentsTool(_ context.Context, _ *mcp.CallToolRequest, in listAgentsIn) 
 	}
 	// One herdr enumeration for the whole host: pane statuses + sidebar names, and
 	// the foreign sessions (panes lasso did not create) to surface alongside.
-	b, berr := resolveBackend(host)
+	// Failing that is not the same as finding nothing, so it is reported rather
+	// than swallowed: a host that list_hosts calls reachable+running+compatible
+	// yet answers with no agents is a contradiction, and the caller has to be
+	// able to tell which half of it to disbelieve.
+	b, err := resolveBackend(host)
 	var panes []gridPane
-	if berr == nil {
-		panes = hostHerdrPanes(b, host)
+	if err == nil {
+		panes, err = hostHerdrPanesErr(b, host)
 	}
 	byPane := map[string]gridPane{}
 	for _, gp := range panes {
 		byPane[gp.PaneID] = gp
 	}
-	out := listAgentsOut{Host: host}
+	out := listAgentsOut{Host: host, Agents: []agentInfo{}}
+	if err != nil {
+		out.HerdrError = fmt.Sprintf("could not enumerate herdr on host %q: %v — live status, sidebar names, and any herdr sessions lasso did not create are missing from this listing", host, err)
+	}
 	lassoPanes := map[string]bool{}
 	for _, rec := range recs {
 		gp := byPane[rec.RootPane]

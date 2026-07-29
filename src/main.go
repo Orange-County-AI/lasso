@@ -591,6 +591,15 @@ type pane struct {
 	Focused       bool   `json:"focused"`
 	Agent         string `json:"agent"`
 	AgentStatus   string `json:"agent_status"`
+	// TerminalTitle is the pane's raw OSC title, glyphs and all. Agent CLIs put
+	// their live state in it (claude prefixes "✳ " when idle and a braille
+	// spinner while working), which is what lets paneAgentPresence recover an
+	// agent herdr's own detection missed — see panestatus.go.
+	TerminalTitle string `json:"terminal_title"`
+	// TerminalTitleStripped is the same title with those state glyphs removed —
+	// the human-readable half ("Check Norm outline wiki connection"), used as a
+	// display name for a session that has no workspace label.
+	TerminalTitleStripped string `json:"terminal_title_stripped"`
 	// AgentSession is the harness session herdr would resume this pane with —
 	// the handle on the agent's *own* working directory (see agentcwd.go).
 	AgentSession *agentSession `json:"agent_session"`
@@ -611,7 +620,7 @@ type pane struct {
 // leader before falling back here. This stays the cheap per-pane answer for the
 // grid, where a per-pane RPC and transcript read would be paid N times over.
 func paneCwd(p pane) string {
-	if p.Agent != "" {
+	if paneHasLiveAgent(p) {
 		if p.Cwd != "" {
 			return p.Cwd
 		}
@@ -626,7 +635,7 @@ func paneCwd(p pane) string {
 // paneCwdUsesForeground reports whether paneCwd returned the foreground cwd
 // rather than the shell launch cwd (drives Active.CwdSource).
 func paneCwdUsesForeground(p pane) bool {
-	if p.Agent != "" {
+	if paneHasLiveAgent(p) {
 		return p.Cwd == "" && p.ForegroundCwd != ""
 	}
 	return p.ForegroundCwd != ""
@@ -741,9 +750,10 @@ func fetchActive() (Active, string, error) {
 		// marks herdr up, and reflects the active host with an empty pane/cwd.
 		return Active{}, sig, nil
 	}
+	agent, status := paneAgentPresence(*fp)
 	a := Active{
 		PaneID: fp.PaneID, WorkspaceID: fp.WorkspaceID,
-		TabID: fp.TabID, Agent: fp.Agent, AgentStatus: fp.AgentStatus,
+		TabID: fp.TabID, Agent: agent, AgentStatus: status,
 	}
 	a.Cwd, a.CwdSource = activeCwd(*fp)
 	a.TabLabel = tabLabel(fp.TabID)
@@ -863,6 +873,7 @@ func fetchPanes() ([]paneView, error) {
 
 	out := make([]paneView, 0, len(pl.Panes))
 	for _, p := range pl.Panes {
+		agent, status := paneAgentPresence(p)
 		out = append(out, paneView{
 			PaneID:         p.PaneID,
 			WorkspaceID:    p.WorkspaceID,
@@ -870,8 +881,8 @@ func fetchPanes() ([]paneView, error) {
 			TabID:          p.TabID,
 			TabLabel:       tabs[p.TabID].label,
 			Cwd:            paneCwd(p),
-			Agent:          p.Agent,
-			AgentStatus:    p.AgentStatus,
+			Agent:          agent,
+			AgentStatus:    status,
 			Focused:        p.Focused,
 		})
 	}

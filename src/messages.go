@@ -171,10 +171,13 @@ func pickLiveRecipient(needle, kind string, cands []AgentRecord, panes paneLooku
 			continue
 		}
 		p, ok := m[r.RootPane]
-		if !ok || p.Agent == "" {
+		if !ok {
 			continue
 		}
-		st := p.AgentStatus
+		agent, st := paneAgentPresence(p)
+		if agent == "" {
+			continue
+		}
 		if st == "" {
 			st = "unknown"
 		}
@@ -334,14 +337,20 @@ func dispatchPendingMessages(backendFor func(string) (Backend, error)) {
 		}
 		msgs := grouped[k]
 		rec, ok := recs[k.host][k.agentID]
-		switch p, live := pm[rec.RootPane]; {
+		p, live := pm[rec.RootPane]
+		// Whether an agent is there, and what it is doing, both go through
+		// paneAgentPresence: on a host where herdr cannot identify the agent, its
+		// own answer is "bare shell, status unknown" — which would fail a queued
+		// message outright rather than hold it until the recipient idles.
+		agent, status := paneAgentPresence(p)
+		switch {
 		case !ok || rec.RootPane == "":
 			failAll(msgs, "agent record or pane is gone")
 		case !live:
 			failAll(msgs, "agent pane is gone")
-		case p.Agent == "":
+		case agent == "":
 			failAll(msgs, "agent process exited (pane is a bare shell)")
-		case p.AgentStatus != "idle":
+		case status != "idle":
 			// mid-turn or blocked — keep queued for a later pass
 		default:
 			parts := make([]string, len(msgs))
