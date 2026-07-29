@@ -119,6 +119,27 @@ func TestResolveRecipientDeadAndUnknown(t *testing.T) {
 	}
 }
 
+func TestResolveRecipientRecoversUnidentifiedAgent(t *testing.T) {
+	// norm's shape: herdr never identified the agent in the pane, so it reports no
+	// `agent` and a status of "unknown" — but the harness reported its session and
+	// the title still shows claude's idle chrome. Such a recipient is live and
+	// addressable; refusing it as "none is running" would drop real messages.
+	records := []hostAgent{{Host: "norm", Agent: AgentRecord{ID: "n1", Title: "wiki check", RootPane: "w3:p1"}}}
+	panes := fixedPanes(map[string][]pane{"norm": {{
+		PaneID:        "w3:p1",
+		AgentStatus:   "unknown",
+		TerminalTitle: "✳ Check Norm outline wiki connection",
+		AgentSession:  &agentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "98bbd260"},
+	}}})
+	rec, status, err := resolveRecipient("wiki check", records, panes)
+	if err != nil {
+		t.Fatalf("resolveRecipient: %v", err)
+	}
+	if rec.ID != "n1" || status != "idle" {
+		t.Errorf("recipient = %q/%q, want n1/idle", rec.ID, status)
+	}
+}
+
 func TestMessageEnvelope(t *testing.T) {
 	m := AgentMessage{ID: "m_x1", SenderLabel: "clem", SenderAddr: "a1@titan", Body: "deploy is green"}
 	e := messageEnvelope(m)
@@ -187,9 +208,14 @@ func TestUpdateAgentTitleByWorkspace(t *testing.T) {
 // paste-confirm/Enter loop completes quickly.
 type msgPaneBackend struct {
 	*memBackend
-	paneID  string
-	status  string
-	agent   string
+	paneID string
+	status string
+	agent  string
+	// title/session mirror the pane fields a host whose herdr cannot identify the
+	// agent still reports: no `agent`, but a harness-reported session and a live
+	// terminal title.
+	title   string
+	session string
 	sent    []string // non-Enter text received by pane.send_text
 	drafted bool     // composer currently holds an unsubmitted draft
 }
@@ -198,9 +224,13 @@ func (b *msgPaneBackend) HerdrCall(method string, params any) (json.RawMessage, 
 	p, _ := params.(map[string]any)
 	switch method {
 	case "pane.list":
+		session := "null"
+		if b.session != "" {
+			session = fmt.Sprintf(`{"source":"herdr:%s","agent":%q,"kind":"id","value":"s1"}`, b.session, b.session)
+		}
 		return json.RawMessage(fmt.Sprintf(
-			`{"panes":[{"pane_id":%q,"agent":%q,"agent_status":%q}]}`,
-			b.paneID, b.agent, b.status)), nil
+			`{"panes":[{"pane_id":%q,"agent":%q,"agent_status":%q,"terminal_title":%q,"agent_session":%s}]}`,
+			b.paneID, b.agent, b.status, b.title, session)), nil
 	case "pane.send_text":
 		text, _ := p["text"].(string)
 		if text == "\r" {
@@ -293,6 +323,39 @@ func TestDispatchFailsMessagesForDeadAgent(t *testing.T) {
 	}
 	if status != msgFailed || detail == "" {
 		t.Fatalf("message state = (%q, %q), want failed with a reason", status, detail)
+	}
+}
+
+func TestDispatchDeliversToUnidentifiedAgent(t *testing.T) {
+	openTestDB(t)
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	if err := appendAgent("local", rec); err != nil {
+		t.Fatal(err)
+	}
+	// herdr cannot identify the agent here: no `agent`, status "unknown". Its own
+	// answer reads as a bare shell, which would fail the message outright.
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1",
+		agent: "", status: "unknown", session: "claude", title: "⠐ Working on it"}
+	m := AgentMessage{ID: "m_1", Host: "local", AgentID: "a1", SenderLabel: "u", Body: "hi", CreatedAt: time.Now()}
+	if err := enqueueAgentMessage(m); err != nil {
+		t.Fatal(err)
+	}
+	// Working: held, not failed.
+	dispatchPendingMessages(func(string) (Backend, error) { return b, nil })
+	if len(b.sent) != 0 {
+		t.Fatalf("delivered mid-turn: %q", b.sent)
+	}
+	if pending, _ := listPendingMessages(); len(pending) != 1 {
+		t.Fatalf("pending while working = %d, want 1 (held, not failed)", len(pending))
+	}
+	// Idle: delivered.
+	b.title = "✳ Working on it"
+	dispatchPendingMessages(func(string) (Backend, error) { return b, nil })
+	if len(b.sent) != 1 {
+		t.Fatalf("sent %d, want 1 once the title reads idle: %q", len(b.sent), b.sent)
+	}
+	if pending, _ := listPendingMessages(); len(pending) != 0 {
+		t.Fatalf("pending after delivery = %d, want 0", len(pending))
 	}
 }
 

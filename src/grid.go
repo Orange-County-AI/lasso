@@ -307,11 +307,16 @@ type gridPane struct {
 	TabID          string `json:"tab_id"`
 	TabLabel       string `json:"tab_label"`
 	PaneLabel      string `json:"pane_label,omitempty"` // herdr's per-pane title; disambiguates sibling panes in one workspace
-	Cwd            string `json:"cwd"`
-	Agent          string `json:"agent"`
-	AgentStatus    string `json:"agent_status"`
-	HasAgent       bool   `json:"has_agent"`
-	Focused        bool   `json:"focused"`
+	// TerminalTitle is the pane's OSC title with the agent's state glyphs
+	// stripped — for an agent pane, what it is currently working on ("Check Norm
+	// outline wiki connection"). It names a session whose workspace was never
+	// labelled, and is the only name a foreign session has in that case.
+	TerminalTitle string `json:"terminal_title,omitempty"`
+	Cwd           string `json:"cwd"`
+	Agent         string `json:"agent"`
+	AgentStatus   string `json:"agent_status"`
+	HasAgent      bool   `json:"has_agent"`
+	Focused       bool   `json:"focused"`
 	// Prompt is the initial prompt the user gave the agent when creating it
 	// (lasso's AgentRecord.Description, not anything herdr knows). It's shipped so
 	// the pane switcher can search the full prompt text; the UI need not display it.
@@ -1006,8 +1011,11 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 			}
 		}
 	}
-	// agent.list is the only source of the agent *kind* (claude/codex/…) and of
-	// which panes are agents at all — pane.list carries agent_status but no kind.
+	// agent.list enumerates the panes herdr has identified an agent in, with the
+	// agent *kind* (claude/codex/…). It is not the only source — pane.list has
+	// carried the kind since herdr 0.7, and paneAgentPresence recovers panes
+	// whose agent herdr never identified at all — but where it does answer it is
+	// the most direct one, so it is folded in first.
 	agentKind := map[string]string{}
 	if r, err := b.HerdrCall("agent.list", map[string]any{}); err == nil {
 		var al struct {
@@ -1046,6 +1054,20 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 	out := make([]gridPane, 0, len(pl.Panes))
 	for _, p := range pl.Panes {
 		kind, isAgent := agentKind[p.PaneID]
+		status := p.AgentStatus
+		if !isAgent {
+			// herdr's agent.list left this pane out. That is authoritative for a
+			// bare shell — and wrong for a pane whose agent it failed to identify,
+			// which paneAgentPresence recovers from the pane's own session and
+			// title (see panestatus.go).
+			kind, status = paneAgentPresence(p)
+			isAgent = kind != ""
+		} else if status == "" || status == "unknown" {
+			// Identified, but herdr has no state for it — read the title itself.
+			if s, _ := titleAgentStatus(kind, p.TerminalTitle); s != "" {
+				status = s
+			}
+		}
 		prompt := promptByPane[p.PaneID]
 		if prompt == "" && isAgent {
 			prompt = promptByWS[p.WorkspaceID]
@@ -1062,9 +1084,10 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 			TabID:          p.TabID,
 			TabLabel:       tabs[p.TabID].label,
 			PaneLabel:      p.Label,
+			TerminalTitle:  p.TerminalTitleStripped,
 			Cwd:            paneCwd(p),
 			Agent:          kind,
-			AgentStatus:    p.AgentStatus,
+			AgentStatus:    status,
 			HasAgent:       isAgent,
 			Focused:        p.Focused,
 			Prompt:         prompt,

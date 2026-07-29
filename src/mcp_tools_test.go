@@ -104,6 +104,10 @@ func TestSidebarNameFallback(t *testing.T) {
 	if got := sidebarName(gridPane{TabLabel: "tb"}); got != "tb" {
 		t.Errorf("sidebarName = %q, want tb", got)
 	}
+	// Nothing labelled anywhere: the terminal title is the only name left.
+	if got := sidebarName(gridPane{TerminalTitle: "Check Norm outline wiki connection"}); got != "Check Norm outline wiki connection" {
+		t.Errorf("sidebarName = %q, want the terminal title", got)
+	}
 	if got := sidebarName(gridPane{}); got != "" {
 		t.Errorf("sidebarName = %q, want empty", got)
 	}
@@ -121,6 +125,15 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	}
 	if ai.SidebarName != "Clem (OCAI)" || ai.Title != "Clem (OCAI)" || ai.RootPane != "w9-1" || ai.ID != "" {
 		t.Errorf("foreign pane info = %+v, want name/pane populated and no lasso id", ai)
+	}
+	// With a terminal title the session keeps its sidebar name as the address but
+	// reports what it is actually working on as the title.
+	ai = agentInfoFromPane("norm", gridPane{
+		PaneID: "w3:p1", WorkspaceLabel: "norm", TerminalTitle: "Check Norm outline wiki connection",
+		Agent: "claude", AgentStatus: "idle",
+	})
+	if ai.SidebarName != "norm" || ai.Title != "Check Norm outline wiki connection" {
+		t.Errorf("foreign pane info = %q/%q, want sidebar name norm and the terminal title", ai.SidebarName, ai.Title)
 	}
 }
 

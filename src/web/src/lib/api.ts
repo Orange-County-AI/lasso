@@ -111,6 +111,10 @@ export interface GridPane {
   tab_id?: string
   tab_label?: string
   pane_label?: string
+  // The pane's OSC title with the agent's state glyphs stripped — for an agent
+  // pane, what it is currently working on. The only name a session whose
+  // workspace was never labelled has.
+  terminal_title?: string
   cwd?: string
   agent?: string
   agent_status?: string
