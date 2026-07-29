@@ -141,6 +141,10 @@ func runServer() {
 	// non-loopback address without auth, so this can't accidentally expose a
 	// writable shell on a public interface again.
 	authUser, authPass, hasAuth := parseAuth(os.Getenv("UI_AUTH"))
+	// Same rule for the MCP endpoint's own OAuth credentials (MCP_OAUTH). Read
+	// before the route table is built — withMCPAuth is a no-op when it's unset.
+	oauthCfg = loadOAuthConfig()
+	logOAuthStatus()
 	if !isLoopback(*listenAddr) && !hasAuth && !*allowNoAuth {
 		log.Fatalf("refusing to listen on non-loopback %q without auth — set UI_AUTH=user:pass, "+
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
@@ -274,9 +278,27 @@ func runServer() {
 	// Model Context Protocol. Mounted here (before the SPA catch-all) and exempt
 	// from UI_AUTH below — see withAuthExcept. The handler serves both /mcp and
 	// /mcp/… (the Streamable-HTTP transport's own subpaths).
-	mcpHandler := newMCPHandler()
+	//
+	// withMCPAuth is a no-op unless MCP_OAUTH is set; when it is, /mcp requires a
+	// bearer token from lasso's own OAuth server (oauth.go) or the UI_AUTH
+	// credentials.
+	mcpHandler := withMCPAuth(newMCPHandler(), authUser, authPass, hasAuth)
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
+	// OAuth 2.1 authorization server for /mcp (oauth.go). The discovery
+	// documents, dynamic registration, and the token endpoint must be reachable
+	// without UI_AUTH — they're the credential-less half of the handshake — but
+	// /oauth/authorize deliberately stays gated, so granting a client access
+	// requires a human who can already get into lasso.
+	mux.HandleFunc("/.well-known/oauth-protected-resource", serveProtectedResourceMetadata)
+	// RFC 9728 §3.1: clients whose resource has a path probe the path-suffixed
+	// form (…/oauth-protected-resource/mcp) instead of the bare one.
+	mux.HandleFunc("/.well-known/oauth-protected-resource/", serveProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", serveAuthServerMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server/", serveAuthServerMetadata)
+	mux.HandleFunc("/oauth/register", serveOAuthRegister)
+	mux.HandleFunc("/oauth/token", serveOAuthToken)
+	mux.HandleFunc("/oauth/authorize", serveOAuthAuthorize)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -293,9 +315,18 @@ func runServer() {
 		mux.HandleFunc("/api/log", serveClientLog)
 	}
 
-	// /mcp is intentionally unauthenticated (see CLAUDE.md security note); the rest
-	// of the app stays behind UI_AUTH when set.
-	handler := withAuthExcept(mux, authUser, authPass, hasAuth, "/mcp")
+	// /mcp carries its own gate (withMCPAuth above — open by default, OAuth when
+	// MCP_OAUTH is set; see CLAUDE.md), and the OAuth discovery/token endpoints
+	// are meaningless behind a credential wall. Everything else — including
+	// /oauth/authorize, which is where consent is actually granted — stays
+	// behind UI_AUTH when set.
+	handler := withAuthExcept(mux, authUser, authPass, hasAuth,
+		"/mcp",
+		"/.well-known/oauth-protected-resource",
+		"/.well-known/oauth-authorization-server",
+		"/oauth/register",
+		"/oauth/token",
+	)
 
 	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
 	// port if the requested one is taken. Outside dev a busy port is fatal — we
@@ -2469,20 +2500,23 @@ func withAuth(next http.Handler, user, pass string, enabled bool) http.Handler {
 	})
 }
 
-// withAuthExcept is withAuth that lets requests under exempt bypass auth. Used to
-// keep /mcp open (its consumers — agent sessions — don't carry UI credentials)
-// while the rest of the app stays gated. A path equal to exempt or under
-// exempt+"/" is matched, so "/mcp" and "/mcp/…" pass but a sibling like
-// "/mcp-foo" does not.
-func withAuthExcept(next http.Handler, user, pass string, enabled bool, exempt string) http.Handler {
+// withAuthExcept is withAuth that lets requests under any of the exempt prefixes
+// bypass auth. Used to keep /mcp open (its consumers — agent sessions — don't
+// carry UI credentials) and to expose the OAuth discovery/token endpoints, which
+// are the credential-less half of a handshake, while the rest of the app stays
+// gated. A path equal to a prefix or under prefix+"/" is matched, so "/mcp" and
+// "/mcp/…" pass but a sibling like "/mcp-foo" does not.
+func withAuthExcept(next http.Handler, user, pass string, enabled bool, exempt ...string) http.Handler {
 	if !enabled {
 		return next
 	}
 	gated := withAuth(next, user, pass, enabled)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == exempt || strings.HasPrefix(r.URL.Path, exempt+"/") {
-			next.ServeHTTP(w, r)
-			return
+		for _, e := range exempt {
+			if r.URL.Path == e || strings.HasPrefix(r.URL.Path, e+"/") {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 		gated.ServeHTTP(w, r)
 	})

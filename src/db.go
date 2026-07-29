@@ -31,6 +31,7 @@ import (
 //	host_state  per-host remembered selections (last repo/agent/type)
 //	repo_state  per-host, per-repo settings + memory (copy-files/setup/base)
 //	agents      append-only log, each row tagged with the host it ran on
+//	oauth_*     MCP OAuth clients/codes/tokens, when MCP_OAUTH is set (oauth.go)
 //
 // modernc.org/sqlite is pure Go, so the binary stays CGO-free and portable.
 
@@ -116,7 +117,7 @@ func openDB() error {
 			return fmt.Errorf("%s: %w", pragma, err)
 		}
 	}
-	if _, err := h.Exec(dbSchema); err != nil {
+	if _, err := h.Exec(dbSchema + oauthSchema); err != nil {
 		h.Close()
 		return fmt.Errorf("create schema: %w", err)
 	}
