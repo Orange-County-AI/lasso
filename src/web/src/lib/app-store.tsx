@@ -1,4 +1,5 @@
 import * as React from "react"
+import { toast } from "sonner"
 
 import { type ActiveState, api } from "@/lib/api"
 import { applyMode, watchSystemMode } from "@/lib/mode"
@@ -23,6 +24,29 @@ interface AppState {
 // Fired when the active host changes (term_rev bumped) so terminal iframes can
 // reload onto the new host's ttyd session.
 export const HOST_CHANGED_EVENT = "lasso:host-changed"
+
+// A server-pushed toast (SSE "notice"): how background work that outlives its
+// request — auto-titling a new agent, which finishes long after create-agent
+// answered — reports a failure the user would otherwise only see in the log.
+interface Notice {
+  level?: "error" | "info" | "success"
+  title: string
+  detail?: string
+}
+
+function showNotice(raw: string) {
+  let n: Notice
+  try {
+    n = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (!n?.title) return
+  const opts = n.detail ? { description: n.detail } : undefined
+  if (n.level === "error") toast.error(n.title, opts)
+  else if (n.level === "success") toast.success(n.title, opts)
+  else toast.info(n.title, opts)
+}
 
 const AppContext = React.createContext<AppState | undefined>(undefined)
 
@@ -83,6 +107,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     es.addEventListener("active", (e) =>
       apply(JSON.parse((e as MessageEvent).data))
     )
+    es.addEventListener("notice", (e) => showNotice((e as MessageEvent).data))
     return () => es?.close()
   }, [apply])
 

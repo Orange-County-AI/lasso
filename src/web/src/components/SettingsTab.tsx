@@ -227,6 +227,7 @@ export function SettingsTab({
       <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
         <AppearanceToggle />
         <HerdrThemeSelect active={active} />
+        <AutoTitleToggle active={active} />
         <div className="mb-4 flex flex-col gap-1">
           <label className={labelClass} htmlFor="settings-host">
             Configuring host
@@ -403,6 +404,50 @@ function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
       />
       Sync agent themes (Claude Code, OpenCode)
     </label>
+  )
+}
+
+// AutoTitleToggle gates auto-titling: after a new agent is created (here or
+// over MCP), lasso asks a local agent CLI to name it from the whole prompt and
+// renames its workspace to that, instead of leaving the prompt's clipped first
+// line as the sidebar entry. Unlike everything below it this is NOT host-scoped
+// — the CLI runs on the box lasso runs on, whichever host the agent landed on —
+// so it sits above the host picker. Server-level setting, default on.
+function AutoTitleToggle({ active }: { active: boolean }) {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    queryKey: qk.autoTitle,
+    queryFn: () => api.autoTitle(),
+    enabled: active,
+  })
+  const mutation = useMutation({
+    mutationFn: (on: boolean) => api.setAutoTitle(on),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.autoTitle }),
+    onError: (e: Error) => toast.error(`Couldn't save: ${e.message}`),
+  })
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <span className={labelClass}>New agents</span>
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+        htmlFor="settings-auto-title"
+      >
+        <Checkbox
+          id="settings-auto-title"
+          checked={query.data?.enabled ?? true}
+          disabled={!query.data || mutation.isPending}
+          onCheckedChange={(c) => mutation.mutate(c === true)}
+        />
+        Auto-title new agents from their prompt
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        Names each new agent by asking a local CLI (claude, then codex, then
+        opencode) to summarize its prompt — so the sidebar shows a title instead
+        of the prompt's clipped first line. Runs on this machine, whichever host
+        the agent was created on, and only renames the workspace: the branch and
+        working directory keep their original names.
+      </p>
+    </div>
   )
 }
 

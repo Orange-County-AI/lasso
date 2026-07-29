@@ -429,6 +429,9 @@ func (e *createErr) Error() string { return e.err.Error() }
 func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.Title = strings.TrimSpace(req.Title)
+	// A title the caller chose is theirs to keep; only a title we derived from
+	// the prompt's first line is a candidate for auto-titling (see autotitle.go).
+	derivedTitle := req.Title == ""
 	if req.Title == "" {
 		req.Title = promptTitle(req.Prompt)
 	}
@@ -631,6 +634,14 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// so there's nothing to launch.
 	if rootPane != "" {
 		go bootAgent(b, host, rec, req.UploadDir)
+	}
+
+	// Rename the agent to something a sidebar can show, off the prompt's whole
+	// content rather than its first line. Concurrent with the boot: it asks a
+	// local agent CLI (seconds), touches nothing the boot touches, and no caller
+	// waits on the result. Only the display name moves — see autotitle.go.
+	if derivedTitle && rec.WorkspaceID != "" && rec.Description != "" && autoTitleEnabled() {
+		go autoTitleAgent(b, host, rec)
 	}
 	return rec, nil
 }
