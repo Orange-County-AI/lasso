@@ -77,7 +77,8 @@ of per-host credentials. Do not re-enable it without also teaching
 ```bash
 lasso mcp-client add --host norm              # scope self: that host only
 lasso mcp-client add --host local --fleet     # the lasso host: whole fleet
-lasso mcp-client list
+lasso mcp-client list                         # incl. how many tokens each holds
+lasso mcp-client token <client_id> [--ttl 90d] # bearer token; default no expiry
 lasso mcp-client rm <client_id>               # also drops its outstanding tokens
 ```
 
@@ -94,22 +95,28 @@ Cloudflare Access service token decides *whether* that box may talk to lasso at
 all; the lasso credential decides *what it may see* once inside.
 
 ```bash
-# on titan: mint it, then put both values in THAT box's secret store only
+# on titan: provision the host, then mint it a token
 lasso mcp-client add --host norm
+lasso mcp-client token <client_id>          # no --ttl => never expires
 
-# on the box
-TOKEN=$(curl -s -u "$LASSO_MCP_CLIENT_ID:$LASSO_MCP_CLIENT_SECRET" \
-  -d grant_type=client_credentials \
-  -H "CF-Access-Client-Id: $LASSO_ACCESS_ID" \
-  -H "CF-Access-Client-Secret: $LASSO_ACCESS_SECRET" \
-  https://lasso.orangecountyai.com/oauth/token | jq -r .access_token)
-
+# on the box (put the token in ITS secret store only)
 claude mcp add --transport http --scope user lasso \
   https://lasso.orangecountyai.com/mcp \
-  --header "Authorization: Bearer $TOKEN" \
+  --header "Authorization: Bearer $LASSO_MCP_TOKEN" \
   --header "CF-Access-Client-Id: $LASSO_ACCESS_ID" \
   --header "CF-Access-Client-Secret: $LASSO_ACCESS_SECRET"
 ```
+
+`token` defaults to **no expiry**, because it sits unattended in a host's config
+where a rolling expiry is an outage on a timer rather than a security win. Pass
+`--ttl 90d` / `2w` / `12h` for a dated one. To revoke: `lasso mcp-client rm
+<client_id>` drops the client and every token issued to it, then `add` a
+replacement — one client is one host, so the blast radius is exactly the host you
+are re-keying. `lasso mcp-client list` shows how many tokens each host holds and
+how many never expire.
+
+The client_id/client_secret still work for `client_credentials` where a caller
+can run a grant; the minted token is for clients that can only carry a header.
 
 Sanity check from that box — `list_agents` with no `host` should return **its
 own** host, and naming another host should be refused with the credential
@@ -117,13 +124,7 @@ explanation.
 
 ## Known gaps
 
-1. **Access tokens live one hour**, so the `--header` install above goes stale.
-   `claude mcp add`'s `--client-id/--client-secret` pair drives the *auth-code*
-   flow (browser + the Access-gated consent screen), which is wrong for a
-   headless box. An unattended install needs a long-lived, revocable token —
-   e.g. `lasso mcp-client token <client_id> --ttl 90d`. **Not implemented**; until
-   it is, per-host installs need a renewer or manual refresh.
-2. **Scope is `self` or `fleet`, with nothing in between.** That covers the two
+1. **Scope is `self` or `fleet`, with nothing in between.** That covers the two
    ends of the titan fleet exactly: the workspace pods can ssh nowhere (`norm`
    has no `~/.ssh` at all), so `self` *is* "the hosts it can ssh into"; and for
    the lasso host, `fleet` *is* titan's ssh config by construction. It does not
@@ -132,7 +133,7 @@ explanation.
    (`self`) or too broad (`fleet`, which would hand it every workspace pod).
    The fix is a per-credential host allowlist, intersected with
    `addressableHosts()` since lasso is the one doing the ssh'ing.
-3. **Alias names are not identities**, which any allowlist work must respect.
+2. **Alias names are not identities**, which any allowlist work must respect.
    Measured on 2026-07-30: `52labs` resolves to `ws-52labs.orangecountyai.com`
    from titan but to `5.78.190.149` from gigachad — *different machines under
    one name*, so name-based matching would hand gigachad's credential a

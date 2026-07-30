@@ -261,18 +261,33 @@ func redirectURIAllowed(c oauthClient, redirect string) bool {
 func purgeExpiredOAuth() {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = db.Exec(`DELETE FROM oauth_codes WHERE expires_at < ?`, now)
-	_, _ = db.Exec(`DELETE FROM oauth_tokens WHERE expires_at < ?`, now)
+	// expires_at = '' means "never expires" (see issueToken). It must be excluded
+	// explicitly: SQLite compares strings, and '' sorts BEFORE any timestamp, so a
+	// bare `expires_at < now` would delete exactly the tokens meant to outlive
+	// everything.
+	_, _ = db.Exec(`DELETE FROM oauth_tokens WHERE expires_at != '' AND expires_at < ?`, now)
 }
 
 // issueToken mints an access or refresh token and records its hash.
+//
+// A ttl of zero or less mints a token that NEVER expires, stored as an empty
+// expires_at. That is the default for the machine tokens `lasso mcp-client
+// token` hands to a host: they sit in that host's MCP client config
+// unattended, where a rolling expiry is not a security win but an outage on a
+// timer. Such a token is revoked by removing its client
+// (`lasso mcp-client rm`), which drops every token issued to it.
 func issueToken(kind, clientID, scope string, ttl time.Duration) (string, error) {
 	tok, err := randToken()
 	if err != nil {
 		return "", err
 	}
+	expires := ""
+	if ttl > 0 {
+		expires = time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	}
 	_, err = db.Exec(
 		`INSERT INTO oauth_tokens (token_hash, kind, client_id, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		hashToken(tok), kind, clientID, scope, time.Now().UTC().Add(ttl).Format(time.RFC3339),
+		hashToken(tok), kind, clientID, scope, expires,
 	)
 	if err != nil {
 		return "", err
@@ -809,6 +824,10 @@ func writeTokenPair(w http.ResponseWriter, clientID, scope string) {
 
 // verifyAccessToken looks up a presented bearer token. Returns the client it was
 // issued to and when the token expires, or false if it is unknown or expired.
+//
+// A ZERO expiresAt with ok=true means the token never expires (issueToken stores
+// that as an empty expires_at). A value that is present but unparseable is
+// treated as invalid, not as immortal — a corrupt row must fail closed.
 func verifyAccessToken(tok string) (clientID string, expiresAt time.Time, ok bool) {
 	if tok == "" {
 		return "", time.Time{}, false
@@ -820,6 +839,9 @@ func verifyAccessToken(tok string) (clientID string, expiresAt time.Time, ok boo
 	).Scan(&clientID, &expires)
 	if err != nil {
 		return "", time.Time{}, false
+	}
+	if expires == "" {
+		return clientID, time.Time{}, true
 	}
 	exp, perr := time.Parse(time.RFC3339, expires)
 	if perr != nil || time.Now().After(exp) {
@@ -846,6 +868,15 @@ func mcpTokenVerifier(_ context.Context, token string, _ *http.Request) (*auth.T
 	clientID, exp, ok := verifyAccessToken(token)
 	if !ok {
 		return nil, auth.ErrInvalidToken
+	}
+	// A never-expiring token has a zero exp, but auth.RequireBearerToken rejects
+	// any TokenInfo whose Expiration is zero ("token missing expiration") — so
+	// present it as expiring far enough out to pass that check. lasso's db stays
+	// the authority on validity; this value only satisfies the SDK's guard, and is
+	// deliberately synthesized here at the boundary rather than stored, so nothing
+	// inside lasso mistakes it for a real expiry.
+	if exp.IsZero() {
+		exp = time.Now().Add(oauthAccessTTL)
 	}
 	ti := &auth.TokenInfo{
 		Scopes:     []string{oauthScope},
