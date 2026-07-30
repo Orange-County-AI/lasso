@@ -102,25 +102,39 @@ func resolveRecipient(spec string, records []hostAgent, panes paneLookup) (Agent
 	if found {
 		return rec, status, nil
 	}
-	// Trim around the split so "fix login flow @gigachad" addresses the same
-	// agent as "fix login flow@gigachad" — titles keep their interior spaces,
-	// but whitespace against the separator is never meaningful.
-	if i := strings.LastIndex(spec, "@"); i > 0 {
-		needle, host := strings.TrimSpace(spec[:i]), strings.TrimSpace(spec[i+1:])
-		if needle != "" && host != "" {
-			rec, status, found, err2 := matchRecipient(needle, host, records, panes)
-			if found {
-				return rec, status, nil
-			}
-			if err2 != nil {
-				return AgentRecord{}, "", err2
-			}
+	if needle, host := splitRecipientHost(spec); host != "" {
+		rec, status, found, err2 := matchRecipient(needle, host, records, panes)
+		if found {
+			return rec, status, nil
+		}
+		if err2 != nil {
+			return AgentRecord{}, "", err2
 		}
 	}
 	if err1 != nil {
 		return AgentRecord{}, "", err1
 	}
 	return AgentRecord{}, "", fmt.Errorf("no agent matches %q — address by the title or id (optionally \"…@host\") that list_agents shows", spec)
+}
+
+// splitRecipientHost splits a host-qualified recipient spec at its LAST "@"
+// ("clem@gigachad" → "clem", "gigachad"), returning an empty host when the spec
+// carries no usable qualifier — including the "@host"/"needle@" degenerate
+// forms, which name nothing. Trimming around the split makes "fix login flow
+// @gigachad" address the same agent as "fix login flow@gigachad": titles keep
+// their interior spaces, but whitespace against the separator is never
+// meaningful. Shared with the scope check in message_agent so "which host did
+// the caller name?" is answered exactly once, the same way.
+func splitRecipientHost(spec string) (needle, host string) {
+	i := strings.LastIndex(spec, "@")
+	if i <= 0 {
+		return strings.TrimSpace(spec), ""
+	}
+	needle, host = strings.TrimSpace(spec[:i]), strings.TrimSpace(spec[i+1:])
+	if needle == "" || host == "" {
+		return strings.TrimSpace(spec), ""
+	}
+	return needle, host
 }
 
 // matchRecipient resolves needle (an agent id or title) against records,
@@ -211,7 +225,7 @@ func addrList(recs []AgentRecord) string {
 // whoami, refusing cross-host pane-id collisions), anyone else passes a free-
 // text label. A from_pane that doesn't resolve is an error rather than a silent
 // fallback — a mis-attributed message is worse than a failed send.
-func resolveMessageSender(ctx context.Context, fromPane, fromHost, from string) (label, addr string, err error) {
+func resolveMessageSender(ctx context.Context, cs mcpCaller, fromPane, fromHost, from string) (label, addr string, err error) {
 	fromPane = strings.TrimSpace(fromPane)
 	if fromPane == "" {
 		if strings.TrimSpace(from) == "" {
@@ -219,9 +233,16 @@ func resolveMessageSender(ctx context.Context, fromPane, fromHost, from string) 
 		}
 		return strings.TrimSpace(from), "", nil
 	}
+	// An identified caller's own host comes from its credential, so its pane is
+	// looked up there rather than hunted across the fleet — same reasoning as
+	// whoami, and it means a self-scoped sender resolves without a cross-host
+	// search it isn't allowed to make anyway.
+	if fromHost == "" {
+		fromHost = cs.Host
+	}
 	var wo whoamiOut
 	if fromHost == "" {
-		wo = resolveWhoamiAcrossHosts(ctx, fromPane)
+		wo = resolveWhoamiAcrossHosts(ctx, cs, fromPane)
 	} else {
 		b, berr := agentBackendResolver(fromHost)
 		if berr != nil {

@@ -41,9 +41,20 @@ func (b *closeBackend) HerdrCall(method string, params any) (json.RawMessage, er
 }
 
 // stubCloseBackends points the close path's backend resolution at fakes; a
-// host absent from the map behaves like an unreachable one.
+// host absent from the map behaves like an unreachable one. The map's hosts are
+// also declared as this lasso's ssh-config aliases, since a host lasso has no
+// alias for is out of scope entirely (hostscope.go) and would be refused before
+// any backend was consulted — the fleet a test hands us is by definition the
+// fleet it means to be addressable.
 func stubCloseBackends(t *testing.T, backends map[string]Backend) {
 	t.Helper()
+	aliases := make([]string, 0, len(backends))
+	for host := range backends {
+		if !isLocalHost(host) {
+			aliases = append(aliases, host)
+		}
+	}
+	stubSSHHosts(t, aliases...)
 	prev := agentBackendResolver
 	agentBackendResolver = func(host string) (Backend, error) {
 		if host == "" {

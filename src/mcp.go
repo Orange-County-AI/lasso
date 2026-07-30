@@ -18,6 +18,11 @@ import (
 // gridHostBackend, listAgents, paneRun, pane.read, …). Tools take an optional
 // `host` and resolve it through gridHostBackend, so a session can drive agents
 // on any reachable host without disturbing the UI's active host.
+//
+// That reach is bounded: an agent sees and talks to agents on its own box or on
+// a host with an alias in lasso's ssh config, and nowhere else. hostscope.go
+// holds the rule and the reasons; every tool that answers a host-scoped question
+// from the agents db runs it first.
 
 // newMCPHandler builds the MCP server, registers the tools, and returns the
 // Streamable-HTTP handler to mount at /mcp. The getServer closure hands every
@@ -47,9 +52,18 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 // host means "the box lasso runs on" (local) — the default the user asked for.
 // gridHostBackend returns a backend for any reachable+compatible host without
 // mutating the UI's active host.
+//
+// A host with no alias in lasso's ssh config is refused up front (see
+// hostscope.go): gridHostBackend would fail on it anyway, but "not available"
+// reads like a machine that is merely down, and the distinction between "asleep
+// for now" and "not a host you may address at all" is the whole point of the
+// scope rule.
 func resolveBackend(host string) (Backend, error) {
 	if host == "" {
 		host = "local"
+	}
+	if err := requireAddressableHost(host); err != nil {
+		return nil, err
 	}
 	return gridHostBackend(host)
 }

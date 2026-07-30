@@ -61,10 +61,10 @@ func TestClientCredentialsGrant(t *testing.T) {
 	if _, ok := body["refresh_token"]; ok {
 		t.Errorf("client_credentials issued a refresh_token: %v", body)
 	}
-	if _, ok := verifyAccessToken(tok); !ok {
+	if _, _, ok := verifyAccessToken(tok); !ok {
 		t.Error("issued token does not verify")
 	}
-	if _, ok := verifyAccessToken(tok + "x"); ok {
+	if _, _, ok := verifyAccessToken(tok + "x"); ok {
 		t.Error("a tampered token verified")
 	}
 }
@@ -234,7 +234,7 @@ func TestAuthorizationCodeFlow(t *testing.T) {
 	if access == "" || refresh == "" {
 		t.Fatalf("missing tokens in %v", body)
 	}
-	if _, ok := verifyAccessToken(access); !ok {
+	if _, _, ok := verifyAccessToken(access); !ok {
 		t.Error("access token does not verify")
 	}
 
