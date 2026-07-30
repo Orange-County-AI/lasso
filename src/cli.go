@@ -28,6 +28,7 @@ import (
 //	lasso update          update to the latest release (or git-pull a supervised checkout)
 //	lasso doctor          check the local install (herdr, socket, port, version)
 //	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
+//	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
@@ -71,6 +72,9 @@ func main() {
 		case "closeme":
 			cliCloseMe()
 			return
+		case "mcp-client":
+			cliMCPClient(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Println(lassoVersion())
 			return
@@ -104,6 +108,7 @@ usage:
   lasso doctor             check the local install
   lasso devproxy [flags]   Host-demux: serve *.<domain> -> 127.0.0.1:<port> (Cloudflare dev preview)
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
+  lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso version            print the version
 
 run "lasso -h" style flags after serve/start/restart; see the README for details.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 // OAuth 2.1 authorization server for the MCP endpoint.
@@ -100,7 +103,14 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   secret_hash   TEXT NOT NULL DEFAULT '',
   redirect_uris TEXT NOT NULL DEFAULT '[]',
   name          TEXT NOT NULL DEFAULT '',
-  created_at    TEXT NOT NULL DEFAULT ''
+  created_at    TEXT NOT NULL DEFAULT '',
+  -- host/mcp_scope make a credential carry WHO is calling and how far it may
+  -- reach (see callerscope.go). Only the CLI (lasso mcp-client add) ever sets
+  -- them, so a non-empty host also marks a client as operator-provisioned --
+  -- which is what licenses it to use client_credentials, unlike an open-DCR
+  -- registration.
+  host          TEXT NOT NULL DEFAULT '',
+  mcp_scope     TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS oauth_codes (
   code_hash        TEXT PRIMARY KEY,
@@ -127,10 +137,19 @@ type oauthClient struct {
 	SecretHash   string
 	RedirectURIs []string
 	Name         string
-	// Static marks the MCP_OAUTH client — the only one allowed to use
-	// client_credentials, since a dynamically-registered client obtaining
-	// machine-to-machine tokens would be an open door.
+	// Static marks the MCP_OAUTH client. It and operator-provisioned host
+	// clients (Host != "") are the only ones allowed to use client_credentials —
+	// a dynamically-registered client obtaining machine-to-machine tokens would
+	// be an open door, but a credential an operator minted out-of-band for a
+	// named host is exactly the machine-to-machine case.
 	Static bool
+	// Host is the lasso host whose agents this credential's callers run on, and
+	// Scope is how far they may reach ("self" / "fleet"). Both empty means the
+	// caller is not host-identified and keeps the historical fleet-wide view.
+	// See callerscope.go — this is the whole point of the per-host clients: the
+	// caller's host is derived from the token, never asserted by the caller.
+	Host  string
+	Scope string
 }
 
 func hashToken(s string) string {
@@ -162,13 +181,17 @@ func lookupOAuthClient(id string) (oauthClient, bool) {
 			RedirectURIs: oauthCfg.RedirectURIs,
 			Name:         "lasso (pre-registered)",
 			Static:       true,
+			// No Host: the pre-registered credential is shared by whatever the
+			// operator points at it (their own connectors, the CLI), so it names no
+			// machine and keeps the fleet-wide view it has always had.
+			Scope: scopeFleet,
 		}, true
 	}
 	var c oauthClient
 	var uris string
 	err := db.QueryRow(
-		`SELECT client_id, secret_hash, redirect_uris, name FROM oauth_clients WHERE client_id = ?`, id,
-	).Scan(&c.ID, &c.SecretHash, &uris, &c.Name)
+		`SELECT client_id, secret_hash, redirect_uris, name, host, mcp_scope FROM oauth_clients WHERE client_id = ?`, id,
+	).Scan(&c.ID, &c.SecretHash, &uris, &c.Name, &c.Host, &c.Scope)
 	if err != nil {
 		return oauthClient{}, false
 	}
@@ -238,18 +261,33 @@ func redirectURIAllowed(c oauthClient, redirect string) bool {
 func purgeExpiredOAuth() {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = db.Exec(`DELETE FROM oauth_codes WHERE expires_at < ?`, now)
-	_, _ = db.Exec(`DELETE FROM oauth_tokens WHERE expires_at < ?`, now)
+	// expires_at = '' means "never expires" (see issueToken). It must be excluded
+	// explicitly: SQLite compares strings, and '' sorts BEFORE any timestamp, so a
+	// bare `expires_at < now` would delete exactly the tokens meant to outlive
+	// everything.
+	_, _ = db.Exec(`DELETE FROM oauth_tokens WHERE expires_at != '' AND expires_at < ?`, now)
 }
 
 // issueToken mints an access or refresh token and records its hash.
+//
+// A ttl of zero or less mints a token that NEVER expires, stored as an empty
+// expires_at. That is the default for the machine tokens `lasso mcp-client
+// token` hands to a host: they sit in that host's MCP client config
+// unattended, where a rolling expiry is not a security win but an outage on a
+// timer. Such a token is revoked by removing its client
+// (`lasso mcp-client rm`), which drops every token issued to it.
 func issueToken(kind, clientID, scope string, ttl time.Duration) (string, error) {
 	tok, err := randToken()
 	if err != nil {
 		return "", err
 	}
+	expires := ""
+	if ttl > 0 {
+		expires = time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	}
 	_, err = db.Exec(
 		`INSERT INTO oauth_tokens (token_hash, kind, client_id, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		hashToken(tok), kind, clientID, scope, time.Now().UTC().Add(ttl).Format(time.RFC3339),
+		hashToken(tok), kind, clientID, scope, expires,
 	)
 	if err != nil {
 		return "", err
@@ -652,9 +690,14 @@ func tokenClientCredentials(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
-	if !client.Static {
+	// Machine-to-machine is for credentials an operator minted deliberately: the
+	// MCP_OAUTH client, and the per-host clients created by `lasso mcp-client
+	// add` (which is the only writer of oauth_clients.host). A client that
+	// registered itself through open DCR is still refused — that path takes no
+	// human approval, so letting it mint machine tokens would be an open door.
+	if !client.Static && client.Host == "" {
 		oauthError(w, http.StatusBadRequest, "unauthorized_client",
-			"client_credentials is only available to the client configured in MCP_OAUTH")
+			"client_credentials is only available to the MCP_OAUTH client and to per-host clients created with `lasso mcp-client add`")
 		return
 	}
 	access, err := issueToken("access", client.ID, oauthScope, oauthAccessTTL)
@@ -780,10 +823,14 @@ func writeTokenPair(w http.ResponseWriter, clientID, scope string) {
 // ---------------------------------------------------------------------------
 
 // verifyAccessToken looks up a presented bearer token. Returns the client it was
-// issued to, or false if it is unknown or expired.
-func verifyAccessToken(tok string) (clientID string, ok bool) {
+// issued to and when the token expires, or false if it is unknown or expired.
+//
+// A ZERO expiresAt with ok=true means the token never expires (issueToken stores
+// that as an empty expires_at). A value that is present but unparseable is
+// treated as invalid, not as immortal — a corrupt row must fail closed.
+func verifyAccessToken(tok string) (clientID string, expiresAt time.Time, ok bool) {
 	if tok == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
 	var expires string
 	err := db.QueryRow(
@@ -791,13 +838,58 @@ func verifyAccessToken(tok string) (clientID string, ok bool) {
 		hashToken(tok),
 	).Scan(&clientID, &expires)
 	if err != nil {
-		return "", false
+		return "", time.Time{}, false
+	}
+	if expires == "" {
+		return clientID, time.Time{}, true
 	}
 	exp, perr := time.Parse(time.RFC3339, expires)
 	if perr != nil || time.Now().After(exp) {
-		return "", false
+		return "", time.Time{}, false
 	}
-	return clientID, true
+	return clientID, exp, true
+}
+
+// mcpTokenVerifier is the auth.TokenVerifier behind /mcp: it turns a presented
+// bearer token into the SDK's TokenInfo, carrying the caller's identity in
+// fields the caller cannot influence.
+//
+//   - UserID is the client id. The SDK pins a session to it (streamable.go
+//     captures it at initialize and 403s any later request on that session
+//     whose token resolves to a different one), which is the spec's
+//     session-hijacking mitigation — "derived from the user token and not
+//     provided by the client" — obtained for free.
+//   - Extra carries the host and scope the credential was provisioned with,
+//     which callerFrom reads back on every tool call.
+//
+// Returning auth.ErrInvalidToken is what makes RequireBearerToken answer 401
+// with the RFC 9728 challenge that starts discovery.
+func mcpTokenVerifier(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+	clientID, exp, ok := verifyAccessToken(token)
+	if !ok {
+		return nil, auth.ErrInvalidToken
+	}
+	// A never-expiring token has a zero exp, but auth.RequireBearerToken rejects
+	// any TokenInfo whose Expiration is zero ("token missing expiration") — so
+	// present it as expiring far enough out to pass that check. lasso's db stays
+	// the authority on validity; this value only satisfies the SDK's guard, and is
+	// deliberately synthesized here at the boundary rather than stored, so nothing
+	// inside lasso mistakes it for a real expiry.
+	if exp.IsZero() {
+		exp = time.Now().Add(oauthAccessTTL)
+	}
+	ti := &auth.TokenInfo{
+		Scopes:     []string{oauthScope},
+		Expiration: exp,
+		UserID:     clientID,
+	}
+	// A token whose client has since been deleted stays valid until it expires
+	// (it always did), but it identifies no host — so it falls back to the
+	// unscoped view rather than being refused outright.
+	if c, found := lookupOAuthClient(clientID); found {
+		ti.Extra = map[string]any{tokenHostKey: c.Host, tokenScopeKey: c.Scope}
+	}
+	return ti, nil
 }
 
 // withMCPAuth gates the /mcp handler.
@@ -823,10 +915,19 @@ func withMCPAuth(next http.Handler, uiUser, uiPass string, uiEnabled bool) http.
 		// token endpoints DO send CORS — those are public documents.
 		fields := strings.Fields(r.Header.Get("Authorization"))
 		if len(fields) == 2 && strings.EqualFold(fields[0], "bearer") {
-			if _, ok := verifyAccessToken(fields[1]); ok {
-				next.ServeHTTP(w, r)
-				return
-			}
+			// Delegate the bearer path to the SDK's own middleware rather than
+			// verifying inline: it is what puts the TokenInfo into the request
+			// context, which is the ONLY way the resolved identity reaches a tool
+			// handler (the streamable transport copies it onto every request's
+			// Extra) and the only way its session pinning engages. The options are
+			// built per-request because the resource metadata URL depends on the
+			// origin the client actually reached. Scopes are deliberately not
+			// enforced here — they never were, and a token minted before this
+			// existed would 403 rather than 401 into a re-auth.
+			auth.RequireBearerToken(mcpTokenVerifier, &auth.RequireBearerTokenOptions{
+				ResourceMetadataURL: externalBaseURL(r) + "/.well-known/oauth-protected-resource",
+			})(next).ServeHTTP(w, r)
+			return
 		} else if uiEnabled {
 			// Basic auth on /mcp is the escape hatch for callers that already
 			// hold UI_AUTH — they shouldn't have to run an OAuth dance to reach
@@ -850,7 +951,17 @@ func withMCPAuth(next http.Handler, uiUser, uiPass string, uiEnabled bool) http.
 func logOAuthStatus() {
 	if !oauthCfg.Enabled {
 		log.Printf("mcp:      /mcp unauthenticated (set MCP_OAUTH=client_id:client_secret to require OAuth)")
+		// A provisioned per-host credential is INERT while /mcp is open: every
+		// caller is unidentified and keeps the fleet-wide view, so an operator who
+		// set up containment and left MCP_OAUTH unset has none. Say so loudly —
+		// silently ignoring the scoping they configured is the worst outcome here.
+		if hosts := hostScopedClientCount(); hosts > 0 {
+			log.Printf("mcp:      WARNING: %d per-host MCP credential(s) provisioned but NOT enforced — /mcp is open, so every caller is unidentified and fleet-scoped. Set MCP_OAUTH to enforce them.", hosts)
+		}
 		return
+	}
+	if hosts := hostScopedClientCount(); hosts > 0 {
+		log.Printf("mcp:      %d per-host MCP credential(s) — those callers are scoped by the host they authenticate as (lasso mcp-client list)", hosts)
 	}
 	scope := "any https/loopback redirect (shown on the consent screen)"
 	if len(oauthCfg.RedirectURIs) > 0 {

@@ -59,7 +59,11 @@ func serveAgentClose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pane_id or agent_id required", http.StatusBadRequest)
 		return
 	}
-	rec, status, err := resolveCloseTarget(r.Context(), host, agentID, paneID)
+	// anyCaller: this endpoint has its own gate (UI_AUTH / Access) and is what
+	// `lasso closeme` posts to, so it is not scoped by an MCP credential. Per-host
+	// MCP scope confines what an agent can reach THROUGH /mcp; a machine's own
+	// HTTP access to lasso is a separate question, settled at the network.
+	rec, status, err := resolveCloseTarget(r.Context(), anyCaller(), host, agentID, paneID)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -88,7 +92,14 @@ func serveAgentClose(w http.ResponseWriter, r *http.Request) {
 // still belong to a peer lasso that created the agent on this machine — the
 // adoption path (adoptPeerAgent) covers that before giving up. The returned
 // int is the HTTP status for a non-nil error.
-func resolveCloseTarget(ctx context.Context, host, agentID, paneID string) (AgentRecord, int, error) {
+func resolveCloseTarget(ctx context.Context, cs mcpCaller, host, agentID, paneID string) (AgentRecord, int, error) {
+	// A host lasso has no ssh alias for — or that this caller may not reach — is
+	// out of scope entirely. Refuse before the db is consulted, so a record for a
+	// machine this lasso cannot connect to, or one belonging to another trust
+	// zone, is never resolved into a close target.
+	if err := cs.requireHost(host); err != nil {
+		return AgentRecord{}, http.StatusBadRequest, err
+	}
 	if agentID != "" {
 		if host != "" {
 			rec, err := findAgentRecord(host, agentID)
@@ -102,7 +113,7 @@ func resolveCloseTarget(ctx context.Context, host, agentID, paneID string) (Agen
 			return AgentRecord{}, http.StatusInternalServerError, err
 		}
 		var matches []AgentRecord
-		for _, ha := range all {
+		for _, ha := range cs.agents(all) {
 			if ha.Agent.ID == agentID {
 				matches = append(matches, ha.Agent)
 			}
@@ -151,7 +162,7 @@ func resolveCloseTarget(ctx context.Context, host, agentID, paneID string) (Agen
 	}
 
 	// No host given: search every host's records in our own db.
-	matches, err := paneMatchesAcrossHosts(paneID)
+	matches, err := paneMatchesAcrossHosts(cs, paneID)
 	if err != nil {
 		return AgentRecord{}, http.StatusInternalServerError, err
 	}
@@ -174,20 +185,24 @@ func resolveCloseTarget(ctx context.Context, host, agentID, paneID string) (Agen
 	}
 }
 
-// paneMatchesAcrossHosts finds, per host in this lasso's own db, the newest
-// agent record whose root pane corresponds to paneID. The raw id is matched
-// as-is on every host; canonicalization through herdr (raw $HERDR_PANE_ID form
-// → public root_pane form) is done only against the LOCAL herdr — a raw pane id
-// is an artifact of the machine the caller runs on, and "resolving" it through
-// some other host's herdr would name an unrelated pane that happens to share
-// the id (the exact collision this file exists to prevent).
-func paneMatchesAcrossHosts(paneID string) ([]AgentRecord, error) {
+// paneMatchesAcrossHosts finds, per host in this lasso's own db that cs may
+// address, the newest agent record whose root pane corresponds to paneID. Hosts
+// with no alias in the ssh config, and hosts outside the caller's own scope, are
+// skipped (hostscope.go / callerscope.go) — a pane on a machine lasso cannot
+// connect to, or in another trust zone, is not a target it may hand back. The raw id is
+// matched as-is on every host; canonicalization through herdr (raw
+// $HERDR_PANE_ID form → public root_pane form) is done only against the LOCAL
+// herdr — a raw pane id is an artifact of the machine the caller runs on, and
+// "resolving" it through some other host's herdr would name an unrelated pane
+// that happens to share the id (the exact collision this file exists to
+// prevent).
+func paneMatchesAcrossHosts(cs mcpCaller, paneID string) ([]AgentRecord, error) {
 	all, err := listAllAgents()
 	if err != nil {
 		return nil, err
 	}
 	byHost := map[string][]AgentRecord{}
-	for _, ha := range all {
+	for _, ha := range cs.agents(all) {
 		byHost[ha.Host] = append(byHost[ha.Host], ha.Agent)
 	}
 	var matches []AgentRecord
