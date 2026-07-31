@@ -74,13 +74,11 @@ func hostClientToken(t *testing.T, host, scope string) string {
 	return tok
 }
 
-// callListAgents invokes the list_agents tool and returns its decoded output
-// alongside whether the call came back as an error.
-func callListAgents(t *testing.T, sess *mcp.ClientSession, args map[string]any) (listAgentsOut, string) {
+// callTool invokes one tool over the session, decoding its structured output
+// into out and returning the tool's error text (empty when it succeeded).
+func callTool(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any, out any) string {
 	t.Helper()
-	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "list_agents", Arguments: args,
-	})
+	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool transport error: %v", err)
 	}
@@ -91,11 +89,21 @@ func callListAgents(t *testing.T, sess *mcp.ClientSession, args map[string]any) 
 				msg.WriteString(tc.Text)
 			}
 		}
-		return listAgentsOut{}, msg.String()
+		return msg.String()
 	}
-	var out listAgentsOut
 	if b, err := json.Marshal(res.StructuredContent); err == nil {
-		_ = json.Unmarshal(b, &out)
+		_ = json.Unmarshal(b, out)
+	}
+	return ""
+}
+
+// callListAgents invokes the list_agents tool and returns its decoded output
+// alongside whether the call came back as an error.
+func callListAgents(t *testing.T, sess *mcp.ClientSession, args map[string]any) (listAgentsOut, string) {
+	t.Helper()
+	var out listAgentsOut
+	if errMsg := callTool(t, sess, "list_agents", args, &out); errMsg != "" {
+		return listAgentsOut{}, errMsg
 	}
 	return out, ""
 }
@@ -145,6 +153,104 @@ func TestMCPCallerScopeOverTheRealEndpoint(t *testing.T) {
 	}
 	if len(out.Agents) != 1 || out.Agents[0].ID != "gig1" {
 		t.Errorf("fleet caller saw %+v on gigachad, want gig1", out.Agents)
+	}
+}
+
+// Groups, end to end over the real endpoint: two hosts in one group address
+// each other with credentials neither of them can lie about, a host outside it
+// is refused, and an edit made with `lasso mcp-group` lands on the very next
+// call — same session, same token, nothing re-minted.
+func TestMCPHostGroupsOverTheRealEndpoint(t *testing.T) {
+	openTestDB(t)
+	enableOAuth(t, "")
+	stubSSHHosts(t, "norm", "norm-darren", "outsider")
+	for _, a := range []struct{ host, id, title, pane string }{
+		{"norm", "n1", "norm agent", "wN:p1"},
+		{"norm-darren", "d1", "darren agent", "wD:p1"},
+		{"outsider", "o1", "outsider agent", "wO:p1"},
+	} {
+		if err := appendAgent(a.host, AgentRecord{ID: a.id, Title: a.title, Type: "git",
+			RootPane: a.pane, WorkDir: "/w/" + a.id, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := createGroup("norm-stack"); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"norm", "norm-darren"} {
+		if _, err := addGroupMember("norm-stack", h, memberKindHost); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	norm := mcpTestSession(t, hostClientToken(t, "norm", scopeSelf))
+	darren := mcpTestSession(t, hostClientToken(t, "norm-darren", scopeSelf))
+	outsider := mcpTestSession(t, hostClientToken(t, "outsider", scopeSelf))
+
+	// Mutual: each sees the other's agents, and neither had to say who it was.
+	out, errMsg := callListAgents(t, norm, map[string]any{"host": "norm-darren"})
+	if errMsg != "" {
+		t.Fatalf("norm was refused its group-mate: %s", errMsg)
+	}
+	if len(out.Agents) != 1 || out.Agents[0].ID != "d1" {
+		t.Errorf("norm saw %+v on norm-darren, want d1", out.Agents)
+	}
+	if out, errMsg = callListAgents(t, darren, map[string]any{"host": "norm"}); errMsg != "" {
+		t.Fatalf("norm-darren was refused its group-mate: %s", errMsg)
+	}
+	if len(out.Agents) != 1 || out.Agents[0].ID != "n1" {
+		t.Errorf("norm-darren saw %+v on norm, want n1", out.Agents)
+	}
+
+	// A host outside the group is refused in both directions, with a refusal that
+	// points at the command that would change it.
+	_, errMsg = callListAgents(t, norm, map[string]any{"host": "outsider"})
+	if errMsg == "" {
+		t.Fatal("a group caller reached a host outside its group")
+	}
+	if !strings.Contains(errMsg, "lasso mcp-group") {
+		t.Errorf("refusal = %q, want it to name the group command", errMsg)
+	}
+	if _, errMsg = callListAgents(t, outsider, map[string]any{"host": "norm"}); errMsg == "" {
+		t.Fatal("a host outside the group listed a group member's agents")
+	}
+
+	// message_agent resolves recipients against the same bound. There is no live
+	// herdr behind these hosts, so an in-group recipient can only get as far as
+	// dialing its host — but that is the distinction under test: the group-mate
+	// resolves to its host, while the outsider is stopped by the credential.
+	var msg messageAgentOut
+	if errMsg = callTool(t, norm, "message_agent", map[string]any{
+		"to":   []string{"darren agent@norm-darren", "outsider agent@outsider"},
+		"text": "ping", "from": "norm",
+	}, &msg); errMsg != "" {
+		t.Fatalf("message_agent: %s", errMsg)
+	}
+	if len(msg.Results) != 2 {
+		t.Fatalf("results = %+v, want two", msg.Results)
+	}
+	if !strings.Contains(msg.Results[0].Detail, "norm-darren") ||
+		strings.Contains(msg.Results[0].Detail, "credential") {
+		t.Errorf("group-mate detail = %q, want it resolved to the host rather than refused",
+			msg.Results[0].Detail)
+	}
+	if !strings.Contains(msg.Results[1].Detail, "credential") {
+		t.Errorf("outsider detail = %q, want the credential refusal", msg.Results[1].Detail)
+	}
+
+	// The live-edit claim: the verifier resolves reach per request, so removing a
+	// member takes effect on the caller's next call — no re-mint, no reconnect.
+	if _, err := removeGroupMember("norm-stack", "norm-darren", memberKindHost); err != nil {
+		t.Fatal(err)
+	}
+	if _, errMsg = callListAgents(t, norm, map[string]any{"host": "norm-darren"}); errMsg == "" {
+		t.Fatal("the group edit did not take effect on the next call over the same session")
+	}
+	if _, err := addGroupMember("norm-stack", "norm-darren", memberKindHost); err != nil {
+		t.Fatal(err)
+	}
+	if _, errMsg = callListAgents(t, norm, map[string]any{"host": "norm-darren"}); errMsg != "" {
+		t.Fatalf("re-adding the member did not restore reach: %s", errMsg)
 	}
 }
 

@@ -888,6 +888,21 @@ func mcpTokenVerifier(_ context.Context, token string, _ *http.Request) (*auth.T
 	// unscoped view rather than being refused outright.
 	if c, found := lookupOAuthClient(clientID); found {
 		ti.Extra = map[string]any{tokenHostKey: c.Host, tokenScopeKey: c.Scope}
+		// Resolve the credential's host groups here, on every verified request,
+		// and hand the tool handlers a ready-made set. Two reasons this belongs at
+		// the boundary rather than in the tool: the reach must come from the same
+		// place the host does (the token) so it cannot be asserted by the caller,
+		// and RequireBearerToken re-runs this verifier per HTTP request with no
+		// caching — which is exactly what makes a `lasso mcp-group` edit take
+		// effect on the caller's NEXT tool call, with no token re-mint and no
+		// session restart. Only a self-scoped host client needs it: a fleet
+		// credential already reaches everything, and a hostless one has no host to
+		// resolve groups for.
+		if c.Host != "" && c.Scope == scopeSelf {
+			if reach := hostReachFromDB(c.Host); len(reach) > 0 {
+				ti.Extra[tokenReachKey] = reach
+			}
+		}
 	}
 	return ti, nil
 }
@@ -956,12 +971,20 @@ func logOAuthStatus() {
 		// set up containment and left MCP_OAUTH unset has none. Say so loudly —
 		// silently ignoring the scoping they configured is the worst outcome here.
 		if hosts := hostScopedClientCount(); hosts > 0 {
-			log.Printf("mcp:      WARNING: %d per-host MCP credential(s) provisioned but NOT enforced — /mcp is open, so every caller is unidentified and fleet-scoped. Set MCP_OAUTH to enforce them.", hosts)
+			log.Printf("mcp:      WARNING: %d per-host MCP credential(s) provisioned but NOT enforced — /mcp is open, so every caller is unidentified and fleet-scoped (host groups are inert for the same reason). Set MCP_OAUTH to enforce them.", hosts)
 		}
 		return
 	}
 	if hosts := hostScopedClientCount(); hosts > 0 {
-		log.Printf("mcp:      %d per-host MCP credential(s) — those callers are scoped by the host they authenticate as (lasso mcp-client list)", hosts)
+		// "scoped to their own host" stopped being the whole story once groups
+		// existed: a self-scoped credential also reaches whatever its host's groups
+		// add. Name both surfaces, so an operator reading this line knows where to
+		// look for the reach they actually granted.
+		if groups := mcpGroupCount(); groups > 0 {
+			log.Printf("mcp:      %d per-host MCP credential(s) — scoped by the host they authenticate as, widened by %d host group(s) (lasso mcp-client list, lasso mcp-group list)", hosts, groups)
+		} else {
+			log.Printf("mcp:      %d per-host MCP credential(s) — those callers are scoped by the host they authenticate as (lasso mcp-client list)", hosts)
+		}
 	}
 	scope := "any https/loopback redirect (shown on the consent screen)"
 	if len(oauthCfg.RedirectURIs) > 0 {

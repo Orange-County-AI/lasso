@@ -16,8 +16,9 @@ import (
 // Because the client id is what a presented token resolves to (see
 // mcpTokenVerifier), the host recorded here is the caller's host — derived from
 // the credential, not asserted by the caller, which is the only form of it worth
-// enforcing on. Scope defaults to "self" (agents on that host see only that
-// host); --fleet opts a trusted host up to the whole addressable set.
+// enforcing on. Scope defaults to "self" (agents on that host see that host,
+// plus whatever host groups add to it — see `lasso mcp-group`); --fleet opts a
+// trusted host up to the whole addressable set.
 //
 // Secrets are shown ONCE at creation and stored hashed, like every other
 // credential in this db. Losing one means minting a new client, not recovering
@@ -82,8 +83,9 @@ usage:
 
   --host   the host this credential's agents run on: "local" for the box lasso
            runs on, else an ssh-config alias exactly as list_hosts shows it
-  --fleet  let those agents address every host lasso can reach (default: only
-           their own host)
+  --fleet  let those agents address every host lasso can reach (default: their
+           own host, plus any host their host's groups reach -- see
+           "lasso mcp-group")
   --name   a label for the listing
   --ttl    how long the minted token lives: 90d, 12h, 30m, 2w. Omit (or pass
            "never") for a token that does not expire — the default, since these
@@ -182,7 +184,8 @@ func mcpClientAdd(args []string) {
 	fmt.Printf("  client_secret: %s\n\n", secret)
 	fmt.Print("Shown once — it is stored hashed. Put it on that host only.\n")
 	if scope == scopeSelf {
-		fmt.Printf("Agents authenticating with it may see and message agents on %q and nowhere else.\n", host)
+		fmt.Printf("Agents authenticating with it may see and message agents on %q, plus any host\n", host)
+		fmt.Printf("a group puts within reach of %q — `lasso mcp-group reach %s` shows the exact set.\n", host, host)
 	} else {
 		fmt.Print("Agents authenticating with it may address every host lasso can reach.\n")
 	}

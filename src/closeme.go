@@ -97,8 +97,17 @@ func resolveCloseTarget(ctx context.Context, cs mcpCaller, host, agentID, paneID
 	// out of scope entirely. Refuse before the db is consulted, so a record for a
 	// machine this lasso cannot connect to, or one belonging to another trust
 	// zone, is never resolved into a close target.
-	if err := cs.requireHost(host); err != nil {
-		return AgentRecord{}, http.StatusBadRequest, err
+	//
+	// Only when a host was NAMED, though: requireHost("") normalizes the empty
+	// host to the local box, which would refuse a group caller whose reach
+	// excludes local before it ever got to the cross-host search it asked for.
+	// The empty-host branches below are bounded by cs.agents() /
+	// paneMatchesAcrossHosts(cs, …) and the adoption gate, so there is nothing
+	// for this check to protect there.
+	if host != "" {
+		if err := cs.requireHost(host); err != nil {
+			return AgentRecord{}, http.StatusBadRequest, err
+		}
 	}
 	if agentID != "" {
 		if host != "" {
@@ -170,11 +179,18 @@ func resolveCloseTarget(ctx context.Context, cs mcpCaller, host, agentID, paneID
 	case 1:
 		return matches[0], 0, nil
 	case 0:
-		if b, err := agentBackendResolver("local"); err == nil {
-			if rec, ok, aerr := adoptPeerAgent(ctx, b, paneID); aerr != nil {
-				return AgentRecord{}, http.StatusConflict, aerr
-			} else if ok {
-				return rec, 0, nil
+		// Adoption resolves a LOCAL pane from a peer lasso's records, bypassing
+		// this lasso's db — so cs.agents(), which bounds the search above, does not
+		// bound it. Gate it on the caller being allowed the local box, or a group
+		// caller whose reach excludes the lasso host could close an agent running
+		// on it by naming a pane id.
+		if cs.allows("local") {
+			if b, err := agentBackendResolver("local"); err == nil {
+				if rec, ok, aerr := adoptPeerAgent(ctx, b, paneID); aerr != nil {
+					return AgentRecord{}, http.StatusConflict, aerr
+				} else if ok {
+					return rec, 0, nil
+				}
 			}
 		}
 		return AgentRecord{}, http.StatusNotFound,

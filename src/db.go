@@ -32,6 +32,8 @@ import (
 //	repo_state  per-host, per-repo settings + memory (copy-files/setup/base)
 //	agents      append-only log, each row tagged with the host it ran on
 //	oauth_*     MCP OAuth clients/codes/tokens, when MCP_OAUTH is set (oauth.go)
+//	mcp_group_* host groups + directed grants, the reach that sits between
+//	            "self" and "fleet" (groups.go)
 //
 // modernc.org/sqlite is pure Go, so the binary stays CGO-free and portable.
 
@@ -97,6 +99,31 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 `
 
+// groupsSchema is the host-group model (groups.go, `lasso mcp-group`), appended
+// to the schema exec below. Deliberately no foreign keys, even though the
+// connection sets PRAGMA foreign_keys=ON: no table in this db uses them (house
+// style), and here they would also forbid naming a subgroup before it exists —
+// which the CLI allows on purpose, since a dangling reference is inert in
+// closure resolution rather than an error, exactly like an ssh alias that was
+// removed after a host joined a group.
+const groupsSchema = `
+CREATE TABLE IF NOT EXISTS mcp_groups (
+  name       TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mcp_group_members (
+  group_name TEXT NOT NULL,
+  member     TEXT NOT NULL,   -- host alias, "local", or a child group name
+  kind       TEXT NOT NULL,   -- 'host' | 'group'
+  PRIMARY KEY (group_name, member, kind)
+);
+CREATE TABLE IF NOT EXISTS mcp_group_grants (
+  from_group TEXT NOT NULL,
+  to_group   TEXT NOT NULL,   -- directed: from's hosts may reach to's hosts
+  PRIMARY KEY (from_group, to_group)
+);
+`
+
 // openDB opens (creating if absent) ~/.lasso/lasso.db, applies pragmas, creates
 // the schema, and imports a legacy config.yaml if present. Call once at startup.
 func openDB() error {
@@ -117,7 +144,7 @@ func openDB() error {
 			return fmt.Errorf("%s: %w", pragma, err)
 		}
 	}
-	if _, err := h.Exec(dbSchema + oauthSchema); err != nil {
+	if _, err := h.Exec(dbSchema + oauthSchema + groupsSchema); err != nil {
 		h.Close()
 		return fmt.Errorf("create schema: %w", err)
 	}
