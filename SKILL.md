@@ -141,3 +141,25 @@ filesystem, or ad-hoc shell commands:
 
 These are the canonical, purpose-built path. Only drop to reading `lasso.db`
 directly or shelling out when a tool genuinely can't express what you need.
+
+## Scope: which agents you can actually see
+
+Your view of the fleet may be **bounded by the credential you authenticate
+with** — not by what exists. What to expect:
+
+- `list_hosts` / `list_agents` return only the hosts **your credential may
+  address**: your own host, plus any hosts the operator grouped yours with.
+  An empty-ish listing is usually containment working as intended, not an
+  outage.
+- The `host` argument of every tool **defaults to your own host** — the one
+  your credential was issued for — not to the machine lasso runs on.
+- **Direction matters.** Another agent may be able to see and message you
+  while you cannot see it (the lasso host typically sees everyone). Don't
+  infer "it can't reach me" from "I can't reach it".
+- A refusal like *"this credential may not address host …"* is a policy
+  boundary, not a transient error. Do **not** retry, work around it via ssh,
+  or read `lasso.db` to peek past it. If you genuinely need the reach, tell
+  the human — widening is an operator action (`lasso mcp-group` /
+  `lasso mcp-client`), never something you can do from your side.
+- Group membership can change live: reach you lacked a moment ago may appear
+  on your next call without any reconnect.
