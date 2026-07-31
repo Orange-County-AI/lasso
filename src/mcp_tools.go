@@ -892,12 +892,19 @@ func resolveWhoamiAcrossHosts(ctx context.Context, cs mcpCaller, paneID string) 
 	case 0:
 		// A pane none of our own records claim may belong to a peer lasso that
 		// spawned the agent on this machine (same fallback closeme uses).
-		if b, err := agentBackendResolver("local"); err == nil {
-			if rec, ok, aerr := adoptPeerAgent(ctx, b, paneID); aerr != nil {
-				return whoamiOut{Detail: aerr.Error()}
-			} else if ok {
-				ai := agentInfoFrom(rec.Host, rec, paneAgentStatus(b, rec.RootPane))
-				return whoamiOut{Found: true, Agent: &ai}
+		//
+		// Gated on the caller being allowed the LOCAL box: adoption goes around the
+		// db entirely, so cs.agents() — which bounds every other branch here — does
+		// not bound it. Without the gate a group caller whose reach excludes the
+		// lasso host could resolve (and then close) a local pane it may not address.
+		if cs.allows("local") {
+			if b, err := agentBackendResolver("local"); err == nil {
+				if rec, ok, aerr := adoptPeerAgent(ctx, b, paneID); aerr != nil {
+					return whoamiOut{Detail: aerr.Error()}
+				} else if ok {
+					ai := agentInfoFrom(rec.Host, rec, paneAgentStatus(b, rec.RootPane))
+					return whoamiOut{Found: true, Agent: &ai}
+				}
 			}
 		}
 		return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on any host this lasso can address (the local box and the hosts with an alias in its ssh config) — you may be in a herdr pane lasso did not create, or the lasso that owns it is unreachable.", paneID)}
@@ -1242,7 +1249,18 @@ func closeAgentTool(ctx context.Context, req *mcp.CallToolRequest, in closeAgent
 	cs := callerFrom(req)
 	// searchHost, not hostOr: an empty host here means "search every host I may
 	// reach", and defaulting it to "local" would stop finding a remote agent by id.
-	rec, _, err := resolveCloseTarget(ctx, cs, cs.searchHost(in.Host), agentID, paneID)
+	host := cs.searchHost(in.Host)
+	// searchHost collapses that search to the caller's own host, which is right
+	// for a plain self-scoped caller — but wrong for one whose groups reach
+	// further, since its group-mate's agent would then never be found by id. Let
+	// the empty host through instead: every branch it opens is already bounded by
+	// cs.agents() / paneMatchesAcrossHosts(cs, …), so the search spans exactly the
+	// caller's reach and nothing more. With no group in play this is a no-op —
+	// reach is empty, so the branch never runs.
+	if in.Host == "" && cs.reachesBeyondOwnHost() {
+		host = ""
+	}
+	rec, _, err := resolveCloseTarget(ctx, cs, host, agentID, paneID)
 	if err != nil {
 		return nil, closeAgentOut{}, err
 	}

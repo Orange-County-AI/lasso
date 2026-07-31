@@ -26,6 +26,18 @@ func callerReq(clientID, host, scope string) *mcp.CallToolRequest {
 	}}
 }
 
+// callerReqReach is callerReq with the group reach the verifier would have
+// resolved for that credential's host attached.
+func callerReqReach(clientID, host, scope string, reach ...string) *mcp.CallToolRequest {
+	req := callerReq(clientID, host, scope)
+	set := map[string]bool{}
+	for _, h := range reach {
+		set[h] = true
+	}
+	req.Extra.TokenInfo.Extra[tokenReachKey] = set
+	return req
+}
+
 func TestCallerFromToken(t *testing.T) {
 	// No token at all — UI_AUTH basic, or the open /mcp — keeps the historical
 	// fleet-wide view, so enabling this feature changes nothing until a per-host
@@ -133,6 +145,155 @@ func TestRequireHostExplainsTheCredential(t *testing.T) {
 	if err := (mcpCaller{Host: "citadel"}).requireHost("citadel"); err == nil ||
 		!strings.Contains(err.Error(), "ssh config") {
 		t.Errorf("unaliased own host: err = %v, want the ssh-config refusal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// groups — additive on top of "self"
+// ---------------------------------------------------------------------------
+
+// A group widens a self-scoped caller and changes nothing else: its own host is
+// still its default, and hosts outside the group are still refused.
+func TestGroupReachWidensASelfScopedCaller(t *testing.T) {
+	stubSSHHosts(t, "norm", "norm-darren", "outsider")
+	c := mcpCaller{ClientID: "c1", Host: "norm", Reach: map[string]bool{"norm-darren": true}}
+
+	for _, h := range []string{"norm", "norm-darren"} {
+		if !c.allows(h) {
+			t.Errorf("a group caller on norm must reach %q", h)
+		}
+	}
+	for _, h := range []string{"outsider", "local", ""} {
+		if c.allows(h) {
+			t.Errorf("a group caller on norm must NOT reach %q", h)
+		}
+	}
+	// The default host is unchanged by groups — a group says where a caller MAY
+	// go, never where it is.
+	if got := c.hostOr(""); got != "norm" {
+		t.Errorf("hostOr(\"\") = %q, want norm", got)
+	}
+	if hs := c.hosts(); !hs["norm"] || !hs["norm-darren"] || len(hs) != 2 {
+		t.Errorf("hosts() = %v, want [norm norm-darren]", sortedHosts(hs))
+	}
+	if !c.reachesBeyondOwnHost() {
+		t.Error("reachesBeyondOwnHost() = false for a caller with a group-mate")
+	}
+	if err := c.requireHost("norm-darren"); err != nil {
+		t.Errorf("group-mate refused: %v", err)
+	}
+	// The refusal for an outsider now has to offer the group, not only --fleet:
+	// an operator who only hears about --fleet will hand out the fleet.
+	err := c.requireHost("outsider")
+	if err == nil {
+		t.Fatal("a group caller reached a host outside its groups")
+	}
+	for _, want := range []string{"outsider", "norm", "credential", "lasso mcp-group"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not mention %q", err, want)
+		}
+	}
+	// "local" is a member like any other, in both directions.
+	toLocal := mcpCaller{Host: "norm", Reach: map[string]bool{"local": true}}
+	for _, h := range []string{"local", ""} {
+		if !toLocal.allows(h) {
+			t.Errorf("a caller whose group includes the lasso host must reach %q", h)
+		}
+	}
+	fromLocal := mcpCaller{Host: "local", Reach: map[string]bool{"norm": true}}
+	if !fromLocal.allows("norm") || !fromLocal.allows("local") {
+		t.Error("a local-host caller must reach its group-mates and itself")
+	}
+}
+
+// Reach is intersected with what lasso can address, so a member whose ssh alias
+// was removed goes inert rather than promising a host nothing can reach.
+func TestGroupReachIsInertWithoutAnSSHAlias(t *testing.T) {
+	stubSSHHosts(t, "norm") // norm-darren's alias has since been removed
+	c := mcpCaller{ClientID: "c1", Host: "norm", Reach: map[string]bool{"norm-darren": true}}
+
+	if hs := c.hosts(); len(hs) != 1 || !hs["norm"] {
+		t.Errorf("hosts() = %v, want just norm — the group-mate has no alias", sortedHosts(hs))
+	}
+	err := c.requireHost("norm-darren")
+	if err == nil || !strings.Contains(err.Error(), "ssh config") {
+		t.Errorf("requireHost = %v, want the ssh-config refusal (both bounds apply)", err)
+	}
+	all := []hostAgent{
+		{Host: "norm", Agent: AgentRecord{ID: "n1"}},
+		{Host: "norm-darren", Agent: AgentRecord{ID: "d1"}},
+	}
+	if got := c.agents(all); len(got) != 1 || got[0].Agent.ID != "n1" {
+		t.Errorf("agents() = %v, want only n1@norm", ids(got))
+	}
+}
+
+// Fleet and unidentified callers are provably untouched by any group: Fleet is
+// the first short-circuit in allows/hosts/agents, so a reach set on a fleet
+// caller cannot widen OR narrow it.
+func TestFleetAndUnidentifiedCallersIgnoreGroups(t *testing.T) {
+	stubSSHHosts(t, "norm", "norm-darren")
+	fleet := mcpCaller{ClientID: "c1", Host: "norm", Fleet: true, Reach: map[string]bool{"nonsense": true}}
+	for _, h := range []string{"norm", "norm-darren", "local", ""} {
+		if !fleet.allows(h) {
+			t.Errorf("a fleet caller must still reach %q", h)
+		}
+	}
+	if hs := fleet.hosts(); len(hs) != 3 {
+		t.Errorf("fleet hosts() = %v, want the whole addressable set", sortedHosts(hs))
+	}
+	if any := anyCaller(); any.Reach != nil || !any.Fleet {
+		t.Errorf("anyCaller() = %+v, want an unidentified fleet caller with no reach", any)
+	}
+}
+
+// The reach rides the TOKEN, resolved from the db at verification time — so a
+// group edit lands on the caller's next call without re-minting anything, and a
+// fleet credential never carries one.
+func TestTokenVerifierCarriesGroupReach(t *testing.T) {
+	openTestDB(t)
+	enableOAuth(t, "")
+	stubSSHHosts(t, "norm", "norm-darren")
+	addHostClient(t, "norm-cid", "norm", scopeSelf)
+	addHostClient(t, "fleet-cid", "norm", scopeFleet)
+	if _, err := createGroup("norm-stack"); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"norm", "norm-darren"} {
+		if _, err := addGroupMember("norm-stack", h, memberKindHost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tok, _, err := mintClientToken("norm-cid", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerFor := func(token string) mcpCaller {
+		t.Helper()
+		ti, err := mcpTokenVerifier(context.Background(), token, nil)
+		if err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+		return callerFrom(&mcp.CallToolRequest{Extra: &mcp.RequestExtra{TokenInfo: ti}})
+	}
+	c := callerFor(tok)
+	if c.Fleet || !c.allows("norm-darren") {
+		t.Fatalf("caller = %+v, want a self-scoped norm caller reaching norm-darren", c)
+	}
+	// A fleet credential resolves no reach — it needs none.
+	ftok, _, err := mintClientToken("fleet-cid", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := callerFor(ftok); f.Reach != nil {
+		t.Errorf("fleet caller carries a reach set %v, want none", sortedHosts(f.Reach))
+	}
+	// Edit the group; the SAME token resolves differently on its next request.
+	if _, err := removeGroupMember("norm-stack", "norm-darren", memberKindHost); err != nil {
+		t.Fatal(err)
+	}
+	if c := callerFor(tok); c.allows("norm-darren") {
+		t.Error("the group edit did not take effect on the next verification")
 	}
 }
 
@@ -260,6 +421,112 @@ func TestWhoamiUsesTheCredentialsHost(t *testing.T) {
 	}
 	if out.Agent.ID != "gig1" || out.Agent.Host != "gigachad" {
 		t.Errorf("resolved to %s@%s, want gig1@gigachad", out.Agent.ID, out.Agent.Host)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// close_agent, the one tool a group widens
+// ---------------------------------------------------------------------------
+
+// groupedFleet is containedFleet plus a group-mate: three hosts with one agent
+// each, and a caller on "norm" whose group reaches "norm-darren" but not the
+// lasso host.
+func groupedFleet(t *testing.T) *mcp.CallToolRequest {
+	t.Helper()
+	openTestDB(t)
+	for _, a := range []struct{ host, id, pane string }{
+		{"local", "loc1", "wL:p1"},
+		{"norm", "norm1", "wN:p1"},
+		{"norm-darren", "dar1", "wD:p1"},
+	} {
+		if err := appendAgent(a.host, AgentRecord{ID: a.id, Title: a.id, Type: "git",
+			RootPane: a.pane, WorkDir: "/w/" + a.id, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubCloseBackends(t, map[string]Backend{
+		"local":       newCloseBackend("local", map[string]string{"wL:p1": "wL:p1"}),
+		"norm":        newCloseBackend("norm", map[string]string{"wN:p1": "wN:p1"}),
+		"norm-darren": newCloseBackend("norm-darren", map[string]string{"wD:p1": "wD:p1"}),
+	})
+	stubPeers(t, nil, nil)
+	return callerReqReach("c-norm", "norm", scopeSelf, "norm-darren")
+}
+
+// With no host, close_agent searches every host the caller may reach — which
+// for a group caller now includes its group-mates. The search is bounded by
+// cs.agents(), so the lasso host's agent stays out of it.
+func TestCloseAgentReachesGroupMates(t *testing.T) {
+	req := groupedFleet(t)
+	darren := agentBackendResolverMust(t, "norm-darren").(*closeBackend)
+	local := agentBackendResolverMust(t, "local").(*closeBackend)
+
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{AgentID: "dar1"}); err != nil {
+		t.Fatalf("closing a group-mate's agent failed: %v", err)
+	}
+	if len(darren.closed) != 1 || darren.closed[0] != "wD:p1" {
+		t.Errorf("norm-darren closed = %v, want [wD:p1]", darren.closed)
+	}
+	// The lasso host is outside the group and stays outside it.
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{AgentID: "loc1"}); err == nil {
+		t.Fatal("a group caller closed an agent on a host outside its groups")
+	}
+	if len(local.closed) != 0 {
+		t.Errorf("local closed = %v, want none", local.closed)
+	}
+	// Naming the out-of-scope host outright is refused with the reason.
+	_, _, err := closeAgentTool(context.Background(), req, closeAgentIn{AgentID: "loc1", Host: "local"})
+	if err == nil || !strings.Contains(err.Error(), "credential") {
+		t.Errorf("explicit out-of-scope host: err = %v, want the credential refusal", err)
+	}
+}
+
+// Peer adoption resolves a LOCAL pane from another lasso's records, going
+// around the db that bounds every other empty-host branch. A group caller whose
+// reach excludes the lasso host must not get through it — otherwise widening
+// close_agent's search would have handed it every local pane by pane id.
+func TestCloseAgentGroupCallerCannotAdoptALocalPane(t *testing.T) {
+	openTestDB(t) // no records of our own — adoption is the only way to resolve
+	local := newCloseBackend("local", map[string]string{"p_82": "w55-1"})
+	_ = local.MkdirAll("/w/peer-agent", 0o755)
+	stubCloseBackends(t, map[string]Backend{"local": local, "norm": newCloseBackend("norm", nil),
+		"norm-darren": newCloseBackend("norm-darren", nil)})
+	stubPeers(t, []string{"citadel"}, func(_, rootPane string) ([]AgentRecord, error) {
+		if rootPane != "w55-1" {
+			return nil, nil
+		}
+		return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "w55-1",
+			WorkspaceID: "w55", WorkDir: "/w/peer-agent"}}, nil
+	})
+
+	req := callerReqReach("c-norm", "norm", scopeSelf, "norm-darren")
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "p_82"}); err == nil {
+		t.Fatal("a group caller adopted and closed a pane on the lasso host")
+	}
+	if len(local.closed) != 0 {
+		t.Errorf("local closed = %v, want none", local.closed)
+	}
+	// The same request from an unidentified caller still adopts — proving the
+	// setup was adoptable and the refusal above came from the scope gate.
+	if _, _, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "p_82"}); err != nil {
+		t.Fatalf("unidentified adoption broke: %v", err)
+	}
+	if len(local.closed) != 1 || local.closed[0] != "w55-1" {
+		t.Errorf("local closed = %v, want [w55-1] for the unidentified caller", local.closed)
+	}
+}
+
+// A plain self-scoped caller (no groups) keeps exactly its old close_agent
+// behavior: the empty host collapses to its own, so a colliding pane id on
+// another host is neither found nor refused as ambiguous.
+func TestCloseAgentWithoutGroupsIsUnchanged(t *testing.T) {
+	req := containedFleet(t)
+	gigachad := agentBackendResolverMust(t, "gigachad").(*closeBackend)
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "wR:p1"}); err != nil {
+		t.Fatalf("closing its own pane failed: %v", err)
+	}
+	if len(gigachad.closed) != 1 {
+		t.Errorf("gigachad closed = %v, want its own pane", gigachad.closed)
 	}
 }
 

@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,18 +34,26 @@ import (
 //	        consent screen), and unidentified callers get. Unidentified is the
 //	        historical behavior, so an install with MCP_OAUTH unset — where /mcp
 //	        is open anyway — behaves exactly as before.
-//	self  — may address only its own host. The default for a per-host client,
-//	        because containment is the reason to mint one.
+//	self  — may address only its own host, PLUS whatever host groups add to it
+//	        (groups.go). The default for a per-host client, because containment
+//	        is the reason to mint one.
+//
+// Groups are additive and nothing else: they only ever widen a self-scoped
+// caller, they are resolved from the caller's host (which comes from the
+// credential, not the caller), and `Fleet` stays the first short-circuit in
+// allows/hosts/agents so a fleet or unidentified caller cannot be affected by
+// any group edit.
 
 const (
 	scopeSelf  = "self"
 	scopeFleet = "fleet"
 
-	// Keys under which mcpTokenVerifier stashes the credential's host and scope
-	// in auth.TokenInfo.Extra. Reverse-DNS-ish to stay clear of anything the SDK
-	// or spec might put there.
+	// Keys under which mcpTokenVerifier stashes the credential's host, scope, and
+	// resolved group reach in auth.TokenInfo.Extra. Reverse-DNS-ish to stay clear
+	// of anything the SDK or spec might put there.
 	tokenHostKey  = "lasso.host"
 	tokenScopeKey = "lasso.scope"
+	tokenReachKey = "lasso.reach"
 )
 
 // mcpCaller is one caller's resolved identity and reach. The zero value is an
@@ -51,6 +62,12 @@ type mcpCaller struct {
 	ClientID string // the OAuth client the token was issued to, when identified
 	Host     string // the host that credential was provisioned for ("" = unknown)
 	Fleet    bool   // may address every addressable host
+	// Reach is the set of OTHER hosts this caller's host groups put within its
+	// reach — nil for a fleet or unidentified caller (they are not narrowed in
+	// the first place) and nil for a self-scoped host in no group, which is the
+	// pre-groups shape. It is resolved per request at token-verification time,
+	// so a group edit lands on the caller's very next tool call.
+	Reach map[string]bool
 }
 
 // anyCaller is the unidentified, fleet-wide caller: the HTTP endpoints (which
@@ -76,11 +93,30 @@ func callerFrom(req *mcp.CallToolRequest) mcpCaller {
 	// A credential with no host names no machine, so it cannot be confined to
 	// one; only an explicit "self" on a host-bearing client narrows the view.
 	c.Fleet = host == "" || scope != scopeSelf
+	// The group reach the verifier resolved for this host, if any. Read as a
+	// ready-made set rather than re-resolved here: a tool call must not turn into
+	// two more db reads, and the verifier already ran once for this request.
+	if reach, ok := ti.Extra[tokenReachKey].(map[string]bool); ok && len(reach) > 0 {
+		c.Reach = reach
+	}
 	return c
 }
 
 // identified reports whether the caller's own host is known.
 func (c mcpCaller) identified() bool { return c.Host != "" }
+
+// reachesBeyondOwnHost reports whether a group has widened this caller past its
+// own host. Only close_agent asks: it decides whether an empty `host` should
+// stay empty (so the cross-host search runs) instead of collapsing to the
+// caller's own host.
+func (c mcpCaller) reachesBeyondOwnHost() bool {
+	for h := range c.Reach {
+		if h != c.Host {
+			return true
+		}
+	}
+	return false
+}
 
 // hostOr resolves a tool's optional `host` argument for this caller. An explicit
 // host wins. Otherwise an identified caller defaults to ITS OWN host rather than
@@ -106,6 +142,13 @@ func (c mcpCaller) hostOr(host string) string {
 // Deliberately not hostOr: defaulting these two to "local" would turn a
 // documented fleet-wide search into a local-only lookup and stop finding the
 // remote agent the caller asked about.
+//
+// Groups do NOT widen this. whoami and message_agent's sender resolution stay
+// pinned to the caller's own host — a caller's own pane is by definition on the
+// host its credential names, and searching a group-mate for it would only
+// reintroduce the cross-host pane-id collision that per-host identity retired.
+// close_agent is the exception, and it overrides the result itself (see
+// closeAgentTool) rather than bending the rule here for both.
 func (c mcpCaller) searchHost(host string) string {
 	if host != "" {
 		return host
@@ -122,8 +165,27 @@ func (c mcpCaller) requireHost(host string) error {
 	if c.allows(host) {
 		return nil
 	}
-	return fmt.Errorf("this credential may only address host %q, not %q: it was provisioned for agents running on %q with scope %q — ask the operator for a fleet-scoped credential (`lasso mcp-client add --host %s --fleet`) if it should reach further",
-		c.Host, host, c.Host, scopeSelf, c.Host)
+	// Say what the credential is, what it currently reaches, and BOTH ways to
+	// widen it. Since host groups exist, the answer to "it should reach further"
+	// is usually a group rather than a fleet credential — and an operator who only
+	// hears about --fleet will hand out the fleet.
+	return fmt.Errorf("this credential may not address host %q: it was provisioned for agents running on %q with scope %q, so it reaches %s — put both hosts in one group (`lasso mcp-group add-member <group> %s %s`), grant one group access to the other (`lasso mcp-group grant`), or mint a fleet-scoped credential (`lasso mcp-client add --host %s --fleet`)",
+		host, c.Host, scopeSelf, c.reachSummary(), c.Host, host, c.Host)
+}
+
+// reachSummary spells out what a scoped caller currently reaches, for refusals.
+func (c mcpCaller) reachSummary() string {
+	if !c.reachesBeyondOwnHost() {
+		return fmt.Sprintf("only %q", c.Host)
+	}
+	others := make([]string, 0, len(c.Reach))
+	for h := range c.Reach {
+		if h != c.Host {
+			others = append(others, strconv.Quote(h))
+		}
+	}
+	sort.Strings(others)
+	return fmt.Sprintf("%q plus its groups (%s)", c.Host, strings.Join(others, ", "))
 }
 
 // allows reports whether the caller may address host, ignoring the separate
@@ -134,26 +196,34 @@ func (c mcpCaller) allows(host string) bool {
 	}
 	if isLocalHost(host) {
 		// "local" is the box lasso runs on. A self-scoped caller may only mean it
-		// if that IS its host — otherwise the empty/"local" default would quietly
-		// hand every contained caller the lasso host.
-		return isLocalHost(c.Host)
+		// if that IS its host, or if a group put the lasso host within its reach —
+		// otherwise the empty/"local" default would quietly hand every contained
+		// caller the lasso host.
+		return isLocalHost(c.Host) || c.Reach["local"]
 	}
-	return host == c.Host
+	return host == c.Host || c.Reach[host]
 }
 
 // hosts is the set of hosts this caller may address: the addressable set for a
-// fleet caller, and at most its own host otherwise. A self-scoped caller whose
-// host has no ssh alias gets an EMPTY set — lasso cannot reach it, so it has
-// nothing to offer even about the caller's own machine.
+// fleet caller, and its own host plus its group reach otherwise. Both are
+// intersected with what lasso can address, so a caller whose host — or whose
+// group-mate — has no ssh alias gets nothing for it: lasso cannot reach it, so
+// it has nothing to offer about it.
 func (c mcpCaller) hosts() map[string]bool {
 	set := addressableHosts()
 	if c.Fleet {
 		return set
 	}
+	out := map[string]bool{}
 	if c.Host != "" && set[c.Host] {
-		return map[string]bool{c.Host: true}
+		out[c.Host] = true
 	}
-	return map[string]bool{}
+	for h := range c.Reach {
+		if set[h] {
+			out[h] = true
+		}
+	}
+	return out
 }
 
 // agents narrows a cross-host record set to what this caller may act on, so a

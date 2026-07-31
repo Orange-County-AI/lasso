@@ -13,7 +13,9 @@ addressable instead of resolving to a target no call can reach. **What this
 caller may address** (`src/callerscope.go`) is per-credential: one OAuth client
 per host, the host riding `auth.TokenInfo` into every tool call, so a caller's
 host is derived from its token and cannot be asserted by the caller. Scope is
-`self` (that host only, the default) or `fleet` (everything lasso can address).
+`self` (that host only, the default) or `fleet` (everything lasso can address);
+**groups** (`src/groups.go`) add reach to named sets of *other* hosts on top of
+`self`, which is the middle ground between those two ends.
 
 MCP itself offers nothing here — as of revision 2025-11-25 `clientInfo` is a
 self-asserted name/version/title and no header identifies the caller — which is
@@ -88,6 +90,81 @@ stored hashed. Only these clients (and the `MCP_OAUTH` client) may use
 `client_credentials` — an open-DCR registration still may not, since that path
 takes no human approval.
 
+## Groups: reach between hosts
+
+`self` and `fleet` are the two ends. A **group** is the middle: a named set of
+hosts whose members may see and message each other, plus **directed grants**
+between groups for the cases where reach should run one way only.
+
+The model, in the order it bites:
+
+- **Mutual inside a group.** Every host in a group's member closure may address
+  every other host in that closure. Symmetric, because "these boxes work
+  together" is symmetric.
+- **Directed between groups.** `grant A B` lets A's hosts reach B's hosts and
+  *not* the reverse, and it is **not transitive**: A→B plus B→C gives A nothing
+  in C. One hop, always.
+- **Members are hosts** — ssh aliases, or the literal `local` — never client
+  credentials. Re-key a host (`mcp-client rm` + `add`) and its membership is
+  untouched, which is the whole reason membership is not stored on the client.
+- **Additive on top of `self`.** No new scope value and no change to
+  `oauth_clients`: a self-scoped credential keeps its own host and gains
+  whatever its host's groups add. `fleet` and unidentified callers are
+  unchanged — they already reach everything.
+- Reach is always intersected with what lasso can address, so a member whose ssh
+  alias has since been removed goes inert rather than becoming a target no call
+  could reach. Same for a dangling reference to a deleted group.
+
+```bash
+lasso mcp-group add <name>
+lasso mcp-group rm <name>            # cascades: its members, its grants, and refs to it
+lasso mcp-group list                 # groups, members (tree), grants
+lasso mcp-group add-member <group> <host|@group>...
+lasso mcp-group rm-member <group> <host|@group>
+lasso mcp-group grant  <from-group> <to-group>   # directed
+lasso mcp-group revoke <from-group> <to-group>
+lasso mcp-group reach <host>         # effective reach, and why it is reachable
+```
+
+A bare name is a host; the `@` sigil marks a subgroup reference (CLI syntax
+only — the db stores the kind, so a host and a group may share a name and stay
+distinct). Host members are checked against the addressable set when added.
+
+Worked example — the two norm boxes work as one stack:
+
+```bash
+lasso mcp-group add norm-stack
+lasso mcp-group add-member norm-stack norm norm-darren
+```
+
+`norm` and `norm-darren` now list and message each other's agents with their
+existing self-scoped credentials. titan (the lasso host, provisioned
+`--fleet`) saw both before and still does. **Nobody in norm-stack sees titan**:
+reach is mutual only among members, and titan is not one — a group is not a
+back door to the fleet-scoped host. To hand one group one-way reach into
+another:
+
+```bash
+lasso mcp-group add ci
+lasso mcp-group grant ci norm-stack   # ci drives norm-stack; norm-stack cannot drive ci
+```
+
+**Nesting is the sharp edge.** Nest `@H` inside `G` and every host in H becomes
+mutual with *all* of `closure(G)`, not just with G's direct members — nesting
+merges reach, it does not layer it. If that is not what you want, don't nest:
+make a grant instead. `lasso mcp-group reach <host>` prints the effective set
+and the reason for each entry; run it after any structural edit.
+
+Group edits apply on the caller's **next tool call**. Reach is resolved per
+request at token-verification time, so there is no token to re-mint, no session
+to restart, and no client-side change on the affected hosts — which also means
+`rm-member` revokes immediately.
+
+One wrinkle, inherited from credential hosts: `local` is the literal name of
+the box lasso runs on, and if that box also has an ssh alias pointing at itself
+the alias is a **distinct member**. Adding one does not add the other. Pick the
+name the credential uses (`mcp-client list` shows it) and use that one.
+
 ## Installing on a host
 
 A workspace box needs **two** credentials, and the split is the useful part: the
@@ -124,16 +201,16 @@ explanation.
 
 ## Known gaps
 
-1. **Scope is `self` or `fleet`, with nothing in between.** That covers the two
-   ends of the titan fleet exactly: the workspace pods can ssh nowhere (`norm`
-   has no `~/.ssh` at all), so `self` *is* "the hosts it can ssh into"; and for
-   the lasso host, `fleet` *is* titan's ssh config by construction. It does not
-   express "the hosts I can ssh into" for a middle-tier box like `gigachad`,
-   which has its own 11 aliases — that box is currently either too narrow
-   (`self`) or too broad (`fleet`, which would hand it every workspace pod).
-   The fix is a per-credential host allowlist, intersected with
-   `addressableHosts()` since lasso is the one doing the ssh'ing.
-2. **Alias names are not identities**, which any allowlist work must respect.
+1. **Group membership is hand-maintained, not derived.** Groups close the
+   `self`/`fleet` gap itself — a middle-tier box like `gigachad`, which has its
+   own 11 aliases and is either too narrow at `self` or too broad at `fleet`,
+   now gets exactly the hosts you put in its group. But you have to enumerate
+   them: nothing reads that box's ssh config and turns it into a group, so the
+   two drift apart silently as its config changes. Auditing is manual (`lasso
+   mcp-group reach <host>`), and deriving membership automatically runs
+   straight into gap 2.
+2. **Alias names are not identities**, which any attempt to derive group
+   membership from a remote ssh config must respect.
    Measured on 2026-07-30: `52labs` resolves to `ws-52labs.orangecountyai.com`
    from titan but to `5.78.190.149` from gigachad — *different machines under
    one name*, so name-based matching would hand gigachad's credential a
