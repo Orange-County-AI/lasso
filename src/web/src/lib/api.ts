@@ -396,11 +396,31 @@ export interface CreateAgentPayload {
   upload_dir?: string
 }
 
-async function getJSON<T>(url: string): Promise<T> {
-  const r = await fetch(url)
+async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
+  let r: Response
+  try {
+    r = await fetch(
+      url,
+      timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined
+    )
+  } catch (e) {
+    // A request that never lands must surface as an error, not as a spinner the
+    // user stares at forever — see aggregateTimeout's callers.
+    if (e instanceof DOMException && e.name === "TimeoutError") {
+      throw new Error(`${url} timed out after ${(timeoutMs ?? 0) / 1000}s`)
+    }
+    throw e
+  }
   if (!r.ok) throw await httpError(r)
   return (await r.json()) as T
 }
+
+// aggregateTimeout caps the two cross-host aggregations (the grid and the agent
+// history). They fan out over ssh, so they are the slowest reads in the app and
+// the ones with the most ways to stall; without a client bound, a backend that
+// stops answering leaves the Grid and the ⌘K palette on "Loading…" indefinitely
+// with nothing to retry and nothing to report.
+const aggregateTimeout = 30_000
 
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const r = await fetch(url, {
@@ -513,13 +533,14 @@ export const api = {
   // Every herdr pane across every reachable, protocol-compatible host (local +
   // remotes), for the Grid tab. Aggregated server-side; per-host failures come
   // back in `errors` rather than failing the whole request.
-  gridPanes: () => getJSON<GridPayload>("/api/grid"),
+  gridPanes: () => getJSON<GridPayload>("/api/grid", aggregateTimeout),
 
   // Every agent lasso ever spawned (across hosts), shaped as GridPane rows so the
   // ⌘K switcher can list past agents next to live panes. AgentID is set; the
   // switcher treats a row whose host+pane_id isn't currently live as "closed" and
   // reopens it via reopenAgent on select.
-  agentHistory: () => getJSON<{ agents: GridPane[] }>("/api/agent-history"),
+  agentHistory: () =>
+    getJSON<{ agents: GridPane[] }>("/api/agent-history", aggregateTimeout),
 
   // Re-open a past session's workspace: re-creates a herdr workspace at its work
   // dir and focuses it (does NOT relaunch the agent). Identify it by agent_id (a

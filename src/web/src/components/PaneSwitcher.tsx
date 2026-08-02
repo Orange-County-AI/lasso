@@ -154,6 +154,14 @@ export function PaneSwitcher({
     return multi
   }, [livePanes])
 
+  // Whichever fetch the current mode depends on failed, if either did. The
+  // history query only counts when the Active filter is off — it isn't even
+  // enabled otherwise.
+  const loadError =
+    (q.error as Error | null)?.message ||
+    (!activeOnly && (hist.error as Error | null)?.message) ||
+    ""
+
   const filtered = React.useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (tokens.length === 0) return panes
@@ -335,9 +343,18 @@ export function PaneSwitcher({
         >
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
-              {q.isLoading || hist.isLoading
-                ? "Loading…"
-                : "No matching panes."}
+              {q.isLoading || hist.isLoading ? (
+                "Loading…"
+              ) : loadError ? (
+                // A failed fetch used to render as "No matching panes." — the
+                // palette claiming the fleet is empty when it simply couldn't
+                // ask. Say what went wrong instead.
+                <span className="text-destructive">
+                  Couldn't load panes: {loadError}
+                </span>
+              ) : (
+                "No matching panes."
+              )}
             </div>
           ) : (
             filtered.map((p, i) => (
