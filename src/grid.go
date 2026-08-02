@@ -337,13 +337,27 @@ type gridPayload struct {
 // gridCache coalesces the (potentially multi-second, multi-host) aggregation so
 // overlapping polls and concurrent viewers share one fetch. Short TTL — herdr
 // state moves, and the frontend polls a couple seconds apart.
+//
+// inflight is non-nil while a refresh is running and closes when it lands. The
+// refresh itself runs with mu RELEASED: it used to be held across the whole
+// aggregation, which serialized every /api/grid behind the slowest host — and
+// once a fetch outlived the TTL, each waiter woke to a stale entry and started
+// its own, so the queue never drained. That is how one wedged host took the
+// Grid and the ⌘K palette down for every client until lasso was restarted.
 var gridCache struct {
-	mu   sync.Mutex
-	at   time.Time
-	data gridPayload
+	mu       sync.Mutex
+	at       time.Time
+	data     gridPayload
+	inflight chan struct{}
 }
 
 const gridCacheTTL = 1500 * time.Millisecond
+
+// gridHostTimeout bounds one host's contribution to the aggregation. Generous
+// against the slow-but-alive case — a cold redial is a handshake plus a socket
+// readiness wait — but finite, so a host that has stopped answering can only
+// cost this much per poll instead of the whole endpoint.
+const gridHostTimeout = 20 * time.Second
 
 // invalidateGridCache drops the cached aggregation so the next /api/grid refetches
 // — used after a mutation (rename/close) so the change shows up without waiting
@@ -781,16 +795,59 @@ func hostIdent(host string) (hostname, user string) {
 
 func serveGrid(w http.ResponseWriter, r *http.Request) {
 	startGridReaper()
+	writeJSON(w, gridSnapshot(r.Context()))
+}
+
+// gridSnapshot serves the cached aggregation, refreshing it at most once at a
+// time. One caller becomes the refresher and the rest wait on its result (or on
+// their own request being cancelled) — nobody holds gridCache.mu across the
+// fetch, so a slow host costs latency instead of wedging the endpoint.
+//
+// The refresh runs under the server context, not the triggering request's: it is
+// shared work, and the client that happened to kick it off navigating away must
+// not cancel it out from under everyone waiting.
+func gridSnapshot(ctx context.Context) gridPayload {
 	gridCache.mu.Lock()
-	defer gridCache.mu.Unlock()
 	if !gridCache.at.IsZero() && time.Since(gridCache.at) < gridCacheTTL {
-		writeJSON(w, gridCache.data)
-		return
+		data := gridCache.data
+		gridCache.mu.Unlock()
+		return data
 	}
-	data := fetchGridPanes(r.Context())
-	gridCache.at = time.Now()
-	gridCache.data = data
-	writeJSON(w, data)
+	if wait := gridCache.inflight; wait != nil {
+		gridCache.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+		}
+		gridCache.mu.Lock()
+		data := gridCache.data
+		gridCache.mu.Unlock()
+		return gridEmptyIfNil(data)
+	}
+	wait := make(chan struct{})
+	gridCache.inflight = wait
+	gridCache.mu.Unlock()
+
+	data := gridFetch(sweepCtx())
+
+	gridCache.mu.Lock()
+	gridCache.at, gridCache.data, gridCache.inflight = time.Now(), data, nil
+	gridCache.mu.Unlock()
+	close(wait)
+	return data
+}
+
+// gridFetch is the aggregation gridSnapshot refreshes through — a variable so a
+// test can stand a slow or counting fetch in for it.
+var gridFetch = fetchGridPanes
+
+// gridEmptyIfNil keeps the payload's panes an empty array rather than JSON null
+// for a caller that gave up (or asked) before any fetch had ever landed.
+func gridEmptyIfNil(p gridPayload) gridPayload {
+	if p.Panes == nil {
+		p.Panes = []gridPane{}
+	}
+	return p
 }
 
 // gridTarget is one host to aggregate.
@@ -932,12 +989,29 @@ func fetchGridPanes(ctx context.Context) gridPayload {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			results[i].host = t.host
-			b, err := gridHostBackend(t.host)
-			if err != nil {
-				results[i].err = err
-				return
+			// Every host gets its own deadline, because this is a fan-in: without
+			// one, the aggregation is only ever as responsive as its worst host,
+			// and a host that never answers means an answer for nobody. Past the
+			// deadline the host degrades to its last-good panes plus an error —
+			// the same treatment a failing host already gets — and its listing is
+			// abandoned to finish (or not) on its own. The send is buffered so
+			// that goroutine can't block on a receiver that has moved on.
+			ch := make(chan result, 1)
+			go func() {
+				b, err := gridHostBackend(t.host)
+				if err != nil {
+					ch <- result{err: err}
+					return
+				}
+				panes, err := gridHostPanes(b, t.host, t.label)
+				ch <- result{panes: panes, err: err}
+			}()
+			select {
+			case r := <-ch:
+				results[i].panes, results[i].err = r.panes, r.err
+			case <-time.After(gridHostTimeout):
+				results[i].err = fmt.Errorf("timed out after %v", gridHostTimeout)
 			}
-			results[i].panes, results[i].err = gridHostPanes(b, t.host, t.label)
 		}(i, t)
 	}
 	wg.Wait()

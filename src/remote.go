@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -63,7 +64,60 @@ type remoteBackend struct {
 const (
 	sshConnectTimeout = 10 * time.Second
 	sshForwardReady   = 4 * time.Second
+	// sshOpTimeout bounds a command riding an established master (git, sqlite3,
+	// $HOME lookups, control-socket ops). Every one of them is a sub-second call
+	// on a healthy path; the bound exists for the unhealthy one, where ssh with
+	// no ConnectTimeout and no ServerAlive of its own waits on a wedged master
+	// forever. Unbounded, one such call parks its caller permanently: four
+	// `git for-each-ref`s to a sleeping laptop sat in ssh for 13 hours and took
+	// the cache warmer's wg.Wait — and so every later warm cycle — with them.
+	sshOpTimeout = 30 * time.Second
+	// sshWaitDelay bounds how long Wait blocks on I/O pipes after the ssh process
+	// itself is gone. See sshCmd.
+	sshWaitDelay = 2 * time.Second
 )
+
+// sshCmd builds an ssh command bounded by ctx. Two details make it safe to run
+// from a request path, and neither is the default:
+//
+//   - The child gets its own process group and Cancel kills the GROUP, so a
+//     ProxyCommand (ProxyJump, `cloudflared access ssh`) dies with the ssh that
+//     spawned it instead of surviving as an orphan.
+//   - WaitDelay caps how long Wait blocks after that. exec's output copiers read
+//     until EOF, and EOF needs every holder of the pipe to close it — including
+//     grandchildren ssh forked. Without it a timeout is a promise the context
+//     cannot keep: the process is killed on schedule and CombinedOutput blocks
+//     forever anyway, waiting on a pipe a surviving ProxyCommand still holds.
+func sshCmd(ctx context.Context, args ...string) *exec.Cmd {
+	return boundedCmd(ctx, "ssh", args...)
+}
+
+// boundedCmd is sshCmd's body, over any binary, so the guarantee can be tested
+// without an ssh server.
+func boundedCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.WaitDelay = sshWaitDelay
+	return cmd
+}
+
+// killProcessGroup SIGKILLs cmd's whole process group (see boundedCmd's
+// Setpgid), so a ProxyCommand goes down with the ssh it was spawned for.
+//
+// The leader is killed through os.Process first, deliberately: that call refuses
+// once Wait has reaped the pid, which is what keeps the raw group kill below
+// from landing on a pgid the OS has since handed to someone else.
+func killProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		return err
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	return nil
+}
 
 // sshBaseOpts are the options every ssh invocation for a remote backend carries.
 // BatchMode makes anything that would prompt (password, unknown host key) fail
@@ -166,7 +220,7 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		"-L", b.localClientSock + ":" + herdrClientSock(b.remoteSock),
 		alias,
 	}
-	out, err := exec.CommandContext(mctx, "ssh", args...).CombinedOutput()
+	out, err := sshCmd(mctx, args...).CombinedOutput()
 	if err != nil {
 		b.killMaster()
 		msg := strings.TrimSpace(string(out))
@@ -246,10 +300,15 @@ func (b *remoteBackend) HerdrCall(method string, params any) (json.RawMessage, e
 // runOut runs a shell command string on the remote host over the control master
 // and returns stdout, surfacing stderr in the error.
 func (b *remoteBackend) runOut(remoteCmd string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sshOpTimeout)
+	defer cancel()
 	args := append(b.ctlOpts(), b.alias, remoteCmd)
-	cmd := exec.Command("ssh", args...)
+	cmd := sshCmd(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("ssh %s: timed out after %v", b.alias, sshOpTimeout)
+		}
 		if ee, ok := err.(*exec.ExitError); ok {
 			if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
 				return "", fmt.Errorf("%s", msg)
@@ -266,8 +325,10 @@ func (b *remoteBackend) runOut(remoteCmd string) (string, error) {
 // SQL rides stdin, never the shell). remoteCmd is the full remote command line
 // (callers wrap it in a login shell when PATH matters).
 func (b *remoteBackend) runStdin(remoteCmd string, stdin []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sshOpTimeout)
+	defer cancel()
 	sshArgs := append(b.ctlOpts(), b.alias, remoteCmd)
-	cmd := exec.Command("ssh", sshArgs...)
+	cmd := sshCmd(ctx, sshArgs...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -275,6 +336,9 @@ func (b *remoteBackend) runStdin(remoteCmd string, stdin []byte) ([]byte, error)
 	cmd.Stderr = &errBuf
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("ssh %s: timed out after %v", b.alias, sshOpTimeout)
+		}
 		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
 			return nil, fmt.Errorf("%s: %s", b.alias, msg)
 		}
@@ -328,6 +392,9 @@ func (b *remoteBackend) sftpClient() (*sftp.Client, error) {
 	}
 	args := append(b.ctlOpts(), b.alias, "-s", "sftp")
 	cmd := exec.Command("ssh", args...)
+	// Own process group, as sshCmd does: this ssh outlives the call, and killing
+	// it must take any ProxyCommand with it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	wr, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -340,9 +407,30 @@ func (b *remoteBackend) sftpClient() (*sftp.Client, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	cl, err := sftp.NewClientPipe(rd, wr)
+	// NewClientPipe reads the server's SSH_FXP_VERSION, which on a wedged master
+	// never arrives — and this runs under sftpMu, the same lock teardown takes.
+	// Unbounded, one hung handshake blocks teardown, which blocks Close, which
+	// blocks gridPoolDrop while it holds the host's dial mutex, which hangs every
+	// later connection attempt to that host. Bound it and the wedge is one failed
+	// op instead.
+	type dialed struct {
+		cl  *sftp.Client
+		err error
+	}
+	ch := make(chan dialed, 1)
+	go func() {
+		cl, err := sftp.NewClientPipe(rd, wr)
+		ch <- dialed{cl, err}
+	}()
+	var cl *sftp.Client
+	select {
+	case d := <-ch:
+		cl, err = d.cl, d.err
+	case <-time.After(sshOpTimeout):
+		err = fmt.Errorf("timed out after %v", sshOpTimeout)
+	}
 	if err != nil {
-		_ = cmd.Process.Kill()
+		_ = killProcessGroup(cmd)
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("sftp on %s: %w", b.alias, err)
 	}
@@ -370,8 +458,8 @@ func (b *remoteBackend) dropSFTP(cl *sftp.Client) {
 	b.sftpMu.Lock()
 	if b.sftpCl == cl {
 		_ = b.sftpCl.Close()
-		if b.sftpCmd != nil && b.sftpCmd.Process != nil {
-			_ = b.sftpCmd.Process.Kill()
+		if b.sftpCmd != nil {
+			_ = killProcessGroup(b.sftpCmd)
 		}
 		b.sftpCl, b.sftpCmd = nil, nil
 	}
@@ -551,9 +639,9 @@ func (b *remoteBackend) teardown() {
 		_ = b.sftpCl.Close()
 		b.sftpCl = nil
 	}
-	if b.sftpCmd != nil && b.sftpCmd.Process != nil {
+	if b.sftpCmd != nil {
 		// Kill only — the watcher goroutine in sftpClient owns the Wait.
-		_ = b.sftpCmd.Process.Kill()
+		_ = killProcessGroup(b.sftpCmd)
 		b.sftpCmd = nil
 	}
 	b.sftpMu.Unlock()
@@ -562,9 +650,14 @@ func (b *remoteBackend) teardown() {
 }
 
 // killMaster gracefully stops the SSH control master and removes the local
-// socket files. Safe to call even if the master never came up.
+// socket files. Safe to call even if the master never came up. Bounded, because
+// teardown runs on paths that hold locks — gridPoolDrop calls Close with the
+// host's dial mutex held — and `-O exit` against a wedged control socket has no
+// timeout of its own.
 func (b *remoteBackend) killMaster() {
-	_ = exec.Command("ssh", "-o", "ControlPath="+b.ctlPath, "-O", "exit", b.alias).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), sshOpTimeout)
+	defer cancel()
+	_ = sshCmd(ctx, "-o", "ControlPath="+b.ctlPath, "-O", "exit", b.alias).Run()
 	_ = os.Remove(b.ctlPath)
 	_ = os.Remove(b.localSock)
 	_ = os.Remove(b.localClientSock)
