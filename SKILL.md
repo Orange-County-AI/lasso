@@ -108,7 +108,7 @@ and fails safe.
 
 ## Using the rest of the herdr CLI
 
-herdr ships its own agent skill (`npx skills add ogulcancelik/herdr --skill
+herdr ships its own agent skill (`npx skills add herdrdev/herdr --skill
 herdr`) covering pane orchestration — splitting panes, starting sibling
 agents with `herdr agent start` / `prompt` / `wait`, and running commands with
 `herdr pane run` / `wait-output`. Those all work from inside a lasso pane too
