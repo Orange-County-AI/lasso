@@ -12,12 +12,14 @@ import (
 // in the pane's foreground process group and only then reads the screen. That
 // identification is where it can go blind:
 //
-//   - herdr 0.7.5 walks the foreground process group on Linux through
+//   - herdr walks the foreground process group on Linux through
 //     /proc/<pid>/task/<tid>/children, a file that only exists when the kernel
 //     was built with CONFIG_PROC_CHILDREN. On a kernel without it (several of
 //     our Kubernetes workspace pods) the walk cannot see past the process-group
 //     leader, so an agent started under a wrapper — `mise <task>`, npx, any
-//     launcher script — is never identified.
+//     launcher script — is never identified. (0.8.0 adds an opt-in second mode,
+//     HERDR_PROCESS_DETECTION=child-groups; "native" is still the default, so
+//     the blind spot — and this recovery path — remain live.)
 //   - the pane then has no detected agent at all: it is absent from agent.list,
 //     pane.list reports no `agent` kind, and agent_status stays "unknown"
 //     forever, because state detection is gated on knowing the agent first.

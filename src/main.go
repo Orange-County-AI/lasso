@@ -1286,7 +1286,22 @@ func outsideHerdrEnv() []string {
 // breaking change is plugin-registry scoping, not the wire — no method lasso
 // calls (ping, events.subscribe, foreground_cwd, terminal input/resize/scroll/
 // release) changed shape, so adopting it is value-only, the same as prior bumps.
-const lassoHerdrProtocol = 17
+// Bumped 17→19 for herdr 0.8.0 (verified by pinging the 0.8.0 binary on an
+// isolated socket — it pongs protocol 19, capabilities.live_handoff, and
+// session.snapshot / pane.list / workspace.list / agent.list / events.subscribe
+// all answer in their existing shapes). 18 was skipped because no herdr release
+// ever carried it: both 17→18 ("preserve kitty printable key releases",
+// e7fc85bf) and 18→19 ("preserve native key lifecycle across routing", #2142,
+// b76adc15) landed between the 0.7.5 and 0.8.0 tags, and both bump the *TUI
+// client↔server* bincode input envelope (ClientInputEvent gains repeat_count /
+// generated_text / source, plus a TextCommit variant) — a surface lasso does
+// not speak. On the JSON socket API lasso does speak, 0.8.0 is purely additive:
+// a new workspace.move_block method, a new workspace.reordered event, two new
+// integration targets, and pane.read's long-existing `truncated` field now
+// actually being set true when rows are dropped (it was hardcoded false before,
+// and lasso doesn't read it). No method lasso calls changed shape, so adopting
+// it is value-only, the same as prior bumps.
+const lassoHerdrProtocol = 19
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
 // build targets, the protocol the installed herdr daemon reports over its socket,

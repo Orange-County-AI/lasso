@@ -105,11 +105,11 @@ description = "Like `dev`, but the backend talks to an ISOLATED herdr release (s
 depends = ["build"]
 shell = "bash -c"
 usage = '''
-arg "[version]" help="herdr release to smoke-test (e.g. 0.7.4); downloaded + cached on first use" default="0.7.4"
+arg "[version]" help="herdr release to smoke-test (e.g. 0.8.0); downloaded + cached on first use" default="0.8.0"
 '''
 run = '''
 set -euo pipefail
-ver="${usage_version:-0.7.4}"; ver="${ver#v}"   # accept 0.7.4 or v0.7.4
+ver="${usage_version:-0.8.0}"; ver="${ver#v}"   # accept 0.8.0 or v0.8.0
 
 # Map this machine to a herdr release asset.
 case "$(uname -s)-$(uname -m)" in
@@ -132,7 +132,7 @@ mkdir -p "$home/xdg-config/herdr" "$home/xdg-data" "$home/xdg-state" "$home/run"
 # Cache the binary across runs; download on first use.
 if [ ! -x "$bin" ]; then
   echo "dev-herdr: downloading herdr $ver ($asset) …"
-  curl -fsSL -o "$bin" "https://github.com/ogulcancelik/herdr/releases/download/v$ver/$asset"
+  curl -fsSL -o "$bin" "https://github.com/herdrdev/herdr/releases/download/v$ver/$asset"
   chmod +x "$bin"
 fi
 echo "dev-herdr: $("$bin" --version | head -n1) at $bin"
@@ -189,6 +189,6 @@ tail -n +1 -f "$logf" & tailpid=$!
 trap 'stop_herdr; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
 
 echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI http://$ip"
-echo "Settings tab should read herdr $ver / protocol 16 / compatible. Ctrl-C stops lasso AND the isolated daemon."
+echo "Settings tab should read herdr $ver / the protocol that daemon pongs / compatible. Ctrl-C stops lasso AND the isolated daemon."
 cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
 '''

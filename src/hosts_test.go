@@ -99,7 +99,7 @@ func TestProbeHostClassification(t *testing.T) {
 		},
 		{
 			name:       "healthy host reports running",
-			script:     `printf '{"running":true,"version":"0.7.5","protocol":17,"socket":"/tmp/h.sock"}'`,
+			script:     `printf '{"running":true,"version":"0.8.0","protocol":19,"socket":"/tmp/h.sock"}'`,
 			timeout:    5 * time.Second,
 			wantState:  "",
 			wantReach:  true,
@@ -116,7 +116,7 @@ func TestProbeHostClassification(t *testing.T) {
 			t.Cleanup(func() { hostProbeTimeout = old })
 
 			start := time.Now()
-			hi := probeHost(context.Background(), "somehost", 17)
+			hi := probeHost(context.Background(), "somehost", 19)
 			elapsed := time.Since(start)
 
 			if elapsed > tc.maxElapsed {
@@ -150,7 +150,7 @@ func TestProbeHostBoundedWhenChildHoldsStdout(t *testing.T) {
 	t.Cleanup(func() { hostProbeTimeout = old })
 
 	start := time.Now()
-	hi := probeHost(context.Background(), "somehost", 17)
+	hi := probeHost(context.Background(), "somehost", 19)
 	elapsed := time.Since(start)
 
 	// Deadline + WaitDelay, with slack. Without WaitDelay this is ~30s.
