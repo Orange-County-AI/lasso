@@ -199,7 +199,12 @@ func TestBootAgentStagesLongPromptAndCloseCleansUp(t *testing.T) {
 	if !strings.HasSuffix(launch, "\n") {
 		t.Errorf("launch line must end with Enter: %q", launch)
 	}
-	body := strings.TrimSuffix(launch, "\n")
+	// The launch line leads with ^U so a keystroke typed into the focused pane
+	// during the boot window can't concatenate with the command (see paneRun).
+	if !strings.HasPrefix(launch, "\x15") {
+		t.Errorf("launch line must lead with ^U to discard pending input: %q", launch)
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(launch, "\x15"), "\n")
 	if strings.ContainsAny(body, "\n\r") {
 		t.Errorf("typed launch command must be single-line: %q", body)
 	}
