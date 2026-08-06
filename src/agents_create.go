@@ -1083,14 +1083,19 @@ func waitPaneReady(b Backend, paneID string) {
 // trailing "\n" ends the line. The bytes land on the PTY raw, so the command
 // must be short and single-line (see needsPromptFile) — embedded newlines
 // submit fragments, and anything past the kernel TTY input queue is dropped.
-// For submitting to an interactive agent TUI use
-// paneSubmit instead — see why there. Returns the herdr RPC error so the caller
-// (launchAgentInPane) can tell a boot that never reached the pane from one that
-// did.
+// The leading "\x15" (^U — VKILL in cooked mode, unix-line-discard in
+// readline/zsh/fish, a no-op on an empty line) discards whatever is already
+// pending on the line: the pane is focused in the UI for a boot window that can
+// run 20+ seconds, and a keystroke typed into it would otherwise concatenate
+// with our command and execute as one mangled line. For submitting to an
+// interactive agent TUI use paneSubmit instead — no ^U there, since the TUIs
+// read raw and it would edit their composer rather than clear a shell line.
+// Returns the herdr RPC error so the caller (launchAgentInPane) can tell a boot
+// that never reached the pane from one that did.
 func paneRun(b Backend, paneID, command string) error {
 	_, err := b.HerdrCall("pane.send_text", map[string]any{
 		"pane_id": paneID,
-		"text":    command + "\n",
+		"text":    "\x15" + command + "\n",
 	})
 	return err
 }
