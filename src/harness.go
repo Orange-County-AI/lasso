@@ -170,18 +170,19 @@ func claudeCommand(o launchOpts) string {
 	// Scrubbing them per-launch restores normal transcript writing. This is
 	// claude-specific (the codex builder needs no scrub); do not "clean it up".
 	//
-	// No --dangerously-skip-permissions: bypass mode is the host's setting, not
-	// ours to force. It comes from ~/.claude/settings.json — permissions
-	// .defaultMode "bypassPermissions" for the mode itself, and
-	// skipDangerousModePermissionPrompt for the accepted-disclaimer gate that
-	// the flag used to satisfy. Leaving it off the launch line also retires a
-	// footgun: the flag forced bypass mode and silently overrode
-	// --permission-mode plan, so plan agents never actually planned, which is
-	// why the two modes needed different launch lines at all. The tradeoff is
-	// that a host whose settings lack those keys gets agents parked on
-	// permission prompts instead of running autonomously.
+	// --allow-dangerously-skip-permissions rides on EVERY claude line, plan mode
+	// included. It only MAKES bypass available — satisfying the accepted-disclaimer
+	// gate that ~/.claude/settings.json's skipDangerousModePermissionPrompt
+	// otherwise has to cover — without selecting it, so the effective mode still
+	// comes from the host's settings (permissions.defaultMode) or from
+	// --permission-mode below, and a plan agent still plans.
+	//
+	// The forcing variant, --dangerously-skip-permissions, stays off the line:
+	// it FORCED bypass mode and silently overrode --permission-mode plan, so
+	// plan agents never actually planned. Do not "simplify" the allow-variant
+	// back into it.
 	const envScrub = "env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "
-	cmd := envScrub + "claude"
+	cmd := envScrub + "claude --allow-dangerously-skip-permissions"
 	if o.planMode {
 		cmd += " --permission-mode plan"
 	}

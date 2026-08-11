@@ -46,9 +46,11 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 	}
 }
 
-// Neither claude launch line carries a skip-permissions flag: bypass mode is
-// the host's ~/.claude/settings.json setting. Plan mode is therefore the only
-// thing that distinguishes the two, via --permission-mode plan.
+// Both claude launch lines carry --allow-dangerously-skip-permissions, which
+// only makes bypass available (satisfying the accepted-disclaimer gate) without
+// selecting it. Neither carries the forcing --dangerously-skip-permissions,
+// which would override plan mode. Plan mode is therefore still the only thing
+// that distinguishes the two, via --permission-mode plan.
 func TestAgentCommandPlanModeFlags(t *testing.T) {
 	// Both claude variants must scrub the leaked CLAUDE_CODE_* session markers so
 	// 2.1.193+ doesn't treat the interactive agent as a child session and suppress
@@ -63,9 +65,13 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	if !strings.Contains(plan, "--permission-mode plan") {
 		t.Errorf("plan command missing --permission-mode plan: %q", plan)
 	}
-	// Either skip-permissions variant on the line would override plan mode and
-	// leave the agent bypassing instead of planning.
-	if strings.Contains(plan, "dangerously-skip-permissions") {
+	if !strings.Contains(plan, "--allow-dangerously-skip-permissions") {
+		t.Errorf("plan command missing the allow-bypass flag: %q", plan)
+	}
+	// The forcing variant would override plan mode and leave the agent
+	// bypassing instead of planning. Match it with its leading space so the
+	// allow flag, which ends in the same token, doesn't count as a hit.
+	if strings.Contains(plan, " --dangerously-skip-permissions") {
 		t.Errorf("plan command must not force bypass mode: %q", plan)
 	}
 
@@ -73,11 +79,14 @@ func TestAgentCommandPlanModeFlags(t *testing.T) {
 	if !strings.HasPrefix(def, envScrub) {
 		t.Errorf("default command must scrub child-session env: %q", def)
 	}
-	// The default line carries no permission flags at all — bypass comes from
-	// the host's settings.json, and plan mode is the only flagged variant.
-	if strings.Contains(def, "dangerously-skip-permissions") ||
+	if !strings.Contains(def, "--allow-dangerously-skip-permissions") {
+		t.Errorf("default command missing the allow-bypass flag: %q", def)
+	}
+	// Bypass is made available, never forced, and plan mode is the only flagged
+	// variant — so the default line selects no mode of its own.
+	if strings.Contains(def, " --dangerously-skip-permissions") ||
 		strings.Contains(def, "--permission-mode") {
-		t.Errorf("default command should carry no permission flags: %q", def)
+		t.Errorf("default command should force no permission mode: %q", def)
 	}
 }
 

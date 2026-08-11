@@ -124,7 +124,11 @@ func TestStagedPromptDeliveredAsSingleArgument(t *testing.T) {
 			// Command substitution strips trailing newlines — the one byte-level
 			// delta this delivery has, and one that carries no meaning in a
 			// prompt. Everything else must arrive exactly.
-			want := []string{"--model", "claude-fable-5", strings.TrimRight(prompt, "\n")}
+			want := []string{
+				"--allow-dangerously-skip-permissions",
+				"--model", "claude-fable-5",
+				strings.TrimRight(prompt, "\n"),
+			}
 			if len(args) != len(want) {
 				t.Fatalf("claude got %d args, want %d (prompt split across arguments?)", len(args), len(want))
 			}
