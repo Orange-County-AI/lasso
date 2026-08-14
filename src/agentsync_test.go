@@ -8,27 +8,58 @@ import (
 	"testing"
 )
 
-// The opencode sync pins the adaptive "catppuccin" theme in tui.json and
-// carries light vs dark via the mode lock in opencode's state kv.json —
-// opencode can't detect the terminal background through the lasso/ttyd chain,
-// so we choose for it.
+// The opencode sync writes a generated theme file — herdr's resolved palette
+// mapped onto opencode's tokens as mode-invariant bare hexes — and pins it by
+// name in tui.json, with the state kv.json mode lock as a fallback hint.
+// opencode never writes the theme file or tui.json, so the pin survives
+// running instances (which do rewrite kv.json from in-memory state — the
+// reason the theme itself must not depend on the mode lock).
 func TestSyncOpencodeTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
-	path := filepath.Join(home, ".config", "opencode", "tui.json")
+	tuiPath := filepath.Join(home, ".config", "opencode", "tui.json")
+	themePath := filepath.Join(home, ".config", "opencode", "themes", "herdr.json")
 	kvPath := filepath.Join(home, ".local", "state", "opencode", "kv.json")
 
-	// Fresh write: creates tui.json with schema + theme and kv.json with the
-	// mode pinned dark.
-	if err := syncOpencodeTheme(b, home, false); err != nil {
+	readTheme := func() map[string]string {
+		var f struct {
+			Schema string            `json:"$schema"`
+			Theme  map[string]string `json:"theme"`
+		}
+		data, err := os.ReadFile(themePath)
+		if err != nil {
+			t.Fatalf("theme file missing: %v", err)
+		}
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("theme file isn't json: %v", err)
+		}
+		if f.Schema == "" {
+			t.Errorf("theme file lacks $schema: %s", data)
+		}
+		return f.Theme
+	}
+
+	// Fresh write: theme file with herdr's palette, tui.json pinning it by
+	// name, kv.json with the mode hint pinned dark.
+	dark := resolveThemeByName("catppuccin")
+	if err := syncOpencodeTheme(b, home, dark); err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	toks := readTheme()
+	if toks["background"] != dark.ui.PanelBg || toks["backgroundPanel"] != dark.ui.Surface0 || toks["text"] != dark.ui.Text {
+		t.Errorf("theme file missing core tokens: %v", toks)
+	}
+	for tok, v := range toks {
+		if !strings.HasPrefix(v, "#") {
+			t.Errorf("token %q = %q, want a mode-invariant bare hex", tok, v)
+		}
+	}
 	var got map[string]any
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(tuiPath)
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("written file isn't json: %v", err)
 	}
-	if got["theme"] != "catppuccin" || got["$schema"] == nil {
+	if got["theme"] != "herdr" || got["$schema"] == nil {
 		t.Fatalf("created file: %s", data)
 	}
 	var kv map[string]any
@@ -40,19 +71,25 @@ func TestSyncOpencodeTheme(t *testing.T) {
 		t.Fatalf("created kv: %s", data)
 	}
 
-	// Existing keys in both files survive a flip to light; the theme name
-	// stays adaptive catppuccin while the mode lock flips.
-	os.WriteFile(path, []byte(`{"theme": "catppuccin", "keybinds": {"leader": "ctrl+x"}}`), 0o644)
+	// Flip to light: the theme file is rewritten with the light palette, a
+	// legacy "catppuccin" pin migrates to "herdr", existing keys in both
+	// config files survive, and the kv hint flips.
+	os.WriteFile(tuiPath, []byte(`{"theme": "catppuccin", "keybinds": {"leader": "ctrl+x"}}`), 0o644)
 	os.WriteFile(kvPath, []byte(`{"sidebar":"auto","theme_mode_lock":"dark","theme_mode":"dark"}`), 0o644)
-	if err := syncOpencodeTheme(b, home, true); err != nil {
+	light := resolveThemeByName("catppuccin-latte")
+	if err := syncOpencodeTheme(b, home, light); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
-	data, _ = os.ReadFile(path)
+	toks = readTheme()
+	if toks["background"] != light.ui.PanelBg || toks["text"] != light.ui.Text {
+		t.Errorf("theme file not rewritten on flip: background=%q text=%q", toks["background"], toks["text"])
+	}
+	data, _ = os.ReadFile(tuiPath)
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("after flip: %v", err)
 	}
-	if got["theme"] != "catppuccin" {
-		t.Errorf("theme = %v, want catppuccin", got["theme"])
+	if got["theme"] != "herdr" {
+		t.Errorf("theme = %v, want herdr", got["theme"])
 	}
 	if _, ok := got["keybinds"]; !ok {
 		t.Errorf("existing keys dropped: %s", data)
@@ -68,14 +105,18 @@ func TestSyncOpencodeTheme(t *testing.T) {
 		t.Errorf("existing kv keys dropped: %s", data)
 	}
 
-	// No-op when already in step: content untouched.
-	before, _ := os.ReadFile(path)
+	// No-op when already in step: content untouched in all three files.
+	before, _ := os.ReadFile(tuiPath)
+	themeBefore, _ := os.ReadFile(themePath)
 	kvBefore, _ := os.ReadFile(kvPath)
-	if err := syncOpencodeTheme(b, home, true); err != nil {
+	if err := syncOpencodeTheme(b, home, light); err != nil {
 		t.Fatalf("noop: %v", err)
 	}
-	if after, _ := os.ReadFile(path); string(after) != string(before) {
+	if after, _ := os.ReadFile(tuiPath); string(after) != string(before) {
 		t.Errorf("no-op sync rewrote tui.json")
+	}
+	if after, _ := os.ReadFile(themePath); string(after) != string(themeBefore) {
+		t.Errorf("no-op sync rewrote herdr.json")
 	}
 	if after, _ := os.ReadFile(kvPath); string(after) != string(kvBefore) {
 		t.Errorf("no-op sync rewrote kv.json")
@@ -83,16 +124,55 @@ func TestSyncOpencodeTheme(t *testing.T) {
 
 	// Unparseable files (e.g. jsonc with comments) are left alone, not
 	// clobbered.
-	os.WriteFile(path, []byte("{\n  // comment\n}\n"), 0o644)
+	os.WriteFile(tuiPath, []byte("{\n  // comment\n}\n"), 0o644)
 	os.WriteFile(kvPath, []byte("not json"), 0o644)
-	if err := syncOpencodeTheme(b, home, false); err != nil {
+	if err := syncOpencodeTheme(b, home, dark); err != nil {
 		t.Fatalf("malformed: %v", err)
 	}
-	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "// comment") {
+	if data, _ := os.ReadFile(tuiPath); !strings.Contains(string(data), "// comment") {
 		t.Errorf("malformed tui.json was clobbered: %s", data)
 	}
 	if data, _ := os.ReadFile(kvPath); string(data) != "not json" {
 		t.Errorf("malformed kv.json was clobbered: %s", data)
+	}
+}
+
+// The generated opencode theme mirrors herdr's palette: core tokens come
+// straight from the theme's UI tokens, diff backgrounds are blends, and
+// every value is a bare hex so opencode's
+// light/dark mode can't change the result.
+func TestOpencodeThemeBody(t *testing.T) {
+	rt := resolveThemeByName("tokyo-night")
+	var got struct {
+		Schema string            `json:"$schema"`
+		Theme  map[string]string `json:"theme"`
+	}
+	if err := json.Unmarshal(opencodeThemeBody(rt), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Schema == "" {
+		t.Errorf("missing $schema")
+	}
+	for tok, want := range map[string]string{
+		"primary":         "#7aa2f7", // Accent
+		"secondary":       "#bb9af7", // Mauve
+		"accent":          "#bb9af7", // ansi Magenta
+		"text":            "#c0caf5", // Text
+		"background":      "#1a1b26", // PanelBg
+		"backgroundPanel": "#24283b", // Surface0
+		"syntaxString":    "#9ece6a", // Green
+		"error":           "#f7768e", // Red
+	} {
+		if got.Theme[tok] != want {
+			t.Errorf("%s = %q, want %q", tok, got.Theme[tok], want)
+		}
+	}
+	// Blended tokens must be neither parent color.
+	for _, tok := range []string{"diffAddedBg", "diffRemovedBg"} {
+		v := got.Theme[tok]
+		if v == "" || v == rt.ui.Green || v == rt.ui.Red || v == rt.ui.PanelBg {
+			t.Errorf("%s = %q, want a blend", tok, v)
+		}
 	}
 }
 
