@@ -96,6 +96,9 @@ func resolveThemeByName(name string) resolvedTheme {
 // herdr's resolved palette and pins it by name — both in files opencode reads
 // but never writes: ~/.config/opencode/themes/herdr.json (custom themes are
 // discovered from <config>/themes/*.json) and the "theme" key in tui.json.
+// It also writes legacy Catppuccin aliases: custom themes override built-ins,
+// so an older lasso or dev build that later rewrites tui.json to "catppuccin"
+// still resolves the generated, mode-invariant Herdr palette.
 // Every token is emitted as a bare hex, which opencode's resolver treats as
 // mode-invariant (only {dark,light} pair objects consult the mode), so the
 // rendered colors are correct no matter what mode the lock/detection lands on.
@@ -106,6 +109,16 @@ func resolveThemeByName(name string) resolvedTheme {
 
 // opencodeThemeName is the generated theme lasso pins for opencode.
 const opencodeThemeName = "herdr"
+
+// opencodeThemeNames includes the generated theme and legacy names older lasso
+// builds can write to tui.json or opencode's state. The custom files shadow
+// opencode's built-ins, making those stale writers harmless.
+var opencodeThemeNames = []string{
+	opencodeThemeName,
+	"catppuccin",
+	"catppuccin-frappe",
+	"catppuccin-macchiato",
+}
 
 func syncOpencodeTheme(b Backend, home string, rt resolvedTheme) error {
 	if err := syncOpencodeThemeFile(b, home, rt); err != nil {
@@ -194,16 +207,22 @@ func opencodeThemeBody(rt resolvedTheme) []byte {
 }
 
 func syncOpencodeThemeFile(b Backend, home string, rt resolvedTheme) error {
-	path := filepath.Join(home, ".config", "opencode", "themes", opencodeThemeName+".json")
+	dir := filepath.Join(home, ".config", "opencode", "themes")
 	body := opencodeThemeBody(rt)
-	if cur, err := b.ReadFile(path); err == nil && string(cur) == string(body) {
-		return nil
+	for _, name := range opencodeThemeNames {
+		path := filepath.Join(dir, name+".json")
+		if cur, err := b.ReadFile(path); err == nil && string(cur) == string(body) {
+			continue
+		}
+		if err := b.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		log.Printf("theme:    opencode theme file -> %s (%s) on %s", name, rt.Resolved, b.Name())
+		if err := b.WriteFile(path, body, 0o644); err != nil {
+			return err
+		}
 	}
-	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	log.Printf("theme:    opencode theme file -> %s (%s) on %s", opencodeThemeName, rt.Resolved, b.Name())
-	return b.WriteFile(path, body, 0o644)
+	return nil
 }
 
 func syncOpencodeTui(b Backend, home string) error {
