@@ -1,6 +1,12 @@
 import { Check, ChevronsUpDown } from "lucide-react"
 import { Popover } from "radix-ui"
 import * as React from "react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 export type ComboOption = { value: string; label: string }
@@ -17,6 +23,7 @@ export function Combobox({
   placeholder = "Select…",
   filterPlaceholder = "Filter…",
   emptyText = "No matches.",
+  showFullLabelOnHover = false,
   disabled,
   className,
 }: {
@@ -27,6 +34,7 @@ export function Combobox({
   placeholder?: string
   filterPlaceholder?: string
   emptyText?: string
+  showFullLabelOnHover?: boolean
   disabled?: boolean
   className?: string
 }) {
@@ -141,35 +149,49 @@ export function Combobox({
               {emptyText}
             </div>
           ) : (
-            filtered.map((opt, i) => (
-              <button
-                key={opt.value}
-                type="button"
-                data-index={i}
-                onClick={() => choose(opt)}
-                onMouseMove={() => {
-                  navSource.current = "pointer"
-                  setActive(i)
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none",
-                  // The keyboard/pointer cursor uses the primary tint so the
-                  // highlighted option reads clearly — `bg-accent` resolves to
-                  // --h-hover, which is the same color as the popover surface
-                  // (--popover also maps to --h-hover), so the highlight was
-                  // imperceptible and you couldn't tell what was selected.
-                  i === active && "bg-primary text-primary-foreground"
-                )}
-              >
-                <Check
-                  className={cn(
-                    "size-4 shrink-0",
-                    opt.value === value ? "opacity-100" : "opacity-0"
-                  )}
-                />
-                <span className="truncate">{opt.label}</span>
-              </button>
-            ))
+            <TooltipProvider delayDuration={300}>
+              {filtered.map((opt, i) => {
+                const option = (
+                  <button
+                    type="button"
+                    data-index={i}
+                    onClick={() => choose(opt)}
+                    onMouseMove={() => {
+                      navSource.current = "pointer"
+                      setActive(i)
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none",
+                      // The keyboard/pointer cursor uses the primary tint so the
+                      // highlighted option reads clearly — `bg-accent` resolves to
+                      // --h-hover, which is the same color as the popover surface
+                      // (--popover also maps to --h-hover), so the highlight was
+                      // imperceptible and you couldn't tell what was selected.
+                      i === active && "bg-primary text-primary-foreground"
+                    )}
+                  >
+                    <Check
+                      className={cn(
+                        "size-4 shrink-0",
+                        opt.value === value ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    <span className="truncate">{opt.label}</span>
+                  </button>
+                )
+                if (!showFullLabelOnHover) {
+                  return <React.Fragment key={opt.value}>{option}</React.Fragment>
+                }
+                return (
+                  <Tooltip key={opt.value}>
+                    <TooltipTrigger asChild>{option}</TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={6}>
+                      {opt.label}
+                    </TooltipContent>
+                  </Tooltip>
+                )
+              })}
+            </TooltipProvider>
           )}
         </div>
       </Popover.Content>

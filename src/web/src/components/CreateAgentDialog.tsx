@@ -846,6 +846,7 @@ export function CreateAgentDialog({
                     onValueChange={setRepo}
                     placeholder="Select a repository…"
                     filterPlaceholder="Filter repositories…"
+                    showFullLabelOnHover
                     emptyText={
                       reposError ? "Couldn't load repos." : "No repos found."
                     }
