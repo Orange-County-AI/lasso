@@ -20,6 +20,7 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	tuiPath := filepath.Join(home, ".config", "opencode", "tui.json")
 	themePath := filepath.Join(home, ".config", "opencode", "themes", "herdr.json")
 	kvPath := filepath.Join(home, ".local", "state", "opencode", "kv.json")
+	themeDir := filepath.Dir(themePath)
 
 	readTheme := func() map[string]string {
 		var f struct {
@@ -48,6 +49,12 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	toks := readTheme()
 	if toks["background"] != dark.ui.PanelBg || toks["backgroundPanel"] != dark.ui.Surface0 || toks["text"] != dark.ui.Text {
 		t.Errorf("theme file missing core tokens: %v", toks)
+	}
+	for _, name := range opencodeThemeNames {
+		data, err := os.ReadFile(filepath.Join(themeDir, name+".json"))
+		if err != nil || string(data) != string(opencodeThemeBody(dark)) {
+			t.Errorf("legacy theme alias %q wasn't written", name)
+		}
 	}
 	for tok, v := range toks {
 		if !strings.HasPrefix(v, "#") {
@@ -108,6 +115,10 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	// No-op when already in step: content untouched in all three files.
 	before, _ := os.ReadFile(tuiPath)
 	themeBefore, _ := os.ReadFile(themePath)
+	aliasesBefore := map[string][]byte{}
+	for _, name := range opencodeThemeNames[1:] {
+		aliasesBefore[name], _ = os.ReadFile(filepath.Join(themeDir, name+".json"))
+	}
 	kvBefore, _ := os.ReadFile(kvPath)
 	if err := syncOpencodeTheme(b, home, light); err != nil {
 		t.Fatalf("noop: %v", err)
@@ -117,6 +128,12 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(themePath); string(after) != string(themeBefore) {
 		t.Errorf("no-op sync rewrote herdr.json")
+	}
+	for name, before := range aliasesBefore {
+		after, _ := os.ReadFile(filepath.Join(themeDir, name+".json"))
+		if string(after) != string(before) {
+			t.Errorf("no-op sync rewrote %s.json", name)
+		}
 	}
 	if after, _ := os.ReadFile(kvPath); string(after) != string(kvBefore) {
 		t.Errorf("no-op sync rewrote kv.json")
