@@ -1,8 +1,8 @@
 // Agent theme sync: when lasso's theme changes (via /api/theme-set, a host
 // switch, or an out-of-band edit to herdr's config.toml picked up by the hub
-// poll), mirror it into the agent CLIs' own theme files — opencode's tui.json
-// + state-file mode lock, Claude Code's ~/.claude/themes/herdr.json, ghostty's
-// themes/herdr, and
+// poll), mirror it into the agent CLIs' own theme files — a generated
+// opencode theme (themes/herdr.json, pinned via tui.json), Claude Code's
+// ~/.claude/themes/herdr.json, ghostty's themes/herdr, and
 // lasso's settings.json (.theme.resolved, read by claude-contextline) — so
 // agents render in step with herdr. Writes go through the Backend interface, so
 // the active remote host gets the same treatment over SFTP (see
@@ -54,7 +54,7 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) {
 		return
 	}
 	light := luminance(rt.ui.PanelBg) > 0.5
-	if err := syncOpencodeTheme(b, home, light); err != nil {
+	if err := syncOpencodeTheme(b, home, rt); err != nil {
 		log.Printf("theme:    opencode sync on %s: %v", b.Name(), err)
 	}
 	if err := syncClaudeTheme(b, home, rt, light); err != nil {
@@ -81,22 +81,129 @@ func resolveThemeByName(name string) resolvedTheme {
 }
 
 // ---------------------------------------------------------------------------
-// opencode — ~/.config/opencode/tui.json "theme" + state kv.json mode lock
+// opencode — generated themes/herdr.json + tui.json "theme" pin + kv mode hint
 // ---------------------------------------------------------------------------
+//
+// opencode 1.x resolves its light/dark mode as: kv "theme_mode_lock" ??
+// the terminal-detected background ?? its default. Neither works for us:
+// detection fails through the lasso/ttyd/xterm chain, and the lock lives in
+// opencode's state kv.json, which any running instance rewrites wholesale from
+// its in-memory state on every state change — so a pin written under it gets
+// clobbered back (observed: a light-locked instance overwrote lasso's dark pin
+// seconds later, and every fresh launch then came up light).
+//
+// So the mode lock can't be load-bearing. Instead lasso generates a theme from
+// herdr's resolved palette and pins it by name — both in files opencode reads
+// but never writes: ~/.config/opencode/themes/herdr.json (custom themes are
+// discovered from <config>/themes/*.json) and the "theme" key in tui.json.
+// Every token is emitted as a bare hex, which opencode's resolver treats as
+// mode-invariant (only {dark,light} pair objects consult the mode), so the
+// rendered colors are correct no matter what mode the lock/detection lands on.
+// A theme flip rewrites herdr.json with the new palette; fresh launches pick
+// it up. The kv mode lock is still written as a fallback hint (it keeps
+// opencode's built-in adaptive themes in step if the pin is ever removed
+// manually), but nothing correct depends on it anymore.
 
-// opencodeTheme is the theme lasso pins for opencode. opencode 1.x themes are
-// adaptive — "catppuccin" renders its latte (light) variant in light mode and
-// mocha in dark — so one name covers both; the light/dark split is carried by
-// the mode lock (syncOpencodeMode), not the theme name. (The old mapping to
-// "catppuccin-latte" is gone: 1.x doesn't ship a theme by that name, so it
-// fell back to the default theme.)
-const opencodeTheme = "catppuccin"
+// opencodeThemeName is the generated theme lasso pins for opencode.
+const opencodeThemeName = "herdr"
 
-func syncOpencodeTheme(b Backend, home string, light bool) error {
+func syncOpencodeTheme(b Backend, home string, rt resolvedTheme) error {
+	if err := syncOpencodeThemeFile(b, home, rt); err != nil {
+		return err
+	}
 	if err := syncOpencodeTui(b, home); err != nil {
 		return err
 	}
-	return syncOpencodeMode(b, home, light)
+	return syncOpencodeMode(b, home, luminance(rt.ui.PanelBg) > 0.5)
+}
+
+// opencodeThemeBody renders rt as an opencode custom theme: herdr's UI tokens
+// mapped onto the same semantic roles lasso uses for its own chrome, all as
+// bare hex strings so the mode can't change the result.
+func opencodeThemeBody(rt resolvedTheme) []byte {
+	u, a := rt.ui, rt.ansi
+	m := map[string]string{
+		"primary":               u.Accent,
+		"secondary":             u.Mauve,
+		"accent":                a.Magenta, // the palette's pink slot (mocha pink, dracula pink, etc.)
+		"error":                 u.Red,
+		"warning":               u.Yellow,
+		"success":               u.Green,
+		"info":                  u.Teal,
+		"text":                  u.Text,
+		"textMuted":             u.Subtext0,
+		"background":            u.PanelBg,
+		"backgroundPanel":       u.Surface0,
+		"backgroundElement":     u.Surface1,
+		"border":                u.Surface1,
+		"borderActive":          u.Accent,
+		"borderSubtle":          u.SurfaceDim,
+		"diffAdded":             u.Green,
+		"diffRemoved":           u.Red,
+		"diffContext":           u.Subtext0,
+		"diffHunkHeader":        u.Peach,
+		"diffHighlightAdded":    u.Green,
+		"diffHighlightRemoved":  u.Red,
+		"diffAddedBg":           blendHex(u.Green, u.PanelBg, 0.9),
+		"diffRemovedBg":         blendHex(u.Red, u.PanelBg, 0.9),
+		"diffContextBg":         u.Surface0,
+		"diffLineNumber":        u.Subtext0,
+		"diffAddedLineNumberBg": blendHex(u.Green, u.PanelBg, 0.95),
+		// Removed line numbers sit on the same tinted rows.
+		"diffRemovedLineNumberBg": blendHex(u.Red, u.PanelBg, 0.95),
+		"markdownText":            u.Text,
+		"markdownHeading":         u.Mauve,
+		"markdownLink":            u.Blue,
+		"markdownLinkText":        u.Teal,
+		"markdownCode":            u.Green,
+		"markdownBlockQuote":      u.Yellow,
+		"markdownEmph":            u.Yellow,
+		"markdownStrong":          u.Peach,
+		"markdownHorizontalRule":  u.Subtext0,
+		"markdownListItem":        u.Blue,
+		"markdownListEnumeration": u.Teal,
+		"markdownImage":           u.Blue,
+		"markdownImageText":       u.Teal,
+		"markdownCodeBlock":       u.Text,
+		"syntaxComment":           u.Subtext0,
+		"syntaxKeyword":           u.Mauve,
+		"syntaxFunction":          u.Blue,
+		"syntaxVariable":          u.Red,
+		"syntaxString":            u.Green,
+		"syntaxNumber":            u.Peach,
+		"syntaxType":              u.Yellow,
+		"syntaxOperator":          u.Teal,
+		"syntaxPunctuation":       u.Text,
+	}
+	// Defensive: drop anything that isn't "#rrggbb" — a bare non-hex string
+	// would be resolved as a color *reference* and throw at render time.
+	for tok, v := range m {
+		if _, _, _, ok := hexRGB(v); !ok {
+			delete(m, tok)
+		}
+	}
+	root := map[string]any{
+		"$schema": "https://opencode.ai/theme.json",
+		"theme":   m,
+	}
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil
+	}
+	return append(out, '\n')
+}
+
+func syncOpencodeThemeFile(b Backend, home string, rt resolvedTheme) error {
+	path := filepath.Join(home, ".config", "opencode", "themes", opencodeThemeName+".json")
+	body := opencodeThemeBody(rt)
+	if cur, err := b.ReadFile(path); err == nil && string(cur) == string(body) {
+		return nil
+	}
+	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	log.Printf("theme:    opencode theme file -> %s (%s) on %s", opencodeThemeName, rt.Resolved, b.Name())
+	return b.WriteFile(path, body, 0o644)
 }
 
 func syncOpencodeTui(b Backend, home string) error {
@@ -121,10 +228,10 @@ func syncOpencodeTui(b Backend, home string) error {
 	if raw, ok := root["theme"]; ok {
 		_ = json.Unmarshal(raw, &cur)
 	}
-	if cur == opencodeTheme {
+	if cur == opencodeThemeName {
 		return nil
 	}
-	root["theme"], _ = json.Marshal(opencodeTheme)
+	root["theme"], _ = json.Marshal(opencodeThemeName)
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return err
@@ -133,18 +240,16 @@ func syncOpencodeTui(b Backend, home string) error {
 	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	log.Printf("theme:    opencode theme -> %s on %s", opencodeTheme, b.Name())
+	log.Printf("theme:    opencode theme -> %s on %s", opencodeThemeName, b.Name())
 	return b.WriteFile(path, out, 0o644)
 }
 
-// syncOpencodeMode pins opencode's light/dark mode. opencode 1.x resolves the
-// mode as: kv "theme_mode_lock" ?? the OSC 10/11-detected terminal background
-// ?? its default. Detection fails through the lasso/ttyd/xterm chain, and a
-// stale lock (e.g. locked light from another terminal session) overrides the
-// adaptive theme entirely — so the theme name in tui.json alone can't flip
-// opencode between light and dark. Pin the lock in its TUI state file. A
-// running opencode keeps its in-memory state (and may write it back over
-// ours); fresh launches read the pinned mode.
+// syncOpencodeMode pins opencode's light/dark mode as a fallback hint. With
+// the generated herdr theme pinned (see above), every rendered token is
+// mode-invariant, so the lock only matters if the tui.json pin is removed
+// manually and opencode falls back to one of its built-in adaptive themes.
+// Note the lock is best-effort by nature: a running opencode keeps its
+// in-memory kv state and may write it back over ours.
 func syncOpencodeMode(b Backend, home string, light bool) error {
 	path := filepath.Join(home, ".local", "state", "opencode", "kv.json")
 	want := "dark"
