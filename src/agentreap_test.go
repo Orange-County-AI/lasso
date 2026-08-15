@@ -142,6 +142,16 @@ func TestReconcileSparesBootingAgents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Same, but past the grace — one of these (three days at "booting") was in
+	// titan's 139, stranded by a lasso that died mid-boot.
+	for _, st := range []string{BootCreating, BootBooting} {
+		rec := reapRec("stale-"+st, "w7:p2")
+		rec.BootStatus = st
+		rec.CreatedAt = time.Now().Add(-agentBootGrace - time.Minute)
+		if err := appendAgent("local", rec); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// A record that never got a pane at all has nothing to falsify either.
 	noPane := reapRec("nopane", "")
 	noPane.WorkspaceID = ""
@@ -156,6 +166,11 @@ func TestReconcileSparesBootingAgents(t *testing.T) {
 	for _, id := range []string{"boot-" + BootCreating, "boot-" + BootBooting, "nopane"} {
 		if !ids[id] {
 			t.Errorf("record %q was reaped while mid-boot / pane-less", id)
+		}
+	}
+	for _, id := range []string{"stale-" + BootCreating, "stale-" + BootBooting} {
+		if ids[id] {
+			t.Errorf("record %q is stranded past the boot grace and was not reaped", id)
 		}
 	}
 }

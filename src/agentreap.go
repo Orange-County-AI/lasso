@@ -33,8 +33,14 @@ package main
 //  3. An empty pane list never condemns. A host lasso is talking to has panes by
 //     construction (herdr is what lasso drives); zero is far likelier to be
 //     protocol drift than a truthful "nothing is running".
-//  4. Agents mid-create are exempt. A record at BootCreating/BootBooting is
-//     legitimately pane-less, or has a pane herdr is still materializing.
+//  4. Agents mid-create are exempt — for agentBootGrace. A record at
+//     BootCreating/BootBooting is legitimately pane-less, or has a pane herdr is
+//     still materializing, so reaping on "no pane yet" would kill agents during
+//     create. But the exemption has to expire: boot_status only advances while
+//     the lasso that started the boot is alive, so a process that dies mid-boot
+//     strands the record at "booting" forever — one such record, three days old,
+//     was in titan's 139. Past the grace it is not a booting agent, it is the
+//     wreck of one, and the ordinary rules apply.
 //  5. A record with no root_pane is exempt — there is no claim to falsify.
 //  6. A pane must be missing from agentReapMisses CONSECUTIVE successful
 //     enumerations of its host. One miss is already good evidence; requiring two
@@ -49,11 +55,21 @@ package main
 import (
 	"log"
 	"sync"
+	"time"
 )
 
 // agentReapMisses is how many consecutive successful enumerations of a host must
 // fail to show a record's pane before the record is tombstoned. See rule 6.
 const agentReapMisses = 2
+
+// agentBootGrace is how long a record may sit at creating/booting before it
+// stops being exempt from reconciliation (rule 4). Generous next to a real boot,
+// which takes seconds — and which in any case holds a pane herdr can see for all
+// but the first instant of it, so a slow boot is protected by having a pane, not
+// by this. What the grace is really sized against is a lasso restart landing
+// mid-boot: long enough that no live create is caught, short enough that the
+// stranded record it leaves behind does not become permanent.
+const agentBootGrace = 10 * time.Minute
 
 // agentReapMiss counts those consecutive misses per host|id. In memory on
 // purpose: the count is evidence about the current process's view of herdr, and
@@ -116,7 +132,12 @@ func reconcileHostAgents(host string, panes []gridPane) int {
 			continue
 		}
 		if rec.BootStatus == BootCreating || rec.BootStatus == BootBooting { // rule 4
-			continue
+			// A zero CreatedAt (an unparseable legacy timestamp) reads as
+			// long-expired, which is the safe direction: such a record predates
+			// this process by definition, so it cannot be a boot in flight.
+			if time.Since(rec.CreatedAt) < agentBootGrace {
+				continue
+			}
 		}
 		if live[rec.RootPane] {
 			agentReapSeen(host, rec.ID)
