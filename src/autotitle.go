@@ -152,7 +152,7 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 // ---------------------------------------------------------------------------
 
 // titler is one CLI lasso will ask for a title, in the order listed: claude
-// first, then codex, then opencode. Each runs one non-interactive turn with the
+// first, then codex, opencode, omp, pi. Each runs one non-interactive turn with the
 // instruction as its last argument (argv, so no quoting is involved) and prints
 // the answer — and only the answer — on stdout; their progress chatter,
 // sandbox warnings and session banners all go to stderr.
@@ -168,6 +168,11 @@ var titlers = []titler{
 	// isn't a repo, and codex exec otherwise refuses to start there.
 	{id: "codex", args: []string{"exec", "--skip-git-repo-check"}},
 	{id: "opencode", args: []string{"run"}},
+	// -p is print mode for both: one turn, answer on stdout, exit. Neither
+	// needs a repo (they run from the home dir), and pi skips its project-trust
+	// prompt entirely in non-interactive modes.
+	{id: "omp", args: []string{"-p"}},
+	{id: "pi", args: []string{"-p"}},
 }
 
 // titlerTimeout caps one CLI's turn. Generous — a first launch pays for config

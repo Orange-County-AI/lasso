@@ -157,9 +157,21 @@ func TestAgentCommandEffort(t *testing.T) {
 		t.Errorf("codex command missing reasoning-effort override: %q", codex)
 	}
 
-	for _, agent := range []string{"claude", "codex", "opencode"} {
+	// omp and pi spell effort --thinking, so check the flag they'd actually
+	// emit rather than the word "effort".
+	for _, agent := range []string{"omp", "pi"} {
+		cmd := agentCommand(agent, launchOpts{effort: "xhigh", prompt: "do it"})
+		if !strings.Contains(cmd, "--thinking 'xhigh'") {
+			t.Errorf("%s command missing thinking flag: %q", agent, cmd)
+		}
+		if strings.Index(cmd, "--thinking") > strings.Index(cmd, "'do it'") {
+			t.Errorf("%s effort must precede the prompt: %q", agent, cmd)
+		}
+	}
+
+	for _, agent := range []string{"claude", "codex", "opencode", "omp", "pi"} {
 		bare := agentCommand(agent, launchOpts{prompt: "do it"})
-		if strings.Contains(bare, "effort") {
+		if strings.Contains(bare, "effort") || strings.Contains(bare, "--thinking") {
 			t.Errorf("empty effort must not emit a flag for %s: %q", agent, bare)
 		}
 	}
@@ -179,6 +191,10 @@ func TestNormalizeEffort(t *testing.T) {
 		{"opencode", "high", ""}, // no effort knob at all
 		{"claude", "", ""},
 		{"claude", "turbo", ""},
+		{"omp", "auto", "auto"},
+		{"omp", "off", "off"},
+		{"pi", "off", "off"},
+		{"pi", "auto", ""}, // omp-only selector; pi takes concrete levels
 	}
 	for _, c := range cases {
 		if got := normalizeEffort(c.agent, c.in); got != c.want {
@@ -201,6 +217,11 @@ func TestNormalizePlanMode(t *testing.T) {
 		{"opencode", true, true},
 		{"codex", true, false}, // codex has no plan mode: drop it
 		{"codex", false, false},
+		// omp has a plan mode, but only behind /plan or a settings default —
+		// no launch flag, so a plan request is dropped the same way.
+		{"omp", true, false},
+		{"pi", true, false}, // pi has no plan mode at all
+
 		{"claude", false, false},
 		{"", true, true}, // unknown ids default to claude, per harnessByID
 		{"nonesuch", true, true},
@@ -260,6 +281,80 @@ func TestAgentCommandOpencode(t *testing.T) {
 	def := agentCommand("opencode", launchOpts{prompt: "do it"})
 	if strings.Contains(def, "--agent") {
 		t.Errorf("non-plan opencode command must not pin an agent: %q", def)
+	}
+}
+
+// omp must auto-approve its tool calls (--yolo, its analog of claude's
+// skip-permissions) and take its prompt after a POSIX "--". The separator is
+// what keeps a value-taking flag in the user's extra_args from swallowing the
+// prompt: omp's parser lets a built-in string flag consume the very next token
+// even when that token looks like a flag.
+func TestAgentCommandOmp(t *testing.T) {
+	cmd := agentCommand("omp", launchOpts{model: "opus", prompt: "do it"})
+	for _, want := range []string{"omp --yolo", "--model 'opus'", "-- 'do it'"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("omp command missing %q: %q", want, cmd)
+		}
+	}
+	if !strings.HasSuffix(cmd, "-- 'do it'") {
+		t.Errorf("prompt must be the final operand, after the separator: %q", cmd)
+	}
+
+	// A value-taking flag in extra_args must not be able to eat the prompt.
+	extra := agentCommand("omp", launchOpts{extraArgs: "--plan", prompt: "do it"})
+	if !strings.HasSuffix(extra, "--plan -- 'do it'") {
+		t.Errorf("separator must sit between extra args and the prompt: %q", extra)
+	}
+
+	// No prompt, no separator — a bare "--" would be a pointless operand.
+	if bare := agentCommand("omp", launchOpts{}); strings.Contains(bare, " -- ") {
+		t.Errorf("promptless omp command should emit no separator: %q", bare)
+	}
+}
+
+// pi has no permission gate to bypass and no plan mode. --approve is not a
+// bypass flag: it settles pi's project-trust question so an interactive launch
+// in a repo carrying .pi resources doesn't block on a dialog at boot.
+func TestAgentCommandPi(t *testing.T) {
+	cmd := agentCommand("pi", launchOpts{model: "sonnet", prompt: "do it"})
+	for _, want := range []string{"pi --approve", "--model 'sonnet'"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("pi command missing %q: %q", want, cmd)
+		}
+	}
+	// pi's parser has no "--" separator — it would land in unknownFlags — so
+	// the prompt is a plain trailing positional.
+	if !strings.HasSuffix(cmd, "'do it'") || strings.Contains(cmd, " -- ") {
+		t.Errorf("pi prompt must be a bare trailing positional: %q", cmd)
+	}
+}
+
+// Every harness id must be distinct: harnessByID resolves first-match and the
+// provisioning script installs one herdr integration per id, so a duplicate
+// would silently shadow a harness.
+func TestHarnessIDsUnique(t *testing.T) {
+	seen := map[string]bool{}
+	for _, h := range harnesses {
+		if seen[h.ID] {
+			t.Errorf("duplicate harness id %q", h.ID)
+		}
+		seen[h.ID] = true
+		if h.Label == "" || h.buildCmd == nil {
+			t.Errorf("harness %q needs a label and a command builder", h.ID)
+		}
+	}
+}
+
+// The remote provisioning script installs herdr's agent-state integration for
+// every harness lasso can spawn. The list is substituted from the registry, so
+// a newly added harness can't be left screen-scraped on remote hosts.
+func TestProvisionScriptCoversEveryHarness(t *testing.T) {
+	if strings.Contains(provisionScript, harnessIDsPlaceholder) {
+		t.Fatalf("provisionScript still carries the unsubstituted placeholder")
+	}
+	want := "for agent in " + strings.Join(harnessIDs(), " ") + "; do"
+	if !strings.Contains(provisionScript, want) {
+		t.Errorf("provisionScript missing %q", want)
 	}
 }
 

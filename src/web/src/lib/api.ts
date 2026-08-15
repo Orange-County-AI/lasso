@@ -250,7 +250,7 @@ export interface ThemePayload {
   // config restyles herdr but this lasso instance won't follow.
   forced: boolean
   // Whether lasso mirrors the theme into agent CLIs' theme files (opencode,
-  // Claude Code) — the "Sync agent themes" toggle.
+  // Claude Code, omp) — the "Sync agent themes" toggle.
   sync_agent_themes: boolean
 }
 

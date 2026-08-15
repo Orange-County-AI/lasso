@@ -1036,7 +1036,9 @@ func launchAgentInPane(b Backend, paneID, setup, agentCmd string) error {
 	// Both claude and codex show a per-directory trust dialog at boot that their
 	// --dangerously-* flags do NOT bypass, leaving the agent blocked. Auto-accept
 	// it so the agent boots straight into the task (the prompt rode along as a CLI
-	// arg, so it proceeds once trust is granted).
+	// arg, so it proceeds once trust is granted). pi has a gate of the same shape
+	// but a flag that settles it (--approve, on its launch line), so it never
+	// reaches here; omp has none at all.
 	confirmAgentTrust(b, paneID)
 	return nil
 }

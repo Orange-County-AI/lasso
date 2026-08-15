@@ -25,7 +25,8 @@ type LassoConfig struct {
 	ReposRoot string `json:"repos_root"`
 	// BranchPrefix seeds the branch-prefix field in the creator (e.g. "feat/").
 	BranchPrefix string `json:"branch_prefix"`
-	// DefaultAgent is the AI agent preselected in the creator ("claude"|"codex"|"opencode").
+	// DefaultAgent is the AI agent preselected in the creator — any harness id
+	// ("claude"|"codex"|"opencode"|"omp"|"pi"); empty means "use last used".
 	// It may be empty — "no preset default" — in which case the creator falls
 	// back to LastAgent.
 	DefaultAgent string `json:"default_agent"`

@@ -382,8 +382,9 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
 }
 
 // SyncAgentThemesToggle gates lasso's mirroring of the herdr theme into agent
-// CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json) on this
-// host and any connected remote host. Server-level setting, default on.
+// CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json, omp's
+// config.yml — omp gets the light/dark pick only, not a palette) on this host
+// and any connected remote host. Server-level setting, default on.
 function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient()
   const mutation = useMutation({
@@ -402,7 +403,7 @@ function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
         disabled={mutation.isPending}
         onCheckedChange={(c) => mutation.mutate(c === true)}
       />
-      Sync agent themes (Claude Code, OpenCode)
+      Sync agent themes (Claude Code, OpenCode, Oh My Pi)
     </label>
   )
 }
@@ -441,11 +442,11 @@ function AutoTitleToggle({ active }: { active: boolean }) {
         Auto-title new agents from their prompt
       </label>
       <p className="text-[11px] text-muted-foreground">
-        Names each new agent by asking a local CLI (claude, then codex, then
-        opencode) to summarize its prompt — so the sidebar shows a title instead
-        of the prompt's clipped first line. Runs on this machine, whichever host
-        the agent was created on, and only renames the workspace: the branch and
-        working directory keep their original names.
+        Names each new agent by asking the first local CLI that answers (claude,
+        codex, opencode, omp, pi) to summarize its prompt — so the sidebar shows
+        a title instead of the prompt's clipped first line. Runs on this
+        machine, whichever host the agent was created on, and only renames the
+        workspace: the branch and working directory keep their original names.
       </p>
     </div>
   )
@@ -681,6 +682,8 @@ function AgentCreatorSettings({
               <option value="claude">Claude Code</option>
               <option value="codex">Codex</option>
               <option value="opencode">OpenCode</option>
+              <option value="omp">Oh My Pi</option>
+              <option value="pi">Pi</option>
             </select>
           </Field>
 

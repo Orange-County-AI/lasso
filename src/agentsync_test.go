@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The opencode sync writes a generated theme file — herdr's resolved palette
@@ -407,5 +409,95 @@ func TestSyncGhosttyTheme(t *testing.T) {
 	}
 	if after, _ := os.Stat(cfg); !after.ModTime().Equal(before.ModTime()) {
 		t.Errorf("config rewritten though its theme key was already in step")
+	}
+}
+
+// omp gets the MODE only, never a palette. It has no mode setting — it picks
+// between theme.dark and theme.light from the terminal's own background, which
+// is the detection that fails through the lasso/ttyd/xterm chain. So the sync
+// points BOTH slots at a built-in of the wanted mode, making the branch
+// irrelevant: `theme.light: dark` is the mechanism, not a bug.
+func TestSyncOmpMode(t *testing.T) {
+	home := t.TempDir()
+	b := &localBackend{}
+	dir := filepath.Join(home, ".omp", "agent")
+	path := filepath.Join(dir, "config.yml")
+
+	readTheme := func() map[string]any {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("config.yml missing: %v", err)
+		}
+		var root map[string]any
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			t.Fatalf("config.yml isn't yaml: %v", err)
+		}
+		m, _ := root["theme"].(map[string]any)
+		return m
+	}
+
+	// A host where omp has never run is left completely alone — a theme switch
+	// must not litter config for a CLI that isn't there.
+	if err := syncOmpMode(b, home, false); err != nil {
+		t.Fatalf("syncOmpMode (no omp): %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config.yml created on a host without omp")
+	}
+
+	// Once omp exists, unrelated settings survive and both slots take the mode.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("symbolPreset: nerd\ntheme:\n  dark: titanium\n  light: light-paper\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncOmpMode(b, home, false); err != nil {
+		t.Fatalf("syncOmpMode dark: %v", err)
+	}
+	if got := readTheme(); got["dark"] != "dark" || got["light"] != "dark" {
+		t.Errorf("dark mode should pin both slots to the dark built-in, got %v", got)
+	}
+	data, _ := os.ReadFile(path)
+	var root map[string]any
+	_ = yaml.Unmarshal(data, &root)
+	if root["symbolPreset"] != "nerd" {
+		t.Errorf("unrelated settings must survive the rewrite: %s", data)
+	}
+
+	// Flipping to light flips both slots the other way.
+	if err := syncOmpMode(b, home, true); err != nil {
+		t.Fatalf("syncOmpMode light: %v", err)
+	}
+	if got := readTheme(); got["dark"] != "light" || got["light"] != "light" {
+		t.Errorf("light mode should pin both slots to the light built-in, got %v", got)
+	}
+
+	// A config that already matches isn't rewritten — no pointless churn under
+	// a running omp.
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncOmpMode(b, home, true); err != nil {
+		t.Fatalf("syncOmpMode repeat: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Errorf("an already-correct config.yml should not be rewritten")
+	}
+
+	// Unparseable YAML is left alone rather than clobbered.
+	if err := os.WriteFile(path, []byte("theme: [this is: not a map\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncOmpMode(b, home, false); err != nil {
+		t.Fatalf("syncOmpMode broken: %v", err)
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "not a map") {
+		t.Errorf("unparseable config.yml was clobbered: %s", data)
 	}
 }

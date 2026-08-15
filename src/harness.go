@@ -7,7 +7,8 @@ import "strings"
 // suggestions — served to the creator via /api/agent-config) with the command
 // builder that turns launch options into the shell line typed into the pane.
 // Adding a harness (gemini, pi, …) means adding one entry here; the frontend
-// and MCP schema pick it up without further plumbing.
+// and MCP schema pick it up without further plumbing (the remote-host
+// provisioning script's herdr integration list is generated from it too).
 
 // harnessDef describes one launchable agent CLI. The exported fields are
 // serialized into the /api/agent-config response so the creator UI renders
@@ -16,7 +17,10 @@ type harnessDef struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	// SupportsPlanMode gates the "Start in plan mode" checkbox — claude and
-	// opencode have a plan mode today. It is also the server-side gate: a plan
+	// opencode are the harnesses with one lasso can request at launch. It is
+	// about the LAUNCH LINE, not the CLI: omp has a plan mode reachable from
+	// its TUI but no flag that starts a session in it, so it reads false here.
+	// It is also the server-side gate: a plan
 	// request for a harness without one is dropped by normalizePlanMode rather
 	// than persisted, so the record can't claim an agent planned when it didn't.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
@@ -82,6 +86,44 @@ var harnesses = []harnessDef{
 			"openai/gpt-5.2-codex",
 		},
 		buildCmd: opencodeCommand,
+	},
+	{
+		ID:               "omp",
+		Label:            "Oh My Pi",
+		SupportsPlanMode: false,
+		// omp's --thinking ladder is pi-catalog's Effort enum plus two selectors
+		// that aren't rungs on it: "off" disables reasoning outright, and "auto"
+		// lets omp resolve a level per turn against the active model. Both are
+		// listed (they're real choices a user wants) but "auto" goes last so the
+		// ladder itself stays cheapest-first.
+		EffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"},
+		// omp resolves --model as a pattern against the authenticated provider
+		// catalogs — exact provider/id, exact bare id, then fuzzy/substring — so
+		// a bare "opus" finds whichever claude-opus the user is logged into.
+		ModelSuggestions: []string{
+			"opus",
+			"sonnet",
+			"gpt-5.5",
+			"gemini-3.1-pro",
+			"anthropic/claude-opus-4-8",
+		},
+		buildCmd: ompCommand,
+	},
+	{
+		ID:               "pi",
+		Label:            "Pi",
+		SupportsPlanMode: false,
+		// Same ladder as omp (pi is omp's upstream), minus "auto" — pi's
+		// --thinking takes concrete levels only.
+		EffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"},
+		ModelSuggestions: []string{
+			"opus",
+			"sonnet",
+			"gpt-5.5",
+			"gemini-3.1-pro",
+			"anthropic/claude-opus-4-8",
+		},
+		buildCmd: piCommand,
 	},
 }
 
@@ -240,4 +282,64 @@ func opencodeCommand(o launchOpts) string {
 		cmd += " --prompt " + promptArg(o)
 	}
 	return cmd
+}
+
+func ompCommand(o launchOpts) string {
+	// --yolo (alias --auto-approve) overrides tools.approvalMode to "yolo" for
+	// the run — omp's analog of claude's skip-permissions, so it never stops on
+	// the `ask` picker (lasso worktrees are already isolated). Unlike claude and
+	// codex there is no boot-time directory-trust dialog: omp dropped the
+	// project-trust flow its upstream pi still has, so confirmAgentTrust has
+	// nothing to accept here.
+	//
+	// No plan mode on the launch line. omp HAS one, but it is reached through
+	// the TUI's /plan or the plan.defaultOnStartup setting — the `--plan` flag
+	// only names the model the "plan" ROLE resolves to, and `--plan-yolo` starts
+	// in plan mode and then auto-approves its own plan, which is the opposite of
+	// the blocking gate lasso's plan_mode promises. SupportsPlanMode:false so a
+	// plan request is dropped rather than recorded as planning that never
+	// happened; wiring a real one means staging a settings file for --config.
+	cmd := "omp --yolo"
+	if m := strings.TrimSpace(o.model); m != "" {
+		cmd += " --model " + shellQuote(m)
+	}
+	if e := strings.TrimSpace(o.effort); e != "" {
+		cmd += " --thinking " + shellQuote(e)
+	}
+	if e := strings.TrimSpace(o.extraArgs); e != "" {
+		cmd += " " + e
+	}
+	if o.prompt != "" || o.promptFile != "" {
+		// The prompt rides after a POSIX "--" rather than as a bare trailing
+		// positional. omp's parser lets a built-in string flag consume the very
+		// next token even when it looks like a flag, so a value-taking flag in
+		// the user's extra_args (`--plan`, `--fork`, …) would otherwise swallow
+		// the prompt and boot the agent with no task at all. "--" ends option
+		// parsing, so everything after it is message text either way. pi's
+		// parser has no such separator, hence only omp gets this.
+		cmd += " -- " + promptArg(o)
+	}
+	return cmd
+}
+
+func piCommand(o launchOpts) string {
+	// pi needs no bypass flag: it has no permission gate to bypass — the tools
+	// just run, and the README is explicit that confirmation flows are something
+	// you add via an extension. So there is no analog of claude's
+	// skip-permissions to pass, and no plan mode either (SupportsPlanMode:false).
+	//
+	// --approve is NOT that bypass. It settles pi's project-trust question for
+	// this run — whether .pi/settings.json, project resources and project
+	// extensions load — which interactive pi otherwise asks about at boot in any
+	// repo carrying them, blocking the launch behind a dialog confirmAgentTrust
+	// doesn't know. Trusting matches what lasso already does by spawning agents
+	// with full permissions in the same worktree.
+	cmd := "pi --approve"
+	if m := strings.TrimSpace(o.model); m != "" {
+		cmd += " --model " + shellQuote(m)
+	}
+	if e := strings.TrimSpace(o.effort); e != "" {
+		cmd += " --thinking " + shellQuote(e)
+	}
+	return appendCommonArgs(cmd, o)
 }
