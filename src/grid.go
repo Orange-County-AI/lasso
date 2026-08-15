@@ -1035,6 +1035,13 @@ func fetchGridPanes(ctx context.Context) gridPayload {
 		}
 		gridErrClear(r.host)
 		gridLastGoodSet(r.host, r.panes)
+		// This branch is the only place lasso holds a fresh, complete, per-host
+		// pane listing on a schedule, which is exactly what reconciling agent
+		// records against herdr needs — and the r.err split above is already the
+		// "did herdr actually answer" distinction reconciliation must not get
+		// wrong. Deliberately not in the failure branch: last-good panes are a
+		// display fallback, not evidence about what is running now.
+		reconcileHostAgents(r.host, r.panes)
 		out.Panes = append(out.Panes, r.panes...)
 	}
 	return out

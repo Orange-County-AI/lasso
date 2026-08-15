@@ -48,7 +48,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing and the host may well have agents this call cannot see.",
+		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. Only agents herdr still has a pane for are listed: a lasso agent whose pane or workspace was closed is reconciled away on this call, so every id you get back is one you can actually send to, read, and close. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing, nothing was reconciled (an unreachable herdr is not evidence that an agent died, so records are kept), and the host may well have agents this call cannot see.",
 	}, listAgentsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -744,10 +744,6 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	if err := cs.requireHost(host); err != nil {
 		return nil, listAgentsOut{}, err
 	}
-	recs, err := listAgents(host)
-	if err != nil {
-		return nil, listAgentsOut{}, err
-	}
 	// One herdr enumeration for the whole host: pane statuses + sidebar names, and
 	// the foreign sessions (panes lasso did not create) to surface alongside.
 	// Failing that is not the same as finding nothing, so it is reported rather
@@ -758,6 +754,17 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	var panes []gridPane
 	if err == nil {
 		panes, err = hostHerdrPanesErr(b, host)
+	}
+	// Reconcile before reading the records, so this listing already reflects what
+	// the enumeration just proved rather than answering stale and fixing it for
+	// the next caller. Only on success: an unreachable herdr is not evidence that
+	// anything died, and the partial listing below says so.
+	if err == nil {
+		reconcileHostAgents(host, panes)
+	}
+	recs, rerr := listAgents(host)
+	if rerr != nil {
+		return nil, listAgentsOut{}, rerr
 	}
 	byPane := map[string]gridPane{}
 	for _, gp := range panes {

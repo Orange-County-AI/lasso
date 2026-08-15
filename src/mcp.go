@@ -58,7 +58,9 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 // reads like a machine that is merely down, and the distinction between "asleep
 // for now" and "not a host you may address at all" is the whole point of the
 // scope rule.
-func resolveBackend(host string) (Backend, error) {
+// A var so a test can stand a fake herdr in for the pool (the same seam
+// agentBackendResolver is for the close path).
+var resolveBackend = func(host string) (Backend, error) {
 	if host == "" {
 		host = "local"
 	}
