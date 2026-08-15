@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS agents (
   root_pane    TEXT NOT NULL DEFAULT '',
   created_at   TEXT NOT NULL DEFAULT '',
   boot_status  TEXT NOT NULL DEFAULT '',
-  boot_error   TEXT NOT NULL DEFAULT ''
+  boot_error   TEXT NOT NULL DEFAULT '',
+  -- closed_at stamps the moment reconciliation (agentreap.go) confirmed the
+  -- agent's herdr pane was gone. Non-empty = tombstone: the row stays for the
+  -- history/reopen views, but every "which agents are there" query filters it
+  -- out, since nothing can be sent to, read from, or closed on it.
+  closed_at    TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agent_messages (
   id           TEXT PRIMARY KEY,
@@ -159,6 +164,7 @@ func openDB() error {
 		`ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN boot_status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN boot_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE oauth_clients ADD COLUMN host TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE oauth_clients ADD COLUMN mcp_scope TEXT NOT NULL DEFAULT ''`,
 	} {
@@ -492,33 +498,87 @@ func updateAgentBootStatus(id, host, status, bootErr string) error {
 	return err
 }
 
-// listAgents returns the agents created on a host, oldest first (append order).
+// agentCols is the column list every agent query selects, in scanAgentRow's
+// order. Named explicitly (never SELECT *) so an older lasso reading a newer
+// db's table keeps working.
+const agentCols = `id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args,
+	description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at,
+	boot_status, boot_error, closed_at`
+
+// scanAgentRow reads one agentCols row into an AgentRecord (Host included).
+func scanAgentRow(rows *sql.Rows) (AgentRecord, error) {
+	var rec AgentRecord
+	var att, created string
+	var plan int
+	if err := rows.Scan(&rec.ID, &rec.Host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
+		&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes,
+		&att, &plan, &rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created,
+		&rec.BootStatus, &rec.BootError, &rec.ClosedAt); err != nil {
+		return AgentRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(att), &rec.Attachments)
+	rec.PlanMode = plan != 0
+	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return rec, nil
+}
+
+// listAgents returns the LIVE agents recorded on a host, oldest first (append
+// order) — records reconciliation has tombstoned (closed_at set: their herdr
+// pane is gone) are excluded, because every caller of this is asking "which
+// agents are there", and an agent whose pane herdr no longer has can be neither
+// messaged, read, nor closed. The history/reopen views take
+// listAllAgentsIncludingClosed / findAgentRecordAny instead.
 func listAgents(host string) ([]AgentRecord, error) {
 	rows, err := db.Query(
-		`SELECT id, title, type, repo, base_branch, branch, agent, model, effort, extra_args, description, notes,
-			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
-		 FROM agents WHERE host=? ORDER BY created_at`, host)
+		`SELECT `+agentCols+` FROM agents WHERE host=? AND closed_at='' ORDER BY created_at`, host)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []AgentRecord
 	for rows.Next() {
-		var rec AgentRecord
-		var att, created string
-		var plan int
-		if err := rows.Scan(&rec.ID, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
-			&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
-			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
+		rec, err := scanAgentRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(att), &rec.Attachments)
-		rec.PlanMode = plan != 0
-		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		rec.Host = host
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+// findAgentRecordAny looks up one agent by id on a host INCLUDING tombstoned
+// records. Only the reopen path wants this: reopening a closed agent is exactly
+// the operation that revives its record (updateAgentPane clears closed_at), so
+// resolving it through the live-only listAgents would make the history view's
+// primary action impossible.
+func findAgentRecordAny(host, id string) (AgentRecord, error) {
+	rows, err := db.Query(`SELECT `+agentCols+` FROM agents WHERE host=? AND id=?`, host, id)
+	if err != nil {
+		return AgentRecord{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return AgentRecord{}, err
+		}
+		return AgentRecord{}, fmt.Errorf("no agent %q on host %q", id, host)
+	}
+	return scanAgentRow(rows)
+}
+
+// markAgentClosed tombstones one record: reconciliation confirmed herdr no
+// longer has its pane. Scoped by id+host — ids are only unique within a host, so
+// an unscoped update would let one host's herdr state condemn another's records.
+// The row itself is kept: it is the agent's history, and reopening it from the
+// switcher clears the stamp again (updateAgentPane).
+func markAgentClosed(id, host string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(
+		`UPDATE agents SET closed_at=? WHERE id=? AND host=? AND closed_at=''`,
+		time.Now().UTC().Format(time.RFC3339Nano), id, host)
+	return err
 }
 
 // hostAgent pairs an AgentRecord with the host it ran on — used by the cross-host
@@ -528,33 +588,36 @@ type hostAgent struct {
 	Agent AgentRecord
 }
 
-// listAllAgents returns every recorded agent across all hosts, oldest first. The
-// ⌘K switcher's "show closed" mode joins these against the live panes so an agent
-// whose pane was closed can still be found (and reopened) by its work dir/prompt.
+// listAllAgents returns every LIVE recorded agent across all hosts, oldest
+// first — the cross-host counterpart of listAgents, with the same tombstone
+// filter and for the same reason: its callers (message_agent recipient
+// resolution, cross-host pane matching, closeme) all resolve a target to act on.
 func listAllAgents() ([]hostAgent, error) {
-	rows, err := db.Query(
-		`SELECT id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args, description, notes,
-			attachments, plan_mode, work_dir, workspace_id, root_pane, created_at, boot_status, boot_error
-		 FROM agents ORDER BY created_at`)
+	return queryHostAgents(`SELECT ` + agentCols + ` FROM agents WHERE closed_at='' ORDER BY created_at`)
+}
+
+// listAllAgentsIncludingClosed returns every recorded agent across all hosts,
+// tombstones included, oldest first. The ⌘K switcher's "show closed" mode joins
+// these against the live panes so an agent whose pane was closed can still be
+// found (and reopened) by its work dir/prompt — which is the whole point of
+// keeping the row rather than deleting it.
+func listAllAgentsIncludingClosed() ([]hostAgent, error) {
+	return queryHostAgents(`SELECT ` + agentCols + ` FROM agents ORDER BY created_at`)
+}
+
+func queryHostAgents(q string) ([]hostAgent, error) {
+	rows, err := db.Query(q)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []hostAgent
 	for rows.Next() {
-		var rec AgentRecord
-		var host, att, created string
-		var plan int
-		if err := rows.Scan(&rec.ID, &host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
-			&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes, &att, &plan,
-			&rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created, &rec.BootStatus, &rec.BootError); err != nil {
+		rec, err := scanAgentRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(att), &rec.Attachments)
-		rec.PlanMode = plan != 0
-		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		rec.Host = host
-		out = append(out, hostAgent{Host: host, Agent: rec})
+		out = append(out, hostAgent{Host: rec.Host, Agent: rec})
 	}
 	return out, rows.Err()
 }
@@ -562,9 +625,12 @@ func listAllAgents() ([]hostAgent, error) {
 // updateAgentPane re-points a recorded agent at a freshly created workspace/pane,
 // so a reopened agent shows as live again (the switcher matches records to panes
 // by host+root_pane). Scoped by id+host since ids are only unique within a host.
+// It also clears any closed_at stamp: the record now names a pane herdr has, so
+// the tombstone reconciliation set is no longer true and the agent belongs back
+// in list_agents.
 func updateAgentPane(id, host, workspaceID, rootPane string) error {
 	_, err := db.Exec(
-		`UPDATE agents SET workspace_id=?, root_pane=? WHERE id=? AND host=?`,
+		`UPDATE agents SET workspace_id=?, root_pane=?, closed_at='' WHERE id=? AND host=?`,
 		workspaceID, rootPane, id, host)
 	return err
 }

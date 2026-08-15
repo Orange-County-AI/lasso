@@ -78,6 +78,14 @@ var agentInfoParams = map[string]agentInfoParam{
 	"Attachments": {
 		Skip: "filenames from the browser upload-staging flow, already moved into the work dir by bootAgent; list the dir instead",
 	},
+	"ClosedAt": {
+		// Every MCP path that builds an agentInfo resolves through listAgents /
+		// listAllAgents, which exclude tombstones — so this would be the empty
+		// string on every agent a caller can ever see. A field that is
+		// unconditionally empty is worse than absent: it reads as "this agent is
+		// not closed" on a listing where being closed was already impossible.
+		Skip: "always empty in MCP output — a tombstoned record is filtered out of every listing before it can become an agentInfo",
+	},
 }
 
 // agentInfoComputed are the agentInfo fields that come from somewhere other than
