@@ -550,7 +550,7 @@ func serveGridClose(w http.ResponseWriter, r *http.Request) {
 // live grid — a record whose pane is still live is just the same agent it already
 // shows, so it dedupes those out.
 func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
-	recs, err := listAllAgents()
+	recs, err := listAllAgentsIncludingClosed()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -716,7 +716,10 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	// requested path (constrained to the lasso worktrees/scratch trees).
 	var workDir, label, recID string
 	if req.AgentID != "" {
-		rec, err := findAgentRecord(req.Host, req.AgentID)
+		// Tombstones included: reopening an agent whose pane herdr no longer has is
+		// precisely what this endpoint is for, and it revives the record (see
+		// updateAgentPane below).
+		rec, err := findAgentRecordAny(req.Host, req.AgentID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return

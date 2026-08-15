@@ -100,6 +100,11 @@ type AgentRecord struct {
 	// BootError is the reason a boot failed, kept for get_agent/list_agents. Empty
 	// unless BootStatus is BootFailed.
 	BootError string `yaml:"boot_error,omitempty" json:"boot_error,omitempty"`
+	// ClosedAt is when reconciliation (agentreap.go) confirmed the agent's herdr
+	// pane no longer exists. Non-empty means this record is a tombstone: kept for
+	// history and reopen, excluded from every "which agents are there" listing.
+	// Empty on live agents (and on every record predating reconciliation).
+	ClosedAt string `yaml:"closed_at,omitempty" json:"closed_at,omitempty"`
 }
 
 // Boot status values for AgentRecord.BootStatus.
