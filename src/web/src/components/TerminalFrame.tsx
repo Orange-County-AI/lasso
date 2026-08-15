@@ -1,7 +1,11 @@
 import * as React from "react"
 
 import { HOST_CHANGED_EVENT } from "@/lib/app-store"
-import { bootTermFrame, refitTerminal } from "@/lib/terminal"
+import {
+  bootTermFrame,
+  refitTerminal,
+  type TerminalInputMode,
+} from "@/lib/terminal"
 
 // A ttyd terminal iframe (the herdr terminal at /terminal/ or the out-of-herdr
 // shell at /shell/). It stays mounted across tab switches — only hidden via CSS
@@ -11,12 +15,14 @@ export function TerminalFrame({
   src,
   title,
   suppressContext,
+  inputMode,
   hidden,
 }: {
   id: string
   src: string
   title: string
   suppressContext: boolean
+  inputMode: TerminalInputMode
   hidden: boolean
 }) {
   // Bump on a host switch to remount the iframe onto the new host's ttyd
@@ -36,8 +42,8 @@ export function TerminalFrame({
   // fresh iframe element, so bootTermFrame must re-run to wire the new one.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey re-runs boot on iframe remount
   React.useEffect(
-    () => bootTermFrame(id, suppressContext),
-    [id, suppressContext, reloadKey]
+    () => bootTermFrame(id, suppressContext, inputMode),
+    [id, suppressContext, inputMode, reloadKey]
   )
 
   React.useEffect(() => {
