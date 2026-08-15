@@ -47,6 +47,8 @@ interface XTerm {
   __herdrOsc52?: boolean
   __herdrResizeGate?: boolean
 }
+export type TerminalInputMode = "herdr" | "shell"
+
 interface TermWindow extends Window {
   term?: XTerm
 }
@@ -60,25 +62,32 @@ function frameWindow(id: string): TermWindow | null {
   return (el?.contentWindow as TermWindow | null) ?? null
 }
 
-// xterm.js sends a bare CR for Shift+Enter too, so a line editor (Claude Code)
-// can't tell it from Enter and submits. Emit backslash+CR instead: Claude's
-// line-continuation inserts a newline and swallows the backslash.
-const NEWLINE_SEQ = "\\\r"
-function sendNewline(term: XTerm) {
+// ttyd's xterm.js collapses Shift+Enter into Enter. Herdr can decode a Kitty
+// CSI-u key event and re-encode it for the focused pane's negotiated keyboard
+// mode, which lets OMP receive a real Shift+Enter. The raw /shell/ iframe has no
+// Herdr decoder, so retain the backslash+CR line-continuation fallback there.
+const HERDR_NEWLINE_SEQ = "\x1b[13;2u"
+const SHELL_NEWLINE_SEQ = "\\\r"
+function sendNewline(term: XTerm, inputMode: TerminalInputMode) {
+  const sequence = inputMode === "herdr" ? HERDR_NEWLINE_SEQ : SHELL_NEWLINE_SEQ
   if (typeof term.input === "function") {
-    term.input(NEWLINE_SEQ)
+    term.input(sequence)
     return
   }
   try {
     const cs = term._core?.coreService
     if (cs && typeof cs.triggerDataEvent === "function")
-      cs.triggerDataEvent(NEWLINE_SEQ, true)
+      cs.triggerDataEvent(sequence, true)
   } catch {
     /* private API moved: no-op rather than throw */
   }
 }
 
-function wireShiftEnter(id: string, tries: number) {
+function wireShiftEnter(
+  id: string,
+  inputMode: TerminalInputMode,
+  tries: number
+) {
   let term: XTerm | undefined
   try {
     term = frameWindow(id)?.term
@@ -106,7 +115,7 @@ function wireShiftEnter(id: string, tries: number) {
           // preventDefault is essential — without it the browser runs Enter's
           // default on the helper textarea, which xterm re-reads as a 2nd Enter.
           if (e.preventDefault) e.preventDefault()
-          sendNewline(t)
+          sendNewline(t, inputMode)
           return false
         }
         return true
@@ -114,7 +123,8 @@ function wireShiftEnter(id: string, tries: number) {
     }
     return
   }
-  if (tries < 20) setTimeout(() => wireShiftEnter(id, tries + 1), 150)
+  if (tries < 20)
+    setTimeout(() => wireShiftEnter(id, inputMode, tries + 1), 150)
 }
 
 // herdr copies (copy-mode, double-click token, mouse selection in a pane) by
@@ -356,7 +366,11 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
 // text). Re-run on each iframe (re)load; __herdrWired guards double-attaching.
-export function wireTerminalIframe(id: string, suppressContext: boolean) {
+export function wireTerminalIframe(
+  id: string,
+  suppressContext: boolean,
+  inputMode: TerminalInputMode
+) {
   let win: TermWindow | null
   let doc: WiredDoc | null
   try {
@@ -425,20 +439,24 @@ export function wireTerminalIframe(id: string, suppressContext: boolean) {
     true
   )
 
-  wireShiftEnter(id, 0)
+  wireShiftEnter(id, inputMode, 0)
   wireOsc52(id, 0)
   wireResizeGate(id, 0)
 }
 
 // bootTermFrame wires the iframe now and re-wires (and re-applies the latest
 // theme) on every reload, since ttyd reconnects yield a fresh xterm.
-export function bootTermFrame(id: string, suppressContext: boolean) {
+export function bootTermFrame(
+  id: string,
+  suppressContext: boolean,
+  inputMode: TerminalInputMode
+) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
-    wireTerminalIframe(id, suppressContext)
+    wireTerminalIframe(id, suppressContext, inputMode)
     mountTerminalKeyBar(id)
   }
   el.addEventListener("load", onLoad)
@@ -447,7 +465,7 @@ export function bootTermFrame(id: string, suppressContext: boolean) {
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
-  wireTerminalIframe(id, suppressContext) // in case it already loaded
+  wireTerminalIframe(id, suppressContext, inputMode) // in case it already loaded
   mountTerminalKeyBar(id) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }

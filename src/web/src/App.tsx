@@ -568,6 +568,7 @@ function Shell() {
                     src="/terminal/"
                     title="Herdr terminal"
                     suppressContext
+                    inputMode="herdr"
                     hidden={effectiveLeftView !== "herdr"}
                   />
                 </Pane>
@@ -676,6 +677,7 @@ function Shell() {
                     src="/shell/"
                     title="Terminal (outside herdr)"
                     suppressContext={false}
+                    inputMode="shell"
                     hidden={rightView !== "terminal"}
                   />
                 </Pane>

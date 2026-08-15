@@ -1099,7 +1099,7 @@ function GridCell({
   React.useEffect(() => {
     if (!src) return
     setReady(false)
-    const cleanup = bootTermFrame(id, true)
+    const cleanup = bootTermFrame(id, true, "herdr")
     // Hold the loading overlay until xterm has painted real pane content, so the
     // ttyd connect/reconnect flash never shows through — and never reveal a frame
     // that isn't a terminal at all (a 404 from a dead attach): re-attach instead.
