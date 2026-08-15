@@ -220,7 +220,7 @@ func syncRemoteTheme(rb *remoteBackend, name string) {
 	}
 	log.Printf("host:     synced theme %q -> %s", name, rb.alias)
 	// Mirror the theme into the remote host's agent CLIs too (opencode, Claude
-	// Code). Resolved by name only — the remote's own [theme.custom] tokens
+	// Code, omp). Resolved by name only — the remote's own [theme.custom] tokens
 	// stay herdr's business.
 	syncAgentThemesVia(rb, resolveThemeByName(name))
 }

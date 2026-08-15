@@ -86,6 +86,29 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     supports_plan_mode: true,
     model_suggestions: [],
   },
+  {
+    id: "omp",
+    label: "Oh My Pi",
+    supports_plan_mode: false,
+    effort_levels: [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "auto",
+    ],
+    model_suggestions: [],
+  },
+  {
+    id: "pi",
+    label: "Pi",
+    supports_plan_mode: false,
+    effort_levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    model_suggestions: [],
+  },
 ]
 
 // One of these is picked at random for the Prompt field's placeholder each time

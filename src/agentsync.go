@@ -2,7 +2,8 @@
 // switch, or an out-of-band edit to herdr's config.toml picked up by the hub
 // poll), mirror it into the agent CLIs' own theme files — a generated
 // opencode theme (themes/herdr.json, pinned via tui.json), Claude Code's
-// ~/.claude/themes/herdr.json, ghostty's themes/herdr, and
+// ~/.claude/themes/herdr.json, ghostty's themes/herdr, omp's light/dark pick
+// (~/.omp/agent/config.yml — mode only, no palette), and
 // lasso's settings.json (.theme.resolved, read by claude-contextline) — so
 // agents render in step with herdr. Writes go through the Backend interface, so
 // the active remote host gets the same treatment over SFTP (see
@@ -26,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // syncAgentThemesKey is the settings-table key for the toggle. Unset means on.
@@ -59,6 +62,9 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) {
 	}
 	if err := syncClaudeTheme(b, home, rt, light); err != nil {
 		log.Printf("theme:    claude sync on %s: %v", b.Name(), err)
+	}
+	if err := syncOmpMode(b, home, light); err != nil {
+		log.Printf("theme:    omp sync on %s: %v", b.Name(), err)
 	}
 	if err := syncGhosttyTheme(b, home, rt); err != nil {
 		log.Printf("theme:    ghostty sync on %s: %v", b.Name(), err)
@@ -310,6 +316,85 @@ func syncOpencodeMode(b Backend, home string, light bool) error {
 		return err
 	}
 	log.Printf("theme:    opencode mode -> %s on %s", want, b.Name())
+	return b.WriteFile(path, out, 0o644)
+}
+
+// ---------------------------------------------------------------------------
+// omp (Oh My Pi) — light/dark only, via ~/.omp/agent/config.yml
+// ---------------------------------------------------------------------------
+//
+// Unlike opencode and Claude Code, omp gets NO generated palette — only the
+// mode. It has no "mode" setting to write: it holds two named themes,
+// theme.dark and theme.light, and picks between them from the TERMINAL's
+// background (OSC 11 luminance, then COLORFGBG, then a hardcoded "dark").
+// That detection is exactly what fails through the lasso/ttyd/xterm chain —
+// the same reason opencode's needs overriding — so a light herdr theme leaves
+// omp rendering dark.
+//
+// The fix is to make the branch not matter: point BOTH keys at a built-in
+// theme of the mode lasso resolved. Whichever way the detection lands, omp
+// renders in the right one. So `theme.light: dark` is not a typo — it reads
+// "even if the terminal looks light, use the dark theme", which is the whole
+// mechanism. "dark" and "light" are omp's own fallback built-ins (its
+// autoDarkTheme/autoLightTheme), so this can't name a theme that isn't there.
+//
+// Best-effort like opencode's mode lock, and for the same reason: omp rewrites
+// config.yml wholesale from its in-memory settings whenever one changes, so a
+// running instance can write back over ours. Fresh launches pick it up.
+const (
+	ompDarkTheme  = "dark"
+	ompLightTheme = "light"
+)
+
+// syncOmpMode pins omp's light/dark by pointing both of its mode-selected theme
+// slots at a built-in of the wanted mode. Skipped entirely on hosts where omp
+// has never run (no ~/.omp/agent), so a theme switch doesn't litter config for
+// a CLI that isn't there.
+func syncOmpMode(b Backend, home string, light bool) error {
+	dir := filepath.Join(home, ".omp", "agent")
+	if _, err := b.Stat(dir); err != nil {
+		return nil // omp not set up on this host
+	}
+	path := filepath.Join(dir, "config.yml")
+	want := ompDarkTheme
+	if light {
+		want = ompLightTheme
+	}
+
+	root := map[string]any{}
+	data, err := b.ReadFile(path)
+	switch {
+	case err == nil:
+		if yaml.Unmarshal(data, &root) != nil {
+			return nil // don't clobber what we can't parse
+		}
+		if root == nil {
+			root = map[string]any{} // an empty/all-comment file decodes to nil
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// Create it — omp's dir exists, so it has run; a config it hasn't
+		// written yet still gets the right mode on the next launch.
+	default:
+		return err
+	}
+
+	theme, _ := root["theme"].(map[string]any)
+	if theme == nil {
+		theme = map[string]any{}
+	}
+	dark, _ := theme["dark"].(string)
+	lightName, _ := theme["light"].(string)
+	if dark == want && lightName == want {
+		return nil
+	}
+	theme["dark"], theme["light"] = want, want
+	root["theme"] = theme
+
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return err
+	}
+	log.Printf("theme:    omp mode -> %s on %s", want, b.Name())
 	return b.WriteFile(path, out, 0o644)
 }
 

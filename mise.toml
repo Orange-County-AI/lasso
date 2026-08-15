@@ -6,9 +6,17 @@
 # Toolchain the tasks below need on PATH. go is pinned to go.mod's version so
 # `mise run build`/`test`/`dev` compile with the exact toolchain (no implicit
 # toolchain download); bun drives the frontend build.
+#
+# The bun pin has a second consumer nobody expects: it shadows the global one
+# for every shell whose cwd is this repo (or a lasso worktree of it), and the
+# agent CLIs lasso spawns are bun shims (`#!/usr/bin/env bun`). omp declares
+# engines.bun >= 1.3.14 and dies in its own parser under anything older — so a
+# stale pin here doesn't just build the frontend with an old bun, it stops an
+# omp agent from booting in a lasso worktree while the same command works fine
+# one directory up. Keep it at or above what the spawnable harnesses need.
 [tools]
 go = "1.25.3"
-bun = "1.3.3"
+bun = "1.3.14"
 
 [tasks."build:web"]
 description = "Build the React/shadcn frontend into src/web/dist (embedded by Go)"

@@ -1156,7 +1156,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("theme:    herdr reload-config: %v", err)
 	}
 	// Mirror the new theme into local agents' theme files (opencode, Claude
-	// Code, …). Resolved from the config we just wrote so [theme.custom]
+	// Code, omp, …). Resolved from the config we just wrote so [theme.custom]
 	// overrides are honored.
 	syncAgentThemesVia(localFsBackend(), loadHerdrTheme(""))
 	// If we're driving a remote host, mirror the theme onto it as well.

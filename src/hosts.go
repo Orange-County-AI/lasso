@@ -737,12 +737,32 @@ const hostProvisionTimeout = 5 * time.Minute
 // end and idempotently: ensure herdr (herdr.dev/install.sh), write a systemd
 // --user unit for the server, enable lingering so it survives logout/reboot,
 // start it, and install the agent-state integrations for every harness lasso
-// can spawn (claude/codex/opencode) so herdr gets authoritative
-// idle/working/blocked hooks instead of screen-scraping. It's shell-agnostic —
-// rather than trust the login shell's PATH wiring, it puts the user-local bin
-// dirs on PATH itself. Every step logs a line so the captured output reads as a
-// provisioning log.
-const provisionScript = `set -u
+// can spawn so herdr gets authoritative idle/working/blocked hooks instead of
+// screen-scraping. It's shell-agnostic — rather than trust the login shell's
+// PATH wiring, it puts the user-local bin dirs on PATH itself. Every step logs
+// a line so the captured output reads as a provisioning log.
+//
+// The integration list is substituted from the harness table rather than
+// spelled out, so adding a harness can't leave newly-spawnable agents
+// screen-scraped on every remote host until someone notices.
+var provisionScript = strings.Replace(provisionScriptTemplate, harnessIDsPlaceholder, strings.Join(harnessIDs(), " "), 1)
+
+// harnessIDsPlaceholder marks where provisionScriptTemplate wants the harness
+// list. Its `@`s keep it from being mistaken for shell syntax if substitution
+// were ever skipped.
+const harnessIDsPlaceholder = "@HARNESS_IDS@"
+
+// harnessIDs lists every launchable harness id, in registry order. These double
+// as herdr's `integration install` targets — the ids were chosen to match.
+func harnessIDs() []string {
+	ids := make([]string, 0, len(harnesses))
+	for _, h := range harnesses {
+		ids = append(ids, h.ID)
+	}
+	return ids
+}
+
+const provisionScriptTemplate = `set -u
 log() { printf '==> %s\n' "$*"; }
 
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
@@ -802,7 +822,7 @@ systemctl --user enable --now herdr.service || { echo "ERROR: 'systemctl --user 
 # agents lasso spawns; without them it falls back to screen-buffer detection.
 # Best-effort: an integration for a CLI that isn't installed yet still stages
 # its hook files and starts working once that CLI arrives.
-for agent in claude codex opencode; do
+for agent in @HARNESS_IDS@; do
   if "$herdr_bin" integration install "$agent" >/dev/null 2>&1; then
     log "integration $agent installed"
   else

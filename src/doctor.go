@@ -62,7 +62,7 @@ func cliDoctor() {
 	// Agent-state integrations — lifecycle hooks that give herdr authoritative
 	// idle/working/blocked states for the harnesses lasso can spawn. Missing
 	// ones degrade to screen-buffer detection, so warn rather than fail.
-	// Harness IDs (claude/codex/opencode) match herdr's integration targets.
+	// Harness IDs (claude/codex/opencode/omp/pi) match herdr's integration targets.
 	if _, err := exec.LookPath("herdr"); err == nil {
 		if out, err := exec.Command("herdr", "integration", "status").Output(); err == nil {
 			installed := map[string]bool{}
