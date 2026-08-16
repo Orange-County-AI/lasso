@@ -91,10 +91,11 @@ var createParams = map[string]createParam{
 	// presumed one — a spawned agent would strand itself at an approval gate
 	// nobody is watching — turned out not to hold: a plan agent answers
 	// normally and only blocks when it wants to EXECUTE, at which point its
-	// status is "blocked" (so wait_agent finds it) and the numbered prompt takes
-	// a send_agent "1" (so an orchestrator can approve it), while a human
-	// watching the pane still gets the real dialog. Verified end to end before
-	// exposing it; see the jsonschema description on createAgentIn.PlanMode.
+	// status is "blocked" (so wait_agent finds it) and the prompt takes a
+	// send_agent (so an orchestrator can approve it), while a human watching the
+	// pane still gets the real dialog. Verified end to end before exposing it;
+	// see the jsonschema description on createAgentIn.PlanMode, which spells out
+	// where omp's gate differs from claude's and opencode's.
 	"PlanMode": {MCP: "PlanMode", TS: "plan_mode"},
 	"Attachments": {
 		MCPSkip: "part of the browser upload-staging flow (/api/agent-upload), which has no MCP equivalent",

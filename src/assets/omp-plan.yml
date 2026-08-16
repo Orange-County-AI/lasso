@@ -1,0 +1,16 @@
+# lasso's own omp config overlay: start the session in plan mode.
+#
+# omp has no plan-mode launch flag, but `omp --config <file>` merges an extra
+# config.yml-style overlay ON TOP of ~/.omp/agent/config.yml for one run only —
+# the user's real config is neither read-modified-written nor consulted for
+# these two keys. Everything else (modelRoles, thinking level, approval mode, …)
+# still flows through from the user's own config, which is why this file carries
+# nothing but the plan keys.
+#
+# defaultOnStartup is the actual switch. enabled rides along because it GATES
+# defaultOnStartup: a user who turned plan mode off globally would otherwise get
+# an agent that lasso recorded as planning but that launched in the normal mode,
+# which is exactly the lie normalizePlanMode exists to prevent.
+plan:
+  enabled: true
+  defaultOnStartup: true

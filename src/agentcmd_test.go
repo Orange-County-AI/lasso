@@ -215,12 +215,14 @@ func TestNormalizePlanMode(t *testing.T) {
 	}{
 		{"claude", true, true},
 		{"opencode", true, true},
+		// omp has no plan-mode FLAG, but plan.defaultOnStartup reaches the same
+		// place through a --config overlay lasso stages itself, so the request is
+		// honored and kept rather than dropped.
+		{"omp", true, true},
+		{"omp", false, false},
 		{"codex", true, false}, // codex has no plan mode: drop it
 		{"codex", false, false},
-		// omp has a plan mode, but only behind /plan or a settings default —
-		// no launch flag, so a plan request is dropped the same way.
-		{"omp", true, false},
-		{"pi", true, false}, // pi has no plan mode at all
+		{"pi", true, false}, // pi has no plan mode at all — not even a setting
 
 		{"claude", false, false},
 		{"", true, true}, // unknown ids default to claude, per harnessByID
@@ -309,6 +311,62 @@ func TestAgentCommandOmp(t *testing.T) {
 	// No prompt, no separator — a bare "--" would be a pointless operand.
 	if bare := agentCommand("omp", launchOpts{}); strings.Contains(bare, " -- ") {
 		t.Errorf("promptless omp command should emit no separator: %q", bare)
+	}
+}
+
+// omp's plan mode is a config setting, not a flag, so the launch line carries a
+// --config pointing at the overlay bootAgent staged. It must compose with the
+// rest of the line and appear ONLY when plan mode was actually requested.
+func TestAgentCommandOmpPlanMode(t *testing.T) {
+	const overlay = "/home/u/.lasso/omp/a1.yml"
+	plan := agentCommand("omp", launchOpts{
+		planMode: true, planConfig: overlay,
+		model: "opus", effort: "high", extraArgs: "--add-dir /srv", prompt: "do it",
+	})
+	for _, want := range []string{
+		"omp --yolo", "--config '" + overlay + "'",
+		"--model 'opus'", "--thinking 'high'", "--add-dir /srv", "-- 'do it'",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("omp plan command missing %q: %q", want, plan)
+		}
+	}
+	if !strings.HasSuffix(plan, "-- 'do it'") {
+		t.Errorf("prompt must stay the final operand in plan mode: %q", plan)
+	}
+	// --config is repeatable and omp merges overlays LAST-WINS, so lasso's must
+	// precede the user's extra_args or a user overlay could not refine it.
+	if strings.Index(plan, "--config") > strings.Index(plan, "--add-dir") {
+		t.Errorf("lasso's --config must precede extra_args: %q", plan)
+	}
+
+	// Not requested → no overlay on the line at all.
+	if def := agentCommand("omp", launchOpts{planConfig: overlay, prompt: "do it"}); strings.Contains(def, "--config") {
+		t.Errorf("non-plan omp command must not pass --config: %q", def)
+	}
+	// Requested but unstaged is not a launch path (bootAgent fails the boot
+	// first); emitting a bare --config with no operand would eat the next flag.
+	if unstaged := agentCommand("omp", launchOpts{planMode: true, prompt: "do it"}); strings.Contains(unstaged, "--config") {
+		t.Errorf("omp command must not emit --config without a staged overlay: %q", unstaged)
+	}
+}
+
+// The overlay lasso ships must actually be the plan setting, and nothing else:
+// every other omp default has to keep flowing through from the user's own
+// config, which --config merges under (never over) this file.
+func TestOmpPlanOverlayContents(t *testing.T) {
+	// Comments are stripped: the rule is about what the overlay SETS, and the
+	// header explains itself by naming the settings it deliberately leaves alone.
+	var settings []string
+	for _, line := range strings.Split(string(ompPlanOverlay), "\n") {
+		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
+			settings = append(settings, strings.TrimRight(line, " \t"))
+		}
+	}
+	got := strings.Join(settings, "\n")
+	want := "plan:\n  enabled: true\n  defaultOnStartup: true"
+	if got != want {
+		t.Errorf("omp plan overlay must set the plan keys and nothing else\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
 

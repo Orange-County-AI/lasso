@@ -373,13 +373,17 @@ func surfacedStatus(rec AgentRecord, herdrStatus string) string {
 // wait_agent polls, so it goes through paneAgentPresence: on a host where herdr
 // cannot identify the agent its status would otherwise be "unknown" forever, and
 // a wait for "idle" could never be satisfied.
+//
+// It then adds the one gate herdr cannot see: omp's plan approval is a TUI
+// overlay raised after the turn ends, so herdr's omp integration has already
+// published idle/done by the time the agent is parked on it (see ompplan.go).
 func paneAgentStatus(b Backend, paneID string) string {
 	p, ok := paneListEntry(b, paneID)
 	if !ok {
 		return ""
 	}
-	_, status := paneAgentPresence(p)
-	return status
+	kind, status := paneAgentPresence(p)
+	return ompGateStatus(b, paneID, kind, status)
 }
 
 // paneHasAgent reports whether an agent is still running in the pane. It returns
@@ -656,7 +660,7 @@ type createAgentIn struct {
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
-	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude and opencode only — dropped for codex, omp and pi, none of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE, at which point its status goes \"blocked\" and its pane shows a numbered \"Would you like to proceed?\" prompt. Wait for it with wait_agent status=blocked, read the plan with read_agent, then approve by sending the option number with send_agent (\"1\" accepts). A human watching the pane can approve it instead — the gate is a real prompt, not a formality, so leaving an agent parked on it is a valid way to keep a plan under review."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web grid still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
@@ -777,7 +781,9 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	lassoPanes := map[string]bool{}
 	for _, rec := range recs {
 		gp := byPane[rec.RootPane]
-		ai := agentInfoFrom(host, rec, gp.AgentStatus)
+		// b is nil-checked inside: when the enumeration failed there is no live
+		// status to upgrade and no backend to read a screen with (see ompplan.go).
+		ai := agentInfoFrom(host, rec, ompGateStatus(b, rec.RootPane, gp.Agent, gp.AgentStatus))
 		ai.SidebarName = sidebarName(gp)
 		out.Agents = append(out.Agents, ai)
 		if rec.RootPane != "" {
@@ -960,7 +966,11 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 	if ok {
 		t.Pane = &gp
 	}
-	status := gp.AgentStatus
+	// omp's plan gate is invisible to herdr's own detection, so a resting omp
+	// pane is checked for it here too — get_agent is where a caller reads the
+	// plan, and it would be an odd contract if the status beside it disagreed
+	// with the one wait_agent just matched on. See ompplan.go.
+	status := ompGateStatus(b, t.PaneID, gp.Agent, gp.AgentStatus)
 	output, _ := paneReadText(b, t.PaneID, "recent", lines)
 	return nil, getAgentOut{Agent: t.info(b.Name(), status), Output: output}, nil
 }
@@ -1301,8 +1311,11 @@ func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool
 	// A long/multi-line prompt was staged to a file for the launch line's
 	// "$(cat …)" (see stageAgentPrompt); it dies with the agent. Best-effort:
 	// a short-prompt agent never had one.
+	// Same for the plan-mode config overlay a plan-mode omp agent launched with
+	// (stageOmpPlanConfig) — per-agent, so it dies with the agent too.
 	if rec.ID != "" {
 		_ = b.RemoveAll(agentPromptPath(b, rec.ID))
+		_ = b.RemoveAll(ompPlanConfigPath(b, rec.ID))
 	}
 
 	// 2. remove_worktree (git only) tears down the worktree, which also closes
