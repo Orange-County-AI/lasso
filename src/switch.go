@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -28,22 +29,29 @@ var switchMu sync.Mutex
 // ---------------------------------------------------------------------------
 // ttyd manager — one per terminal role, supports respawn on host switch
 // ---------------------------------------------------------------------------
+const ttydRestartTimeout = 5 * time.Second
 
 // ttydManager owns one ttyd terminal (a fixed proxy socket + base path) and can
 // restart it with a new command/env when the active host changes. The proxy
 // (unixSocketProxy) always dials the same socket path, so a respawn under the
 // same path is transparent to the HTTP routing — only the iframe needs a reload.
 type ttydManager struct {
-	parent   context.Context
-	sock     string
-	basePath string
+	parent      context.Context
+	sock        string
+	basePath    string
+	waitTimeout time.Duration
 
 	mu     sync.Mutex
 	cancel context.CancelFunc // cancels the currently-running instance
 }
 
 func newTtydManager(parent context.Context, sock, basePath string) *ttydManager {
-	return &ttydManager{parent: parent, sock: sock, basePath: basePath}
+	return &ttydManager{
+		parent:      parent,
+		sock:        sock,
+		basePath:    basePath,
+		waitTimeout: ttydRestartTimeout,
+	}
 }
 
 // restart kills the current ttyd (if any), waits for it to release the socket,
@@ -53,9 +61,13 @@ func (m *ttydManager) restart(command string, env []string) error {
 	defer m.mu.Unlock()
 	if m.cancel != nil {
 		m.cancel()
-		// Wait for the old instance's deferred socket removal so the new ttyd
-		// binds cleanly (and the old cleanup can't unlink the new socket).
-		waitSocket(m.sock, false, 3*time.Second)
+		// Do not spawn on the same path until the old instance has removed its
+		// socket. startTtyd removes stale paths before binding; doing that while
+		// the old ttyd is still alive unlinks its listener and leaves the proxy
+		// returning 502.
+		if !waitSocket(m.sock, false, m.waitTimeout) {
+			return fmt.Errorf("timed out waiting for ttyd socket %s to close", m.sock)
+		}
 		m.cancel = nil
 	}
 	ctx, cancel := context.WithCancel(m.parent)
@@ -65,7 +77,11 @@ func (m *ttydManager) restart(command string, env []string) error {
 	}
 	m.cancel = cancel
 	// Give ttyd a moment to bind so the first proxied request doesn't 502.
-	waitSocket(m.sock, true, 3*time.Second)
+	if !waitSocket(m.sock, true, m.waitTimeout) {
+		cancel()
+		m.cancel = nil
+		return fmt.Errorf("timed out waiting for ttyd socket %s to open", m.sock)
+	}
 	return nil
 }
 
@@ -95,15 +111,17 @@ func applyBackendToTerminals(b Backend) {
 
 // waitSocket polls until the socket file exists (want=true) or is gone
 // (want=false), or the timeout elapses.
-func waitSocket(sock string, want bool, timeout time.Duration) {
+func waitSocket(sock string, want bool, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_, err := os.Stat(sock)
 		if (err == nil) == want {
-			return
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	_, err := os.Stat(sock)
+	return (err == nil) == want
 }
 
 // ---------------------------------------------------------------------------
