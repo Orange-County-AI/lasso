@@ -145,10 +145,21 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 // test can assert on the launch line an agent's boot actually produced.
 type launchFake struct {
 	*memBackend
-	mu       sync.Mutex
+	mu sync.Mutex
+	// cli is the token that marks the launch line among everything typed into
+	// the pane (setup script, trust confirmations). Empty means "claude ", the
+	// harness most of these tests use.
+	cli      string
 	sent     []string
 	launched chan struct{} // closed once a line invoking the agent CLI lands
 	once     sync.Once
+}
+
+func (b *launchFake) cliToken() string {
+	if b.cli == "" {
+		return "claude "
+	}
+	return b.cli
 }
 
 func (b *launchFake) HerdrCall(method string, params any) (json.RawMessage, error) {
@@ -164,7 +175,7 @@ func (b *launchFake) HerdrCall(method string, params any) (json.RawMessage, erro
 		b.mu.Lock()
 		b.sent = append(b.sent, text)
 		b.mu.Unlock()
-		if strings.Contains(text, "claude ") {
+		if strings.Contains(text, b.cliToken()) {
 			b.once.Do(func() { close(b.launched) })
 		}
 	}
@@ -178,7 +189,7 @@ func (b *launchFake) launchLine() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, s := range b.sent {
-		if strings.Contains(s, "claude ") {
+		if strings.Contains(s, b.cliToken()) {
 			return strings.TrimSpace(s)
 		}
 	}
@@ -285,5 +296,50 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	}
 	if strings.Contains(line, " --dangerously-skip-permissions") {
 		t.Errorf("plan launch forces bypass mode, which overrides plan:\n  %s", line)
+	}
+}
+
+// The same for omp, whose plan mode is not a flag at all: an MCP plan request
+// has to survive normalizePlanMode, get lasso's overlay staged onto the host,
+// and come out the far end as a --config on the typed launch line. This is the
+// whole path — anything short of it records planning that never happened.
+func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	b := &launchFake{memBackend: newMemBackend(), cli: "omp ", launched: make(chan struct{})}
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	in := createAgentIn{Type: "scratch", Title: "omp planner", Prompt: "plan it", Agent: "omp", PlanMode: true}
+	rec, err := createAgent(b, in.toCreateReq())
+	if err != nil {
+		t.Fatalf("createAgent: %v", err)
+	}
+	if !rec.PlanMode {
+		t.Fatal("plan_mode:true did not reach the persisted record for omp")
+	}
+	select {
+	case <-b.launched:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+	}
+	line := b.launchLine()
+	overlay := ompPlanConfigPath(b, rec.ID)
+	if !strings.Contains(line, "--config '"+overlay+"'") {
+		t.Errorf("omp launch line is not in plan mode:\n  %s", line)
+	}
+	if got := b.files[overlay]; got != string(ompPlanOverlay) {
+		t.Errorf("plan overlay was not staged onto the host: %q", got)
+	}
+	// The overlay is lasso's own file under the lasso dir. Writing the user's
+	// own omp config instead would outlive the run and change every later omp
+	// session on the box.
+	if strings.Contains(overlay, ".omp") {
+		t.Errorf("plan overlay must not live in the user's omp config dir: %s", overlay)
 	}
 }

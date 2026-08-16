@@ -89,7 +89,7 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
   {
     id: "omp",
     label: "Oh My Pi",
-    supports_plan_mode: false,
+    supports_plan_mode: true,
     effort_levels: [
       "off",
       "minimal",
@@ -975,8 +975,9 @@ export function CreateAgentDialog({
                     </select>
                   </Field>
                 )}
-                {/* Plan mode only exists on harnesses that support it (claude);
-                    hide the toggle elsewhere rather than offering a no-op. */}
+                {/* Plan mode only exists on harnesses that support it (claude,
+                    opencode, omp); hide the toggle elsewhere rather than
+                    offering a no-op. */}
                 {harness.supports_plan_mode && (
                   <div className="flex items-center gap-2">
                     <Checkbox

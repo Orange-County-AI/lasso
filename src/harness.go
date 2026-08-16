@@ -16,14 +16,20 @@ import "strings"
 type harnessDef struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	// SupportsPlanMode gates the "Start in plan mode" checkbox — claude and
-	// opencode are the harnesses with one lasso can request at launch. It is
-	// about the LAUNCH LINE, not the CLI: omp has a plan mode reachable from
-	// its TUI but no flag that starts a session in it, so it reads false here.
-	// It is also the server-side gate: a plan
-	// request for a harness without one is dropped by normalizePlanMode rather
-	// than persisted, so the record can't claim an agent planned when it didn't.
+	// SupportsPlanMode gates the "Start in plan mode" checkbox — claude,
+	// opencode and omp are the harnesses with one lasso can request at launch.
+	// It is about the LAUNCH LINE, not the CLI: codex has no plan mode lasso can
+	// select at launch and pi has none at all, so both read false here. It is
+	// also the server-side gate: a plan request for a harness without one is
+	// dropped by normalizePlanMode rather than persisted, so the record can't
+	// claim an agent planned when it didn't.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
+	// stagesPlanConfig marks a harness whose plan mode is a CONFIG SETTING
+	// rather than a flag, so bootAgent must materialize lasso's own config
+	// overlay on the target host before it can build the launch line (see
+	// ompplan.go). Unexported: it is boot plumbing, not a UI-facing capability —
+	// SupportsPlanMode is what the creator and the MCP schema read.
+	stagesPlanConfig bool
 	// EffortLevels are the thinking/reasoning-effort levels this harness's CLI
 	// accepts, cheapest first — they populate the creator's "Thinking effort"
 	// select. Unlike ModelSuggestions this IS a closed set (the CLIs reject or
@@ -48,7 +54,13 @@ type launchOpts struct {
 	// EffortLevels; empty means "don't pass one" (the CLI's own default).
 	effort    string
 	extraArgs string
-	prompt    string
+	// planConfig, when set, is a config overlay staged on the target host that
+	// asks the harness to start in plan mode — for the harnesses whose plan mode
+	// is a setting rather than a flag (stagesPlanConfig; today just omp). Only
+	// consulted when planMode is set; bootAgent stages it before it builds the
+	// command, and fails the boot rather than launching a plan agent without it.
+	planConfig string
+	prompt     string
 	// promptFile, when set, is a file on the target host holding the prompt;
 	// the launch line then carries `"$(cat <file>)"` in place of the inline
 	// quoted prompt and prompt is ignored. Used when the prompt is too big or
@@ -90,7 +102,8 @@ var harnesses = []harnessDef{
 	{
 		ID:               "omp",
 		Label:            "Oh My Pi",
-		SupportsPlanMode: false,
+		SupportsPlanMode: true,
+		stagesPlanConfig: true,
 		// omp's --thinking ladder is pi-catalog's Effort enum plus two selectors
 		// that aren't rungs on it: "off" disables reasoning outright, and "auto"
 		// lets omp resolve a level per turn against the active model. Both are
@@ -110,8 +123,13 @@ var harnesses = []harnessDef{
 		buildCmd: ompCommand,
 	},
 	{
-		ID:               "pi",
-		Label:            "Pi",
+		ID:    "pi",
+		Label: "Pi",
+		// No plan mode to request: unlike its omp fork, pi has no plan feature at
+		// all — no plan settings, no plan flags, and no --config overlay to carry
+		// them. Upstream ships plan mode as an EXAMPLE EXTENSION
+		// (examples/extensions/plan-mode) a user opts into, which is a user's
+		// install rather than something lasso can turn on from the launch line.
 		SupportsPlanMode: false,
 		// Same ladder as omp (pi is omp's upstream), minus "auto" — pi's
 		// --thinking takes concrete levels only.
@@ -292,14 +310,21 @@ func ompCommand(o launchOpts) string {
 	// project-trust flow its upstream pi still has, so confirmAgentTrust has
 	// nothing to accept here.
 	//
-	// No plan mode on the launch line. omp HAS one, but it is reached through
-	// the TUI's /plan or the plan.defaultOnStartup setting — the `--plan` flag
-	// only names the model the "plan" ROLE resolves to, and `--plan-yolo` starts
-	// in plan mode and then auto-approves its own plan, which is the opposite of
-	// the blocking gate lasso's plan_mode promises. SupportsPlanMode:false so a
-	// plan request is dropped rather than recorded as planning that never
-	// happened; wiring a real one means staging a settings file for --config.
+	// Plan mode rides in as a config overlay rather than a flag: omp has no
+	// plan-mode flag (`--plan` names the plan ROLE's model, `--plan-yolo`
+	// auto-approves), but `--config` merges an extra config.yml over the user's
+	// for this run alone, and plan.defaultOnStartup lives there. bootAgent stages
+	// the overlay (ompplan.go) and fails the boot if it can't, so an empty
+	// planConfig here means the caller isn't launching — a command built for
+	// length-checking or a test — and there is nothing to point --config at.
+	//
+	// It goes on FIRST, ahead of extra_args: --config is repeatable and omp
+	// merges the overlays left to right, so a user passing their own --config in
+	// extra_args refines lasso's rather than being overridden by it.
 	cmd := "omp --yolo"
+	if o.planMode && o.planConfig != "" {
+		cmd += " --config " + shellQuote(o.planConfig)
+	}
 	if m := strings.TrimSpace(o.model); m != "" {
 		cmd += " --model " + shellQuote(m)
 	}

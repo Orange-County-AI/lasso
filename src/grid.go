@@ -1124,10 +1124,21 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 	// Agent initial prompts live in lasso's own records (AgentRecord.Description),
 	// not in herdr — join them in by root pane (and by workspace as a fallback for
 	// the agent's pane) so the pane switcher can search the full prompt text.
+	//
+	// The same pass collects the panes whose agent lasso launched in omp's plan
+	// mode. herdr cannot see omp's plan gate (ompplan.go), so those panes — and
+	// ONLY those — get a screen read below to find out whether they are parked on
+	// it. Narrowed to the records rather than to every omp pane on the host
+	// because this runs on the grid's poll: a plan-mode omp agent is the only
+	// pane that can be at the gate lasso promised, and there are usually none.
 	promptByPane := map[string]string{}
 	promptByWS := map[string]string{}
+	planGate := map[string]bool{}
 	if recs, err := listAgents(host); err == nil {
 		for _, rec := range recs {
+			if rec.PlanMode && rec.RootPane != "" && harnessByID(rec.Agent).stagesPlanConfig {
+				planGate[rec.RootPane] = true
+			}
 			if rec.Description == "" {
 				continue
 			}
@@ -1157,6 +1168,9 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 			if s, _ := titleAgentStatus(kind, p.TerminalTitle); s != "" {
 				status = s
 			}
+		}
+		if planGate[p.PaneID] {
+			status = ompGateStatus(b, p.PaneID, kind, status)
 		}
 		prompt := promptByPane[p.PaneID]
 		if prompt == "" && isAgent {

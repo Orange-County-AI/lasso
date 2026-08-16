@@ -681,6 +681,21 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 		extraArgs: rec.ExtraArgs,
 		prompt:    agentPrompt(rec),
 	}
+	// A harness whose plan mode is a config setting rather than a flag (omp)
+	// needs lasso's overlay on disk before its launch line can point --config at
+	// it. Staged first, because the resulting path lengthens the command and so
+	// feeds the needsPromptFile budget below. A failure fails the boot: launching
+	// anyway would produce an agent that never planned under a record that says
+	// it did, which is the exact lie normalizePlanMode exists to prevent.
+	if opts.planMode && harnessByID(rec.Agent).stagesPlanConfig {
+		path, err := stageOmpPlanConfig(b, rec.ID)
+		if err != nil {
+			log.Printf("agent %s on %s: boot failed: stage plan config: %v", rec.ID, host, err)
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, "stage plan config: "+err.Error())
+			return
+		}
+		opts.planConfig = path
+	}
 	// A long or multi-line prompt can't ride the typed launch line (paneRun
 	// types raw bytes into the pane — see needsPromptFile), so stage it to a
 	// file the command expands at exec time. If staging fails, typing the
@@ -1215,15 +1230,17 @@ func confirmAgentTrust(b Backend, paneID string) {
 	}
 }
 
-// paneShowsTrustPrompt reports whether the pane's visible screen currently shows
-// claude's or codex's directory-trust dialog.
-func paneShowsTrustPrompt(b Backend, paneID string) bool {
+// paneVisibleText returns the pane's current screen (not its scrollback) as
+// text. ok is false when the pane is gone, the herdr RPC failed, or the reply
+// didn't parse — so callers that scan the screen for a dialog answer "no dialog"
+// on a read they couldn't make, rather than inventing one either way.
+func paneVisibleText(b Backend, paneID string) (string, bool) {
 	res, err := b.HerdrCall("pane.read", map[string]any{
 		"pane_id": paneID,
 		"source":  "visible",
 	})
 	if err != nil {
-		return false
+		return "", false
 	}
 	var r struct {
 		Read struct {
@@ -1231,9 +1248,18 @@ func paneShowsTrustPrompt(b Backend, paneID string) bool {
 		} `json:"read"`
 	}
 	if json.Unmarshal(res, &r) != nil {
+		return "", false
+	}
+	return r.Read.Text, true
+}
+
+// paneShowsTrustPrompt reports whether the pane's visible screen currently shows
+// claude's or codex's directory-trust dialog.
+func paneShowsTrustPrompt(b Backend, paneID string) bool {
+	t, ok := paneVisibleText(b, paneID)
+	if !ok {
 		return false
 	}
-	t := r.Read.Text
 	return strings.Contains(t, "trust this folder") || // claude
 		strings.Contains(t, "trust the contents of this directory") // codex
 }
