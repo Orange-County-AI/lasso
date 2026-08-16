@@ -1311,11 +1311,11 @@ func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool
 	// A long/multi-line prompt was staged to a file for the launch line's
 	// "$(cat …)" (see stageAgentPrompt); it dies with the agent. Best-effort:
 	// a short-prompt agent never had one.
-	// Same for the plan-mode config overlay a plan-mode omp agent launched with
-	// (stageOmpPlanConfig) — per-agent, so it dies with the agent too.
+	// Same for the config overlay an omp agent launched with (stageOmpConfig) —
+	// per-agent, so it dies with the agent too.
 	if rec.ID != "" {
 		_ = b.RemoveAll(agentPromptPath(b, rec.ID))
-		_ = b.RemoveAll(ompPlanConfigPath(b, rec.ID))
+		_ = b.RemoveAll(ompConfigPath(b, rec.ID))
 	}
 
 	// 2. remove_worktree (git only) tears down the worktree, which also closes

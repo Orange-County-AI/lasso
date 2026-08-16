@@ -24,12 +24,13 @@ type harnessDef struct {
 	// dropped by normalizePlanMode rather than persisted, so the record can't
 	// claim an agent planned when it didn't.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
-	// stagesPlanConfig marks a harness whose plan mode is a CONFIG SETTING
-	// rather than a flag, so bootAgent must materialize lasso's own config
-	// overlay on the target host before it can build the launch line (see
-	// ompplan.go). Unexported: it is boot plumbing, not a UI-facing capability —
-	// SupportsPlanMode is what the creator and the MCP schema read.
-	stagesPlanConfig bool
+	// stagesConfigOverlay marks a harness lasso must reach through a CONFIG
+	// OVERLAY rather than flags, so bootAgent materializes lasso's own overlay on
+	// the target host before it can build the launch line: today just omp, whose
+	// plan mode and theme pin are both settings (see ompplan.go). Unexported: it
+	// is boot plumbing, not a UI-facing capability — SupportsPlanMode is what the
+	// creator and the MCP schema read.
+	stagesConfigOverlay bool
 	// EffortLevels are the thinking/reasoning-effort levels this harness's CLI
 	// accepts, cheapest first — they populate the creator's "Thinking effort"
 	// select. Unlike ModelSuggestions this IS a closed set (the CLIs reject or
@@ -54,13 +55,14 @@ type launchOpts struct {
 	// EffortLevels; empty means "don't pass one" (the CLI's own default).
 	effort    string
 	extraArgs string
-	// planConfig, when set, is a config overlay staged on the target host that
-	// asks the harness to start in plan mode — for the harnesses whose plan mode
-	// is a setting rather than a flag (stagesPlanConfig; today just omp). Only
-	// consulted when planMode is set; bootAgent stages it before it builds the
-	// command, and fails the boot rather than launching a plan agent without it.
-	planConfig string
-	prompt     string
+	// configOverlay, when set, is a config overlay staged on the target host that
+	// carries the settings this harness can't take as flags — omp's theme pin,
+	// plus plan mode when planMode is set (stagesConfigOverlay; today just omp).
+	// bootAgent stages it before it builds the command; a plan agent whose
+	// overlay couldn't be staged fails the boot rather than launching unplanned,
+	// while a theme-only overlay is cosmetic and its absence just launches bare.
+	configOverlay string
+	prompt        string
 	// promptFile, when set, is a file on the target host holding the prompt;
 	// the launch line then carries `"$(cat <file>)"` in place of the inline
 	// quoted prompt and prompt is ignored. Used when the prompt is too big or
@@ -100,10 +102,10 @@ var harnesses = []harnessDef{
 		buildCmd: opencodeCommand,
 	},
 	{
-		ID:               "omp",
-		Label:            "Oh My Pi",
-		SupportsPlanMode: true,
-		stagesPlanConfig: true,
+		ID:                  "omp",
+		Label:               "Oh My Pi",
+		SupportsPlanMode:    true,
+		stagesConfigOverlay: true,
 		// omp's --thinking ladder is pi-catalog's Effort enum plus two selectors
 		// that aren't rungs on it: "off" disables reasoning outright, and "auto"
 		// lets omp resolve a level per turn against the active model. Both are
@@ -310,20 +312,21 @@ func ompCommand(o launchOpts) string {
 	// project-trust flow its upstream pi still has, so confirmAgentTrust has
 	// nothing to accept here.
 	//
-	// Plan mode rides in as a config overlay rather than a flag: omp has no
-	// plan-mode flag (`--plan` names the plan ROLE's model, `--plan-yolo`
-	// auto-approves), but `--config` merges an extra config.yml over the user's
-	// for this run alone, and plan.defaultOnStartup lives there. bootAgent stages
-	// the overlay (ompplan.go) and fails the boot if it can't, so an empty
-	// planConfig here means the caller isn't launching — a command built for
-	// length-checking or a test — and there is nothing to point --config at.
+	// The settings lasso can't pass as flags ride in on a config overlay: plan
+	// mode (omp has no flag for it — `--plan` names the plan ROLE's model,
+	// `--plan-yolo` auto-approves) and the theme pin, which must beat whatever a
+	// running omp last wrote into config.yml. `--config` merges an extra
+	// config.yml over the user's for this run alone; bootAgent stages it
+	// (ompplan.go), so an empty configOverlay here means the caller isn't
+	// launching — a command built for length-checking or a test — and there is
+	// nothing to point --config at.
 	//
 	// It goes on FIRST, ahead of extra_args: --config is repeatable and omp
 	// merges the overlays left to right, so a user passing their own --config in
 	// extra_args refines lasso's rather than being overridden by it.
 	cmd := "omp --yolo"
-	if o.planMode && o.planConfig != "" {
-		cmd += " --config " + shellQuote(o.planConfig)
+	if o.configOverlay != "" {
+		cmd += " --config " + shellQuote(o.configOverlay)
 	}
 	if m := strings.TrimSpace(o.model); m != "" {
 		cmd += " --model " + shellQuote(m)

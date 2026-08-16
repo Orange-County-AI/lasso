@@ -1136,7 +1136,7 @@ func gridHostPanes(b Backend, host, hostLabel string) ([]gridPane, error) {
 	planGate := map[string]bool{}
 	if recs, err := listAgents(host); err == nil {
 		for _, rec := range recs {
-			if rec.PlanMode && rec.RootPane != "" && harnessByID(rec.Agent).stagesPlanConfig {
+			if rec.PlanMode && rec.RootPane != "" && harnessByID(rec.Agent).stagesConfigOverlay {
 				planGate[rec.RootPane] = true
 			}
 			if rec.Description == "" {

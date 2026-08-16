@@ -329,11 +329,11 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
 	}
 	line := b.launchLine()
-	overlay := ompPlanConfigPath(b, rec.ID)
+	overlay := ompConfigPath(b, rec.ID)
 	if !strings.Contains(line, "--config '"+overlay+"'") {
 		t.Errorf("omp launch line is not in plan mode:\n  %s", line)
 	}
-	if got := b.files[overlay]; got != string(ompPlanOverlay) {
+	if got := b.files[overlay]; !strings.Contains(got, string(ompPlanOverlay)) {
 		t.Errorf("plan overlay was not staged onto the host: %q", got)
 	}
 	// The overlay is lasso's own file under the lasso dir. Writing the user's

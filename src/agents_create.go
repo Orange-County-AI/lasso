@@ -681,20 +681,30 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 		extraArgs: rec.ExtraArgs,
 		prompt:    agentPrompt(rec),
 	}
-	// A harness whose plan mode is a config setting rather than a flag (omp)
-	// needs lasso's overlay on disk before its launch line can point --config at
-	// it. Staged first, because the resulting path lengthens the command and so
-	// feeds the needsPromptFile budget below. A failure fails the boot: launching
-	// anyway would produce an agent that never planned under a record that says
-	// it did, which is the exact lie normalizePlanMode exists to prevent.
-	if opts.planMode && harnessByID(rec.Agent).stagesPlanConfig {
-		path, err := stageOmpPlanConfig(b, rec.ID)
-		if err != nil {
-			log.Printf("agent %s on %s: boot failed: stage plan config: %v", rec.ID, host, err)
-			_ = updateAgentBootStatus(rec.ID, host, BootFailed, "stage plan config: "+err.Error())
+	// A harness lasso reaches through a config overlay (omp) needs it on disk
+	// before its launch line can point --config at it. Staged first, because the
+	// resulting path lengthens the command and so feeds the needsPromptFile budget
+	// below. Every omp agent gets one — it carries the theme pin, which has to
+	// beat whatever a running omp last wrote into the user's config.yml — and a
+	// plan agent's also carries the plan keys.
+	//
+	// So the failure handling splits: for a PLAN agent, launching anyway would
+	// produce an agent that never planned under a record that says it did, the
+	// exact lie normalizePlanMode exists to prevent, so the boot fails. For
+	// everyone else the overlay is cosmetic, and an agent that boots in the wrong
+	// theme beats an agent that doesn't boot.
+	if harnessByID(rec.Agent).stagesConfigOverlay {
+		path, err := stageOmpConfig(b, rec.ID, opts.planMode)
+		switch {
+		case err == nil:
+			opts.configOverlay = path
+		case opts.planMode:
+			log.Printf("agent %s on %s: boot failed: stage omp config: %v", rec.ID, host, err)
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, "stage omp config: "+err.Error())
 			return
+		default:
+			log.Printf("agent %s on %s: stage omp config: %v (launching without the theme pin)", rec.ID, host, err)
 		}
-		opts.planConfig = path
 	}
 	// A long or multi-line prompt can't ride the typed launch line (paneRun
 	// types raw bytes into the pane — see needsPromptFile), so stage it to a
