@@ -2,12 +2,12 @@
 // switch, or an out-of-band edit to herdr's config.toml picked up by the hub
 // poll), mirror it into the agent CLIs' own theme files — a generated
 // opencode theme (themes/herdr.json, pinned via tui.json), Claude Code's
-// ~/.claude/themes/herdr.json, ghostty's themes/herdr, omp's light/dark pick
-// (~/.omp/agent/config.yml — mode only, no palette), and
-// lasso's settings.json (.theme.resolved, read by claude-contextline) — so
-// agents render in step with herdr. Writes go through the Backend interface, so
-// the active remote host gets the same treatment over SFTP (see
-// syncRemoteTheme).
+// ~/.claude/themes/herdr.json, ghostty's themes/herdr, omp's
+// ~/.omp/agent/themes/herdr.json (pinned in both of its mode slots, and the one
+// mirror a running agent picks up live), and lasso's settings.json
+// (.theme.resolved, read by claude-contextline) — so agents render in step with
+// herdr. Writes go through the Backend interface, so the active remote host gets
+// the same treatment over SFTP (see syncRemoteTheme).
 //
 // This subsumes the old per-machine herdr-theme-sync watcher daemons: lasso is
 // the single writer of herdr's [theme].name in practice, and its hub poll
@@ -63,7 +63,7 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) {
 	if err := syncClaudeTheme(b, home, rt, light); err != nil {
 		log.Printf("theme:    claude sync on %s: %v", b.Name(), err)
 	}
-	if err := syncOmpMode(b, home, light); err != nil {
+	if err := syncOmpTheme(b, home, rt); err != nil {
 		log.Printf("theme:    omp sync on %s: %v", b.Name(), err)
 	}
 	if err := syncGhosttyTheme(b, home, rt); err != nil {
@@ -320,46 +320,215 @@ func syncOpencodeMode(b Backend, home string, light bool) error {
 }
 
 // ---------------------------------------------------------------------------
-// omp (Oh My Pi) — light/dark only, via ~/.omp/agent/config.yml
+// omp (Oh My Pi) — generated themes/herdr.json + both config.yml theme slots
 // ---------------------------------------------------------------------------
 //
-// Unlike opencode and Claude Code, omp gets NO generated palette — only the
-// mode. It has no "mode" setting to write: it holds two named themes,
-// theme.dark and theme.light, and picks between them from the TERMINAL's
-// background (OSC 11 luminance, then COLORFGBG, then a hardcoded "dark").
-// That detection is exactly what fails through the lasso/ttyd/xterm chain —
-// the same reason opencode's needs overriding — so a light herdr theme leaves
-// omp rendering dark.
+// omp holds two named themes — settings theme.dark and theme.light — and picks
+// between them from the TERMINAL's background (OSC 11 luminance, then
+// COLORFGBG, then a hardcoded "dark"), re-deciding on terminal appearance
+// reports and SIGWINCH. That detection is what fails through the
+// lasso/ttyd/xterm chain, the same reason opencode's needs overriding.
 //
-// The fix is to make the branch not matter: point BOTH keys at a built-in
-// theme of the mode lasso resolved. Whichever way the detection lands, omp
-// renders in the right one. So `theme.light: dark` is not a typo — it reads
-// "even if the terminal looks light, use the dark theme", which is the whole
-// mechanism. "dark" and "light" are omp's own fallback built-ins (its
-// autoDarkTheme/autoLightTheme), so this can't name a theme that isn't there.
+// Pinning both slots at omp's own built-in "dark"/"light" (what lasso did
+// before) only half-worked. It did make the SLOT choice irrelevant, but the pin
+// lives in config.yml, which omp reads once at startup — so a herdr theme flip
+// never reached a RUNNING omp, and an agent launched before the flip kept the
+// mode its terminal happened to look like until someone restarted it.
 //
-// Best-effort like opencode's mode lock, and for the same reason: omp rewrites
-// config.yml wholesale from its in-memory settings whenever one changes, so a
-// running instance can write back over ours. Fresh launches pick it up.
-const (
-	ompDarkTheme  = "dark"
-	ompLightTheme = "light"
-)
+// So omp gets opencode's treatment instead: a generated theme carrying herdr's
+// palette at ~/.omp/agent/themes/herdr.json, pinned in BOTH slots. Two things
+// follow:
+//
+//   - the light/dark branch cannot matter — both slots name one theme, and its
+//     colors are herdr's rather than a mode's;
+//   - it repaints LIVE. omp watches <themes dir>/<current theme>.json and
+//     debounce-reloads it on change, so rewriting herdr.json restyles every
+//     running omp launched with the pin in place. That watcher is deliberately
+//     skipped when the current theme is named "dark" or "light" — one more
+//     reason the old pin could never repaint anything.
+//
+// omp's lookup resolves built-ins BEFORE custom files, so the generated file
+// must not be called dark.json/light.json (it would be shadowed); "herdr" is
+// both unshadowed and watched. Every token is a literal hex: a token that is
+// neither a hex nor a declared var throws during resolution, and omp answers a
+// failed theme load by falling back to its built-in "dark" — i.e. one bad token
+// costs the whole palette.
+//
+// The config pin stays best-effort, as opencode's is: omp rewrites config.yml
+// wholesale from its in-memory settings whenever one changes, so a running
+// instance can write back over the slots. That cannot undo a live repaint (the
+// theme file is what running instances read), and fresh launches take the pin.
 
-// syncOmpMode pins omp's light/dark by pointing both of its mode-selected theme
-// slots at a built-in of the wanted mode. Skipped entirely on hosts where omp
-// has never run (no ~/.omp/agent), so a theme switch doesn't litter config for
-// a CLI that isn't there.
-func syncOmpMode(b Backend, home string, light bool) error {
+// ompThemeName is the generated theme lasso writes and pins in both of omp's
+// mode slots. Must not collide with an omp built-in — see above.
+const ompThemeName = "herdr"
+
+// ompThemeSchema is the $schema omp's own built-in themes carry. Informational
+// only (omp validates with an in-code ArkType schema), but it makes the
+// generated file behave in an editor.
+const ompThemeSchema = "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/theme-schema.json"
+
+// syncOmpTheme writes the generated theme and points both mode slots at it.
+// Skipped entirely on hosts where omp has never run (no ~/.omp/agent), so a
+// theme switch doesn't litter config for a CLI that isn't there.
+func syncOmpTheme(b Backend, home string, rt resolvedTheme) error {
 	dir := filepath.Join(home, ".omp", "agent")
 	if _, err := b.Stat(dir); err != nil {
 		return nil // omp not set up on this host
 	}
-	path := filepath.Join(dir, "config.yml")
-	want := ompDarkTheme
-	if light {
-		want = ompLightTheme
+	if err := syncOmpThemeFile(b, dir, rt); err != nil {
+		return err
 	}
+	return syncOmpThemePin(b, dir)
+}
+
+// ompColors maps herdr's UI tokens onto omp's color tokens — the same semantic
+// roles lasso uses for its own chrome and for opencode's generated theme. Every
+// token omp requires is present; thinkingMax is the one optional token and is
+// emitted too (omp falls back to thinkingXhigh without it).
+func ompColors(u uiPalette) map[string]string {
+	return map[string]string{
+		"accent":       u.Accent,
+		"border":       u.Surface1,
+		"borderAccent": u.Accent,
+		"borderMuted":  u.Surface0,
+		"success":      u.Green,
+		"error":        u.Red,
+		"warning":      u.Yellow,
+		"muted":        u.Subtext0,
+		"dim":          u.Overlay0,
+		"text":         u.Text,
+		"thinkingText": u.Subtext0,
+
+		"selectedBg":         u.Surface0,
+		"userMessageBg":      u.SurfaceDim,
+		"userMessageText":    u.Text,
+		"customMessageBg":    u.Surface0,
+		"customMessageText":  u.Text,
+		"customMessageLabel": u.Mauve,
+		// Tool result frames tint their background toward the outcome, the way
+		// the opencode theme tints diff rows: a 10% wash over the panel bg, so
+		// success/error read at a glance without fighting the text.
+		"toolPendingBg": u.SurfaceDim,
+		"toolSuccessBg": blendHex(u.Green, u.PanelBg, 0.9),
+		"toolErrorBg":   blendHex(u.Red, u.PanelBg, 0.9),
+		"toolTitle":     u.Text,
+		"toolOutput":    u.Subtext0,
+
+		"mdHeading":         u.Mauve,
+		"mdLink":            u.Blue,
+		"mdLinkUrl":         u.Subtext0,
+		"mdCode":            u.Green,
+		"mdCodeBlock":       u.Text,
+		"mdCodeBlockBorder": u.Surface1,
+		"mdQuote":           u.Yellow,
+		"mdQuoteBorder":     u.Surface1,
+		"mdHr":              u.Overlay0,
+		"mdListBullet":      u.Blue,
+
+		"toolDiffAdded":     u.Green,
+		"toolDiffRemoved":   u.Red,
+		"toolDiffContext":   u.Subtext0,
+		"syntaxComment":     u.Subtext0,
+		"syntaxKeyword":     u.Mauve,
+		"syntaxFunction":    u.Blue,
+		"syntaxVariable":    u.Red,
+		"syntaxString":      u.Green,
+		"syntaxNumber":      u.Peach,
+		"syntaxType":        u.Yellow,
+		"syntaxOperator":    u.Teal,
+		"syntaxPunctuation": u.Text,
+
+		// The thinking ladder colors the editor border by reasoning level, so it
+		// climbs the palette rather than repeating one hue.
+		"thinkingOff":     u.Overlay0,
+		"thinkingMinimal": u.Overlay1,
+		"thinkingLow":     u.Blue,
+		"thinkingMedium":  u.Teal,
+		"thinkingHigh":    u.Mauve,
+		"thinkingXhigh":   u.Peach,
+		"thinkingMax":     u.Red,
+		"bashMode":        u.Teal,
+		"pythonMode":      u.Yellow,
+
+		"statusLineBg":        u.Surface0,
+		"statusLineSep":       u.Overlay0,
+		"statusLineModel":     u.Mauve,
+		"statusLinePath":      u.Blue,
+		"statusLineGitClean":  u.Green,
+		"statusLineGitDirty":  u.Yellow,
+		"statusLineContext":   u.Teal,
+		"statusLineSpend":     u.Peach,
+		"statusLineStaged":    u.Green,
+		"statusLineDirty":     u.Yellow,
+		"statusLineUntracked": u.Red,
+		"statusLineOutput":    u.Text,
+		"statusLineCost":      u.Peach,
+		"statusLineSubagents": u.Accent,
+	}
+}
+
+// ompThemeBody renders rt as an omp custom theme.
+func ompThemeBody(rt resolvedTheme) []byte {
+	colors := ompColors(rt.ui)
+	// A [theme.custom] override reaches us already parsed to a hex, so this is
+	// belt and braces — but omp treats a non-hex token as a var reference and
+	// throws when it resolves nothing, and a theme that fails to load costs the
+	// whole palette (omp falls back to built-in "dark"). So a malformed token
+	// takes the same token off the unmodified built-in palette instead of being
+	// emitted or, as in opencode's body, dropped: omp requires all of them.
+	var base map[string]string
+	for tok, v := range colors {
+		if _, _, _, ok := hexRGB(v); !ok {
+			if base == nil {
+				base = ompColors(resolveThemeByName(rt.Resolved).ui)
+			}
+			colors[tok] = base[tok]
+		}
+	}
+	root := map[string]any{
+		"$schema": ompThemeSchema,
+		"name":    ompThemeName,
+		"colors":  colors,
+		"export": map[string]string{
+			"pageBg": rt.ui.PanelBg,
+			"cardBg": rt.ui.SurfaceDim,
+			"infoBg": rt.ui.Surface0,
+		},
+	}
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil
+	}
+	return append(out, '\n')
+}
+
+// syncOmpThemeFile writes the generated theme into omp's custom themes dir
+// (<agent dir>/themes, which omp discovers and watches). Unchanged content is
+// left alone: the write is what a running omp reloads on, so a no-op rewrite
+// would make every poll tick restyle live sessions for nothing.
+func syncOmpThemeFile(b Backend, agentDir string, rt resolvedTheme) error {
+	dir := filepath.Join(agentDir, "themes")
+	path := filepath.Join(dir, ompThemeName+".json")
+	body := ompThemeBody(rt)
+	if body == nil {
+		return fmt.Errorf("render omp theme %q", rt.Resolved)
+	}
+	if cur, err := b.ReadFile(path); err == nil && string(cur) == string(body) {
+		return nil
+	}
+	if err := b.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	log.Printf("theme:    omp theme file -> %s (%s) on %s", ompThemeName, rt.Resolved, b.Name())
+	return b.WriteFile(path, body, 0o644)
+}
+
+// syncOmpThemePin points both of omp's mode-selected theme slots at the
+// generated theme, so whichever way its terminal detection lands it loads the
+// same palette — and lands on the one name whose file omp watches.
+func syncOmpThemePin(b Backend, agentDir string) error {
+	path := filepath.Join(agentDir, "config.yml")
 
 	root := map[string]any{}
 	data, err := b.ReadFile(path)
@@ -373,28 +542,30 @@ func syncOmpMode(b Backend, home string, light bool) error {
 		}
 	case errors.Is(err, fs.ErrNotExist):
 		// Create it — omp's dir exists, so it has run; a config it hasn't
-		// written yet still gets the right mode on the next launch.
+		// written yet still gets the pin on the next launch.
 	default:
 		return err
 	}
 
+	// A legacy flat `theme: "name"` (omp migrates it on read) is replaced by the
+	// nested form rather than merged into.
 	theme, _ := root["theme"].(map[string]any)
 	if theme == nil {
 		theme = map[string]any{}
 	}
 	dark, _ := theme["dark"].(string)
-	lightName, _ := theme["light"].(string)
-	if dark == want && lightName == want {
+	light, _ := theme["light"].(string)
+	if dark == ompThemeName && light == ompThemeName {
 		return nil
 	}
-	theme["dark"], theme["light"] = want, want
+	theme["dark"], theme["light"] = ompThemeName, ompThemeName
 	root["theme"] = theme
 
 	out, err := yaml.Marshal(root)
 	if err != nil {
 		return err
 	}
-	log.Printf("theme:    omp mode -> %s on %s", want, b.Name())
+	log.Printf("theme:    omp theme pin -> %s on %s", ompThemeName, b.Name())
 	return b.WriteFile(path, out, 0o644)
 }
 
