@@ -1,7 +1,7 @@
 "use client"
 
 import { Tooltip as TooltipPrimitive } from "radix-ui"
-import type * as React from "react"
+import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
@@ -19,9 +19,57 @@ function TooltipProvider({
 }
 
 function Tooltip({
+  open: controlledOpen,
+  defaultOpen,
+  onOpenChange,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(
+    defaultOpen ?? false
+  )
+  const open = controlledOpen ?? uncontrolledOpen
+  const setOpen = React.useCallback(
+    (nextOpen: boolean) => {
+      if (controlledOpen === undefined) setUncontrolledOpen(nextOpen)
+      onOpenChange?.(nextOpen)
+    },
+    [controlledOpen, onOpenChange]
+  )
+
+  // Radix handles pointer-downs in this document, but iframe events never reach
+  // it. Listen inside same-origin frames while open; window blur covers the
+  // first interaction with a cross-origin frame.
+  React.useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    const frameWindows: Window[] = []
+    for (const frame of document.querySelectorAll("iframe")) {
+      try {
+        const frameWindow = frame.contentWindow
+        if (!frameWindow) continue
+        frameWindow.addEventListener("pointerdown", close, true)
+        frameWindows.push(frameWindow)
+      } catch {
+        // Cross-origin frames are inaccessible; window blur is the safe fallback.
+      }
+    }
+    window.addEventListener("blur", close)
+    return () => {
+      window.removeEventListener("blur", close)
+      for (const frameWindow of frameWindows) {
+        frameWindow.removeEventListener("pointerdown", close, true)
+      }
+    }
+  }, [open, setOpen])
+
+  return (
+    <TooltipPrimitive.Root
+      data-slot="tooltip"
+      open={open}
+      onOpenChange={setOpen}
+      {...props}
+    />
+  )
 }
 
 function TooltipTrigger({

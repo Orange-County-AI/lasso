@@ -1,16 +1,16 @@
 package main
 
-// Usage limits footer — surfaces the same subscription usage limits that the
-// `clui` TUI shows (Claude Code, Kimi Code, Codex), so a lasso user can see how
-// much of their 5-hour / weekly quotas they've burned without leaving the app.
+// Usage limits footer — surfaces subscription usage limits for Claude Code,
+// Kimi Code, Codex, and the Z.ai GLM Coding Plan, so a lasso user can see how
+// much of their short / weekly quotas they've burned without leaving the app.
 //
-// This reads the same on-disk credential files each provider's own CLI writes
-// and calls the same usage endpoints clui does, parsing the same fields. Tokens
+// This reads credentials from provider CLI files or environment variables and
+// calls the upstream usage endpoints those providers' own tools use. Tokens
 // that expire (Codex, Kimi) are refreshed proactively and written back, matching
 // clui's behaviour — a Kimi access token lives only ~15 minutes, so a polling
 // footer would break within one refresh window otherwise. Claude's token comes
-// straight from ~/.claude/.credentials.json and is used as-is (no refresh path,
-// same as clui).
+// straight from ~/.claude/.credentials.json and is used as-is; Z.ai accepts its
+// explicit API-key variables/files or a Z.ai-backed Claude Code settings.json.
 //
 // Everything is best-effort per provider: a provider that has no credentials,
 // times out, or errors simply contributes an `err` (or is omitted) rather than
@@ -172,8 +172,8 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch all three providers concurrently — one slow endpoint shouldn't
-	// serialize behind the others.
+	// Fetch every provider concurrently — one slow endpoint shouldn't serialize
+	// behind the others.
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -181,6 +181,7 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 		fetchClaudeUsage,
 		fetchKimiUsage,
 		fetchCodexUsage,
+		fetchZaiUsage,
 	}
 	results := make([]usageProvider, len(fetchers))
 	var wg sync.WaitGroup
@@ -819,6 +820,276 @@ func refreshCodexToken(ctx context.Context, path string, auth map[string]any) st
 	auth["last_refresh"] = time.Now().UTC().Format(time.RFC3339Nano)
 	writeJSONFile(path, auth)
 	return access
+}
+
+// ---- Z.ai GLM Coding Plan ----------------------------------------------------
+
+const zaiDefaultBaseURL = "https://api.z.ai"
+
+func fetchZaiUsage(ctx context.Context) usageProvider {
+	p := usageProvider{Name: "Z.ai"}
+	token, baseURL := readZaiCredentials()
+	if token == "" {
+		return usageProvider{} // no credentials → omit
+	}
+	if usageInBackoff(p.Name) {
+		p.Err = "cooldown"
+		return p
+	}
+
+	body, status, err := zaiUsageRequest(ctx, baseURL, token)
+	if err != nil {
+		p.Err = err.Error()
+		return p
+	}
+	if status == http.StatusTooManyRequests {
+		usageNoteRateLimited(p.Name)
+	}
+	if status != http.StatusOK {
+		p.Err = fmt.Sprintf("http %d", status)
+		return p
+	}
+
+	plan, limits, err := parseZaiUsage(body)
+	if err != nil {
+		p.Err = "bad response"
+		return p
+	}
+	p.Plan = plan
+	p.Limits = limits
+	if len(p.Limits) == 0 {
+		p.Err = "no limits"
+	}
+	return p
+}
+
+func zaiUsageRequest(ctx context.Context, baseURL, token string) ([]byte, int, error) {
+	req, _ := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		baseURL+"/api/monitor/usage/quota/limit",
+		nil,
+	)
+	// Z.ai's official Claude Code plugin sends ANTHROPIC_AUTH_TOKEN verbatim in
+	// Authorization (not with a Bearer prefix); the quota endpoint accepts it.
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-US,en")
+	req.Header.Set("User-Agent", usageUserAgent)
+	return usageDo(req)
+}
+
+// readZaiCredentials accepts the explicit Z.ai variables, the two config files
+// used by GLM usage clients, or a Claude Code settings.json configured for Z.ai.
+// The latter mirrors Z.ai's official usage plugin, which reads
+// ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN.
+func readZaiCredentials() (token, baseURL string) {
+	if token = strings.TrimSpace(os.Getenv("ZAI_API_KEY")); token != "" {
+		return token, zaiDefaultBaseURL
+	}
+	if token = strings.TrimSpace(os.Getenv("GLM_API_KEY")); token != "" {
+		return token, zaiDefaultBaseURL
+	}
+
+	for _, path := range []string{
+		homeFile(".config", "openusage", "zai.json"),
+		homeFile(".config", "zai", "key.json"),
+	} {
+		if m, err := readJSONFile(path); err == nil {
+			token = strings.TrimSpace(asString(m["apiKey"]))
+			if token == "" {
+				token = strings.TrimSpace(asString(m["api_key"]))
+			}
+			if token != "" {
+				return token, zaiDefaultBaseURL
+			}
+		}
+	}
+
+	if baseURL = zaiBaseURL(os.Getenv("ANTHROPIC_BASE_URL")); baseURL != "" {
+		token = strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
+		if token == "" {
+			token = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		}
+		if token != "" {
+			return token, baseURL
+		}
+	}
+
+	settings, err := readJSONFile(homeFile(".claude", "settings.json"))
+	if err != nil {
+		return "", ""
+	}
+	env := asMap(settings["env"])
+	if env == nil {
+		return "", ""
+	}
+	baseURL = zaiBaseURL(asString(env["ANTHROPIC_BASE_URL"]))
+	if baseURL == "" {
+		return "", ""
+	}
+	token = strings.TrimSpace(asString(env["ANTHROPIC_AUTH_TOKEN"]))
+	if token == "" {
+		token = strings.TrimSpace(asString(env["ANTHROPIC_API_KEY"]))
+	}
+	if token == "" {
+		return "", ""
+	}
+	return token, baseURL
+}
+
+// zaiBaseURL reduces an Anthropic-compatible endpoint to the trusted Z.ai or
+// Zhipu origin used by the monitor API. Restricting hosts prevents a settings
+// file from turning this server-side credential request into an arbitrary URL.
+func zaiBaseURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "api.z.ai", "open.bigmodel.cn", "dev.bigmodel.cn":
+		return "https://" + host
+	default:
+		return ""
+	}
+}
+
+func parseZaiUsage(body []byte) (string, []usageLimit, error) {
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return "", nil, err
+	}
+	data := asMap(root["data"])
+	if data == nil {
+		data = root
+	}
+	return formatZaiPlan(asString(data["level"])), parseZaiLimits(data), nil
+}
+
+func parseZaiLimits(data map[string]any) []usageLimit {
+	arr, _ := data["limits"].([]any)
+	type parsedLimit struct {
+		limit  usageLimit
+		window time.Duration
+	}
+	parsed := make([]parsedLimit, 0, len(arr))
+
+	for _, it := range arr {
+		m := asMap(it)
+		kind := strings.ToUpper(asString(m["type"]))
+		switch kind {
+		case "CREDIT_LIMIT", "TOKENS_LIMIT", "TIME_LIMIT":
+		default:
+			continue
+		}
+
+		pct, ok := usageNum(m["percentage"])
+		if !ok {
+			used, usedOK := usageNum(m["currentValue"])
+			total, totalOK := usageNum(m["usage"])
+			if !usedOK || !totalOK || total <= 0 {
+				continue
+			}
+			pct = used / total * 100
+		}
+		if pct < 0 {
+			pct = 0
+		} else if pct > 100 {
+			pct = 100
+		}
+
+		reset := zaiResetTime(m["nextResetTime"])
+		unitNum, _ := usageNum(m["unit"])
+		countNum, _ := usageNum(m["number"])
+		count := int(countNum)
+		if count <= 0 {
+			count = 1
+		}
+		label, window := zaiWindow(kind, int(unitNum), count, reset)
+		parsed = append(parsed, parsedLimit{
+			limit: usageLimit{
+				Label:      label,
+				Percent:    round(pct),
+				ResetsAt:   reset,
+				Countdown:  window > 0 && window <= 24*time.Hour,
+				ElapsedPct: elapsedPct(reset, window),
+			},
+			window: window,
+		})
+	}
+
+	// Z.ai normally returns the 5-hour quota before weekly/monthly limits. Sort
+	// by duration as a defensive measure so the footer order stays predictable.
+	sort.SliceStable(parsed, func(i, j int) bool {
+		if parsed[i].window == 0 {
+			return false
+		}
+		if parsed[j].window == 0 {
+			return true
+		}
+		return parsed[i].window < parsed[j].window
+	})
+	limits := make([]usageLimit, 0, len(parsed))
+	for _, p := range parsed {
+		limits = append(limits, p.limit)
+	}
+	return limits
+}
+
+// zaiWindow decodes the quota API's numeric unit enum: 3=hour, 5=month,
+// 6=week. Calendar months use the actual reset month rather than a 30-day
+// approximation so the pace notch stays accurate.
+func zaiWindow(kind string, unit, count int, resetsAt string) (string, time.Duration) {
+	label := "Usage"
+	var window time.Duration
+	switch unit {
+	case 3:
+		window = time.Duration(count) * time.Hour
+		label = fmt.Sprintf("%d-Hour", count)
+	case 5:
+		label = "Monthly"
+		if count > 1 {
+			label = fmt.Sprintf("%d-Month", count)
+		}
+		if reset, err := time.Parse(time.RFC3339, resetsAt); err == nil {
+			window = reset.Sub(reset.AddDate(0, -count, 0))
+		}
+	case 6:
+		window = time.Duration(count) * 7 * 24 * time.Hour
+		label = "Weekly"
+		if count > 1 {
+			label = fmt.Sprintf("%d-Week", count)
+		}
+	}
+	if kind == "TIME_LIMIT" {
+		if label == "Usage" {
+			return "MCP", window
+		}
+		return "MCP " + label, window
+	}
+	return label, window
+}
+
+func zaiResetTime(v any) string {
+	if n, ok := usageNum(v); ok && n > 0 {
+		ms := int64(n)
+		if ms < 1_000_000_000_000 {
+			return time.Unix(ms, 0).UTC().Format(time.RFC3339)
+		}
+		return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+	}
+	return rfc3339ToUTC(asString(v))
+}
+
+func formatZaiPlan(plan string) string {
+	parts := strings.FieldsFunc(plan, func(r rune) bool {
+		return r == '_' || r == '-' || r == ' '
+	})
+	for i, part := range parts {
+		parts[i] = titleWord(part)
+	}
+	return strings.Join(parts, " ")
 }
 
 // ---- shared low-level helpers ------------------------------------------------

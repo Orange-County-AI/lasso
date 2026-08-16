@@ -384,7 +384,7 @@ func gridHostAllowed(host string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// GET/POST /api/ui-state — persisted browser UI prefs (grid filters + sidebar)
+// GET/POST /api/ui-state — persisted browser UI preferences
 // ---------------------------------------------------------------------------
 
 // uiStateMu serializes /api/ui-state read-modify-writes so two tabs patching
@@ -424,6 +424,12 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		}
 		if us.GridWatched == nil {
 			us.GridWatched = []string{}
+		}
+		if us.UsageHidden == nil {
+			us.UsageHidden = []string{}
+		}
+		if us.UsageOrder == nil {
+			us.UsageOrder = []string{}
 		}
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
