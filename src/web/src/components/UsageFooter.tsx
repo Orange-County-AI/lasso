@@ -180,11 +180,14 @@ function LimitChip({ limit }: { limit: UsageLimit }) {
       <TooltipTrigger asChild>{chip}</TooltipTrigger>
       <TooltipContent
         side="top"
-        className="max-w-64 font-sans text-xs normal-case tracking-normal"
+        className="max-w-64 flex-col items-start gap-0.5 font-sans text-xs normal-case leading-snug tracking-normal"
       >
         <div className="font-medium">{limit.label}</div>
-        {reset ? <div className="text-muted-foreground">{reset}</div> : null}
-        {pace ? <div className="text-muted-foreground">{pace}</div> : null}
+        {/* The tooltip surface is inverted (bg-foreground/text-background), so
+            secondary lines dim the *inverted* ink — text-muted-foreground is
+            mixed for the app background and washes out here. */}
+        {reset ? <div className="text-background/80">{reset}</div> : null}
+        {pace ? <div className="text-background/80">{pace}</div> : null}
       </TooltipContent>
     </Tooltip>
   )
@@ -207,11 +210,11 @@ function CompactLimitChip({ limit }: { limit: UsageLimit }) {
       </TooltipTrigger>
       <TooltipContent
         side="top"
-        className="max-w-64 font-sans text-xs normal-case tracking-normal"
+        className="max-w-64 flex-col items-start gap-0.5 font-sans text-xs normal-case leading-snug tracking-normal"
       >
         <div className="font-medium">{limit.label}</div>
-        {reset ? <div className="text-muted-foreground">{reset}</div> : null}
-        {pace ? <div className="text-muted-foreground">{pace}</div> : null}
+        {reset ? <div className="text-background/80">{reset}</div> : null}
+        {pace ? <div className="text-background/80">{pace}</div> : null}
       </TooltipContent>
     </Tooltip>
   )
