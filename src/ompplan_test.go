@@ -70,15 +70,20 @@ func bootOmpAgent(t *testing.T, id string, planMode bool) (*ompPlanBootFake, Age
 }
 
 // End to end through bootAgent: a plan-mode omp agent must get lasso's own
-// overlay written onto the target host and pointed at by --config, and closing
-// the agent must remove it. The user's ~/.omp/agent/config.yml is never touched
-// — the overlay is a separate file merged over it for that run only.
+// overlay written onto the target host and pointed at by --config, carrying BOTH
+// halves (theme pin + plan keys), and closing the agent must remove it. The
+// user's ~/.omp/agent/config.yml is never touched — the overlay is a separate
+// file merged over it for that run only.
 func TestBootAgentStagesOmpPlanOverlayAndCloseCleansUp(t *testing.T) {
 	b, rec := bootOmpAgent(t, "ompplan1", true)
 
-	path := ompPlanConfigPath(b, rec.ID)
-	if got := b.files[path]; got != string(ompPlanOverlay) {
-		t.Errorf("staged overlay differs from the embedded asset:\n got: %q\nwant: %q", got, string(ompPlanOverlay))
+	path := ompConfigPath(b, rec.ID)
+	got := b.files[path]
+	if !strings.Contains(got, string(ompPlanOverlay)) {
+		t.Errorf("staged overlay is missing the plan keys:\n got: %q\nwant contains: %q", got, string(ompPlanOverlay))
+	}
+	if !strings.Contains(got, "dark: "+ompThemeName) || !strings.Contains(got, "light: "+ompThemeName) {
+		t.Errorf("staged overlay is missing the theme pin: %q", got)
 	}
 	launch := b.launchLine(t)
 	if !strings.Contains(launch, "--config '"+path+"'") {
@@ -96,20 +101,30 @@ func TestBootAgentStagesOmpPlanOverlayAndCloseCleansUp(t *testing.T) {
 		t.Fatalf("closeAgentRecord: %v", err)
 	}
 	if _, ok := b.files[path]; ok {
-		t.Errorf("staged plan overlay must be removed on close: %s", path)
+		t.Errorf("staged overlay must be removed on close: %s", path)
 	}
 }
 
-// Without plan mode there is nothing to stage and nothing to point at: an omp
-// agent that never asked to plan must launch on a bare line.
-func TestBootAgentSkipsOmpPlanOverlayWithoutPlanMode(t *testing.T) {
+// Without plan mode the overlay still exists — it carries the theme pin, which
+// is the only way a launch beats whatever a running omp last wrote into
+// config.yml — but it must carry no plan keys, or a normal agent would come up
+// planning.
+func TestBootAgentStagesOmpThemeOverlayWithoutPlanMode(t *testing.T) {
 	b, rec := bootOmpAgent(t, "ompplain1", false)
 
-	if _, ok := b.files[ompPlanConfigPath(b, rec.ID)]; ok {
-		t.Error("a non-plan omp agent must not stage a plan overlay")
+	path := ompConfigPath(b, rec.ID)
+	got, ok := b.files[path]
+	if !ok {
+		t.Fatalf("a non-plan omp agent must still stage the theme overlay: %s", path)
 	}
-	if launch := b.launchLine(t); strings.Contains(launch, "--config") {
-		t.Errorf("non-plan omp launch line must carry no --config: %q", launch)
+	if !strings.Contains(got, "dark: "+ompThemeName) || !strings.Contains(got, "light: "+ompThemeName) {
+		t.Errorf("staged overlay is missing the theme pin: %q", got)
+	}
+	if strings.Contains(got, "plan:") {
+		t.Errorf("a non-plan omp agent must not stage the plan keys: %q", got)
+	}
+	if launch := b.launchLine(t); !strings.Contains(launch, "--config '"+path+"'") {
+		t.Errorf("non-plan omp launch line must point --config at the overlay: %q", launch)
 	}
 }
 

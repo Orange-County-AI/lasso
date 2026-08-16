@@ -412,16 +412,19 @@ func TestSyncGhosttyTheme(t *testing.T) {
 	}
 }
 
-// omp gets the MODE only, never a palette. It has no mode setting — it picks
-// between theme.dark and theme.light from the terminal's own background, which
-// is the detection that fails through the lasso/ttyd/xterm chain. So the sync
-// points BOTH slots at a built-in of the wanted mode, making the branch
-// irrelevant: `theme.light: dark` is the mechanism, not a bug.
-func TestSyncOmpMode(t *testing.T) {
+// omp used to get the MODE only: both theme slots pinned at its built-in
+// "dark"/"light". That made its terminal-background detection irrelevant but
+// could never reach a RUNNING omp (config.yml is read once, at startup, and omp
+// watches no built-in theme file). Now it gets a generated palette at
+// ~/.omp/agent/themes/herdr.json with both slots pinned to it — the file omp
+// discovers, resolves ahead of nothing (no built-in shadows the name), and
+// watches for live reload.
+func TestSyncOmpTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
 	dir := filepath.Join(home, ".omp", "agent")
 	path := filepath.Join(dir, "config.yml")
+	themePath := filepath.Join(dir, "themes", "herdr.json")
 
 	readTheme := func() map[string]any {
 		data, err := os.ReadFile(path)
@@ -435,28 +438,51 @@ func TestSyncOmpMode(t *testing.T) {
 		m, _ := root["theme"].(map[string]any)
 		return m
 	}
+	readColors := func() map[string]any {
+		data, err := os.ReadFile(themePath)
+		if err != nil {
+			t.Fatalf("theme file missing: %v", err)
+		}
+		var f struct {
+			Schema string         `json:"$schema"`
+			Name   string         `json:"name"`
+			Colors map[string]any `json:"colors"`
+		}
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("theme file isn't json: %v", err)
+		}
+		if f.Schema == "" || f.Name != "herdr" {
+			t.Errorf("theme file must carry $schema and name %q: %s", "herdr", data)
+		}
+		return f.Colors
+	}
 
 	// A host where omp has never run is left completely alone — a theme switch
 	// must not litter config for a CLI that isn't there.
-	if err := syncOmpMode(b, home, false); err != nil {
-		t.Fatalf("syncOmpMode (no omp): %v", err)
+	if err := syncOmpTheme(b, home, resolveThemeByName("catppuccin")); err != nil {
+		t.Fatalf("syncOmpTheme (no omp): %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("config.yml created on a host without omp")
 	}
+	if _, err := os.Stat(themePath); !os.IsNotExist(err) {
+		t.Fatalf("theme file created on a host without omp")
+	}
 
-	// Once omp exists, unrelated settings survive and both slots take the mode.
+	// Once omp exists: the palette lands, both slots name it, and unrelated
+	// settings survive the config rewrite.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("symbolPreset: nerd\ntheme:\n  dark: titanium\n  light: light-paper\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncOmpMode(b, home, false); err != nil {
-		t.Fatalf("syncOmpMode dark: %v", err)
+	dark := resolveThemeByName("catppuccin")
+	if err := syncOmpTheme(b, home, dark); err != nil {
+		t.Fatalf("syncOmpTheme dark: %v", err)
 	}
-	if got := readTheme(); got["dark"] != "dark" || got["light"] != "dark" {
-		t.Errorf("dark mode should pin both slots to the dark built-in, got %v", got)
+	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
+		t.Errorf("both slots must name the generated theme, got %v", got)
 	}
 	data, _ := os.ReadFile(path)
 	var root map[string]any
@@ -464,40 +490,133 @@ func TestSyncOmpMode(t *testing.T) {
 	if root["symbolPreset"] != "nerd" {
 		t.Errorf("unrelated settings must survive the rewrite: %s", data)
 	}
-
-	// Flipping to light flips both slots the other way.
-	if err := syncOmpMode(b, home, true); err != nil {
-		t.Fatalf("syncOmpMode light: %v", err)
-	}
-	if got := readTheme(); got["dark"] != "light" || got["light"] != "light" {
-		t.Errorf("light mode should pin both slots to the light built-in, got %v", got)
+	cols := readColors()
+	if cols["text"] != dark.ui.Text || cols["accent"] != dark.ui.Accent || cols["statusLineBg"] != dark.ui.Surface0 {
+		t.Errorf("theme file missing core tokens: %v", cols)
 	}
 
-	// A config that already matches isn't rewritten — no pointless churn under
-	// a running omp.
-	before, err := os.Stat(path)
+	// A theme flip rewrites the palette file — that write is what a running omp
+	// reloads on, so it is the whole point of the mirror.
+	light := resolveThemeByName("catppuccin-latte")
+	if err := syncOmpTheme(b, home, light); err != nil {
+		t.Fatalf("syncOmpTheme light: %v", err)
+	}
+	if cols := readColors(); cols["text"] != light.ui.Text {
+		t.Errorf("theme file not repainted for the light theme: %v", cols)
+	}
+	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
+		t.Errorf("slots must stay pinned across a flip, got %v", got)
+	}
+
+	// Nothing already in step is rewritten: an idle poll tick must not restyle
+	// live sessions (the theme file) or churn config.yml under a running omp.
+	beforeCfg, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syncOmpMode(b, home, true); err != nil {
-		t.Fatalf("syncOmpMode repeat: %v", err)
-	}
-	after, err := os.Stat(path)
+	beforeTheme, err := os.Stat(themePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !before.ModTime().Equal(after.ModTime()) {
-		t.Errorf("an already-correct config.yml should not be rewritten")
+	if err := syncOmpTheme(b, home, light); err != nil {
+		t.Fatalf("syncOmpTheme repeat: %v", err)
+	}
+	afterCfg, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterTheme, err := os.Stat(themePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !beforeCfg.ModTime().Equal(afterCfg.ModTime()) {
+		t.Errorf("an already-pinned config.yml should not be rewritten")
+	}
+	if !beforeTheme.ModTime().Equal(afterTheme.ModTime()) {
+		t.Errorf("an unchanged theme file should not be rewritten (it triggers omp's watcher)")
 	}
 
-	// Unparseable YAML is left alone rather than clobbered.
+	// Unparseable YAML is left alone rather than clobbered — and the palette,
+	// which is a whole-file write, still lands.
 	if err := os.WriteFile(path, []byte("theme: [this is: not a map\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncOmpMode(b, home, false); err != nil {
-		t.Fatalf("syncOmpMode broken: %v", err)
+	if err := syncOmpTheme(b, home, dark); err != nil {
+		t.Fatalf("syncOmpTheme broken: %v", err)
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "not a map") {
 		t.Errorf("unparseable config.yml was clobbered: %s", data)
+	}
+	if cols := readColors(); cols["text"] != dark.ui.Text {
+		t.Errorf("theme file should still be written when the config is unreadable: %v", cols)
+	}
+}
+
+// Every token omp requires must be present and a literal "#rrggbb" for every
+// herdr theme: omp resolves a non-hex token as a var reference, throws when it
+// finds none, and answers a failed load by falling back to its own built-in
+// "dark" — so one malformed value costs the entire palette.
+func TestOmpThemeBodyComplete(t *testing.T) {
+	// The tokens omp's theme schema requires (thinkingMax is its one optional
+	// token, and lasso emits it too).
+	required := []string{
+		"accent", "border", "borderAccent", "borderMuted", "success", "error",
+		"warning", "muted", "dim", "text", "thinkingText", "selectedBg",
+		"userMessageBg", "userMessageText", "customMessageBg", "customMessageText",
+		"customMessageLabel", "toolPendingBg", "toolSuccessBg", "toolErrorBg",
+		"toolTitle", "toolOutput", "mdHeading", "mdLink", "mdLinkUrl", "mdCode",
+		"mdCodeBlock", "mdCodeBlockBorder", "mdQuote", "mdQuoteBorder", "mdHr",
+		"mdListBullet", "toolDiffAdded", "toolDiffRemoved", "toolDiffContext",
+		"syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable",
+		"syntaxString", "syntaxNumber", "syntaxType", "syntaxOperator",
+		"syntaxPunctuation", "thinkingOff", "thinkingMinimal", "thinkingLow",
+		"thinkingMedium", "thinkingHigh", "thinkingXhigh", "thinkingMax",
+		"bashMode", "pythonMode", "statusLineBg", "statusLineSep",
+		"statusLineModel", "statusLinePath", "statusLineGitClean",
+		"statusLineGitDirty", "statusLineContext", "statusLineSpend",
+		"statusLineStaged", "statusLineDirty", "statusLineUntracked",
+		"statusLineOutput", "statusLineCost", "statusLineSubagents",
+	}
+	// resolveThemeByName, not loadHerdrTheme: the assertions are about the
+	// built-in palettes, and the machine's own herdr config must not decide
+	// whether this test passes.
+	for name := range themes {
+		rt := resolveThemeByName(name)
+		var f struct {
+			Colors map[string]string `json:"colors"`
+			Export map[string]string `json:"export"`
+		}
+		if err := json.Unmarshal(ompThemeBody(rt), &f); err != nil {
+			t.Fatalf("%s: theme body isn't json: %v", name, err)
+		}
+		for _, tok := range required {
+			v, ok := f.Colors[tok]
+			if !ok {
+				t.Errorf("%s: missing required token %s", name, tok)
+				continue
+			}
+			if _, _, _, ok := hexRGB(v); !ok {
+				t.Errorf("%s: token %s is %q, not a #rrggbb literal", name, tok, v)
+			}
+		}
+		for tok, v := range f.Export {
+			if _, _, _, ok := hexRGB(v); !ok {
+				t.Errorf("%s: export.%s is %q, not a #rrggbb literal", name, tok, v)
+			}
+		}
+	}
+
+	// A herdr [theme.custom] token lasso couldn't parse to a hex must not reach
+	// the file: it falls back to the built-in's value for that token.
+	rt := resolveThemeByName("nord")
+	rt.ui.Text = "steel-blue"
+	var f struct {
+		Colors map[string]string `json:"colors"`
+	}
+	if err := json.Unmarshal(ompThemeBody(rt), &f); err != nil {
+		t.Fatalf("theme body isn't json: %v", err)
+	}
+	if f.Colors["text"] != themes["nord"].ui.Text {
+		t.Errorf("a non-hex token should fall back to the built-in value, got %q", f.Colors["text"])
 	}
 }

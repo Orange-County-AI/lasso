@@ -314,13 +314,14 @@ func TestAgentCommandOmp(t *testing.T) {
 	}
 }
 
-// omp's plan mode is a config setting, not a flag, so the launch line carries a
-// --config pointing at the overlay bootAgent staged. It must compose with the
-// rest of the line and appear ONLY when plan mode was actually requested.
-func TestAgentCommandOmpPlanMode(t *testing.T) {
+// omp's plan mode AND its theme pin are config settings, not flags, so the
+// launch line carries a --config pointing at the overlay bootAgent staged. It
+// must compose with the rest of the line, and — since the theme pin is on every
+// omp agent — it rides whether or not plan mode was requested.
+func TestAgentCommandOmpConfigOverlay(t *testing.T) {
 	const overlay = "/home/u/.lasso/omp/a1.yml"
 	plan := agentCommand("omp", launchOpts{
-		planMode: true, planConfig: overlay,
+		planMode: true, configOverlay: overlay,
 		model: "opus", effort: "high", extraArgs: "--add-dir /srv", prompt: "do it",
 	})
 	for _, want := range []string{
@@ -340,12 +341,13 @@ func TestAgentCommandOmpPlanMode(t *testing.T) {
 		t.Errorf("lasso's --config must precede extra_args: %q", plan)
 	}
 
-	// Not requested → no overlay on the line at all.
-	if def := agentCommand("omp", launchOpts{planConfig: overlay, prompt: "do it"}); strings.Contains(def, "--config") {
-		t.Errorf("non-plan omp command must not pass --config: %q", def)
+	// No plan mode, same overlay: it carries the theme pin, so it still rides.
+	def := agentCommand("omp", launchOpts{configOverlay: overlay, prompt: "do it"})
+	if !strings.Contains(def, "--config '"+overlay+"'") {
+		t.Errorf("a non-plan omp command must still pass its overlay: %q", def)
 	}
-	// Requested but unstaged is not a launch path (bootAgent fails the boot
-	// first); emitting a bare --config with no operand would eat the next flag.
+	// Nothing staged is not a launch path (bootAgent stages first); emitting a
+	// bare --config with no operand would eat the next flag.
 	if unstaged := agentCommand("omp", launchOpts{planMode: true, prompt: "do it"}); strings.Contains(unstaged, "--config") {
 		t.Errorf("omp command must not emit --config without a staged overlay: %q", unstaged)
 	}

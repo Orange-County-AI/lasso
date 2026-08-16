@@ -394,8 +394,8 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
 
 // SyncAgentThemesToggle gates lasso's mirroring of the herdr theme into agent
 // CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json, omp's
-// config.yml — omp gets the light/dark pick only, not a palette) on this host
-// and any connected remote host. Server-level setting, default on.
+// themes/herdr.json — the one a running agent picks up live) on this host and
+// any connected remote host. Server-level setting, default on.
 function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient()
   const mutation = useMutation({
