@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -73,5 +74,76 @@ func TestElapsedPct(t *testing.T) {
 	}
 	if elapsedPct(reset, 0) != -1 {
 		t.Fatal("zero window should yield -1")
+	}
+}
+
+// TestParseZaiUsage covers both quota formats Z.ai has shipped
+// (CREDIT_LIMIT/TOKENS_LIMIT) plus the monthly MCP counter. It uses relative
+// reset times so the pace calculation is deterministic within a small margin.
+func TestParseZaiUsage(t *testing.T) {
+	now := time.Now()
+	body, err := json.Marshal(map[string]any{
+		"code": 200,
+		"data": map[string]any{
+			"level": "lite",
+			"limits": []any{
+				map[string]any{
+					"type":          "CREDIT_LIMIT",
+					"unit":          3,
+					"number":        5,
+					"percentage":    88,
+					"nextResetTime": now.Add(2 * time.Hour).UnixMilli(),
+				},
+				map[string]any{
+					"type":          "TOKENS_LIMIT",
+					"unit":          6,
+					"number":        1,
+					"percentage":    17,
+					"nextResetTime": now.Add(6 * 24 * time.Hour).UnixMilli(),
+				},
+				map[string]any{
+					"type":         "TIME_LIMIT",
+					"unit":         5,
+					"number":       1,
+					"usage":        4000,
+					"currentValue": 1000,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, limits, err := parseZaiUsage(body)
+	if err != nil {
+		t.Fatalf("parseZaiUsage returned error: %v", err)
+	}
+	if plan != "Lite" {
+		t.Fatalf("plan = %q, want Lite", plan)
+	}
+	if len(limits) != 3 {
+		t.Fatalf("got %d limits, want 3: %+v", len(limits), limits)
+	}
+
+	fiveHour := limits[0]
+	if fiveHour.Label != "5-Hour" || fiveHour.Percent != 88 || !fiveHour.Countdown {
+		t.Fatalf("5-hour limit mangled: %+v", fiveHour)
+	}
+	if fiveHour.ElapsedPct < 59 || fiveHour.ElapsedPct > 61 {
+		t.Fatalf("5-hour elapsed = %d, want ~60", fiveHour.ElapsedPct)
+	}
+
+	weekly := limits[1]
+	if weekly.Label != "Weekly" || weekly.Percent != 17 || weekly.Countdown {
+		t.Fatalf("weekly limit mangled: %+v", weekly)
+	}
+	if weekly.ElapsedPct < 13 || weekly.ElapsedPct > 15 {
+		t.Fatalf("weekly elapsed = %d, want ~14", weekly.ElapsedPct)
+	}
+
+	mcp := limits[2]
+	if mcp.Label != "MCP Monthly" || mcp.Percent != 25 || mcp.ElapsedPct != -1 {
+		t.Fatalf("MCP limit mangled: %+v", mcp)
 	}
 }

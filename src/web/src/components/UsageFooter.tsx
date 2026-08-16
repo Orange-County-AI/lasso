@@ -6,20 +6,25 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { api, type UsageLimit, type UsageProvider } from "@/lib/api"
+import {
+  api,
+  completeUsageProviderOrder,
+  type UsageLimit,
+  type UsageProvider,
+} from "@/lib/api"
 import { qk } from "@/lib/query"
+import { useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // UsageFooter — a slim status bar pinned to the bottom of the app that surfaces
-// subscription usage limits (Claude Code / Kimi Code / Codex), the same numbers
-// the `clui` TUI shows. Deliberately text-only and one line tall: the goal is to
-// keep the user aware of their quotas without spending screen real estate.
+// subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai).
+// Deliberately text-only and one line tall: the goal is to keep the user aware
+// of their quotas without spending screen real estate.
 //
-// Each metric is `LABEL [pace-bar] nn%`. The pace bar's key idea is *velocity*:
-// the bar fills to your usage %, with a notch at how far through the period you
-// are. Usage that spills past the notch (drawn red) means you're burning faster
-// than the clock and will hit the cap before it resets. Hover any metric for the
-// reset time and the pace read-out.
+// Standard mode renders `LABEL [pace-bar] nn%`: the fill shows usage, with a
+// time notch that exposes whether consumption is ahead of the clock. Compact
+// mode removes those bars, abbreviates provider names, and joins metrics with
+// slashes; each metric's tooltip still carries its full label, reset, and pace.
 
 // Poll on the same cadence clui uses (60s). The backend caches for ~25s so
 // multiple tabs don't multiply upstream calls.
@@ -45,6 +50,8 @@ function shortLabel(label: string): string {
   const l = label.toLowerCase()
   if (l.includes("5-hour") || l === "session" || l.startsWith("5h")) return "5H"
   if (l.includes("7-day")) return "7D"
+  if (l.startsWith("mcp")) return "MCP"
+  if (l === "monthly" || l === "month") return "MO"
   if (l.endsWith(" limit")) {
     // "5h Limit" / "45m Limit" / "Weekly Limit"
     const base = label.slice(0, -" Limit".length)
@@ -56,6 +63,24 @@ function shortLabel(label: string): string {
   }
   if (l === "weekly" || l === "week") return "WK"
   return label.toUpperCase()
+}
+
+const COMPACT_PROVIDER_NAMES: Record<string, string> = {
+  "Claude Code": "CLAUDE",
+  "Kimi Code": "KIMI",
+  Codex: "CODEX",
+  "Z.ai": "ZAI",
+}
+
+function compactProviderName(name: string): string {
+  const known = COMPACT_PROVIDER_NAMES[name]
+  if (known) return known
+  return (
+    name
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 4) || name
+  )
 }
 
 function pad(n: number): string {
@@ -165,6 +190,70 @@ function LimitChip({ limit }: { limit: UsageLimit }) {
   )
 }
 
+function CompactLimitChip({ limit }: { limit: UsageLimit }) {
+  const reset = resetText(limit)
+  const pace = paceText(limit)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+          <span className="text-muted-foreground">
+            {shortLabel(limit.label)}
+          </span>
+          <span className={cn("tabular-nums", pctClass(limit.percent))}>
+            {limit.percent}%
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        className="max-w-64 font-sans text-xs normal-case tracking-normal"
+      >
+        <div className="font-medium">{limit.label}</div>
+        {reset ? <div className="text-muted-foreground">{reset}</div> : null}
+        {pace ? <div className="text-muted-foreground">{pace}</div> : null}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function CompactProviderGroup({ provider }: { provider: UsageProvider }) {
+  const fullName = provider.plan
+    ? `${provider.name} · ${provider.plan}`
+    : provider.name
+  return (
+    <div className="inline-flex items-center whitespace-nowrap">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="font-medium text-foreground">
+            {compactProviderName(provider.name)}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className="font-sans text-xs normal-case tracking-normal"
+        >
+          {fullName}
+        </TooltipContent>
+      </Tooltip>
+      {provider.err ? (
+        <span className="ml-1.5 text-muted-foreground/40">—</span>
+      ) : (
+        <span className="ml-1.5 inline-flex items-center">
+          {provider.limits.map((limit, index) => (
+            <Fragment key={limit.label}>
+              {index > 0 ? (
+                <span className="mx-0.5 text-muted-foreground/60">/</span>
+              ) : null}
+              <CompactLimitChip limit={limit} />
+            </Fragment>
+          ))}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function ProviderGroup({ provider }: { provider: UsageProvider }) {
   return (
     <div className="inline-flex items-center gap-3.5 whitespace-nowrap">
@@ -185,10 +274,26 @@ function ProviderGroup({ provider }: { provider: UsageProvider }) {
 
 export function UsageFooter() {
   const { data, isError } = useUsage()
+  const ui = useUIState()
+  const hidden = ui.usage_hidden ?? []
+  const order = completeUsageProviderOrder(ui.usage_order)
+  const compact = ui.usage_compact ?? false
 
-  // Nothing to show (no configured providers, or the whole fetch failed) — stay
-  // out of the way rather than render an empty bar.
-  const providers = data?.providers ?? []
+  // Nothing to show (no configured providers, every provider is hidden, or the
+  // whole fetch failed) — stay out of the way rather than render an empty bar.
+  // Filtering creates a copy before sorting so React Query's payload is never
+  // mutated in place.
+  const reported = data?.providers ?? []
+  const providers = reported
+    .filter((provider) => !hidden.includes(provider.name))
+    .sort((a, b) => {
+      const aIndex = order.indexOf(a.name)
+      const bIndex = order.indexOf(b.name)
+      if (aIndex < 0 && bIndex < 0) return 0
+      if (aIndex < 0) return 1
+      if (bIndex < 0) return -1
+      return aIndex - bIndex
+    })
   if (isError || providers.length === 0) return null
 
   return (
@@ -198,16 +303,34 @@ export function UsageFooter() {
           the margins (letting it scroll left/right) when it's wider than the
           screen. `no-scrollbar` keeps the slim bar from growing a scrollbar. */}
       <footer className="no-scrollbar flex-none overflow-x-auto border-border border-t bg-card">
-        <div className="mx-auto flex w-max items-center px-4 py-1 font-label text-[11px] uppercase tracking-wider">
+        <div
+          className={cn(
+            "mx-auto flex w-max items-center py-1 font-label text-[11px] uppercase",
+            compact ? "px-3 tracking-wide" : "px-4 tracking-wider"
+          )}
+        >
           {providers.map((p, i) => (
             <Fragment key={p.name}>
               {i > 0 ? (
-                <span
-                  className="mx-5 h-4 w-px flex-none bg-muted-foreground/50"
-                  aria-hidden
-                />
+                compact ? (
+                  <span
+                    className="mx-2 flex-none text-muted-foreground/60"
+                    aria-hidden
+                  >
+                    ·
+                  </span>
+                ) : (
+                  <span
+                    className="mx-5 h-4 w-px flex-none bg-muted-foreground/50"
+                    aria-hidden
+                  />
+                )
               ) : null}
-              <ProviderGroup provider={p} />
+              {compact ? (
+                <CompactProviderGroup provider={p} />
+              ) : (
+                <ProviderGroup provider={p} />
+              )}
             </Fragment>
           ))}
         </div>

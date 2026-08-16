@@ -78,6 +78,32 @@ export interface UsagePayload {
   updatedAt: string
 }
 
+// Providers the backend knows how to meter. Kept here so the footer and its
+// Settings controls share the persisted provider names exactly.
+export const USAGE_PROVIDER_NAMES = [
+  "Claude Code",
+  "Kimi Code",
+  "Codex",
+  "Z.ai",
+] as const
+
+// Normalize persisted order without hiding providers introduced by a newer
+// build. Unknown and duplicate names are dropped; known missing names append in
+// backend order.
+export function completeUsageProviderOrder(
+  saved: readonly string[] | undefined
+): string[] {
+  const known: readonly string[] = USAGE_PROVIDER_NAMES
+  const completed = (saved ?? []).filter(
+    (name, index, order) =>
+      known.includes(name) && order.indexOf(name) === index
+  )
+  for (const name of known) {
+    if (!completed.includes(name)) completed.push(name)
+  }
+  return completed
+}
+
 export interface Pane {
   pane_id: string
   workspace_id?: string
@@ -137,10 +163,10 @@ export interface GridPayload {
   errors?: Record<string, string>
 }
 
-// Persisted, global browser UI preferences (SQLite-backed): Grid tab filters +
-// sidebar collapse. The client reads the whole object and writes the whole
-// object back (merge happens client-side), so navigating away and back — or
-// opening lasso elsewhere — restores the same view.
+// Persisted, global browser UI preferences (SQLite-backed): Grid tab filters,
+// sidebar layout, and footer preferences. The client reads the whole object and
+// writes patches, so navigating away and back — or opening lasso elsewhere —
+// restores the same view.
 export interface UIState {
   grid_agents_only: boolean
   grid_hidden_hosts: string[]
@@ -165,6 +191,12 @@ export interface UIState {
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
   files_click_navigates: boolean
+  // Provider names omitted from the bottom usage footer. Empty = show all.
+  usage_hidden: string[]
+  // Preferred provider order; providers absent here append automatically.
+  usage_order: string[]
+  // Use abbreviated provider names and metrics without pace bars.
+  usage_compact: boolean
 }
 
 export interface FileEntry {
@@ -619,7 +651,7 @@ export const api = {
       { panes }
     ),
 
-  // Persisted UI prefs (grid filters + sidebar collapse).
+  // Persisted UI preferences (grid, sidebar, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),
   // Patch semantics: send only the changed fields; the server merges into the
   // stored state (so stale tabs can't clobber fields they didn't touch) and
@@ -627,8 +659,8 @@ export const api = {
   saveUIState: (patch: Partial<UIState>) =>
     postJSON<UIState>("/api/ui-state", patch),
   version: () => getJSON<VersionInfo>("/api/version"),
-  // Subscription usage limits (Claude Code / Kimi Code / Codex), the same data
-  // the `clui` TUI shows — rendered in the bottom UsageFooter.
+  // Subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai),
+  // rendered in the bottom UsageFooter.
   usage: () => getJSON<UsagePayload>("/api/usage"),
 
   files: (path: string) =>

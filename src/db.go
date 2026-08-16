@@ -242,7 +242,7 @@ func getSetting(key string) (string, error) {
 }
 
 // uiState is the browser's persisted, global (host-agnostic) UI preferences:
-// the Grid tab's filters and whether the right sidebar is collapsed. It's kept
+// Grid filters, right-sidebar layout, and usage-footer preferences. It's kept
 // server-side (one JSON blob in settings) rather than in localStorage so the UI
 // looks the same across browsers/devices reaching the same lasso.
 type uiState struct {
@@ -272,6 +272,14 @@ type uiState struct {
 	// it expands the folder in place. Defaulted true in getUIState so a fresh
 	// install (or an older stored blob lacking the field) navigates.
 	FilesClickNavigates bool `json:"files_click_navigates"`
+	// UsageHidden contains provider names omitted from the bottom usage footer.
+	// A deny-list keeps new providers visible by default on older installations.
+	UsageHidden []string `json:"usage_hidden"`
+	// UsageOrder is the preferred provider order in the bottom usage footer.
+	// Missing providers are appended client-side so upgrades expose new ones.
+	UsageOrder []string `json:"usage_order"`
+	// UsageCompact selects the one-line abbreviated footer layout.
+	UsageCompact bool `json:"usage_compact"`
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
@@ -284,6 +292,8 @@ func getUIState() (uiState, error) {
 		GridMode:            "watch",
 		GridWatched:         []string{},
 		FilesClickNavigates: true,
+		UsageHidden:         []string{},
+		UsageOrder:          []string{},
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -302,6 +312,12 @@ func getUIState() (uiState, error) {
 	}
 	if us.GridWatched == nil {
 		us.GridWatched = []string{}
+	}
+	if us.UsageHidden == nil {
+		us.UsageHidden = []string{}
+	}
+	if us.UsageOrder == nil {
+		us.UsageOrder = []string{}
 	}
 	if us.GridMode != "watch" && us.GridMode != "select" {
 		us.GridMode = "watch"
