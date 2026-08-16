@@ -187,6 +187,81 @@ func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 	}
 }
 
+// The grid feeds lasso's own pane rail and switcher, so it has to reach the
+// same verdict the MCP tools do — an agent the rail shows idle while wait_agent
+// calls it blocked is the contradiction the whole check exists to remove. The
+// grid runs on a poll, so it only screen-reads panes whose record says lasso
+// launched them in omp's plan mode.
+func TestGridHostPanesReportsOmpPlanGate(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	// Two omp agents on the host, both resting on a screen showing the overlay.
+	// Only the plan-mode one may be reported blocked: the other never asked to
+	// plan, so lasso has no gate to claim on its behalf.
+	planned := AgentRecord{ID: "g1", Host: "local", Agent: "omp", PlanMode: true, RootPane: "p1", Type: "scratch"}
+	plain := AgentRecord{ID: "g2", Host: "local", Agent: "omp", PlanMode: false, RootPane: "p2", Type: "scratch"}
+	for _, rec := range []AgentRecord{planned, plain} {
+		if err := appendAgent("local", rec); err != nil {
+			t.Fatalf("appendAgent %s: %v", rec.ID, err)
+		}
+	}
+
+	b := &gridGateFake{memBackend: newMemBackend(), screen: ompPlanReviewScreen}
+	panes, err := gridHostPanes(b, "local", "local")
+	if err != nil {
+		t.Fatalf("gridHostPanes: %v", err)
+	}
+	got := map[string]string{}
+	for _, p := range panes {
+		got[p.PaneID] = p.AgentStatus
+	}
+	if got["p1"] != "blocked" {
+		t.Errorf("plan-mode omp pane status = %q, want blocked", got["p1"])
+	}
+	if got["p2"] != "idle" {
+		t.Errorf("non-plan omp pane status = %q, want idle (lasso claims no gate for it)", got["p2"])
+	}
+	if b.reads["p2"] {
+		t.Error("the grid must not screen-read a pane whose record never asked for plan mode")
+	}
+}
+
+// gridGateFake answers the enumeration gridHostPanes makes: two idle omp panes,
+// both showing the same screen, and it records which panes were read so a test
+// can prove the poll didn't read the one it had no reason to.
+type gridGateFake struct {
+	*memBackend
+	screen string
+	reads  map[string]bool
+}
+
+func (b *gridGateFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+	switch method {
+	case "pane.list":
+		raw, _ := json.Marshal(map[string]any{"panes": []map[string]any{
+			{"pane_id": "p1", "agent": "omp", "agent_status": "idle", "workspace_id": "w1", "tab_id": "t1"},
+			{"pane_id": "p2", "agent": "omp", "agent_status": "idle", "workspace_id": "w1", "tab_id": "t1"},
+		}})
+		return raw, nil
+	case "pane.read":
+		if p, ok := params.(map[string]any); ok {
+			if id, ok := p["pane_id"].(string); ok {
+				if b.reads == nil {
+					b.reads = map[string]bool{}
+				}
+				b.reads[id] = true
+			}
+		}
+		raw, _ := json.Marshal(map[string]any{"read": map[string]any{"text": b.screen}})
+		return raw, nil
+	}
+	return json.RawMessage(`{}`), nil
+}
+
 // list_agents applies the gate check with whatever backend it got, and it got
 // none when the host's herdr enumeration failed. That must leave the status
 // alone, not panic and not invent a gate nobody could look for.

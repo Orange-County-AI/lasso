@@ -83,11 +83,26 @@ func stageOmpPlanConfig(b Backend, agentID string) (string, error) {
 // So lasso reads the screen for it. ompGateStatus asks paneShowsOmpPlanReview
 // when herdr says an omp pane is at rest, and reports "blocked" when the overlay
 // is up. It is applied on the three MCP surfaces the plan_mode contract names —
-// wait_agent (via paneAgentStatus), get_agent and list_agents — each of which
-// already holds the pane it is about, so the extra read is one per resting omp
-// agent per call. The web grid (fetchGridPanes) keeps herdr's answer instead: it
-// renders every pane on every host from one enumeration on a 2s poll, where the
-// same check would be a screen read per pane per poll forever.
+// wait_agent (via paneAgentStatus), get_agent and list_agents — and on the grid
+// (gridHostPanes), which feeds lasso's own pane rail and switcher. The grid runs
+// on a poll, so there it is narrowed to the panes whose RECORD says lasso
+// launched them in plan mode: that is the only population that can be at the
+// gate lasso promised, and it is usually empty.
+//
+// What this cannot reach is HERDR's own sidebar, which renders herdr's answer
+// and not lasso's. herdr accepts a state report only from the source that
+// already owns the pane's agent lifecycle: a report from a "lasso" source is
+// dropped, and reporting as "herdr:omp" instead outranks the real integration's
+// seq counter — that counter is seeded at the omp process's START time, so a
+// report stamped with the current time wins forever and the pane's status
+// freezes at whatever lasso last said. Both were measured, the second by
+// wedging a probe pane at "blocked" while omp was demonstrably working. The
+// integration does expose a `herdr:blocked` event another omp extension could
+// emit, and omp takes a per-run `-e <file>` so lasso could stage one — but omp
+// fires no extension event when the plan review opens (a probe extension
+// subscribed to every documented event sees `agent_end` and then nothing), so
+// there is nothing for such an extension to hang off. Making herdr's sidebar
+// agree needs a change in omp or in herdr's omp integration, not here.
 
 // ompGateStatus is that upgrade: given the agent kind and status herdr reported
 // for a pane, it returns "blocked" when the pane is an omp parked on its plan
