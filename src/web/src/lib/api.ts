@@ -280,6 +280,9 @@ export interface ThemePayload {
   // Whether lasso mirrors the theme into agent CLIs' theme files (opencode,
   // Claude Code, omp) — the "Sync agent themes" toggle.
   sync_agent_themes: boolean
+  // Hosts ("local" or ssh aliases) lasso writes no theme to at all — neither
+  // herdr's config.toml nor any agent theme file. Everything else syncs.
+  theme_sync_off: string[]
 }
 
 // httpError builds a concise Error from a non-OK response. lasso/herdr return
@@ -484,6 +487,14 @@ export const api = {
   setSyncAgentThemes: (enabled: boolean) =>
     postJSON<{ ok: boolean; sync_agent_themes: boolean }>("/api/theme-set", {
       sync_agent_themes: enabled,
+    }),
+  // Switches every theme write lasso makes to ONE host on or off ("local" or an
+  // ssh alias): herdr's config.toml there plus its agent theme files. Turning it
+  // back on pushes the current theme to that host right away when it's reachable.
+  setHostThemeSync: (host: string, enabled: boolean) =>
+    postJSON<{ ok: boolean; theme_sync_off: string[] }>("/api/theme-set", {
+      theme_sync_host: host,
+      theme_sync: enabled,
     }),
 
   // Whether new agents are re-titled from their prompt by a local agent CLI

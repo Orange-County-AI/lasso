@@ -103,6 +103,14 @@ own monochrome design system, not herdr's palette. It follows your **system
 light/dark** preference (`prefers-color-scheme`), overridable in Settings →
 Appearance (System / Light / Dark, persisted per device).
 
+When lasso drives a **remote host**, a theme change is mirrored onto that machine
+too — `[theme].name` in its herdr config — and into the agent CLIs' own theme
+files on every host lasso syncs (Claude Code, OpenCode, Oh My Pi, ghostty), so
+agents render in step with herdr. Settings → Herdr theme switches that off: "Sync
+agent themes" for the agent CLIs everywhere, or "Sync theme to hosts" per host,
+which leaves an unchecked machine's herdr config and agent themes entirely alone
+(re-checking it pushes the current theme straight back).
+
 ## Updating
 
 `lasso update` brings the binary up to date. It auto-detects the install:

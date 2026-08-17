@@ -97,6 +97,9 @@ type themePayload struct {
 	// SyncAgentThemes is the server-level toggle for mirroring the theme into
 	// agent CLIs' theme files (agentsync.go); flipped via POST /api/theme-set.
 	SyncAgentThemes bool `json:"sync_agent_themes"`
+	// ThemeSyncOff lists the hosts ("local" or ssh aliases) lasso writes no
+	// theme to at all — the per-host opt-out, also flipped via /api/theme-set.
+	ThemeSyncOff []string `json:"theme_sync_off"`
 }
 
 func defaultSock() string {
@@ -229,6 +232,7 @@ func runServer() {
 			Themes:          themeOptions,
 			Forced:          *themeName != "" && *themeName != "auto",
 			SyncAgentThemes: syncAgentThemesEnabled(),
+			ThemeSyncOff:    themeSyncOffHosts(),
 		})
 	})
 	mux.HandleFunc("/api/theme-set", serveThemeSet)
@@ -1098,7 +1102,8 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 // so the browser repaints chrome + terminals), and the running herdr server is
 // asked to reload its config over the API socket. When a remote host is the
 // active backend, the change is mirrored onto it too (same as a host switch), so
-// its terminals track the theme.
+// its terminals track the theme — unless that host's theme sync is switched off
+// (theme_sync_off, also edited here).
 func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1110,6 +1115,11 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 		// theme files (see agentsync.go); nil leaves the setting unchanged.
 		// Sent alone (no name) it only flips the setting.
 		SyncAgentThemes *bool `json:"sync_agent_themes"`
+		// ThemeSyncHost + ThemeSync flip ONE host's theme sync ("local" or an
+		// ssh alias): false stops every theme write lasso makes to that host,
+		// true resumes them. Sent alone (no name) they only update that host.
+		ThemeSyncHost string `json:"theme_sync_host"`
+		ThemeSync     *bool  `json:"theme_sync"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -1121,8 +1131,30 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.ThemeSync != nil {
+		// An empty host would silently mean "local"; a caller flipping a host's
+		// sync has to name it, and it has to be one lasso can address at all.
+		if req.ThemeSyncHost == "" || !hostAddressable(req.ThemeSyncHost) {
+			http.Error(w, fmt.Sprintf("unknown host %q", req.ThemeSyncHost), http.StatusBadRequest)
+			return
+		}
+		if err := setThemeSyncFor(req.ThemeSyncHost, *req.ThemeSync); err != nil {
+			http.Error(w, "save setting: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if *req.ThemeSync {
+			// Switching sync back on converges that host now rather than at its
+			// next theme or host switch. Off the request path: reaching a remote
+			// costs an ssh round trip, and an unreachable one just logs.
+			go convergeThemeSyncFor(req.ThemeSyncHost)
+		}
+	}
 	if req.Name == "" {
-		writeJSON(w, map[string]any{"ok": true, "sync_agent_themes": syncAgentThemesEnabled()})
+		writeJSON(w, map[string]any{
+			"ok":                true,
+			"sync_agent_themes": syncAgentThemesEnabled(),
+			"theme_sync_off":    themeSyncOffHosts(),
+		})
 		return
 	}
 	name := normalizeThemeName(req.Name)
