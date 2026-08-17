@@ -14,6 +14,10 @@ export interface ActiveState {
   // Bumps whenever the persisted UI prefs change (any tab saving /api/ui-state)
   // so every open tab refetches and converges.
   ui_state_rev?: number
+  // The host `cwd` lives on — normally the active host, but the focused pane
+  // may be an ssh window onto another host's herdr, in which case this is that
+  // host and file/diff requests must address it explicitly.
+  cwd_host?: string
 }
 
 // One ssh-config host as a herdr target. Selectable in the footer switcher only
@@ -663,8 +667,13 @@ export const api = {
   // rendered in the bottom UsageFooter.
   usage: () => getJSON<UsagePayload>("/api/usage"),
 
-  files: (path: string) =>
-    getJSON<DirListing>(`/api/files?path=${encodeURIComponent(path)}`),
+  // List a directory. `host` (omitted = the active backend) is the host the
+  // path lives on — the sidebar browses the focused pane's host, which can
+  // differ from the active one when the pane is an ssh window.
+  files: (path: string, host?: string) =>
+    getJSON<DirListing>(
+      withHost(`/api/files?path=${encodeURIComponent(path)}`, host)
+    ),
 
   // Optionally pass a host to read the file from that host (?host=); omitted =
   // the active backend. Used for previewing a file that lives on another host
@@ -673,26 +682,29 @@ export const api = {
     withHost(`/api/file?path=${encodeURIComponent(path)}`, host),
 
   // A URL that forces a browser download (Content-Disposition: attachment) and
-  // skips the preview size cap.
-  downloadURL: (path: string) =>
-    `/api/file?path=${encodeURIComponent(path)}&download=1`,
+  // skips the preview size cap. `host` targets the machine the path lives on.
+  downloadURL: (path: string, host?: string) =>
+    withHost(`/api/file?path=${encodeURIComponent(path)}&download=1`, host),
 
-  // Upload one or more files into an existing directory. Filenames are kept
-  // (basename only) — the server drops them into `dir`.
+  // Upload one or more files into an existing directory on `host` (omitted =
+  // the active backend). Filenames are kept (basename only) — the server drops
+  // them into `dir`.
   uploadFiles: async (
     dir: string,
-    files: File[]
+    files: File[],
+    host?: string
   ): Promise<{ ok: boolean; files: string[] }> => {
     const form = new FormData()
     form.append("dir", dir)
+    if (host) form.append("host", host)
     for (const f of files) form.append("files", f, f.name)
     const r = await fetch("/api/file-upload", { method: "POST", body: form })
     if (!r.ok) throw await httpError(r)
     return r.json()
   },
 
-  fileText: async (path: string) => {
-    const r = await fetch(api.fileURL(path))
+  fileText: async (path: string, host?: string) => {
+    const r = await fetch(api.fileURL(path, host))
     if (!r.ok) throw await httpError(r)
     return r.text()
   },
@@ -701,9 +713,9 @@ export const api = {
   // download — so a binary preview can poll for on-disk changes and only reload
   // when the file actually changed. Returns null on any failure (the caller
   // treats that as "no change observed").
-  fileSig: async (path: string): Promise<string | null> => {
+  fileSig: async (path: string, host?: string): Promise<string | null> => {
     try {
-      const r = await fetch(api.fileURL(path), { method: "HEAD" })
+      const r = await fetch(api.fileURL(path, host), { method: "HEAD" })
       if (!r.ok) return null
       const lm = r.headers.get("last-modified") ?? ""
       const len = r.headers.get("content-length") ?? ""
@@ -713,36 +725,46 @@ export const api = {
     }
   },
 
-  // Overwrite an existing file with new content (preserving its mode).
-  writeFile: (path: string, content: string) =>
-    postJSON<{ ok: boolean }>("/api/file-write", { path, content }),
+  // Overwrite an existing file on `host` (omitted = the active backend) with
+  // new content (preserving its mode).
+  writeFile: (path: string, content: string, host?: string) =>
+    postJSON<{ ok: boolean }>("/api/file-write", { path, content, host }),
 
-  // Delete a file or directory (directories recursively).
-  deleteFile: (path: string) =>
-    postJSON<{ ok: boolean }>("/api/file-delete", { path }),
+  // Delete a file or directory on `host` (directories recursively).
+  deleteFile: (path: string, host?: string) =>
+    postJSON<{ ok: boolean }>("/api/file-delete", { path, host }),
 
-  // Rename an entry in place; `name` is a bare basename kept in the same dir.
-  renameFile: (path: string, name: string) =>
-    postJSON<{ ok: boolean; path: string }>("/api/file-rename", { path, name }),
+  // Rename an entry in place on `host`; `name` is a bare basename kept in the
+  // same dir.
+  renameFile: (path: string, name: string, host?: string) =>
+    postJSON<{ ok: boolean; path: string }>("/api/file-rename", {
+      path,
+      name,
+      host,
+    }),
 
   // Diff metadata: the complete changed-file list with per-file counts (no diff
-  // text — that's fetched per file via diffFile).
-  diff: (path: string) => {
+  // text — that's fetched per file via diffFile). `host` (omitted = the active
+  // backend) is the machine the repo lives on — the cwd the sidebar follows can
+  // sit on another host than the active one.
+  diff: (path: string, host?: string) => {
     const params = new URLSearchParams({
       path,
       mode: "auto",
       ignoreWhitespace: "true",
     })
-    return getJSON<DiffPayload>(`/api/diff?${params}`)
+    return getJSON<DiffPayload>(withHost(`/api/diff?${params}`, host))
   },
 
   // The unified diff for a single file, pinned to the same comparison the list
   // is showing (mode "branch" | "working", plus the base branch in branch mode).
+  // `host` (omitted = the active backend) is the machine the repo lives on.
   diffFile: (
     path: string,
     file: string,
     mode: "branch" | "working",
-    baseBranch?: string
+    baseBranch?: string,
+    host?: string
   ) => {
     const params = new URLSearchParams({
       path,
@@ -751,7 +773,7 @@ export const api = {
       ignoreWhitespace: "true",
     })
     if (baseBranch) params.set("baseBranch", baseBranch)
-    return getJSON<FileDiff>(`/api/diff-file?${params}`)
+    return getJSON<FileDiff>(withHost(`/api/diff-file?${params}`, host))
   },
 
   focus: (workspace_id?: string, tab_id?: string) =>

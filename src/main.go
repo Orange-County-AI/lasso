@@ -703,6 +703,7 @@ type Active struct {
 	ThemeRev       int    `json:"theme_rev"`    // bumps when herdr's resolved theme changes (config.toml edited)
 	HerdrUp        bool   `json:"herdr_up"`     // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
 	Host           string `json:"host"`         // active host: "local" or an ssh-config alias
+	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's herdr; the sidebar browses Cwd on this host
 	TermRev        int    `json:"term_rev"`     // bumps on host switch so the browser reloads the terminal iframes
 	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
 }
@@ -755,7 +756,7 @@ func fetchActive() (Active, string, error) {
 		PaneID: fp.PaneID, WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: agent, AgentStatus: status,
 	}
-	a.Cwd, a.CwdSource = activeCwd(*fp)
+	a.Cwd, a.CwdSource, a.CwdHost = activeCwd(*fp)
 	a.TabLabel = tabLabel(fp.TabID)
 	for _, w := range wl.Workspaces {
 		if w.WorkspaceID == a.WorkspaceID {
@@ -1467,12 +1468,6 @@ const (
 	maxUntracked = 256 << 10 // 256 KiB per synthesized untracked-file diff
 )
 
-// gitOut runs `git -C dir args...` on the active host and returns stdout. The
-// local implementation is gitOutLocal; remoteBackend runs git over SSH.
-func gitOut(dir string, args ...string) (string, error) {
-	return curBackend().GitOut(dir, args...)
-}
-
 // gitOutLocal runs `git -C dir args...` on this machine and returns stdout,
 // surfacing git's stderr in the error so the browser can show why a repo
 // couldn't be diffed. This is localBackend.GitOut.
@@ -1503,6 +1498,14 @@ func gitOutLocal(dir string, args ...string) (string, error) {
 // branch the comparison runs against) toggles. The response always reports the
 // working-tree dirty-file count so the UI can flag dirtiness in either mode.
 func serveDiff(w http.ResponseWriter, r *http.Request) {
+	// The diff runs on the host the request names (?host=, default active) so
+	// the sidebar can diff the FOCUSED pane's host even while the terminal grid
+	// is attached elsewhere.
+	be, err := namedHostBackend(r.URL.Query().Get("host"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	path := filepath.Clean(r.URL.Query().Get("path"))
 	if !filepath.IsAbs(path) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
@@ -1515,13 +1518,13 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 
 	_ = includeUntracked // untracked files are always included in the metadata list
 
-	root, err := gitOut(path, "rev-parse", "--show-toplevel")
+	root, err := be.GitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		http.Error(w, "not a git repo: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	root = strings.TrimSpace(root)
-	branch := strings.TrimSpace(mustGit(root, "rev-parse", "--abbrev-ref", "HEAD"))
+	branch := strings.TrimSpace(mustGit(be, root, "rev-parse", "--abbrev-ref", "HEAD"))
 
 	wsArg := func(base ...string) []string {
 		if ignoreWS {
@@ -1532,7 +1535,7 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 
 	// working-tree status is always read so the dirty count is accurate even when
 	// showing the branch diff.
-	status := parseStatus(mustGit(root, "status", "--short"))
+	status := parseStatus(mustGit(be, root, "status", "--short"))
 	dirty := len(status)
 
 	var files []diffFile
@@ -1543,13 +1546,13 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	// other.
 	isBranchDiff := mode == "branch" || (mode != "working" && dirty == 0)
 	if isBranchDiff {
-		files, baseBranch = branchFiles(root, branch, baseOverride, wsArg)
+		files, baseBranch = branchFiles(be, root, branch, baseOverride, wsArg)
 		if baseBranch == "" {
 			isBranchDiff = false // no base to compare against → show the working tree
 		}
 	}
 	if !isBranchDiff {
-		files = workingFiles(root, status, wsArg)
+		files = workingFiles(be, root, status, wsArg)
 	}
 
 	writeJSON(w, map[string]any{
@@ -1564,7 +1567,14 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 // is showing (branch vs working); the per-file diff is capped at maxDiff (a
 // single genuinely huge file), reported via "truncated".
 func serveDiffFile(w http.ResponseWriter, r *http.Request) {
+	// Same host routing as serveDiff: the per-file diff must come from the host
+	// the file list was built on, or the paths wouldn't line up.
 	q := r.URL.Query()
+	be, err := namedHostBackend(q.Get("host"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	path := filepath.Clean(q.Get("path"))
 	file := q.Get("file")
 	if !filepath.IsAbs(path) {
@@ -1579,13 +1589,13 @@ func serveDiffFile(w http.ResponseWriter, r *http.Request) {
 	mode := q.Get("mode")
 	baseOverride := q.Get("baseBranch")
 
-	root, err := gitOut(path, "rev-parse", "--show-toplevel")
+	root, err := be.GitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		http.Error(w, "not a git repo: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	root = strings.TrimSpace(root)
-	branch := strings.TrimSpace(mustGit(root, "rev-parse", "--abbrev-ref", "HEAD"))
+	branch := strings.TrimSpace(mustGit(be, root, "rev-parse", "--abbrev-ref", "HEAD"))
 	wsArg := func(base ...string) []string {
 		if ignoreWS {
 			return append(base, "-w")
@@ -1597,18 +1607,18 @@ func serveDiffFile(w http.ResponseWriter, r *http.Request) {
 	if mode == "branch" {
 		base := baseOverride
 		if base == "" {
-			base = defaultBranch(root, branch)
+			base = defaultBranch(be, root, branch)
 		}
 		if base != "" {
-			if mb := strings.TrimSpace(mustGit(root, "merge-base", base, "HEAD")); mb != "" {
-				d = mustGit(root, wsArg("diff", mb+"..HEAD", "--", file)...)
+			if mb := strings.TrimSpace(mustGit(be, root, "merge-base", base, "HEAD")); mb != "" {
+				d = mustGit(be, root, wsArg("diff", mb+"..HEAD", "--", file)...)
 			}
 		}
 	} else {
 		// working tree vs HEAD (staged + unstaged combined); empty ⇒ untracked.
-		d = mustGit(root, wsArg("diff", "HEAD", "--", file)...)
+		d = mustGit(be, root, wsArg("diff", "HEAD", "--", file)...)
 		if d == "" {
-			d = untrackedDiff(root, file)
+			d = untrackedDiff(be, root, file)
 		}
 	}
 
@@ -1627,28 +1637,28 @@ func serveDiffFile(w http.ResponseWriter, r *http.Request) {
 // the caller can report what it tried to compare against.
 // branchFiles lists the files changed on this branch vs its base, with per-file
 // counts. Returns ("", nil) base when there's no base branch to compare against.
-func branchFiles(root, current, override string, wsArg func(...string) []string) ([]diffFile, string) {
+func branchFiles(be Backend, root, current, override string, wsArg func(...string) []string) ([]diffFile, string) {
 	base := override
 	if base == "" {
-		base = defaultBranch(root, current)
+		base = defaultBranch(be, root, current)
 	}
 	if base == "" {
 		return nil, ""
 	}
-	mb := strings.TrimSpace(mustGit(root, "merge-base", base, "HEAD"))
+	mb := strings.TrimSpace(mustGit(be, root, "merge-base", base, "HEAD"))
 	if mb == "" {
 		return nil, base
 	}
-	return fileList(root, wsArg, mb+"..HEAD"), base
+	return fileList(be, root, wsArg, mb+"..HEAD"), base
 }
 
 // workingFiles lists the working-tree changes (staged + unstaged vs HEAD) with
 // counts, then appends untracked files (which `git diff` omits).
-func workingFiles(root string, status []diffFile, wsArg func(...string) []string) []diffFile {
-	files := fileList(root, wsArg, "HEAD")
+func workingFiles(be Backend, root string, status []diffFile, wsArg func(...string) []string) []diffFile {
+	files := fileList(be, root, wsArg, "HEAD")
 	for _, f := range status {
 		if f.Status == "untracked" {
-			files = append(files, diffFile{Path: f.Path, Status: "untracked", Add: countAddedLines(root, f.Path)})
+			files = append(files, diffFile{Path: f.Path, Status: "untracked", Add: countAddedLines(be, root, f.Path)})
 		}
 	}
 	return files
@@ -1659,11 +1669,11 @@ func workingFiles(root string, status []diffFile, wsArg func(...string) []string
 // `--name-status`. --no-renames keeps paths plain so the two outputs align (a
 // rename shows as delete+add). Whitespace-only modifications (with -w) collapse
 // to 0/0 and are dropped, matching the per-file view that would show nothing.
-func fileList(root string, wsArg func(...string) []string, rangeArgs ...string) []diffFile {
+func fileList(be Backend, root string, wsArg func(...string) []string, rangeArgs ...string) []diffFile {
 	num := wsArg(append([]string{"diff", "--numstat", "--no-renames"}, rangeArgs...)...)
 	name := append([]string{"diff", "--name-status", "--no-renames"}, rangeArgs...)
-	counts, order := parseNumstat(mustGit(root, num...))
-	statuses := parseNameStatusMap(mustGit(root, name...))
+	counts, order := parseNumstat(mustGit(be, root, num...))
+	statuses := parseNameStatusMap(mustGit(be, root, name...))
 	var files []diffFile
 	for _, p := range order {
 		c := counts[p]
@@ -1709,13 +1719,13 @@ func numOrZero(s string) int {
 // countAddedLines returns the line count of a small text file, for an untracked
 // file's "+N" count (git omits untracked files from numstat). Mirrors the cap in
 // untrackedDiff so we never read a huge or binary file just to count lines.
-func countAddedLines(root, rel string) int {
+func countAddedLines(be Backend, root, rel string) int {
 	full := filepath.Join(root, rel)
-	info, err := curBackend().Stat(full)
+	info, err := be.Stat(full)
 	if err != nil || info.IsDir() || info.Size() > maxUntracked {
 		return 0
 	}
-	data, err := curBackend().ReadFile(full)
+	data, err := be.ReadFile(full)
 	if err != nil || isBinary(data) {
 		return 0
 	}
@@ -1726,10 +1736,10 @@ func countAddedLines(root, rel string) int {
 	return strings.Count(s, "\n") + 1
 }
 
-// mustGit runs a git command, returning "" on error (the diff endpoint treats
-// a missing sub-result as empty rather than failing the whole request).
-func mustGit(dir string, args ...string) string {
-	out, _ := gitOut(dir, args...)
+// mustGit runs a git command on be, returning "" on error (the diff endpoint
+// treats a missing sub-result as empty rather than failing the whole request).
+func mustGit(be Backend, dir string, args ...string) string {
+	out, _ := be.GitOut(dir, args...)
 	return out
 }
 
@@ -1786,8 +1796,8 @@ func parseNameStatusMap(s string) map[string]string {
 // defaultBranch resolves the repo's base branch for a branch-vs-base diff:
 // origin/HEAD if set, else main/master — never the current branch (that would
 // diff a branch against itself).
-func defaultBranch(root, current string) string {
-	if ref, err := gitOut(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+func defaultBranch(be Backend, root, current string) string {
+	if ref, err := be.GitOut(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		ref = strings.TrimSpace(ref) // e.g. "origin/main"
 		if i := strings.LastIndex(ref, "/"); i >= 0 {
 			ref = ref[i+1:]
@@ -1800,7 +1810,7 @@ func defaultBranch(root, current string) string {
 		if b == current {
 			continue
 		}
-		if _, err := gitOut(root, "rev-parse", "--verify", "--quiet", b); err == nil {
+		if _, err := be.GitOut(root, "rev-parse", "--verify", "--quiet", b); err == nil {
 			return b
 		}
 	}
@@ -1809,13 +1819,13 @@ func defaultBranch(root, current string) string {
 
 // untrackedDiff synthesizes an "all added" unified diff for an untracked file
 // (git diff omits untracked files), so the Diff view can preview new files too.
-func untrackedDiff(root, rel string) string {
+func untrackedDiff(be Backend, root, rel string) string {
 	full := filepath.Join(root, rel)
-	info, err := curBackend().Stat(full)
+	info, err := be.Stat(full)
 	if err != nil || info.IsDir() || info.Size() > maxUntracked {
 		return ""
 	}
-	data, err := curBackend().ReadFile(full)
+	data, err := be.ReadFile(full)
 	if err != nil {
 		return ""
 	}
@@ -2097,6 +2107,12 @@ func (h *hub) run(ctx context.Context) {
 		a.TermRev = h.termRev
 		a.UIStateRev = h.uiStateRev
 		a.Host = curBackend().Name()
+		// activeCwd fills CwdHost only when a resolver knows the host; an empty
+		// one (no focused pane, or a resolver that can't tell) defaults to the
+		// active host so the browser always has a concrete host to browse.
+		if a.CwdHost == "" {
+			a.CwdHost = a.Host
+		}
 		changed := a != h.cur
 		h.cur = a
 		clients := make([]chan Active, 0, len(h.clients))
@@ -2211,14 +2227,11 @@ type fileEntry struct {
 	Size int64  `json:"size,omitempty"`
 }
 
-// expandTilde resolves a leading ~ or ~/… to the current user's home
-// directory so the path input accepts the shorthand. Anything else (including
-// ~user, which we don't resolve) is returned unchanged.
-func expandTilde(p string) string { return expandTildeOn(curBackend(), p) }
-
-// expandTildeOn expands a leading ~ against a specific backend's home dir, so a
-// path can be resolved on a host other than the active one (e.g. listing a
-// remote host's repos for its Settings).
+// expandTildeOn expands a leading ~ or ~/… against a specific backend's home
+// directory so the path input accepts the shorthand on whichever host the
+// request targets — active or named (e.g. listing a remote host's repos for its
+// Settings). Anything else (including ~user, which we don't resolve) is
+// returned unchanged.
 func expandTildeOn(be Backend, p string) string {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return p
@@ -2234,12 +2247,20 @@ func expandTildeOn(be Backend, p string) string {
 }
 
 func serveFiles(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(expandTilde(r.URL.Query().Get("path")))
+	// Resolve the host FIRST so the tilde below expands against that host's
+	// home (a remote ~ must not become the local home) and a bogus alias is
+	// refused before anything touches a filesystem.
+	be, err := namedHostBackend(r.URL.Query().Get("host"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	path := filepath.Clean(expandTildeOn(be, r.URL.Query().Get("path")))
 	if !filepath.IsAbs(path) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	out, err := curBackend().ReadDir(path)
+	out, err := be.ReadDir(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2263,17 +2284,23 @@ func serveFileDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Path string `json:"path"`
+		Host string `json:"host"` // host to delete on (default active)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := filepath.Clean(expandTilde(req.Path))
+	be, err := namedHostBackend(req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	path := filepath.Clean(expandTildeOn(be, req.Path))
 	if !filepath.IsAbs(path) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	if err := curBackend().RemoveAll(path); err != nil {
+	if err := be.RemoveAll(path); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2290,12 +2317,18 @@ func serveFileRename(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
 		Name string `json:"name"`
+		Host string `json:"host"` // host to rename on (default active)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := filepath.Clean(expandTilde(req.Path))
+	be, err := namedHostBackend(req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	path := filepath.Clean(expandTildeOn(be, req.Path))
 	if !filepath.IsAbs(path) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
@@ -2306,11 +2339,11 @@ func serveFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dst := filepath.Join(filepath.Dir(path), name)
-	if _, err := curBackend().Lstat(dst); err == nil {
+	if _, err := be.Lstat(dst); err == nil {
 		http.Error(w, "a file with that name already exists", http.StatusConflict)
 		return
 	}
-	if err := curBackend().Rename(path, dst); err != nil {
+	if err := be.Rename(path, dst); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2328,17 +2361,23 @@ func serveFileWrite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
+		Host    string `json:"host"` // host to write on (default active)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := filepath.Clean(expandTilde(req.Path))
+	be, err := namedHostBackend(req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	path := filepath.Clean(expandTildeOn(be, req.Path))
 	if !filepath.IsAbs(path) {
 		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
-	info, err := curBackend().Stat(path)
+	info, err := be.Stat(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2347,7 +2386,7 @@ func serveFileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a file", http.StatusBadRequest)
 		return
 	}
-	if err := curBackend().WriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
+	if err := be.WriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2372,12 +2411,19 @@ func serveFileUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "parse upload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	dir := filepath.Clean(expandTilde(r.FormValue("dir")))
+	// The form's `host` field (default active) picks the filesystem `dir` names —
+	// resolved before the tilde expands, for the same reason as serveFiles.
+	be, err := namedHostBackend(r.FormValue("host"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	dir := filepath.Clean(expandTildeOn(be, r.FormValue("dir")))
 	if !filepath.IsAbs(dir) {
 		http.Error(w, "dir must be absolute", http.StatusBadRequest)
 		return
 	}
-	if info, err := curBackend().Stat(dir); err != nil {
+	if info, err := be.Stat(dir); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	} else if !info.IsDir() {
@@ -2396,7 +2442,7 @@ func serveFileUpload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid filename", http.StatusBadRequest)
 			return
 		}
-		if err := saveUpload(fh, filepath.Join(dir, name)); err != nil {
+		if err := saveUpload(be, fh, filepath.Join(dir, name)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -2405,16 +2451,17 @@ func serveFileUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "files": written})
 }
 
-// saveUpload streams one multipart file to dst on the active host, truncating
-// any existing file. Routes through the backend so an upload while a remote host
-// is active lands on that host (over SFTP), not the machine running lasso.
-func saveUpload(fh *multipart.FileHeader, dst string) error {
+// saveUpload streams one multipart file to dst on be, truncating any existing
+// file. The backend arrives as a parameter so an upload lands on the host the
+// request selected (over SFTP when that's a remote), not whichever host happens
+// to be active.
+func saveUpload(be Backend, fh *multipart.FileHeader, dst string) error {
 	src, err := fh.Open()
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	out, err := curBackend().Create(dst)
+	out, err := be.Create(dst)
 	if err != nil {
 		return err
 	}
@@ -2428,18 +2475,19 @@ func saveUpload(fh *multipart.FileHeader, dst string) error {
 const maxPreview = 2 << 20 // 2 MiB
 
 func serveFile(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(expandTilde(r.URL.Query().Get("path")))
-	if !filepath.IsAbs(path) {
-		http.Error(w, "path must be absolute", http.StatusBadRequest)
-		return
-	}
 	// Read from the host the request targets (?host=, default active) so a preview
 	// of a file that lives on another host — e.g. a screenshot just pasted onto the
 	// host an agent will run on — resolves there instead of 404ing against the
-	// active backend.
+	// active backend. Resolved BEFORE the tilde expands so ~ names that host's
+	// home, not the active one's.
 	be, err := reqHostBackend(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	path := filepath.Clean(expandTildeOn(be, r.URL.Query().Get("path")))
+	if !filepath.IsAbs(path) {
+		http.Error(w, "path must be absolute", http.StatusBadRequest)
 		return
 	}
 	info, err := be.Stat(path)

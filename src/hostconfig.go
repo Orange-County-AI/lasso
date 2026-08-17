@@ -230,6 +230,22 @@ func hostParam(r *http.Request) (string, bool) {
 	return host, gridHostAllowed(host)
 }
 
+// namedHostBackend resolves the backend an explicit host selector names — the
+// spine of every endpoint that operates on a chosen host's filesystem (the
+// sidebar's file/diff endpoints). Empty means the active host, so requests that
+// omit the selector keep pointing wherever the app is currently driving; the
+// gridHostAllowed gate refuses anything we may not drive (a bogus alias) before
+// a single path byte is expanded or read.
+func namedHostBackend(host string) (Backend, error) {
+	if host == "" {
+		host = curBackend().Name()
+	}
+	if !gridHostAllowed(host) {
+		return nil, fmt.Errorf("host %q not available", host)
+	}
+	return gridHostBackend(host)
+}
+
 // hostDefaults reads host's creator defaults from host's own lasso.db.
 func hostDefaults(host string) (creatorDefaults, error) {
 	if isLocalHost(host) {

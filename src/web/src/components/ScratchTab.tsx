@@ -17,7 +17,11 @@ import { typeIntoHerdr } from "@/lib/terminal"
 const STORAGE_KEY = "lasso-scratch"
 
 export function ScratchTab() {
-  const { activeCwd } = useApp()
+  // cwdHost matters here as much as activeCwd: the default save path lands
+  // under the focused pane's cwd, which can live on another host (an
+  // ssh-attached pane) — writing it without the host would create the file on
+  // the wrong machine.
+  const { activeCwd, cwdHost } = useApp()
   const [content, setContent] = React.useState(() => lsGet(STORAGE_KEY) ?? "")
   const [showSave, setShowSave] = React.useState(false)
   const [savePath, setSavePath] = React.useState("")
@@ -63,13 +67,13 @@ export function ScratchTab() {
     const path = savePath.trim()
     if (!path) return
     try {
-      await api.writeFile(path, content)
+      await api.writeFile(path, content, cwdHost ?? undefined)
       toast.success(`Saved to ${path}`)
       setShowSave(false)
     } catch (e) {
       toast.error((e as Error).message)
     }
-  }, [savePath, content])
+  }, [savePath, content, cwdHost])
 
   const onSaveKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
