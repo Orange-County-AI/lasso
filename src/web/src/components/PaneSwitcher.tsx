@@ -91,10 +91,18 @@ interface PaneSection {
   panes: HostPane[]
 }
 
-// PaneSwitcher: a Cmd+K command-palette over every herdr pane on every host.
-// Type to filter; ↑/↓ to move; Enter to open + focus the pane in the herdr
-// terminal (handing the keyboard straight to its xterm). It always searches the
-// full pane set across all hosts.
+// PaneSwitcher: a ⌘K command-palette over the panes of the ACTIVE host — which,
+// with herdr-mirror running, is the whole fleet anyway: every other machine's
+// workspaces are mirrored into this herdr as real local panes. Type to filter;
+// ↑/↓ to move; Enter to open + focus the pane in the herdr terminal (handing
+// the keyboard straight to its xterm).
+//
+// It deliberately drops the other hosts' rows /api/all-panes also carries. A
+// mirrored pane would otherwise be listed twice — once as the local mirror,
+// once as the remote pane it streams — and picking the remote copy switches
+// lasso's active host (a seconds-long terminal reload) to show what the mirror
+// row already had on screen. Nothing is lost from view: the rows still bucket by
+// the machine their work is on (see sections), so the fleet reads as the fleet.
 export function PaneSwitcher({
   open,
   onOpenChange,
@@ -127,14 +135,29 @@ export function PaneSwitcher({
   // already hands focus to the pane's terminal) from a cancel.
   const chosenRef = React.useRef(false)
 
+  // The host whose panes are listed. activeHost is null only until the first
+  // /api/active answer lands, and lasso boots on the local machine, so "local"
+  // is the right assumption for that instant.
+  const hostKey = activeHost ?? "local"
+
   // Shares the prefetched cross-host pane cache (same key), so the palette is
-  // usually instant; otherwise it fetches on open.
+  // usually instant; otherwise it fetches on open. The request stays the
+  // cross-host aggregation rather than one host's listing: its per-host success
+  // branch is also what reconciles lasso's agent records against herdr
+  // (fetchAllPanes → reconcileHostAgents), and this endpoint is the only thing
+  // that drives it on a schedule. The narrowing happens here.
   const q = useQuery({
     queryKey: qk.panes,
     queryFn: () => api.allPanes(),
     enabled: open,
   })
-  const livePanes = q.data?.panes ?? [] // backend order = newest first
+  // The active host's live panes, mirrors included — a mirror IS a local pane
+  // (it reports host "local" and names the machine it streams in mirror_host).
+  const livePanes = React.useMemo(
+    // backend order = newest first
+    () => (q.data?.panes ?? []).filter((p) => p.host === hostKey),
+    [q.data, hostKey]
+  )
 
   // Past agents (every one lasso spawned). Only fetched when the Active filter is
   // off, since that's the only mode that surfaces closed ones.
@@ -145,10 +168,11 @@ export function PaneSwitcher({
   })
 
   // Closed sessions = history rows whose herdr pane is no longer live: recorded
-  // agents and orphan worktree/scratch dirs alike. Diff against the live set by
-  // host+pane_id (a still-running agent already shows as its live pane) and by
-  // host+cwd (an orphan dir that's currently open is already a live pane), so
-  // nothing is listed twice.
+  // agents and orphan worktree/scratch dirs alike. Scoped to the active host
+  // like the live rows (the history endpoint spans every host), then diffed
+  // against the live set by host+pane_id (a still-running agent already shows as
+  // its live pane) and by host+cwd (an orphan dir that's currently open is
+  // already a live pane), so nothing is listed twice.
   const closedAgents = React.useMemo(() => {
     if (activeOnly) return [] as HostPane[]
     const livePaneIds = new Set(livePanes.map((p) => `${p.host}|${p.pane_id}`))
@@ -156,10 +180,11 @@ export function PaneSwitcher({
       livePanes.filter((p) => p.cwd).map((p) => `${p.host}|${p.cwd}`)
     )
     return (hist.data?.agents ?? [])
+      .filter((a) => a.host === hostKey)
       .filter((a) => !livePaneIds.has(`${a.host}|${a.pane_id}`))
       .filter((a) => !a.cwd || !liveCwds.has(`${a.host}|${a.cwd}`))
       .map((a) => ({ ...a, closed: true }))
-  }, [activeOnly, livePanes, hist.data])
+  }, [activeOnly, hostKey, livePanes, hist.data])
 
   // Closed rows go after the live ones (newest live panes first, then closed
   // agents newest-first — see /api/agent-history, which orders by creation time

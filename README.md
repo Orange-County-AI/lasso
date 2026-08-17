@@ -10,8 +10,9 @@ server at `/mcp` so an agent can spawn and drive other agents through lasso.
 Two resizable, collapsible columns:
 
 - **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
-  header row with the host switcher, the ⌘K pane search (every pane on every
-  host, plus past sessions to reopen) and **New Agent**.
+  header row with the host switcher, the ⌘K pane search (every pane on the
+  active host — including the ones herdr-mirror streams in from other machines —
+  plus past sessions to reopen) and **New Agent**.
 - **Right** — the git **Diff** of the focused pane's repo (working tree, or the
   branch vs. its base when clean), a **Files** browser that follows the active
   pane's directory and opens files in a markdown/code/image viewer, a **Browser**

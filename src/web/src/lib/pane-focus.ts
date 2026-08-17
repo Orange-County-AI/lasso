@@ -35,13 +35,17 @@ export function usePaneFocusPending(): boolean {
 // focusPaneInHerdr makes a pane herdr's focused pane and hands the keyboard to
 // the terminal showing it — the ⌘K switcher's open path. If the pane is on
 // another host, switch there first (which reloads the herdr terminal onto that
-// host), then focus its tab.
+// host), then focus its tab. The switcher only offers the active host's panes
+// now, so that switch is a guard for the one window where they can disagree:
+// before the first /api/active answer lands the palette assumes "local", and
+// focusing a local pane's tab through a remote active backend would land on the
+// wrong host's herdr entirely.
 //
 // It pushes one browser history entry for the host it lands on, so Back returns
 // to the host the jump started from. The pane id is deliberately absent from
-// that entry (see restoreHost), so a same-host jump produces an entry identical
-// to the current one — pushQueryParam collapses that into a replace rather than
-// a dead Back step.
+// that entry (see restoreHost), so a same-host jump — now the normal case —
+// produces an entry identical to the current one, which pushQueryParam collapses
+// into a replace rather than a dead Back step.
 export async function focusPaneInHerdr(p: HostPane, activeHost: string | null) {
   // Match HostSwitcher's convention of omitting ?host for the local machine.
   pushQueryParam("host", p.host === "local" ? null : p.host)
