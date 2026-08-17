@@ -37,11 +37,16 @@ import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
-import { restorePaneFocus } from "@/lib/pane-focus"
+import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
-import { getQueryParam, pushQueryParam, setQueryParam } from "@/lib/url"
+import {
+  getQueryParam,
+  pushQueryParam,
+  setQueryParam,
+  setQueryParams,
+} from "@/lib/url"
 import { cn } from "@/lib/utils"
 
 type LeftView = "herdr" | "grid"
@@ -261,10 +266,10 @@ function Shell() {
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
   const ui = useUIState()
 
-  // The live focused pane + active host (SSE-driven). The pane is reflected in
-  // the URL so Back/Forward can re-focus it; the host is mirrored into a ref so
-  // the (referentially stable) popstate handler always sees the current host.
-  const { activePaneID, host } = useApp()
+  // The active host (SSE-driven), mirrored into a ref so the (referentially
+  // stable) popstate handler always sees the current one. herdr's focused pane
+  // is deliberately NOT part of the URL — see lib/url.
+  const { host } = useApp()
   const hostRef = React.useRef(host)
   hostRef.current = host
 
@@ -316,29 +321,19 @@ function Shell() {
   React.useEffect(syncViewportHeight, [])
 
   // Reflect the initial tab in the query string once on mount — this also
-  // clears any legacy #hash (setQueryParam drops the fragment). The initial
-  // value is captured in a ref so the effect needs no reactive deps.
+  // clears any legacy #hash (setQueryParam drops the fragment) and any stale
+  // ?pane= from a link written before pane focus left the URL, so we never look
+  // like we honor a param we ignore. The initial value is captured in a ref so
+  // the effect needs no reactive deps.
   const initialView = React.useRef(leftView)
   React.useEffect(() => {
-    setQueryParam("view", initialView.current)
+    setQueryParams({ view: initialView.current, pane: null })
   }, [])
 
-  // Reflect the focused pane in the URL (replaceState; cleared when none) so the
-  // current history entry always names the pane on screen. Pushed entries are
-  // created only by an explicit ⌘K/Grid navigation (see focusPaneInHerdr); this
-  // effect fires on the SSE-driven pane change, not on those pushes, so it never
-  // clobbers a freshly-pushed entry — the previous entry keeps the previous
-  // pane, which is exactly what Back should restore.
-  React.useEffect(() => {
-    setQueryParam("pane", activePaneID)
-  }, [activePaneID])
-
-  // Back/forward drives the active left tab from the URL, and — when returning
-  // to a Herdr entry that named a pane — re-focuses that pane (switching host
-  // first if needed), so Back after a ⌘K jump lands you back on the pane you
-  // came from, across hosts. Restoring is gated to the Herdr view: a Grid entry
-  // just shows the Grid (re-focusing a pane behind it would be an invisible
-  // backend change).
+  // Back/forward drives lasso's own state from the URL: the active left tab and,
+  // when the entry names a different one, the active host. The focused pane is
+  // not restored — that is herdr's state, and a browser history step must not
+  // re-point it (see lib/pane-focus's restoreHost).
   React.useEffect(() => {
     const onPop = () => {
       const v = getQueryParam("view") ?? ""
@@ -346,14 +341,11 @@ function Shell() {
         ? (v as LeftView)
         : "herdr"
       switchLeft(view, true)
-      const pane = getQueryParam("pane")
-      if (view === "herdr" && pane) {
-        restorePaneFocus(
-          getQueryParam("host") ?? "local",
-          pane,
-          hostRef.current,
-          () => switchLeft("herdr", true)
-        ).catch((e) => toast.error(`focus failed: ${(e as Error).message}`))
+      const host = getQueryParam("host") ?? "local"
+      if (host !== hostRef.current) {
+        restoreHost(host).catch((e) =>
+          toast.error(`host switch failed: ${(e as Error).message}`)
+        )
       }
     }
     window.addEventListener("popstate", onPop)
@@ -694,9 +686,9 @@ function Shell() {
           </ResizablePanel>
         </ResizablePanelGroup>
         {/* ⌘K pane switcher — searches every pane on every host, opens the chosen
-          one in the Herdr tab. focusPaneInHerdr pushes a history entry naming
-          the pane, so Back re-focuses the pane you came from (see the popstate
-          handler above). */}
+          one in the Herdr tab. focusPaneInHerdr pushes a history entry for the
+          tab + host it lands on (never the pane — herdr owns that), so Back from
+          a Grid → Herdr jump returns to the Grid. */}
         <PaneSwitcher
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

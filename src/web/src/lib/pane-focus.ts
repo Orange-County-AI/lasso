@@ -1,6 +1,5 @@
 import * as React from "react"
-import { api, type GridPane, type GridPayload } from "@/lib/api"
-import { qk, queryClient } from "@/lib/query"
+import { api, type GridPane } from "@/lib/api"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { pushQueryParams } from "@/lib/url"
 
@@ -73,9 +72,12 @@ export function focusPaneInPlace(p: GridPane, activeHost: string | null) {
 
 // focusPaneInHerdr is the user-initiated focus path, shared by the Grid tab
 // (header click) and the Cmd+K pane switcher. It pushes one browser history
-// entry encoding the target (view + host + pane) so Back/Forward re-focus the
-// pane you came from (see restorePaneFocus), then focuses the pane. The history
-// push happens here — callers' surfaceHerdr should only set the tab, not push.
+// entry for lasso's own view state (tab + host) so Back returns to where the
+// jump started, then focuses the pane. The pane id is deliberately absent from
+// that entry (see restoreHost), so a same-host jump produces an entry identical
+// to the current one — pushQueryParams collapses that into a replace rather
+// than a dead Back step. The push happens here — callers' surfaceHerdr should
+// only set the tab, not push.
 export async function focusPaneInHerdr(
   p: GridPane,
   activeHost: string | null,
@@ -85,35 +87,17 @@ export async function focusPaneInHerdr(
     view: "herdr",
     // Match HostSwitcher's convention of omitting ?host for the local machine.
     host: p.host === "local" ? null : p.host,
-    pane: p.pane_id,
   })
   await focusPaneCore(p, activeHost, surfaceHerdr)
 }
 
-// restorePaneFocus re-focuses the pane named by a history entry (host+pane_id)
-// on Back/Forward, *without* pushing a new entry. The full cross-host pane list
-// is cached under qk.grid (prefetched on load); look the pane up there, fetching
-// once if the cache is cold. If the pane is gone, fall back to at least
-// restoring the host so the user lands somewhere sensible.
-export async function restorePaneFocus(
-  host: string,
-  paneId: string,
-  activeHost: string | null,
-  surfaceHerdr: () => void
-) {
-  let data = queryClient.getQueryData<GridPayload>(qk.grid)
-  if (!data) {
-    data = await queryClient.fetchQuery<GridPayload>({
-      queryKey: qk.grid,
-      queryFn: () => api.gridPanes(),
-    })
-  }
-  const p = data?.panes.find(
-    (x: GridPane) => x.host === host && x.pane_id === paneId
-  )
-  if (p) {
-    await focusPaneCore(p, activeHost, surfaceHerdr)
-  } else if (host !== activeHost) {
-    await trackFocusWork(api.switchHost(host))
-  }
+// restoreHost re-points lasso at the host a history entry names, on
+// Back/Forward, without pushing an entry of its own. It is the whole of what a
+// history entry restores, because which pane herdr focuses is herdr's state,
+// not lasso's: it is global to the herdr session, shared with its TUI and every
+// other lasso client, so a browser Back — which the user reads as "undo my
+// navigation" — must not silently re-point it for everyone. The URL therefore
+// carries ?view= and ?host= (lasso's own tab and active backend) and no ?pane=.
+export async function restoreHost(host: string) {
+  await trackFocusWork(api.switchHost(host))
 }
