@@ -16,7 +16,6 @@ import {
 import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
 import {
-  type AgentRecord,
   ApiError,
   api,
   type CreateAgentPayload,
@@ -200,25 +199,11 @@ function hostUsable(h: HostInfo): boolean {
 }
 
 export function CreateAgentDialog({
-  onCreated,
-  onCloseFocus,
-  switchActiveHost = true,
   variant = "button",
 }: {
-  onCreated?: (rec: AgentRecord, host: string) => void
-  // Called on a create-driven close INSTEAD of the default herdr-terminal
-  // focus — lets App keep the keyboard in the grid when that's where the new
-  // agent will surface (see GridTab's focusRequest).
-  onCloseFocus?: () => void
-  // Whether to switch the UI's active host to the picked host before creating,
-  // so the Herdr terminal lands on the new agent. True from the Herdr view;
-  // false from the Grid view, where the create targets the picked host directly
-  // (the agent surfaces as its own grid cell) and switching would needlessly
-  // yank the active host — the very thing that made grid creates flaky.
-  switchActiveHost?: boolean
-  // "button" — the inline outline button on the Agents tab header.
+  // "button" — the inline outline button on a panel header.
   // "floating" — a pill matching the host switcher, for the bottom-left footer.
-  // "header" — a compact button for the left column's tab-strip trailing slot.
+  // "header" — a compact button for the left column's header row.
   variant?: "button" | "floating" | "header"
 }) {
   const [open, setOpen] = React.useState(false)
@@ -572,13 +557,10 @@ export function CreateAgentDialog({
       // host can actually read them. No-op when they're already there.
       const finalPrompt = await rehomePastedImages(prompt, selectedHost)
       // Land the user on the new agent by switching the active backend to the
-      // picked host (Herdr-view create) — the terminal then points at it. Grid
-      // creates skip this (switchActiveHost=false): the agent is created on the
-      // picked host DIRECTLY via the payload's `host`, so no switch is needed and
-      // the create no longer rides whatever host the grid last focused. Deferred
-      // to here (not on dropdown change) so previewing a host's repos while
-      // editing doesn't yank the Herdr tab onto another host.
-      if (switchActiveHost && selectedHost !== (activeHost ?? "local")) {
+      // picked host — the herdr terminal then points at it. Deferred to here
+      // (not on dropdown change) so previewing another host's repos while
+      // editing doesn't yank the terminal onto it.
+      if (selectedHost !== (activeHost ?? "local")) {
         await api.switchHost(selectedHost)
       }
       let uploadDir: string | undefined
@@ -590,7 +572,7 @@ export function CreateAgentDialog({
       }
       const payload: CreateAgentPayload = {
         // Target the picked host's backend directly (server resolves it via
-        // gridHostBackend), independent of the UI's active host.
+        // hostBackend), independent of the UI's active host.
         host: selectedHost,
         type,
         prompt: finalPrompt.trim(),
@@ -629,7 +611,6 @@ export function CreateAgentDialog({
       // so refetch them (prefix-match clears every host's cached config).
       queryClient.invalidateQueries({ queryKey: ["agent-config"] })
       queryClient.invalidateQueries({ queryKey: ["repos"] })
-      onCreated?.(rec, selectedHost)
     },
     onError: (err) => {
       toast.error("Failed to create agent", {
@@ -700,15 +681,13 @@ export function CreateAgentDialog({
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
         onCloseAutoFocus={(e) => {
-          // On a create-driven close, send focus to where the new agent will
-          // appear — the herdr terminal by default, or wherever onCloseFocus
-          // says (the grid). Otherwise (cancel / Esc) let Radix restore focus
-          // to the trigger as usual.
+          // On a create-driven close, hand the keyboard to the herdr terminal —
+          // the new agent's pane is already focused there. Otherwise (cancel /
+          // Esc) let Radix restore focus to the trigger as usual.
           if (createdRef.current) {
             createdRef.current = false
             e.preventDefault()
-            if (onCloseFocus) onCloseFocus()
-            else focusHerdrTerminal()
+            focusHerdrTerminal()
           }
         }}
       >

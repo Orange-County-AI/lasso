@@ -34,9 +34,9 @@ func cutPane(pane string) (ws, p string, ok bool) {
 	return pane, "", false
 }
 
-func gp(host, pane string) gridPane {
+func gp(host, pane string) hostPane {
 	ws, _, _ := cutPane(pane)
-	return gridPane{Host: host, PaneID: pane, WorkspaceID: ws}
+	return hostPane{Host: host, PaneID: pane, WorkspaceID: ws}
 }
 
 // liveIDs is the set of agent ids listAgents still returns for a host.
@@ -65,7 +65,7 @@ func TestReconcileClosesOnlyVanishedPanes(t *testing.T) {
 	if err := appendAgent("local", reapRec("gone", "w2:p1")); err != nil {
 		t.Fatal(err)
 	}
-	panes := []gridPane{gp("local", "w1:p1")}
+	panes := []hostPane{gp("local", "w1:p1")}
 
 	// One miss is not enough — a single absence must not condemn.
 	if n := reconcileHostAgents("local", panes); n != 0 {
@@ -98,8 +98,8 @@ func TestReconcileMissStreakResetsOnSight(t *testing.T) {
 	if err := appendAgent("local", reapRec("flicker", "w1:p1")); err != nil {
 		t.Fatal(err)
 	}
-	with := []gridPane{gp("local", "w1:p1")}
-	without := []gridPane{gp("local", "w9:p9")}
+	with := []hostPane{gp("local", "w1:p1")}
+	without := []hostPane{gp("local", "w9:p9")}
 
 	reconcileHostAgents("local", without) // miss 1
 	reconcileHostAgents("local", with)    // seen — streak resets
@@ -126,7 +126,7 @@ func TestReconcileIgnoresEmptyEnumeration(t *testing.T) {
 		}
 	}
 	if !liveIDs(t, "local")["a1"] {
-		t.Error("an empty pane listing closed a record")
+		t.Error("an empty pane enumeration closed a record")
 	}
 }
 
@@ -158,7 +158,7 @@ func TestReconcileSparesBootingAgents(t *testing.T) {
 	if err := appendAgent("local", noPane); err != nil {
 		t.Fatal(err)
 	}
-	panes := []gridPane{gp("local", "w1:p1")}
+	panes := []hostPane{gp("local", "w1:p1")}
 	for i := 0; i < agentReapMisses+2; i++ {
 		reconcileHostAgents("local", panes)
 	}
@@ -187,7 +187,7 @@ func TestReconcileIsPerHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	// local's herdr has no w1:p1 — but citadel's record names the same pane id.
-	panes := []gridPane{gp("local", "w5:p1")}
+	panes := []hostPane{gp("local", "w5:p1")}
 	for i := 0; i < agentReapMisses+1; i++ {
 		reconcileHostAgents("local", panes)
 	}
@@ -207,7 +207,7 @@ func TestTombstoneKeptForHistoryAndReopen(t *testing.T) {
 	if err := appendAgent("local", reapRec("hist", "w2:p1")); err != nil {
 		t.Fatal(err)
 	}
-	panes := []gridPane{gp("local", "w1:p1")}
+	panes := []hostPane{gp("local", "w1:p1")}
 	for i := 0; i < agentReapMisses; i++ {
 		reconcileHostAgents("local", panes)
 	}

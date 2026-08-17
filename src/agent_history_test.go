@@ -11,7 +11,7 @@ import (
 )
 
 // serveAgentHistory should return every recorded agent (across hosts) shaped as a
-// gridPane: the title in WorkspaceLabel, the work dir as Cwd, and the record id in
+// hostPane: the title in WorkspaceLabel, the work dir as Cwd, and the record id in
 // AgentID so the client can reopen it.
 func TestServeAgentHistory(t *testing.T) {
 	openTestDB(t)
@@ -29,7 +29,7 @@ func TestServeAgentHistory(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (%s)", rr.Code, rr.Body.String())
 	}
 	var out struct {
-		Agents []gridPane `json:"agents"`
+		Agents []hostPane `json:"agents"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -87,13 +87,13 @@ func TestServeAgentHistoryOrphanDirs(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (%s)", rr.Code, rr.Body.String())
 	}
 	var out struct {
-		Agents []gridPane `json:"agents"`
+		Agents []hostPane `json:"agents"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
-	byCwd := map[string]gridPane{}
+	byCwd := map[string]hostPane{}
 	for _, g := range out.Agents {
 		byCwd[g.Cwd] = g
 	}

@@ -331,7 +331,7 @@ func messageDispatchLoop(ctx context.Context) {
 		case <-msgKick:
 		case <-t.C:
 		}
-		dispatchPendingMessages(gridHostBackend)
+		dispatchPendingMessages(hostBackend)
 	}
 }
 

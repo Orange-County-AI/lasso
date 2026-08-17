@@ -180,7 +180,7 @@ func TestListAgentsIDsAllResolve(t *testing.T) {
 			t.Errorf("listed agent %q does not resolve: %v", a.ID, err)
 			continue
 		}
-		if _, ok := findGridPane(panes, tgt.PaneID); !ok {
+		if _, ok := findPane(panes, tgt.PaneID); !ok {
 			t.Errorf("listed agent %q resolves to pane %q that herdr does not have", a.ID, tgt.PaneID)
 		}
 	}

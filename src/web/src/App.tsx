@@ -3,13 +3,11 @@ import {
   ChevronRight,
   Files,
   Globe,
-  LayoutGrid,
   type LucideIcon,
   NotebookPen,
   Search,
   Settings,
   SquareTerminal,
-  Terminal,
 } from "lucide-react"
 import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
@@ -18,7 +16,6 @@ import { BrowserTab } from "@/components/BrowserTab"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
-import { type GridFocusRequest, GridTab } from "@/components/GridTab"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewTerminalDialog } from "@/components/NewTerminalDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
@@ -41,27 +38,10 @@ import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
-import {
-  getQueryParam,
-  pushQueryParam,
-  setQueryParam,
-  setQueryParams,
-} from "@/lib/url"
+import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type LeftView = "herdr" | "grid"
 type RightView = "files" | "scratch" | "browser" | "terminal" | "settings"
-
-const LEFT_VIEWS: LeftView[] = ["herdr", "grid"]
-
-// Below this *nav* width (px) the left column drops the Grid tab (and with it
-// the whole tab strip — Herdr is then the only view) and pins itself to Herdr.
-// The trigger is the measured strip width — NOT the viewport — because
-// the left column is only a fraction of the window (the sidebar eats the rest),
-// so a wide screen can still leave the nav too cramped for host + tabs + search
-// + New Agent without overlapping. The container queries below (`@container/lnav`)
-// collapse the search/New-Agent labels within this same shrinking strip.
-const GRID_HIDE_PX = 520
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -85,30 +65,18 @@ type TabDef = {
 // truncating the last tab to "Settin…" or forcing a horizontal scroll.
 function FitTabs({
   tabs,
-  leading,
-  center,
   trailing,
   listClassName,
-  onWidth,
 }: {
   tabs: TabDef[]
-  leading?: React.ReactNode
-  center?: React.ReactNode
   trailing?: React.ReactNode
   listClassName?: string
-  // Reports the strip's own width so a parent can drop tabs / switch views when
-  // the nav (not the viewport) gets too narrow. Fires on mount and on resize.
-  onWidth?: (width: number) => void
 }) {
-  const rootRef = React.useRef<HTMLDivElement>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const measureRef = React.useRef<HTMLDivElement>(null)
   const [compact, setCompact] = React.useState(false)
-  const onWidthRef = React.useRef(onWidth)
-  onWidthRef.current = onWidth
 
   React.useLayoutEffect(() => {
-    const root = rootRef.current
     const scroll = scrollRef.current
     const measure = measureRef.current
     if (!scroll || !measure) return
@@ -117,10 +85,8 @@ function FitTabs({
       // width is the space the labels need. If that can't fit the visible
       // track, switch to icons. The +1 absorbs sub-pixel rounding.
       setCompact(measure.scrollWidth > scroll.clientWidth + 1)
-      if (root) onWidthRef.current?.(root.clientWidth)
     }
     const ro = new ResizeObserver(check)
-    if (root) ro.observe(root)
     ro.observe(scroll)
     ro.observe(measure)
     check()
@@ -128,26 +94,11 @@ function FitTabs({
   }, [])
 
   return (
-    <TabsList ref={rootRef} className={cn(stripClass, listClassName)}>
-      {leading}
-      {/* A short vertical rule fences the leading control (host picker) off from
-          the tab group so the two idioms don't read as one jammed-together row.
-          Dropped when there are no tabs — nothing left to fence off. */}
-      {leading && tabs.length > 0 && (
-        <div aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-border" />
-      )}
-      {/* Tabs live in their own region; the leading/trailing controls stay fixed
-          on the row. no-scrollbar hides the scrollbar so it doesn't steal row
-          height. */}
+    <TabsList className={cn(stripClass, listClassName)}>
+      {/* no-scrollbar hides the scrollbar so it doesn't steal row height. */}
       <div
         ref={scrollRef}
-        className={cn(
-          "no-scrollbar relative flex min-w-0 overflow-x-auto",
-          // When a center slot is present the tabs size to their content so the
-          // centered element gets the remaining track; otherwise the tabs region
-          // grows to fill the row (and drives the icon-collapse measurement).
-          center ? "flex-none" : "flex-1"
-        )}
+        className="no-scrollbar relative flex min-w-0 flex-1 overflow-x-auto"
       >
         {tabs.map(({ value, label, icon: Icon, badge, className }) => (
           <TabsTrigger
@@ -176,9 +127,6 @@ function FitTabs({
           ))}
         </div>
       </div>
-      {center && (
-        <div className="flex min-w-0 flex-1 justify-center px-2">{center}</div>
-      )}
       {trailing}
     </TabsList>
   )
@@ -234,18 +182,8 @@ export function App() {
 }
 
 function Shell() {
-  const [leftView, setLeftView] = React.useState<LeftView>(() => {
-    // Prefer ?view=; fall back to a legacy #hash (migrated to a query param on
-    // first write below) so old links still land on the right tab.
-    const v = getQueryParam("view") ?? location.hash.slice(1)
-    return (LEFT_VIEWS as string[]).includes(v) ? (v as LeftView) : "herdr"
-  })
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
-  // A pending "focus this pane in the grid" request — set when an agent is
-  // created from the New Agent dialog while the Grid view is active.
-  const [gridFocusReq, setGridFocusReq] =
-    React.useState<GridFocusRequest | null>(null)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newTermOpen, setNewTermOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
@@ -282,37 +220,13 @@ function Shell() {
     }
   }, [])
 
-  // push=true adds a browser history entry (so Back returns to the previous
-  // view) instead of replacing the current one — used when focusing a Grid pane
-  // surfaces the Herdr tab, so Back goes back to the Grid.
-  const switchLeft = React.useCallback(
-    (name: LeftView, fromUrl = false, push = false) => {
-      setLeftView(name)
-      if (!fromUrl) (push ? pushQueryParam : setQueryParam)("view", name)
-    },
-    []
-  )
-
-  // When the nav strip is too narrow (see GRID_HIDE_PX) the Grid tab is dropped
-  // and the left column pins to Herdr — regardless of the persisted `?view=` or
-  // a resize while Grid was active. Keyed on the measured strip width (reported
-  // by FitTabs) so it fires whenever the sidebar squeezes the column, not just
-  // on a narrow viewport. `effectiveLeftView` drives rendering immediately; the
-  // effect normalizes the state + URL to match.
-  const [navWidth, setNavWidth] = React.useState(0)
-  const hideGrid = navWidth > 0 && navWidth < GRID_HIDE_PX
-  const effectiveLeftView: LeftView = hideGrid ? "herdr" : leftView
-  React.useEffect(() => {
-    if (hideGrid && leftView !== "herdr") switchLeft("herdr")
-  }, [hideGrid, leftView, switchLeft])
-
   // Warm the cross-host pane list in the background on load so the first ⌘K
   // pane-switcher search is instant instead of waiting on a fresh fetch. Shares
-  // qk.grid with the Grid tab and the switcher, so all three reuse one cache.
+  // qk.panes with the switcher, so both reuse one cache.
   React.useEffect(() => {
     void queryClient.prefetchQuery({
-      queryKey: qk.grid,
-      queryFn: () => api.gridPanes(),
+      queryKey: qk.panes,
+      queryFn: () => api.allPanes(),
     })
   }, [])
 
@@ -320,27 +234,20 @@ function Shell() {
   // input line never hides behind it (no-op on desktop).
   React.useEffect(syncViewportHeight, [])
 
-  // Reflect the initial tab in the query string once on mount — this also
-  // clears any legacy #hash (setQueryParam drops the fragment) and any stale
-  // ?pane= from a link written before pane focus left the URL, so we never look
-  // like we honor a param we ignore. The initial value is captured in a ref so
-  // the effect needs no reactive deps.
-  const initialView = React.useRef(leftView)
+  // Clear URL state we no longer honor, once on mount: a legacy #hash
+  // (setQueryParams drops the fragment), the ?view= of the retired left tab
+  // strip, and any stale ?pane= from a link written before pane focus left the
+  // URL — so we never look like we honor a param we ignore. ?host= is lasso's
+  // only URL state now, and HostSwitcher owns it.
   React.useEffect(() => {
-    setQueryParams({ view: initialView.current, pane: null })
+    setQueryParams({ view: null, pane: null })
   }, [])
 
-  // Back/forward drives lasso's own state from the URL: the active left tab and,
-  // when the entry names a different one, the active host. The focused pane is
-  // not restored — that is herdr's state, and a browser history step must not
-  // re-point it (see lib/pane-focus's restoreHost).
+  // Back/forward re-points lasso at the host the history entry names. The
+  // focused pane is not restored — that is herdr's state, and a browser history
+  // step must not re-point it (see lib/pane-focus's restoreHost).
   React.useEffect(() => {
     const onPop = () => {
-      const v = getQueryParam("view") ?? ""
-      const view = (LEFT_VIEWS as string[]).includes(v)
-        ? (v as LeftView)
-        : "herdr"
-      switchLeft(view, true)
       const host = getQueryParam("host") ?? "local"
       if (host !== hostRef.current) {
         restoreHost(host).catch((e) =>
@@ -350,7 +257,7 @@ function Shell() {
     }
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
-  }, [switchLeft])
+  }, [])
 
   // The sidebar's last open width (% of the group), so expanding restores it
   // rather than snapping to minSize. react-resizable-panels' expand() only
@@ -376,23 +283,17 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // ⌘G → Grid, ⌘H → Herdr, ⌘K → pane switcher, ⌘I → new terminal, ⌘\ → toggle
-  // the sidebar, ⌘/ → keyboard-shortcuts reference. Bound to the Cmd key only
-  // (not Ctrl) so it never clobbers terminal control keys like Ctrl-H
-  // (backspace). The herdr/shell terminal iframes re-dispatch Cmd-shortcuts to
-  // this document, so these work even while a terminal holds focus. (See
-  // SHORTCUTS, the reference list shown in Settings.)
+  // ⌘K → pane switcher, ⌘I → new terminal, ⌘\ → toggle the sidebar, ⌘/ →
+  // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
+  // never clobbers terminal control keys like Ctrl-H (backspace). The
+  // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
+  // these work even while a terminal holds focus. (See SHORTCUTS, the reference
+  // list shown in Settings.)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
       const k = e.key.toLowerCase()
-      if (k === "g") {
-        e.preventDefault()
-        switchLeft("grid")
-      } else if (k === "h") {
-        e.preventDefault()
-        switchLeft("herdr")
-      } else if (k === "\\") {
+      if (k === "\\") {
         e.preventDefault()
         toggleSidebar()
       } else if (k === "k") {
@@ -409,7 +310,7 @@ function Shell() {
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [switchLeft, toggleSidebar])
+  }, [toggleSidebar])
 
   // Apply the synced sidebar layout continuously — including changes arriving
   // from other tabs over SSE — not just once at load. The sidebar's footprint
@@ -472,109 +373,66 @@ function Shell() {
             minSize={15}
             className="flex h-full min-h-0 flex-col"
           >
-            <Tabs
-              value={effectiveLeftView}
-              onValueChange={(v) => switchLeft(v as LeftView)}
-              className="flex h-full flex-col gap-0"
+            {/* The left column's header row. It is not a tab strip: the column
+                is always the herdr terminal, so the row just carries the host
+                picker, the ⌘K search affordance and New Agent. Styled with the
+                sidebar's strip classes so both columns share one chrome, and
+                `@container/lnav` makes it the container the search / New-Agent
+                labels shrink against (see their `@min-[…]/lnav:` classes). */}
+            <div
+              className={cn(
+                stripClass,
+                "@container/lnav flex items-center pr-2 text-muted-foreground"
+              )}
             >
-              <FitTabs
-                onWidth={setNavWidth}
-                // When the strip is too narrow for Grid, Herdr is the only view —
-                // so drop the whole tab strip (a lone always-active "Herdr" tab is
-                // just noise) and give that room to the search bar.
-                tabs={
-                  hideGrid
-                    ? []
-                    : [
-                        { value: "herdr", label: "Herdr", icon: Terminal },
-                        { value: "grid", label: "Grid", icon: LayoutGrid },
-                      ]
-                }
-                leading={<HostSwitcher variant="nav" />}
-                center={
-                  <HeaderSearch
-                    onOpen={() => {
-                      setPaletteFromTerm(false)
-                      setPaletteOpen(true)
-                    }}
-                  />
-                }
-                // `@container/lnav` makes this strip the container the search /
-                // New-Agent labels shrink against (see their `@min-[…]/lnav:`
-                // classes). pr-2 keeps the trailing control off the edge.
-                listClassName="@container/lnav pr-2"
-                trailing={
-                  // New Agent sits at the far-right of the strip; when the sidebar
-                  // is collapsed the git status + expand control follow it.
-                  <div className="ml-2 flex items-center gap-1.5">
-                    {/* On create: from the Herdr view, surface the herdr terminal
-                      so the close handler can hand it the keyboard. From the
-                      Grid view, stay put — GridTab picks the new pane up via
-                      focusRequest and focuses its cell instead. */}
-                    <CreateAgentDialog
-                      variant="header"
-                      onCreated={(rec, host) => {
-                        if (leftView === "grid") {
-                          setGridFocusReq({
-                            host,
-                            paneId: rec.root_pane,
-                            workspaceId: rec.workspace_id,
-                            ts: Date.now(),
-                          })
-                        } else {
-                          switchLeft("herdr")
-                        }
-                      }}
-                      onCloseFocus={leftView === "grid" ? () => {} : undefined}
-                      // From the Grid view, create on the picked host directly
-                      // without switching the UI's active host (the agent shows
-                      // up as its own grid cell); from Herdr, switch so the
-                      // terminal lands on the new agent.
-                      switchActiveHost={leftView !== "grid"}
-                    />
-                    {collapsed && (
-                      <>
-                        {/* Git status at a glance while the file viewer is hidden:
-                          the uncommitted-change count (or a green dot when clean),
-                          mirroring the Files tab's badge. */}
-                        <GitStatusBadge
-                          dirty={diffDirty}
-                          ready={gitReady}
-                          textClassName="self-center text-[13px]"
-                        />
-                        <button
-                          type="button"
-                          className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                          title="show file viewer"
-                          onClick={expandSidebar}
-                        >
-                          <ChevronLeft className="size-4" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                }
-              />
-              <div className="relative min-h-0 flex-1">
-                <Pane show={effectiveLeftView === "herdr"}>
-                  <TerminalFrame
-                    id="term"
-                    src="/terminal/"
-                    title="Herdr terminal"
-                    suppressContext
-                    inputMode="herdr"
-                    hidden={effectiveLeftView !== "herdr"}
-                  />
-                </Pane>
-                <Pane show={effectiveLeftView === "grid"}>
-                  <GridTab
-                    active={effectiveLeftView === "grid"}
-                    onFocusInHerdr={() => switchLeft("herdr")}
-                    focusRequest={gridFocusReq}
-                  />
-                </Pane>
+              <HostSwitcher variant="nav" />
+              <div className="flex min-w-0 flex-1 justify-center px-2">
+                <HeaderSearch
+                  onOpen={() => {
+                    setPaletteFromTerm(false)
+                    setPaletteOpen(true)
+                  }}
+                />
               </div>
-            </Tabs>
+              {/* New Agent sits at the far-right of the row; when the sidebar
+                  is collapsed the git status + expand control follow it. */}
+              <div className="ml-2 flex items-center gap-1.5">
+                {/* The new agent's pane becomes herdr's focused pane, so the
+                    terminal below already shows it — the dialog's own close
+                    handler hands it the keyboard. */}
+                <CreateAgentDialog variant="header" />
+                {collapsed && (
+                  <>
+                    {/* Git status at a glance while the file viewer is hidden:
+                        the uncommitted-change count (or a green dot when clean),
+                        mirroring the Files tab's badge. */}
+                    <GitStatusBadge
+                      dirty={diffDirty}
+                      ready={gitReady}
+                      textClassName="self-center text-[13px]"
+                    />
+                    <button
+                      type="button"
+                      className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                      title="show file viewer"
+                      onClick={expandSidebar}
+                    >
+                      <ChevronLeft className="size-4" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <TerminalFrame
+                id="term"
+                src="/terminal/"
+                title="Herdr terminal"
+                suppressContext
+                inputMode="herdr"
+                hidden={false}
+              />
+            </div>
           </ResizablePanel>
 
           <ResizableHandle
@@ -685,23 +543,18 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
-        {/* ⌘K pane switcher — searches every pane on every host, opens the chosen
-          one in the Herdr tab. focusPaneInHerdr pushes a history entry for the
-          tab + host it lands on (never the pane — herdr owns that), so Back from
-          a Grid → Herdr jump returns to the Grid. */}
+        {/* ⌘K pane switcher — searches every pane on every host and focuses the
+          chosen one in the herdr terminal. focusPaneInHerdr pushes a history
+          entry for the host it lands on (never the pane — herdr owns that), so
+          Back returns to the host the jump started from. */}
         <PaneSwitcher
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
-          onFocusInHerdr={() => switchLeft("herdr")}
           termWasFocused={paletteFromTerm}
         />
         {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
-          agent) and drops the user into its shell in the Herdr tab. */}
-        <NewTerminalDialog
-          open={newTermOpen}
-          onOpenChange={setNewTermOpen}
-          surfaceHerdr={() => switchLeft("herdr")}
-        />
+          agent) and drops the user into its shell. */}
+        <NewTerminalDialog open={newTermOpen} onOpenChange={setNewTermOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />

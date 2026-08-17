@@ -55,19 +55,18 @@ func TestReapOrphanLassoSSH(t *testing.T) {
 		return p
 	}
 
-	deadCtl := mk("lasso-ctl-999999999-citadel-grid.sock") // pid can't exist
-	deadFwd := mk("lasso-herdr-999999999-citadel-grid.sock")
-	deadFwdClient := mk("lasso-herdr-999999999-citadel-grid-client.sock")
-	deadTerm := mk("lasso-gridterm-999999999-abcdef.sock")
-	aliveCtl := mk(fmt.Sprintf("lasso-ctl-%d-citadel-grid.sock", os.Getpid())) // our own pid: alive
-	bogus := mk("lasso-ctl-bogus")                                             // no pid segment
-	nonNumeric := mk("lasso-ctl-12x-0.sock")                                   // unparsable pid
-	unrelated := mk("lasso-something-else.sock")                               // wrong prefix
+	deadCtl := mk("lasso-ctl-999999999-citadel.sock") // pid can't exist
+	deadFwd := mk("lasso-herdr-999999999-citadel.sock")
+	deadFwdClient := mk("lasso-herdr-999999999-citadel-client.sock")
+	aliveCtl := mk(fmt.Sprintf("lasso-ctl-%d-citadel.sock", os.Getpid())) // our own pid: alive
+	bogus := mk("lasso-ctl-bogus")                                        // no pid segment
+	nonNumeric := mk("lasso-ctl-12x-0.sock")                              // unparsable pid
+	unrelated := mk("lasso-something-else.sock")                          // wrong prefix
 
-	if got := reapOrphanLassoSSH(context.Background(), tmp); got != 4 {
-		t.Errorf("removed = %d, want 4", got)
+	if got := reapOrphanLassoSSH(context.Background(), tmp); got != 3 {
+		t.Errorf("removed = %d, want 3", got)
 	}
-	for _, p := range []string{deadCtl, deadFwd, deadFwdClient, deadTerm} {
+	for _, p := range []string{deadCtl, deadFwd, deadFwdClient} {
 		if fileExists(p) {
 			t.Errorf("dead-owner file %s should have been removed", p)
 		}

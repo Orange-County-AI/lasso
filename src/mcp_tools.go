@@ -153,7 +153,7 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 // agentInfoFromPane is the agentInfo view of a foreign herdr session — a pane
 // lasso did not create (e.g. a long-lived bot). It has no lasso record, so only
 // the herdr-known fields are populated; SidebarName/RootPane are its address.
-func agentInfoFromPane(host string, gp gridPane) agentInfo {
+func agentInfoFromPane(host string, gp hostPane) agentInfo {
 	name := sidebarName(gp)
 	// A foreign session has no lasso record to take a title from, so its terminal
 	// title — what the agent says it is working on — is the closest thing, and
@@ -174,7 +174,7 @@ func agentInfoFromPane(host string, gp gridPane) agentInfo {
 // tab label when a workspace is unnamed, and last to the terminal title — which
 // for an agent pane is what it is working on, and the only name left when
 // nothing along the way was ever labelled.
-func sidebarName(gp gridPane) string {
+func sidebarName(gp hostPane) string {
 	if gp.WorkspaceLabel != "" {
 		return gp.WorkspaceLabel
 	}
@@ -198,7 +198,7 @@ type resolvedTarget struct {
 	Host   string
 	PaneID string
 	Record *AgentRecord // set when the target is a lasso-created agent
-	Pane   *gridPane    // set when the target is a foreign herdr session
+	Pane   *hostPane    // set when the target is a foreign herdr session
 }
 
 // info projects the target into the MCP-facing agentInfo, preferring the given
@@ -236,7 +236,7 @@ func (t resolvedTarget) agentKind() string {
 // collide: a name matching more than one agent/session is refused with the
 // candidates listed rather than guessed (names are only unique per host). recs
 // are the host's lasso agents; panes are its live herdr panes.
-func resolveTarget(host, needle string, recs []AgentRecord, panes []gridPane) (resolvedTarget, error) {
+func resolveTarget(host, needle string, recs []AgentRecord, panes []hostPane) (resolvedTarget, error) {
 	needle = strings.TrimSpace(needle)
 	if needle == "" {
 		return resolvedTarget{}, fmt.Errorf("a target (agent id, pane id, or name) is required")
@@ -308,28 +308,28 @@ func resolveTarget(host, needle string, recs []AgentRecord, panes []gridPane) (r
 // to a user should take hostHerdrPanesErr instead and say so: with no panes,
 // every live detail (status, sidebar name, foreign sessions) is silently
 // missing, which reads exactly like a host that simply has no agents.
-func hostHerdrPanes(b Backend, host string) []gridPane {
+func hostHerdrPanes(b Backend, host string) []hostPane {
 	gps, _ := hostHerdrPanesErr(b, host)
 	return gps
 }
 
 // hostHerdrPanesErr is hostHerdrPanes with the enumeration failure kept.
-func hostHerdrPanesErr(b Backend, host string) ([]gridPane, error) {
-	gps, err := gridHostPanes(b, host, host)
+func hostHerdrPanesErr(b Backend, host string) ([]hostPane, error) {
+	gps, err := enumerateHostPanes(b, host, host)
 	if err != nil {
 		return nil, err
 	}
 	return gps, nil
 }
 
-// findGridPane returns the enumerated pane with the given id.
-func findGridPane(panes []gridPane, paneID string) (gridPane, bool) {
+// findPane returns the enumerated pane with the given id.
+func findPane(panes []hostPane, paneID string) (hostPane, bool) {
 	for i := range panes {
 		if panes[i].PaneID == paneID {
 			return panes[i], true
 		}
 	}
-	return gridPane{}, false
+	return hostPane{}, false
 }
 
 // resolveAgentTarget is the tool-facing resolver behind get_agent/read_agent/
@@ -671,7 +671,7 @@ type createAgentIn struct {
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
-	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web grid still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web all-panes listing still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
@@ -766,7 +766,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	// yet answers with no agents is a contradiction, and the caller has to be
 	// able to tell which half of it to disbelieve.
 	b, err := resolveBackend(host)
-	var panes []gridPane
+	var panes []hostPane
 	if err == nil {
 		panes, err = hostHerdrPanesErr(b, host)
 	}
@@ -781,7 +781,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	if rerr != nil {
 		return nil, listAgentsOut{}, rerr
 	}
-	byPane := map[string]gridPane{}
+	byPane := map[string]hostPane{}
 	for _, gp := range panes {
 		byPane[gp.PaneID] = gp
 	}
@@ -973,7 +973,7 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 	}
 	// Re-enumerate so the returned agent carries a live status and sidebar name
 	// even when it resolved by id (the fast path skips herdr).
-	gp, ok := findGridPane(hostHerdrPanes(b, b.Name()), t.PaneID)
+	gp, ok := findPane(hostHerdrPanes(b, b.Name()), t.PaneID)
 	if ok {
 		t.Pane = &gp
 	}

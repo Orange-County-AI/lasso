@@ -133,11 +133,7 @@ export function FilesPanel() {
 
         {focusing && (
           <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background/70 text-muted-foreground text-xs">
-            <span
-              className="termcell-spinner"
-              role="status"
-              aria-label="loading"
-            />
+            <span className="spinner" role="status" aria-label="loading" />
             following pane…
           </div>
         )}

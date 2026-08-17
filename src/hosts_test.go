@@ -245,9 +245,9 @@ func TestDiscoverHostsServesReadyHostsWhileOneIsSlow(t *testing.T) {
 
 // TestDiscoverHostsDoesNotBlockOnRefreshWhenWarm: once the store holds real
 // results, a re-probe kicked in the background must not make readers wait for
-// it. The grid and the repo warmer poll discovery constantly; taxing them with
-// a grace period for data they already have would be the old all-or-nothing
-// stall in miniature.
+// it. The pane aggregation and the repo warmer poll discovery constantly; taxing
+// them with a grace period for data they already have would be the old
+// all-or-nothing stall in miniature.
 func TestDiscoverHostsDoesNotBlockOnRefreshWhenWarm(t *testing.T) {
 	resetHostStore(t)
 

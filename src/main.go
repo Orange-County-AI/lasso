@@ -240,14 +240,7 @@ func runServer() {
 	mux.HandleFunc("/api/file-write", serveFileWrite)
 	mux.HandleFunc("/api/file-upload", serveFileUpload)
 	mux.HandleFunc("/api/panes", servePanes)
-	mux.HandleFunc("/api/grid", serveGrid)
-	mux.HandleFunc("/api/grid/term", serveGridTerm)
-	mux.HandleFunc("/api/grid/term-touch", serveGridTermTouch)
-	mux.HandleFunc("/api/grid/term-release", serveGridTermRelease)
-	mux.HandleFunc("/api/grid/term-release-all", serveGridTermReleaseAll)
-	mux.HandleFunc("/api/grid/rename", serveGridRename)
-	mux.HandleFunc("/api/grid/close", serveGridClose)
-	mux.HandleFunc("/grid-term/", serveGridTermProxy)
+	mux.HandleFunc("/api/all-panes", serveAllPanes)
 	mux.HandleFunc("/api/ui-state", serveUIState)
 	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/api/rename", serveRename)
@@ -494,12 +487,6 @@ func shellCommand() string {
 // non-nil, overrides the child environment (the shell terminal passes
 // outsideHerdrEnv); nil inherits the viewer's env.
 func startTtyd(ctx context.Context, sock, basePath, command string, env []string) error {
-	return startTtydArgv(ctx, sock, basePath, strings.Fields(command), env)
-}
-
-// startTtydArgv is startTtyd with the child command given as an explicit argv,
-// for callers that build the argv themselves (the grid's per-pane attach).
-func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string, env []string) error {
 	// Bind a private unix socket (one per instance) rather than a shared TCP
 	// port, so concurrent prod/dev instances can't collide or cross-connect.
 	// Clear any stale socket left by a crashed prior run with this PID so ttyd
@@ -511,9 +498,8 @@ func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string,
 	// with herdr's chrome and the sidebar. Passed to ttyd via `-t theme=<json>`,
 	// which forwards it to xterm.js in the browser. Seed from the hub's *live*
 	// theme (the global `theme` is only the startup snapshot) so a terminal
-	// spawned after a theme change — e.g. a Grid cell, or a host-switch respawn —
-	// starts on the current palette rather than flashing the stale one before the
-	// browser re-applies it.
+	// spawned after a theme change or host-switch respawn starts on the current
+	// palette rather than flashing the stale one before the browser reapplies it.
 	xtheme := theme.xtermJSON()
 	if srvHub != nil {
 		xtheme = srvHub.themeSnapshot().xtermJSON()
@@ -535,7 +521,7 @@ func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string,
 		"-t", "cursorInactiveStyle=block",
 		"-t", "theme=" + xtheme,
 	}
-	args = append(args, cmdArgv...)
+	args = append(args, strings.Fields(command)...)
 	cmd := exec.Command("ttyd", args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	cmd.Env = env                                         // nil → inherit
@@ -543,7 +529,7 @@ func startTtydArgv(ctx context.Context, sock, basePath string, cmdArgv []string,
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	log.Printf("spawned ttyd (pid %d) %q @ %s", cmd.Process.Pid, strings.Join(cmdArgv, " "), basePath)
+	log.Printf("spawned ttyd (pid %d) %q @ %s", cmd.Process.Pid, command, basePath)
 	go func() {
 		<-ctx.Done()
 		// kill the whole process group (ttyd + the shell it spawned)
@@ -616,9 +602,9 @@ type pane struct {
 // viewer's old /proc-scraping workaround.)
 //
 // The focused pane — the one the file viewer follows — gets a better answer
-// from activeCwd, which asks the harness and the foreground process-group
-// leader before falling back here. This stays the cheap per-pane answer for the
-// grid, where a per-pane RPC and transcript read would be paid N times over.
+// from activeCwd, which asks the harness and foreground process-group leader
+// before falling back here. This stays the cheap per-pane answer for cross-host
+// aggregation, where a per-pane RPC and transcript read would be paid N times.
 func paneCwd(p pane) string {
 	if paneHasLiveAgent(p) {
 		if p.Cwd != "" {
@@ -644,8 +630,8 @@ func paneCwdUsesForeground(p pane) bool {
 // pane.list is by far herdr's most expensive method: as of 0.6.5 it resolves
 // every pane's foreground_cwd via the TTY + /proc on each call (~0.5–1.5s for a
 // busy session), versus <10ms for workspace.list/tab.list. The viewer hits it
-// from both the active-pane refresh loop and the grid endpoint, so a short
-// single-flight cache keeps a focus event, the periodic poll, and a grid fetch
+// from both the active-pane refresh loop and the pane endpoint, so a short
+// single-flight cache keeps a focus event, the periodic poll, and a pane fetch
 // that land close together from each paying the full cost. Event-driven
 // refreshes invalidate the cache first (see invalidatePaneList) so focus
 // changes never serve a stale snapshot.
@@ -699,7 +685,7 @@ type Active struct {
 	TabLabel       string `json:"tab_label"`
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
-	PanesRev       int    `json:"panes_rev"`    // bumps when the pane-grid layout (workspace order/membership) changes
+	PanesRev       int    `json:"panes_rev"`    // bumps when workspace order or pane membership changes
 	ThemeRev       int    `json:"theme_rev"`    // bumps when herdr's resolved theme changes (config.toml edited)
 	HerdrUp        bool   `json:"herdr_up"`     // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
 	Host           string `json:"host"`         // active host: "local" or an ssh-config alias
@@ -710,7 +696,7 @@ type Active struct {
 
 // fetchActive returns the focused-pane state plus a layout signature. The
 // signature captures workspace order + pane membership (see layoutSignature), so
-// the caller can detect when the pane grid needs to re-render — e.g. after a
+// the caller can detect when the pane list needs to re-render — e.g. after a
 // workspace is reordered in herdr — independently of focus changes.
 func fetchActive() (Active, string, error) {
 	res, err := herdrPaneList()
@@ -766,11 +752,10 @@ func fetchActive() (Active, string, error) {
 	return a, sig, nil
 }
 
-// layoutSignature is a deterministic string of the workspace order (number +
-// id + label) and pane→workspace/tab membership. It deliberately omits focus and
-// cwd, so it changes when workspaces are reordered/renamed or panes are
-// added/removed/moved — but NOT on a mere focus change (the grid's focus
-// highlight is updated separately, without a full reload).
+// layoutSignature is a deterministic string of workspace order (number + id +
+// label) and pane-to-workspace/tab membership. It deliberately omits focus and
+// cwd, so it changes for workspace and pane layout changes, but not a focus
+// move.
 func layoutSignature(panes []pane, wss []workspace) string {
 	ws := append([]workspace(nil), wss...)
 	sort.Slice(ws, func(i, j int) bool { return ws[i].Number < ws[j].Number })
@@ -806,11 +791,11 @@ func tabLabel(tabID string) string {
 }
 
 // ---------------------------------------------------------------------------
-// pane grid: list every pane + focus one
+// pane list: list every pane + focus one
 // ---------------------------------------------------------------------------
 
-// paneView is a herdr pane enriched with its workspace/tab labels (and ordering
-// numbers, used server-side for sorting) for display in the right column's grid.
+// paneView is a herdr pane enriched with workspace/tab labels and ordering
+// numbers for API consumers that need a labeled, sorted active-host pane list.
 type paneView struct {
 	PaneID         string `json:"pane_id"`
 	WorkspaceID    string `json:"workspace_id"`
@@ -939,9 +924,9 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// serveRename renames the tab a pane lives in. The grid labels each card with
-// its tab label, so renaming the *tab* is what visibly relabels the card
-// (pane.rename sets a pane name that herdr never surfaces in pane.list).
+// serveRename renames the tab a pane lives in. pane.rename sets a pane name
+// that herdr does not surface in pane.list, so the user-visible tab label is
+// the mutable name exposed by this endpoint.
 func serveRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -966,8 +951,8 @@ func serveRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// serveWorkspaceRename relabels a workspace (workspace.rename). The Agents grid
-// titles each card with its workspace label, so this is what visibly renames it.
+// serveWorkspaceRename relabels a workspace (workspace.rename), updating the
+// workspace label returned by pane-list APIs and agent records.
 func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -990,7 +975,7 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Keep the agent record's title — the address list_agents and message_agent
-	// surface over MCP — in step with what the grid now shows.
+	// surface over MCP — in step with what the pane listings now show.
 	_ = updateAgentTitleByWorkspace(curBackend().Name(), req.WorkspaceID, req.Label)
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -1027,8 +1012,8 @@ func closePane(ctx context.Context, id string) error {
 // which is treated as success since the goal (pane gone) is met. invalid_request
 // is our own bug, so it fails fast without burning retries. Honors ctx so a
 // client that walks away (closed tab / navigation) doesn't keep us hammering
-// herdr. closer is host-specific (the active backend for serveClose, a grid-pool
-// backend for serveGridClose) so the same resilience applies on every host.
+// herdr. closer is host-specific, so the same retry behavior applies wherever
+// a caller obtained the backend.
 func closePaneWith(ctx context.Context, closer func(string) error, id string) error {
 	var last error
 	for attempt := 0; attempt < closeAttempts; attempt++ {
@@ -1516,9 +1501,9 @@ func gitErrNoRepo(err error) bool {
 // branch the comparison runs against) toggles. The response always reports the
 // working-tree dirty-file count so the UI can flag dirtiness in either mode.
 func serveDiff(w http.ResponseWriter, r *http.Request) {
-	// The diff runs on the host the request names (?host=, default active) so
-	// the sidebar can diff the FOCUSED pane's host even while the terminal grid
-	// is attached elsewhere.
+	// The diff runs on the host the request names (?host=, default active) so the
+	// sidebar can diff the FOCUSED pane's host even while the terminal is attached
+	// to another one.
 	be, err := namedHostBackend(r.URL.Query().Get("host"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -1898,7 +1883,7 @@ func isBinary(b []byte) bool {
 // Reconnects on failure. Beyond the *.focused events that drive the active-pane
 // view, it listens to the workspace/tab/pane lifecycle events — notably
 // workspace.updated, which fires when workspaces are reordered — so the pane
-// grid's order and membership stay live.
+// list's order and membership stay live.
 func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
 	for ctx.Err() == nil {
 		conn, err := net.Dial("unix", curBackend().HerdrSock())
@@ -1972,7 +1957,7 @@ func notifyUI(n notice) {
 type hub struct {
 	mu         sync.RWMutex
 	cur        Active
-	rev        int    // pane-grid layout revision (bumped when lastSig changes)
+	rev        int    // pane-list layout revision (bumped when lastSig changes)
 	lastSig    string // last seen layout signature
 	themeRev   int    // theme revision (bumped when the resolved theme changes)
 	termRev    int    // host-switch revision (bumped so the browser reloads terminals)

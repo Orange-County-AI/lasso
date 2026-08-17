@@ -268,7 +268,7 @@ func serveRepoBranches(w http.ResponseWriter, r *http.Request) {
 	}
 	// Branches need only git on the host's filesystem (no db), so run them on the
 	// host's backend directly — no lasso CLI required on the remote.
-	be, err := gridHostBackend(host)
+	be, err := hostBackend(host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -313,12 +313,10 @@ func gitDefaultBranch(cur Backend, repo string) string {
 
 type createAgentReq struct {
 	// Host is the box to create the agent on ("local" or an ssh-config alias);
-	// empty means the active host. The web flow sends the host picked in the
-	// dialog so the create targets it DIRECTLY (via its own backend) rather than
-	// depending on the UI's active host having been switched there first — in the
-	// Grid view the active host is often a remote you merely navigated to, whose
-	// herdr connection may be flaky, and creating against it produced spurious
-	// "server unreachable" retry loops.
+	// empty means the active host. The New Agent dialog and MCP create_agent tool
+	// name a host explicitly, so creation targets that host's backend directly
+	// rather than requiring an active-host switch first. That prevents a request
+	// from riding an unrelated, possibly unavailable active backend.
 	Host         string `json:"host"`
 	Type         string `json:"type"`   // "git" | "scratch"
 	Prompt       string `json:"prompt"` // the agent's instruction; its first line is the title
@@ -363,19 +361,14 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Create on the requested host (default: active). When it's the active host we
-	// use the active backend as before; when it's a DIFFERENT host we target that
-	// host's own backend directly (like the MCP create_agent tool + the
-	// upload/paste handlers), so the agent lands where the user picked without the
-	// UI having to switch its active host there first. That switch requirement is
-	// what let a Grid-view create ride whatever (possibly dead/remote) host the
-	// grid last focused and 502-loop; picking the backend from the request removes
-	// the dependency entirely.
+	// Create on the requested host (default: active). A non-active host uses its
+	// own backend directly, as do the MCP create_agent tool and upload/paste
+	// handlers, so an explicitly named host never depends on a UI host switch.
 	host := req.Host
 	if host == "" {
 		host = curBackend().Name()
 	}
-	if !gridHostAllowed(host) {
+	if !hostAllowed(host) {
 		// Not a transient-tunnel failure — surface it (a retry can't help), so the
 		// browser shows a real error instead of the "resubmitting…" spinner.
 		http.Error(w, "host not available", http.StatusBadRequest)
@@ -384,7 +377,7 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 	be := curBackend()
 	if host != be.Name() {
 		var err error
-		if be, err = gridHostBackend(host); err != nil {
+		if be, err = hostBackend(host); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -423,7 +416,7 @@ func (e *createErr) Error() string { return e.err.Error() }
 // and waiting for its pane — happens afterward in bootAgent, off the response's
 // critical path, so the create_agent tool honors its "returns immediately" promise
 // even when the boot is slow. Shared by serveCreateAgent (active host) and the MCP
-// create_agent tool (any host, via gridHostBackend) — so every herdr/file call
+// create_agent tool (any host, via hostBackend) — so every herdr/file call
 // goes through b rather than the package-level helpers that always hit the active
 // host.
 func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {

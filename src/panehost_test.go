@@ -94,7 +94,7 @@ func TestSplitSSHDest(t *testing.T) {
 func TestPaneSSHHop(t *testing.T) {
 	// hostAliasFor only ever answers for a host lasso may drive; "local" is the
 	// one alias that is always allowed, so it stands in for a real one here.
-	// gridHostAllowed compares against the active host, so a backend must be
+	// hostAllowed compares against the active host, so a backend must be
 	// installed (in production one always is, from main).
 	swapBackend(t, &localBackend{})
 

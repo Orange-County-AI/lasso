@@ -29,10 +29,7 @@ import (
 //
 //   - herdr RPC + events: the remote herdr unix socket is forwarded (-L) to a
 //     local socket, which the shared dial code (herdrCallSock / subscribeEvents)
-//     points at — identical to the local case. herdr's streaming client socket
-//     (<sock>-client.sock, the transport `herdr terminal attach` uses for pty
-//     bytes) is forwarded alongside it, so grid pane attaches multiplex over
-//     this same connection instead of opening SSH connections of their own.
+//     points at — identical to the local case.
 //   - file ops: the SFTP subsystem (`ssh host -s sftp`), driven by pkg/sftp.
 //   - git: `ssh host "git -C <dir> ..."`.
 //
@@ -43,13 +40,9 @@ type remoteBackend struct {
 	remoteSock string // absolute herdr socket path on the remote host
 	ctlPath    string // ssh ControlMaster control socket (local)
 	localSock  string // local end of the forwarded herdr socket
-	// localClientSock is the local end of the forwarded herdr *client* socket
-	// (herdrClientSock(localSock)). It is derived, but stored so teardown and
-	// the grid attach agree on one path.
-	localClientSock string
-	home            string // remote $HOME, for ~-expansion
-	protocol        int    // remote herdr protocol (verified == local at connect)
-	version         string // remote herdr version (for display)
+	home       string // remote $HOME, for ~-expansion
+	protocol   int    // remote herdr protocol (verified == local at connect)
+	version    string // remote herdr version (for display)
 
 	cancel context.CancelFunc // tears down the control master + sockets
 	done   chan struct{}      // closed once teardown completes
@@ -132,14 +125,13 @@ func killProcessGroup(cmd *exec.Cmd) error {
 // cancelled die mid-authentication, and OpenSSH >= 9.8 scores an aborted
 // handshake as authfail under PerSourcePenalties: the remote then drops every
 // new connection from this IP for 15-600s, which surfaces as herdr's "remote
-// platform detection failed: Connection closed by <ip> port 22" and a grid full
-// of "Press ⏎ to Reconnect". With auto, the first op to find no master becomes
-// one and the rest of the cycle rides it.
+// platform detection failed: Connection closed by <ip> port 22". With auto, the
+// first op to find no master becomes one and the rest of the cycle rides it.
 //
 // ControlPersist is bounded here, unlike the yes on the forward-carrying master
 // in newRemoteBackend: a master created by this path has no -L forwards, so it
 // can't serve the backend. The health check (herdrPing over the forwarded
-// socket, see gridHostBackend) fails against it and redials, and newRemoteBackend
+// socket, see hostBackend) fails against it and redials, and newRemoteBackend
 // unlinks the socket before dialing — leaving the ad-hoc master orphaned with no
 // socket for -O exit to reach. A timed persist bounds that to a minute instead
 // of leaking it until the sshreap loop or process exit.
@@ -159,10 +151,10 @@ func (b *remoteBackend) ctlOpts() []string {
 // backend tears itself down when parent is cancelled (process exit) or when
 // Close is called (host switch). On any failure it cleans up and returns the
 // error so the caller can roll back to the previous backend.
-// nameTag disambiguates the on-disk control/forward socket filenames so a
-// backend opened for one purpose can't clobber another to the same host: the
-// active-host backend (serveHostSwitch) passes "", while the grid pool passes
-// "grid", letting both hold a live connection to the same alias at once.
+// nameTag disambiguates on-disk control/forward socket filenames so a backend
+// opened for one purpose cannot clobber another to the same host: the
+// active-host backend (serveHostSwitch) passes "", while the host pool passes
+// "hostpool", letting both hold a live connection to the same alias at once.
 func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int, nameTag string) (*remoteBackend, error) {
 	if remoteSock == "" {
 		return nil, fmt.Errorf("no remote herdr socket for %s", alias)
@@ -178,11 +170,9 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		localSock:  filepath.Join(os.TempDir(), fmt.Sprintf("lasso-herdr-%d-%s.sock", os.Getpid(), tag)),
 		done:       make(chan struct{}),
 	}
-	b.localClientSock = herdrClientSock(b.localSock)
 	// Clear stale sockets a crashed prior run may have left so ssh can bind.
 	_ = os.Remove(b.ctlPath)
 	_ = os.Remove(b.localSock)
-	_ = os.Remove(b.localClientSock)
 
 	// Open the control master and the forwarded herdr socket. -fNT backgrounds
 	// the master after authentication, so this returns once the forward is up.
@@ -194,10 +184,10 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 	// ControlPersist=yes: the master's lifetime is the backend's lifetime —
 	// Close/teardown kills it explicitly, and the sshreap loop cleans up after a
 	// crashed lasso. A timed persist (formerly 60) let the master exit during any
-	// quiet minute: the grid pool holds no persistent channel (unlike the active
+	// quiet minute: the host pool holds no persistent channel (unlike the active
 	// backend, whose event subscription reconnects every second), so pooled
-	// masters routinely died between polls, taking the forwarded sockets — and
-	// every grid terminal and SFTP session on them — down with them.
+	// masters routinely died between polls, taking the forwarded socket — and
+	// every SFTP session on it — down with them.
 	// ServerAlive* makes a genuinely dead path (network drop, sleep) kill the
 	// master within ~60s so liveness checks fail fast and trigger a redial,
 	// instead of every op hanging on a wedged TCP connection.
@@ -213,11 +203,6 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		"-o", "ServerAliveCountMax=4",
 		"-fNT",
 		"-L", b.localSock + ":" + b.remoteSock,
-		// herdr's streaming client socket sits beside the RPC socket on the
-		// remote host; forwarding it lets `herdr terminal attach` run locally
-		// against this master (see gridAttachCmd). A remote without it just
-		// fails the forward at connect time, not the master.
-		"-L", b.localClientSock + ":" + herdrClientSock(b.remoteSock),
 		alias,
 	}
 	out, err := sshCmd(mctx, args...).CombinedOutput()
@@ -285,13 +270,6 @@ func (b *remoteBackend) waitForSocket(ctx context.Context, wantProtocol int) (st
 
 func (b *remoteBackend) Name() string      { return b.alias }
 func (b *remoteBackend) HerdrSock() string { return b.localSock }
-
-// herdrClientSock derives the streaming client socket path herdr uses from its
-// RPC socket path (herdr.sock → herdr-client.sock) — the same derivation herdr
-// itself applies to HERDR_SOCKET_PATH.
-func herdrClientSock(sock string) string {
-	return strings.TrimSuffix(sock, ".sock") + "-client.sock"
-}
 
 func (b *remoteBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
 	return herdrCallSock(b.localSock, method, params)
@@ -410,7 +388,7 @@ func (b *remoteBackend) sftpClient() (*sftp.Client, error) {
 	// NewClientPipe reads the server's SSH_FXP_VERSION, which on a wedged master
 	// never arrives — and this runs under sftpMu, the same lock teardown takes.
 	// Unbounded, one hung handshake blocks teardown, which blocks Close, which
-	// blocks gridPoolDrop while it holds the host's dial mutex, which hangs every
+	// blocks hostPoolDrop while it holds the host's dial mutex, which hangs every
 	// later connection attempt to that host. Bound it and the wedge is one failed
 	// op instead.
 	type dialed struct {
@@ -651,7 +629,7 @@ func (b *remoteBackend) teardown() {
 
 // killMaster gracefully stops the SSH control master and removes the local
 // socket files. Safe to call even if the master never came up. Bounded, because
-// teardown runs on paths that hold locks — gridPoolDrop calls Close with the
+// teardown runs on paths that hold locks — hostPoolDrop calls Close with the
 // host's dial mutex held — and `-O exit` against a wedged control socket has no
 // timeout of its own.
 func (b *remoteBackend) killMaster() {
@@ -660,7 +638,6 @@ func (b *remoteBackend) killMaster() {
 	_ = sshCmd(ctx, "-o", "ControlPath="+b.ctlPath, "-O", "exit", b.alias).Run()
 	_ = os.Remove(b.ctlPath)
 	_ = os.Remove(b.localSock)
-	_ = os.Remove(b.localClientSock)
 }
 
 // TermCmd / ShellCmd / TermEnv give the per-host commands the two ttyd

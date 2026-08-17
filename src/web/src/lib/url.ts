@@ -1,12 +1,12 @@
 // Small helpers for reflecting app state in the URL query string (e.g.
-// ?view=herdr&host=minime). We use real query params rather than the hash so
-// links are conventional and the fragment stays free. Updates use
-// replaceState so they don't pile up history entries on every tab/host change.
+// ?host=minime). We use real query params rather than the hash so links are
+// conventional and the fragment stays free. Updates use replaceState so they
+// don't pile up history entries on every host change.
 //
-// Only state lasso OWNS belongs here: the left tab and the active host. herdr's
-// focused pane does not — it is one global per herdr session, shared with the
-// TUI and every other lasso client, so a URL that named it would let a browser
-// Back re-point it for everyone (and a shared link steal focus on open).
+// Only state lasso OWNS belongs here, which is now just the active host.
+// herdr's focused pane does not — it is one global per herdr session, shared
+// with the TUI and every other lasso client, so a URL that named it would let a
+// browser Back re-point it for everyone (and a shared link steal focus on open).
 
 export function getQueryParam(key: string): string | null {
   return new URLSearchParams(window.location.search).get(key)
@@ -14,28 +14,24 @@ export function getQueryParam(key: string): string | null {
 
 // setQueryParam sets (or, when value is null/empty, removes) one query param,
 // leaving the path and other params untouched. The hash is intentionally
-// dropped — we've migrated off fragment-based state. Uses replaceState so plain
-// tab/host changes don't pile up history entries.
+// dropped — we've migrated off fragment-based state. Uses replaceState so a
+// plain host change doesn't pile up history entries.
 export function setQueryParam(key: string, value: string | null) {
   writeQueryParam(key, value, false)
 }
 
 // pushQueryParam is like setQueryParam but adds a history entry instead of
 // replacing the current one — for navigations the browser Back button should
-// reverse (e.g. focusing a Grid pane in Herdr should let Back return to Grid).
+// reverse (focusing a pane on another host, say).
 export function pushQueryParam(key: string, value: string | null) {
   writeQueryParam(key, value, true)
 }
 
-// setQueryParams / pushQueryParams set (or remove, when null/empty) several
-// params in one history operation — so a multi-param navigation (e.g. focusing
-// a pane writes view+host at once) is a single Back step, not one per key.
+// setQueryParams sets (or removes, when null/empty) several params in one
+// history operation — so clearing the params we no longer honor is a single
+// replace rather than one per key.
 export function setQueryParams(params: Record<string, string | null>) {
   writeQueryParams(params, false)
-}
-
-export function pushQueryParams(params: Record<string, string | null>) {
-  writeQueryParams(params, true)
 }
 
 function writeQueryParam(key: string, value: string | null, push: boolean) {

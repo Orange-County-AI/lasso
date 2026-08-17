@@ -13,12 +13,10 @@ import (
 // unified dev logging — one stream for backend + browser
 // ---------------------------------------------------------------------------
 //
-// For debugging the Grid tab's cross-host churn we want the frontend's view of
-// events (which panes a poll returned, when a cell attached/released, when the
-// active host switched) interleaved with the backend's (pool drops, term
-// spawns, discovery flaps) in a single time-ordered log. So in -dev mode we tee
-// the standard logger to a file AND expose POST /api/log, which the browser
-// posts batched events to — they land in the same file via the same log.Printf.
+// For debugging cross-host pane aggregation, interleave the frontend's poll
+// results and active-host switches with backend pool drops and discovery flaps.
+// In -dev mode we tee the standard logger to a file and expose POST /api/log;
+// browser events land in the same file via log.Printf.
 //
 // The file path is stable (so a separate process — an editor, a tail, a coding
 // agent — can read it without discovering a temp path): LASSO_DEV_LOG, default

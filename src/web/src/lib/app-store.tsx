@@ -9,8 +9,8 @@ import { syncUIState } from "@/lib/ui-state"
 
 // App-wide state derived from herdr, kept live over the /api/events SSE stream.
 // Components read activeCwd/activePaneID/panesRev reactively and run their own
-// effects off them (Files follows the cwd, Diff reloads, the grid re-highlights
-// the focused pane and reloads on a layout change).
+// effects off them (Files follows the cwd, Diff reloads, the pane switcher's
+// cached listing is refreshed on a layout change).
 interface AppState {
   activeCwd: string | null
   activePaneID: string | null

@@ -23,7 +23,7 @@ export const qk = {
   repos: (host: string) => ["repos", host] as const,
   repoBranches: (host: string, path: string) =>
     ["repo-branches", host, path] as const,
-  grid: ["grid"] as const,
+  panes: ["all-panes"] as const,
   agentHistory: ["agent-history"] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.

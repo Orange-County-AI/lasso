@@ -15,8 +15,8 @@ import (
 // branch), then converse with them statefully through their herdr pane.
 //
 // Every tool reuses the same machinery the React UI drives (createAgent,
-// gridHostBackend, listAgents, paneRun, pane.read, …). Tools take an optional
-// `host` and resolve it through gridHostBackend, so a session can drive agents
+// hostBackend, listAgents, paneRun, pane.read, …). Tools take an optional
+// `host` and resolve it through hostBackend, so a session can drive agents
 // on any reachable host without disturbing the UI's active host.
 //
 // That reach is bounded: an agent sees and talks to agents on its own box or on
@@ -71,11 +71,11 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 
 // resolveBackend maps a tool's optional `host` argument to a Backend. An empty
 // host means "the box lasso runs on" (local) — the default the user asked for.
-// gridHostBackend returns a backend for any reachable+compatible host without
+// hostBackend returns a backend for any reachable+compatible host without
 // mutating the UI's active host.
 //
 // A host with no alias in lasso's ssh config is refused up front (see
-// hostscope.go): gridHostBackend would fail on it anyway, but "not available"
+// hostscope.go): hostBackend would fail on it anyway, but "not available"
 // reads like a machine that is merely down, and the distinction between "asleep
 // for now" and "not a host you may address at all" is the whole point of the
 // scope rule.
@@ -88,7 +88,7 @@ var resolveBackend = func(host string) (Backend, error) {
 	if err := requireAddressableHost(host); err != nil {
 		return nil, err
 	}
-	return gridHostBackend(host)
+	return hostBackend(host)
 }
 
 // findAgentRecord looks up an agent created on host by its lasso id, so the

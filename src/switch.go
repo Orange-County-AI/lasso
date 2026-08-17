@@ -170,12 +170,9 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, wantProto := localProtocol()
-		// NB: we deliberately do NOT evict target's grid-pool connection here.
-		// Grid cells stream over the grid pool (see gridHostBackend), which is
-		// independent of the active backend — dropping it would kill every visible
-		// grid cell for the host we're switching to and force a reconnect. The two
-		// connections coexist by design (different socket tags); the pool is idle-
-		// reaped once the Grid tab closes.
+		// Keep target's host-pool connection: it is independent of the active
+		// backend and serves host-addressed RPC, file, diff, and agent-creation
+		// work. The pool is idle-reaped, so a switch does not need to evict it.
 		rb, err := newRemoteBackend(srvCtx, target, hi.Socket, wantProto, "")
 		if err != nil {
 			http.Error(w, "connect "+target+": "+err.Error(), http.StatusBadGateway)
@@ -205,9 +202,8 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tear down the previous backend after a short grace so in-flight requests
-	// that captured it finish first. Local Close is a no-op. Grid cells for the
-	// previous host stream over the grid pool, NOT this active backend, so they
-	// are untouched by its teardown — no release, no reconnect flash on switch.
+	// that captured it finish first. Local Close is a no-op. Host-pool entries
+	// are independent of this active backend and remain subject to idle reaping.
 	if prev != nil {
 		go func() {
 			time.Sleep(2 * time.Second)

@@ -89,7 +89,7 @@ applies to you.
 
 ## Broadcasting what you're working on
 
-Your pane has a status card in the herdr sidebar and the lasso grid. You can
+Your pane has a status card in the herdr sidebar and lasso's ⌘K pane switcher. You can
 put a live one-line summary on it so the human can see what you're doing
 without opening your terminal:
 

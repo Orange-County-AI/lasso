@@ -13,16 +13,14 @@ import { focusHerdrTerminal } from "@/lib/terminal"
 // NewTerminalDialog: ⌘I → a single-field prompt for a workspace name that spins
 // up a bare herdr terminal (no agent) and drops the user straight into it. The
 // name field auto-focuses; Enter creates, Esc cancels. The backend focuses the
-// new workspace in herdr server-side, so on success we only surface the Herdr
-// tab and hand the keyboard to its terminal — the user can type commands at once.
+// new workspace in herdr server-side, so on success we only hand the keyboard to
+// the herdr terminal — the user can type commands at once.
 export function NewTerminalDialog({
   open,
   onOpenChange,
-  surfaceHerdr,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  surfaceHerdr: () => void
 }) {
   const [name, setName] = React.useState("")
   const [creating, setCreating] = React.useState(false)
@@ -45,11 +43,10 @@ export function NewTerminalDialog({
     setCreating(true)
     try {
       await api.createTerminal(name.trim())
-      // The backend already focused the new workspace in herdr; surface the
-      // Herdr tab, then close — onCloseAutoFocus hands the keyboard to its
-      // terminal once Radix has finished unmounting the dialog.
+      // The backend already focused the new workspace in herdr; close, and
+      // onCloseAutoFocus hands the keyboard to the terminal once Radix has
+      // finished unmounting the dialog.
       createdRef.current = true
-      surfaceHerdr()
       onOpenChange(false)
     } catch (e) {
       toast.error(`Failed to create terminal: ${(e as Error).message}`)

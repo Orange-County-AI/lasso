@@ -49,7 +49,7 @@ package main
 //
 // Foreign herdr sessions — panes lasso did not create, like a long-lived bot in
 // its own pane — are untouched by all of this: they have no record to tombstone,
-// they are derived from the pane listing itself on every call, and so they
+// they are derived from the pane enumeration itself on every call, and so they
 // appear and disappear with the panes they are.
 
 import (
@@ -105,13 +105,12 @@ func agentReapMissed(host, id string) bool {
 	return false
 }
 
-// reconcileHostAgents tombstones the records on host whose herdr pane is gone,
-// given a SUCCESSFUL enumeration of that host's panes (see rule 1 — never call
-// this with the panes from a failed or partial listing). Returns how many records
-// it closed. Best effort throughout: this runs on the grid poll and on
-// list_agents, so a db hiccup is logged and retried on the next pass rather than
-// failing the listing that triggered it.
-func reconcileHostAgents(host string, panes []gridPane) int {
+// reconcileHostAgents tombstones records on host whose herdr pane is gone,
+// given a successful enumeration (never call it with a failed or partial
+// listing). Best effort throughout: /api/all-panes polling and list_agents
+// both trigger it, so a database hiccup is logged and retried next pass rather
+// than failing the listing that triggered it.
+func reconcileHostAgents(host string, panes []hostPane) int {
 	if db == nil || host == "" || len(panes) == 0 { // rule 3
 		return 0
 	}

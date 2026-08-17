@@ -285,7 +285,7 @@ var (
 
 // reachablePeerHosts lists the ssh-config hosts a peer lasso could be asked
 // on: probed reachable with a running, protocol-compatible herdr — the same
-// bar gridHostBackend (and thus remoteDB) requires.
+// bar hostBackend (and thus remoteDB) requires.
 func reachablePeerHosts(ctx context.Context) []string {
 	var out []string
 	for _, h := range discoverHosts(ctx, false) {
