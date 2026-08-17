@@ -25,9 +25,17 @@ import (
 // on either end knows where that shell has cd'd to — so those panes keep the
 // local answer instead of a guess.
 
+// A herdr-mirror pane is the third shape of the same thing, and the only one
+// that is not launched by hand: the plugin runs one `herdr-mirror pane
+// <ssh-target> <remoteWs>:<remotePane>` streamer per mirrored pane, so its argv
+// names the far host and the exact pane over there. Everything the local pane
+// shows lives on that host, and its own cwd is herdr-mirror's streamer
+// directory, which describes nothing at all.
+
 // sshHop is the far side of an attach: the alias lasso addresses that host by,
 // plus the agent the attach targeted. An empty agent means a session-level
-// attach, which shows whatever pane the far side has focused.
+// attach, which shows whatever pane the far side has focused. A mirror names
+// the far side's pane id, which attachedPane resolves the same way.
 type sshHop struct {
 	host  string
 	agent string
@@ -52,6 +60,12 @@ func paneSSHHop(pi paneProcessInfo) (sshHop, bool) {
 				continue
 			}
 			dest, agent = d, a
+		case "herdr-mirror":
+			d, remote := mirrorPaneArgs(proc.Argv)
+			if remote == "" {
+				continue
+			}
+			dest, agent = d, remote
 		default:
 			continue
 		}
@@ -159,6 +173,22 @@ func herdrAttachTarget(cmd []string) (string, bool) {
 		return words[2], true
 	}
 	return "", false
+}
+
+// mirrorPaneArgs reads a herdr-mirror streamer's argv as `herdr-mirror pane
+// <ssh-target> <remoteWs>:<remotePane> [flags…]`, returning the ssh destination
+// and the pane id on the far side. Both are empty for every other subcommand —
+// the `daemon` control plane and the one-shot `status`/`once` calls are not
+// windows onto anything, and only the `pane` streamer has a far-side pane to
+// ask about.
+func mirrorPaneArgs(argv []string) (dest, remotePane string) {
+	if len(argv) < 4 || argv[1] != "pane" {
+		return "", ""
+	}
+	if strings.HasPrefix(argv[2], "-") || !strings.Contains(argv[3], ":") {
+		return "", ""
+	}
+	return argv[2], argv[3]
 }
 
 // argvFlagValue returns the value of a long flag written either as
@@ -334,6 +364,34 @@ func attachedPane(be Backend, agent string) (pane, bool) {
 	for _, a := range al.Agents {
 		if a.Name == agent || a.PaneID == agent || a.TerminalID == agent {
 			return a.pane, true
+		}
+	}
+	// A herdr-mirror hop names the far side's PANE, which need not hold an agent
+	// at all — a mirrored shell is still a window onto that host's filesystem —
+	// so agent.list cannot answer for it. Falling through to the pane listing
+	// keeps the "gone means nothing, never some other pane" rule: an id that
+	// isn't there matches nothing here either.
+	return paneByID(be, agent)
+}
+
+// paneByID finds one pane by id in a host's pane listing.
+func paneByID(be Backend, paneID string) (pane, bool) {
+	if paneID == "" {
+		return pane{}, false
+	}
+	res, err := be.HerdrCall("pane.list", map[string]any{})
+	if err != nil {
+		return pane{}, false
+	}
+	var pl struct {
+		Panes []pane `json:"panes"`
+	}
+	if json.Unmarshal(res, &pl) != nil {
+		return pane{}, false
+	}
+	for _, p := range pl.Panes {
+		if p.PaneID == paneID {
+			return p, true
 		}
 	}
 	return pane{}, false
