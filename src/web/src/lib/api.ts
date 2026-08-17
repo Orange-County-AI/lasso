@@ -158,6 +158,16 @@ export interface GridPane {
   // live) so the switcher renders it distinctly and reopens rather than focuses.
   agent_id?: string
   closed?: boolean
+  // Set when this pane is a herdr-mirror stream of another machine's pane (the
+  // plugin turns each mirrored remote workspace into a real LOCAL workspace, so
+  // `host` still says "local"). mirror_host is the herdr-mirror host key,
+  // mirror_label the workspace's label as it reads over there — the mirror's
+  // sidebar label minus its "<host>: " prefix — and mirror_workspace /
+  // mirror_pane the remote herdr's own ids. See src/mirror.go.
+  mirror_host?: string
+  mirror_label?: string
+  mirror_workspace?: string
+  mirror_pane?: string
 }
 
 export interface GridPayload {

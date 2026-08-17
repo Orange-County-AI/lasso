@@ -37,24 +37,41 @@ export function splitAlias(
   return { family: alias.slice(0, i), member: alias.slice(i + 1) }
 }
 
-// families returns the alias prefixes worth grouping on: a prefix shared by two
-// or more dashed aliases, or one dashed alias plus the bare alias it extends
+// aliasFamilies returns the alias prefixes worth grouping on: a prefix shared by
+// two or more dashed aliases, or one dashed alias plus the bare alias it extends
 // (`visiquate` + `visiquate-jessica`). A lone `norm-game` forms no family, so
 // it keeps grouping by its physical host as before instead of splitting off
 // into a group of one.
-function families(hosts: readonly HostInfo[]): ReadonlySet<string> {
+//
+// Takes bare names rather than HostInfo so callers that only have names —
+// the pane palette groups by ssh alias AND by herdr-mirror host key, neither of
+// which comes with a probed host row — use the same rule as the host pickers
+// instead of inventing a second one.
+export function aliasFamilies(aliases: readonly string[]): ReadonlySet<string> {
   const counts = new Map<string, number>()
   const bare = new Set<string>()
-  for (const h of hosts) {
-    const s = splitAlias(h.alias)
+  for (const alias of aliases) {
+    const s = splitAlias(alias)
     if (s) counts.set(s.family, (counts.get(s.family) ?? 0) + 1)
-    else bare.add(h.alias)
+    else bare.add(alias)
   }
   const out = new Set<string>()
   for (const [name, n] of counts) {
     if (n > 1 || bare.has(name)) out.add(name)
   }
   return out
+}
+
+// familyOf names the group an alias belongs to: its family prefix when that
+// family exists, else the alias itself (a name that forms no family is its own
+// group).
+export function familyOf(alias: string, fams: ReadonlySet<string>): string {
+  const s = splitAlias(alias)
+  return s && fams.has(s.family) ? s.family : alias
+}
+
+function families(hosts: readonly HostInfo[]): ReadonlySet<string> {
+  return aliasFamilies(hosts.map((h) => h.alias))
 }
 
 // memberLabel names a host inside a group: the part after its alias's first "-"
