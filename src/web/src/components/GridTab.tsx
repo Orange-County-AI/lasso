@@ -36,7 +36,7 @@ import { qk } from "@/lib/query"
 import {
   bootTermFrame,
   focusTerminalFrame,
-  onTerminalFocus,
+  onTerminalInteract,
   whenTerminalReady,
 } from "@/lib/terminal"
 import { GRID_FRAME_CLASS } from "@/lib/theme"
@@ -930,7 +930,7 @@ function GridCell({
   pending: boolean
   onToggleWatch: () => void
   onClick: (e: React.MouseEvent | React.KeyboardEvent) => void
-  /** The user clicked into this cell's terminal (its iframe took focus). */
+  /** The user interacted with this cell's terminal (click or keypress). */
   onBodyFocus: () => void
   onOpenInHerdr: () => void
   onRename: () => void
@@ -1020,14 +1020,17 @@ function GridCell({
     [p.host, p.terminal_id]
   )
 
-  // Report clicks into the terminal (its window taking focus) so GridTab can
-  // promote this pane to herdr's focused pane. Kept in a ref so the listener
-  // attaches once per iframe rather than churning on every poll re-render.
+  // Report gestures into the terminal (a click or keypress) so GridTab can
+  // promote this pane to herdr's focused pane. A passive window-focus event
+  // (alt-tab back into the browser) must NOT promote — herdr's focus is
+  // session-global, so that would silently yank every other client onto this
+  // pane. Kept in a ref so the listener attaches once per iframe rather than
+  // churning on every poll re-render.
   const onBodyFocusRef = React.useRef(onBodyFocus)
   onBodyFocusRef.current = onBodyFocus
   React.useEffect(() => {
     if (!src) return
-    return onTerminalFocus(id, () => onBodyFocusRef.current())
+    return onTerminalInteract(id, () => onBodyFocusRef.current())
   }, [src, id])
 
   // Drop back to the unattached state so the lazy-mount effect re-attaches (the

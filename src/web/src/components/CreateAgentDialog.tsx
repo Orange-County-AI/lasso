@@ -618,9 +618,10 @@ export function CreateAgentDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      if (rec.workspace_id) {
-        api.focus(rec.workspace_id).catch(() => {})
-      }
+      // No api.focus here: the creation RPC itself already asked herdr to
+      // focus the new workspace (web creates default no_focus:false), and a
+      // bare workspace_id has no tab to focus anyway — /api/focus requires both
+      // ids, so this call always 400'd and was swallowed.
       createdRef.current = true
       setOpen(false)
       reset()

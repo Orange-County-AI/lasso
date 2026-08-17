@@ -584,12 +584,14 @@ export const api = {
     getJSON<{ agents: GridPane[] }>("/api/agent-history", aggregateTimeout),
 
   // Re-open a past session's workspace: re-creates a herdr workspace at its work
-  // dir and focuses it (does NOT relaunch the agent). Identify it by agent_id (a
-  // recorded agent — also re-points its record at the new pane) or by work_dir (an
-  // orphan worktree/scratch dir with no record). Returns the new pane so the caller
-  // can focus it through the normal pane-focus path.
-  reopenAgent: (host: string, body: { agent_id?: string; work_dir?: string }) =>
-    postJSON<GridPane>("/api/agent/reopen", { host, ...body }),
+  // dir and focuses it unless focus:false (does NOT relaunch the agent). Identify
+  // it by agent_id (a recorded agent — also re-points its record at the new pane)
+  // or by work_dir (an orphan worktree/scratch dir with no record). Returns the
+  // new pane so the caller can focus it through the normal pane-focus path.
+  reopenAgent: (
+    host: string,
+    body: { agent_id?: string; work_dir?: string; focus?: boolean }
+  ) => postJSON<GridPane>("/api/agent/reopen", { host, ...body }),
 
   // Ensure a ttyd is attached to one pane's terminal and return its proxy base
   // path (the iframe src). Used to first-attach a visible cell; creates the ttyd
@@ -781,7 +783,8 @@ export const api = {
     return getJSON<FileDiff>(withHost(`/api/diff-file?${params}`, host))
   },
 
-  focus: (workspace_id?: string, tab_id?: string) =>
+  // Both ids are required — /api/focus 400s on a missing tab_id.
+  focus: (workspace_id: string, tab_id: string) =>
     postJSON<unknown>("/api/focus", { workspace_id, tab_id }),
 
   rename: (tab_id: string | undefined, label: string) =>
@@ -871,12 +874,12 @@ export const api = {
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
 
-  // Create a bare herdr workspace running just a shell (no agent) and focus it.
-  // The backend focuses the new workspace server-side; the caller surfaces the
-  // Herdr tab and hands the keyboard to its terminal.
-  createTerminal: (label: string) =>
+  // Create a bare herdr workspace running just a shell (no agent). Interactive
+  // callers keep focus=true so the user can type immediately; automation can
+  // pass false without moving herdr's session-global focus.
+  createTerminal: (label: string, focus = true) =>
     postJSON<{ workspace_id: string; root_pane: string }>(
       "/api/create-terminal",
-      { label }
+      { label, focus }
     ),
 }
