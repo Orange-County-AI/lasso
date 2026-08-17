@@ -1,0 +1,23 @@
+│                │                                │
+╰────────────────┴────────────────────────────────╯
+ Tip: Did you know? Each
+      kitty/tmux/cmux/zellij/wezterm split keeps
+      its own session — `omp -c` resumes the right
+      one
+
+ Connected to MCP servers: parakeep, lasso.
+
+
+ this is my half typed draftMSG-FROM-OTHER-AGENT:
+ just say the word ack and nothing else
+
+
+ ack
+
+╭──     Opus 5 · 󰪣 high   dg   4.5%/1M 󰁨 ───╮
+│  first line of draftsecond lineword word word     │
+│  word word word word word word word word word     │
+│  word word word word word word word word word     │
+│  word word word word word word word word word     │
+│  word word word word word word word word word     │
+╰─ word                                            ─╯

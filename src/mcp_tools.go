@@ -218,6 +218,17 @@ func (t resolvedTarget) info(host, status string) agentInfo {
 	return ai
 }
 
+// agentKind is herdr's harness label for this resolved target.
+func (t resolvedTarget) agentKind() string {
+	if t.Record != nil {
+		return t.Record.Agent
+	}
+	if t.Pane != nil {
+		return t.Pane.Agent
+	}
+	return ""
+}
+
 // resolveTarget maps needle to exactly one addressable pane on host. needle may
 // be a lasso agent id, a herdr pane id, or a display name (a lasso agent's title
 // OR a foreign session's sidebar name). Precedence resolves the unambiguous
@@ -983,7 +994,7 @@ type sendAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped. Names are only unique per host — set this when a name exists on more than one host."`
 	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
 	To      string `json:"to,omitempty" jsonschema:"Who to send to: a lasso agent id, its sidebar/display name (the name shown in the herdr pane switcher), or a herdr pane id — including a foreign herdr session lasso did not create (a long-lived bot). A name that matches more than one agent/session is refused with the candidates listed, so re-target by id or pane id. Given instead of, or as well as, agent_id."`
-	Text    string `json:"text" jsonschema:"Message to send; it is typed into the agent's pane and submitted with Enter."`
+	Text    string `json:"text" jsonschema:"Message to send; it is typed into the agent's pane and submitted with Enter. Refuses without sending when the recipient has unsent composer input; retry after it clears or use message_agent for queued delivery."`
 }
 
 type sendAgentOut struct {
@@ -1010,7 +1021,12 @@ func sendAgentTool(_ context.Context, req *mcp.CallToolRequest, in sendAgentIn) 
 	if t.PaneID == "" {
 		return nil, sendAgentOut{}, fmt.Errorf("target %q has no pane to send to", needle)
 	}
-	paneSubmit(b, t.PaneID, in.Text)
+	if composerGuardEnabled() && paneComposerState(b, t.PaneID, t.agentKind()) == ComposerDraft {
+		return nil, sendAgentOut{Sent: false}, fmt.Errorf("message was NOT delivered: recipient %q has unsent input in its composer; retry after it clears or use message_agent for queued delivery", needle)
+	}
+	if !paneSubmit(b, t.PaneID, t.agentKind(), in.Text) {
+		return nil, sendAgentOut{Sent: false}, fmt.Errorf("message was NOT delivered: recipient %q has unsent input in its composer; retry after it clears or use message_agent for queued delivery", needle)
+	}
 	return nil, sendAgentOut{Sent: true}, nil
 }
 

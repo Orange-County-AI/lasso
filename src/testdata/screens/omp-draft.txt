@@ -1,0 +1,23 @@
+│    ██    ██    │ ────────────────────────────── │
+│    ██    ██    │ LSP Servers                    │
+│   ▄██▄  ▄██▄   │ No LSP servers                 │
+│                │                                │
+│ Claude Opus 5  │                                │
+│   anthropic    │                                │
+│                │ ────────────────────────────── │
+│                │ Recent sessions                │
+│                │ No recent sessions             │
+│                │                                │
+│                │                                │
+│                │                                │
+│                │                                │
+╰────────────────┴────────────────────────────────╯
+ Tip: Did you know? Each
+      kitty/tmux/cmux/zellij/wezterm split keeps
+      its own session — `omp -c` resumes the right
+      one
+
+ Connected to MCP servers: parakeep, lasso.
+
+╭──     Opus 5 · 󰪣 high   dg   2.6%/1M 󰁨 ───╮
+╰─ this is my half typed draft                     ─╯

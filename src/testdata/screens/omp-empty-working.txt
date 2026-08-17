@@ -1,0 +1,23 @@
+ 17
+ 18
+ 19
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 30
+
+
+ run the bash command 'sleep 12' and then say done
+
+
+ ⠏ Working… ⟨esc⟩
+
+╭──     Opus 5 · 󰪣 high   dg   4.5%/1M 󰁨 ───╮
+╰─                                                 ─╯

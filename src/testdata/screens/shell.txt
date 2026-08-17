@@ -1,0 +1,8 @@
+echo hello from a plain shell
+
+/tmp/dg ☸ default
+❯ echo hello from a plain shell
+hello from a plain shell
+
+/tmp/dg ☸ default
+❯

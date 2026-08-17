@@ -1,0 +1,23 @@
+│                       ▐▛███▜▌                      │
+│                      ▝▜█████▛▘                     │
+│                        ▘▘ ▝▝                       │
+│                                                    │
+│           Opus 5 (1M context) with high…           │
+│                     Claude Max                     │
+│                      /tmp/dg                       │
+│                                                    │
+╰────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+❯ half typed claude draftcount from 1 to 20 slowly,
+  one number per line
+
+· Waddling… (4s · thinking with high effort)
+
+──────────────────────────────────────────────────────
+❯ draft while working
+──────────────────────────────────────────────────────
+  Opus 5 (1M context)  stephan@orangecountyai.com
+  dg
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -279,6 +281,43 @@ func kickMessageDispatch() {
 	}
 }
 
+// messageDraftHolds remembers a positive draft observation so the dispatcher
+// logs one hold and one release rather than spamming every two-second pass.
+// It stores only routing metadata, never the private composer text.
+var messageDraftHolds struct {
+	sync.Mutex
+	active map[string]struct{}
+}
+
+func messageDraftHoldKey(host, agentID string) string {
+	return host + "\x00" + agentID
+}
+
+func applyMessageDraftHold(host, agentID, paneID, agentKind string) {
+	key := messageDraftHoldKey(host, agentID)
+	messageDraftHolds.Lock()
+	if messageDraftHolds.active == nil {
+		messageDraftHolds.active = map[string]struct{}{}
+	}
+	_, held := messageDraftHolds.active[key]
+	messageDraftHolds.active[key] = struct{}{}
+	messageDraftHolds.Unlock()
+	if !held {
+		log.Printf("messages: held delivery to %s on %s — %s composer in pane %s has unsent input", agentID, host, agentKind, paneID)
+	}
+}
+
+func releaseMessageDraftHold(host, agentID, paneID string) {
+	key := messageDraftHoldKey(host, agentID)
+	messageDraftHolds.Lock()
+	_, held := messageDraftHolds.active[key]
+	delete(messageDraftHolds.active, key)
+	messageDraftHolds.Unlock()
+	if held {
+		log.Printf("messages: resumed delivery to %s on %s — composer in pane %s is clear", agentID, host, paneID)
+	}
+}
+
 // messageDispatchLoop drains the agent_messages queue for as long as the server
 // runs. A pass touches no host unless something is pending, so the steady-state
 // cost is one local sqlite query per tick.
@@ -374,11 +413,24 @@ func dispatchPendingMessages(backendFor func(string) (Backend, error)) {
 		case status != "idle":
 			// mid-turn or blocked — keep queued for a later pass
 		default:
+			// A positive draft is the only thing that may hold a durable message.
+			// Unknown layouts/read failures deliberately fall through and preserve
+			// the pre-guard delivery behavior.
+			if composerGuardEnabled() && paneComposerState(backends[k.host], rec.RootPane, agent) == ComposerDraft {
+				applyMessageDraftHold(k.host, k.agentID, rec.RootPane, agent)
+				continue
+			}
+			releaseMessageDraftHold(k.host, k.agentID, rec.RootPane)
 			parts := make([]string, len(msgs))
 			for i, m := range msgs {
 				parts[i] = messageEnvelope(m)
 			}
-			paneSubmit(backends[k.host], rec.RootPane, strings.Join(parts, "\n\n"))
+			if !paneSubmit(backends[k.host], rec.RootPane, agent, strings.Join(parts, "\n\n")) {
+				// A human can start typing after the pre-submit screen read. This
+				// second guard sends no bytes and leaves every row pending.
+				applyMessageDraftHold(k.host, k.agentID, rec.RootPane, agent)
+				continue
+			}
 			for _, m := range msgs {
 				_ = markMessageDelivered(m.ID)
 			}

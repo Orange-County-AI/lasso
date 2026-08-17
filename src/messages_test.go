@@ -298,6 +298,36 @@ func TestDispatchDeliversOnIdleOnly(t *testing.T) {
 	}
 }
 
+func TestDispatchHoldsDraftUntilComposerClears(t *testing.T) {
+	openTestDB(t)
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	if err := appendAgent("local", rec); err != nil {
+		t.Fatal(err)
+	}
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "claude", status: "idle", drafted: true}
+	m := AgentMessage{ID: "m_1", Host: "local", AgentID: "a1", SenderLabel: "u", Body: "do not clobber", CreatedAt: time.Now()}
+	if err := enqueueAgentMessage(m); err != nil {
+		t.Fatal(err)
+	}
+	resolver := func(string) (Backend, error) { return b, nil }
+
+	dispatchPendingMessages(resolver)
+	if len(b.sent) != 0 {
+		t.Fatalf("sent while the composer had a human draft: %q", b.sent)
+	}
+	if pending, _ := listPendingMessages(); len(pending) != 1 {
+		t.Fatalf("pending while draft = %d, want 1", len(pending))
+	}
+
+	b.drafted = false
+	dispatchPendingMessages(resolver)
+	if len(b.sent) != 1 || !strings.Contains(b.sent[0], "do not clobber") {
+		t.Fatalf("delivery after composer cleared = %q, want queued message once", b.sent)
+	}
+	if pending, _ := listPendingMessages(); len(pending) != 0 {
+		t.Fatalf("pending after composer clear = %d, want 0", len(pending))
+	}
+}
 func TestDispatchFailsMessagesForDeadAgent(t *testing.T) {
 	openTestDB(t)
 	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}

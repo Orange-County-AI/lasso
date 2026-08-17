@@ -1125,28 +1125,20 @@ func paneRun(b Backend, paneID, command string) error {
 	return err
 }
 
-// paneSubmit types text into an interactive agent's pane (claude/codex TUI) and
-// submits it as a turn. Two things make this fragile, both handled here:
+// paneSubmit types text into an interactive agent's pane and submits it as a
+// turn. The caller supplies agentKind from herdr's agent metadata so compositor
+// reads use the matching harness geometry.
 //
-//  1. Bracketed paste vs Enter. The TUIs run in raw mode with bracketed paste, so
-//     a "\r"/"\n" appended to the message is pasted as a literal newline and the
-//     turn never submits — the message just stacks in the input box. The Enter
-//     must be its own send_text so it lands as a real keypress (the same
-//     mechanism confirmAgentTrust uses to accept the trust dialog).
-//
-//  2. A race between the paste committing and the Enter. herdr delivers the paste
-//     and the Enter as separate PTY writes; when the TUI is busy (mid-turn,
-//     streaming tool output) it applies the bracketed paste a beat late, so an
-//     Enter sent immediately after hits a still-empty composer and is a no-op —
-//     the message then sits there unsubmitted, even after the agent goes idle.
-//     This is why sending to an idle agent appeared to work while sending to a
-//     busy one silently failed.
-//
-// So: send the paste, wait until the composer actually shows it (the paste
-// committed), then send Enter — re-sending until the composer is observed empty,
-// i.e. the turn really went through. A repeat Enter is harmless: it's a no-op on
-// an empty composer and on one whose draft was already submitted.
-func paneSubmit(b Backend, paneID, text string) {
+// The text and Enter must be separate PTY writes: raw-mode TUIs treat a newline
+// appended to bracketed paste as input, not an Enter key. After the paste lands,
+// Enter is retried until the shared detector observes an empty composer; this
+// handles a busy TUI applying the paste after its first Enter. It returns false
+// without sending bytes when a positive composer-draft read catches a human's
+// unsent input between the caller's guard and this submission.
+func paneSubmit(b Backend, paneID, agentKind, text string) bool {
+	if composerGuardEnabled() && paneComposerState(b, paneID, agentKind) == ComposerDraft {
+		return false
+	}
 	_, _ = b.HerdrCall("pane.send_text", map[string]any{
 		"pane_id": paneID,
 		"text":    text,
@@ -1157,7 +1149,7 @@ func paneSubmit(b Backend, paneID, text string) {
 	commit := time.Now().Add(3 * time.Second)
 	for time.Now().Before(commit) {
 		time.Sleep(150 * time.Millisecond)
-		if !paneInputEmpty(b, paneID) {
+		if !paneInputEmpty(b, paneID, agentKind) {
 			break
 		}
 	}
@@ -1168,52 +1160,27 @@ func paneSubmit(b Backend, paneID, text string) {
 			"text":    "\r",
 		})
 		time.Sleep(300 * time.Millisecond)
-		if paneInputEmpty(b, paneID) || time.Now().After(deadline) {
-			return
+		if paneInputEmpty(b, paneID, agentKind) || time.Now().After(deadline) {
+			return true
 		}
 	}
 }
 
-// paneInputEmpty reports whether the agent TUI's composer currently holds no
-// pending draft — paneSubmit uses it to confirm a turn submitted rather than
-// leaving the message parked in the input box. The composer sits between the last
-// pair of horizontal-rule lines the TUI draws above its status footer; an empty
-// box is just the prompt marker ("❯"/"›"/">") with nothing after it. When the
-// composer can't be located it returns false (don't claim empty), so paneSubmit
-// errs toward an extra harmless Enter rather than a dropped message.
-func paneInputEmpty(b Backend, paneID string) bool {
-	res, err := b.HerdrCall("pane.read", map[string]any{
-		"pane_id": paneID,
-		"source":  "visible",
-	})
-	if err != nil {
-		return false
+// paneComposerState reads only the pane's visible screen. A failed read remains
+// unknown so callers fail open rather than starving a durable message queue.
+func paneComposerState(b Backend, paneID, agentKind string) ComposerState {
+	text, ok := paneVisibleText(b, paneID)
+	if !ok {
+		return ComposerUnknown
 	}
-	var r struct {
-		Read struct {
-			Text string `json:"text"`
-		} `json:"read"`
-	}
-	if json.Unmarshal(res, &r) != nil {
-		return false
-	}
-	lines := strings.Split(r.Read.Text, "\n")
-	isRule := func(s string) bool {
-		t := strings.TrimSpace(s)
-		return len([]rune(t)) >= 10 && strings.Trim(t, "─") == ""
-	}
-	last, prev := -1, -1
-	for i, ln := range lines {
-		if isRule(ln) {
-			prev, last = last, i
-		}
-	}
-	if prev < 0 || last <= prev {
-		return false // composer geometry not found
-	}
-	box := strings.TrimSpace(strings.Join(lines[prev+1:last], ""))
-	box = strings.TrimSpace(strings.TrimLeft(box, "❯›> "))
-	return box == ""
+	return detectComposer(agentKind, text)
+}
+
+// paneInputEmpty reports whether the shared detector positively recognizes an
+// empty composer. Unknown deliberately remains false: paneSubmit then tries an
+// extra Enter rather than treating an unparsed screen as a submitted turn.
+func paneInputEmpty(b Backend, paneID, agentKind string) bool {
+	return paneComposerState(b, paneID, agentKind) == ComposerEmpty
 }
 
 // confirmAgentTrust watches a freshly-launched agent pane for its per-directory

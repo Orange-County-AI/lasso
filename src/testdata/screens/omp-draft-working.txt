@@ -1,0 +1,23 @@
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 30
+
+
+ run the bash command 'sleep 12' and then say done
+
+
+ Let me run it and see what happens.
+
+╭───────────────────────────────────────────────────╮
+│ $ sleep 12                                        │
+╰───────────────────────────────────────────────────╯
+
+ ⠴ Sleeping twelve seconds ⟨esc⟩
+
+╭──     Opus 5 · 󰪣 high   dg   4.5%/1M 󰁨 ───╮
+╰─ steering draft not yet sent                     ─╯

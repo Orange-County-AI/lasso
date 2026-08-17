@@ -1,0 +1,23 @@
+  13
+  14
+  15
+  16
+  17
+  18
+  19
+  20
+
+✻ Cogitated for 5s
+
+❯ run the bash command 'sleep 12' then say done
+
+✻ Billowing… (3s · thinking with high effort)
+  ⎿  Tip: Use git worktrees to run multiple Claude
+     sessions in parallel.
+  Plugin updated: frontend-design · Run /reload-plug…
+──────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────
+  [░░░░░░░░░░] 5%  Opus 5 (1M context)  stephan@oran…
+  dg
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← …

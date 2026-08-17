@@ -1,0 +1,23 @@
+
+╭─ Claude Code ──────────────────────────────────────╮
+│                                                    │
+│               Welcome back Stephan!                │
+│                                                    │
+│                       ▐▛███▜▌                      │
+│                      ▝▜█████▛▘                     │
+│                        ▘▘ ▝▝                       │
+│                                                    │
+│           Opus 5 (1M context) with high…           │
+│                     Claude Max                     │
+│                      /tmp/dg                       │
+│                                                    │
+╰────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+  You've used 96% of your weekly limit · resets 9am …
+──────────────────────────────────────────────────────
+❯ half typed claude draft
+──────────────────────────────────────────────────────
+  Opus 5 (1M context)  stephan@orangecountyai.com
+  dg
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
