@@ -230,6 +230,30 @@ func hostParam(r *http.Request) (string, bool) {
 	return host, gridHostAllowed(host)
 }
 
+// namedHostBackend resolves the backend a host selector names — the spine of
+// every endpoint that operates on a chosen host's filesystem (the sidebar's
+// file/diff endpoints, the upload/paste handlers). Empty means the active host,
+// and the gridHostAllowed gate refuses anything we may not drive (a bogus alias)
+// before a single path byte is expanded or read.
+//
+// A selector that names the ACTIVE host resolves to the active backend itself,
+// not to the grid pool's separate connection for that alias. The pool is
+// deliberately distinct from the active backend so a host switch can't yank the
+// pty out from under a streaming grid terminal (see gridHostBackend) — a
+// one-shot stat/read/git has no such lifetime to protect, so it should use the
+// connection we already hold rather than open a second SSH master to the box we
+// are already driving.
+func namedHostBackend(host string) (Backend, error) {
+	cur := curBackend()
+	if host == "" || host == cur.Name() {
+		return cur, nil
+	}
+	if !gridHostAllowed(host) {
+		return nil, fmt.Errorf("host %q not available", host)
+	}
+	return gridHostBackend(host)
+}
+
 // hostDefaults reads host's creator defaults from host's own lasso.db.
 func hostDefaults(host string) (creatorDefaults, error) {
 	if isLocalHost(host) {

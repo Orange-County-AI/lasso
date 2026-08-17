@@ -37,9 +37,16 @@ function classify(status: string): FileChange {
 // tints each row with the file's change status. The file viewer/editor overlay
 // lives here too and opens by default (the Files subtab is active first).
 export function FilesPanel() {
-  const { activeCwd } = useApp()
+  const { activeCwd, cwdHost } = useApp()
   const [sub, setSub] = React.useState<SubView>("files")
-  const [viewerPath, setViewerPath] = React.useState<string | null>(null)
+  // The open viewer's file and the host it was opened from, captured together:
+  // the tree can follow focus onto another host while the viewer is open, and
+  // an open editor must keep reading — and saving — on the host it opened on
+  // rather than wherever focus has since moved.
+  const [viewer, setViewer] = React.useState<{
+    path: string
+    host: string | null
+  } | null>(null)
   // A pane focus (possibly a multi-second cross-host switch) is in flight —
   // this panel follows the focused pane's cwd, so veil the stale content with
   // a loading state until the switch lands rather than looking desynchronized.
@@ -94,9 +101,10 @@ export function FilesPanel() {
           )}
         >
           <FilesTab
-            viewerPath={viewerPath}
-            onOpenFile={setViewerPath}
+            viewerPath={viewer?.path ?? null}
+            onOpenFile={(path, host) => setViewer({ path, host })}
             changes={changes}
+            host={cwdHost}
           />
         </div>
         <div
@@ -105,12 +113,21 @@ export function FilesPanel() {
             sub !== "diff" && "hidden"
           )}
         >
-          <DiffTab repoPath={activeCwd} data={data} error={error} />
+          <DiffTab
+            repoPath={activeCwd}
+            host={cwdHost}
+            data={data}
+            error={error}
+          />
         </div>
 
-        {viewerPath && (
+        {viewer && (
           <React.Suspense fallback={null}>
-            <FileViewer path={viewerPath} onClose={() => setViewerPath(null)} />
+            <FileViewer
+              path={viewer.path}
+              host={viewer.host}
+              onClose={() => setViewer(null)}
+            />
           </React.Suspense>
         )}
 

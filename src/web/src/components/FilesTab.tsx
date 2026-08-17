@@ -82,18 +82,32 @@ export function FilesTab({
   viewerPath,
   onOpenFile,
   changes,
+  host,
 }: {
   viewerPath: string | null
-  onOpenFile: (path: string) => void
+  // `path` is joined by the host the tree was browsing when the file was
+  // opened, so the viewer keeps reading/saving there even if focus later moves
+  // onto another host.
+  onOpenFile: (path: string, host: string | null) => void
   // Absolute-path → git change status, used to hint changed rows. A directory
   // is hinted when any changed file lives beneath it.
   changes: Map<string, FileChange>
+  // The host the active pane's cwd lives on (the tree's follow target). The
+  // focused pane may be an ssh window onto another host, in which case this
+  // differs from the active host — every listing and mutation below addresses
+  // it, or we'd browse one machine and write another.
+  host: string | null
 }) {
   const { activeCwd } = useApp()
   // When true, clicking a folder re-roots the tree into it; when false it
   // expands in place. Persisted server-side and toggled from the header.
   const clickNavigates = useUIState().files_click_navigates
   const [curPath, setCurPath] = React.useState<string | null>(null)
+  // The host being browsed. TAB STATE, not a live read of `host`: like curPath
+  // it follows the active pane while `follow` is on and freezes the moment the
+  // user steers (types a path, navigates into a dir, goes up) — every request
+  // the tab makes is addressed to it.
+  const [curHost, setCurHost] = React.useState<string | null>(null)
   const [follow, setFollow] = React.useState(true)
   const [pathValue, setPathValue] = React.useState("")
   // The canonical root path (as the server cleaned it) and its parent, for the
@@ -134,27 +148,37 @@ export function FilesTab({
     return () => ro.disconnect()
   }, [pathValue])
 
-  // Follow the active pane's cwd while "follow" is on.
+  // Follow the active pane's cwd (and the host it lives on) while "follow" is
+  // on. The host tracks alongside the path for the same reason: the tree must
+  // browse the machine the focused pane's cwd actually sits on, which can be
+  // another host than the active one when the pane is an ssh window.
   React.useEffect(() => {
-    if (follow && activeCwd && activeCwd !== curPath) setCurPath(activeCwd)
-  }, [follow, activeCwd, curPath])
+    if (!follow) return
+    if (activeCwd && activeCwd !== curPath) setCurPath(activeCwd)
+    if (host !== curHost) setCurHost(host)
+  }, [follow, activeCwd, curPath, host, curHost])
 
-  // Turn following back on and jump straight to the active pane's cwd. Done
-  // explicitly (not left to the effect above) because the effect's snap is
-  // gated on activeCwd !== curPath: after you'd only edited the path box
-  // without committing — or re-rooted to a dir that happens to equal the
-  // active cwd — that guard holds and re-checking the box would just flip a
-  // flag without returning you. Re-rooting and resetting the input here makes
-  // "follow active pane" reliably go back.
+  // Turn following back on and jump straight to the active pane's cwd (on its
+  // own host). Done explicitly (not left to the effect above) because the
+  // effect's snap is gated on activeCwd !== curPath: after you'd only edited
+  // the path box without committing — or re-rooted to a dir that happens to
+  // equal the active cwd — that guard holds and re-checking the box would just
+  // flip a flag without returning you. Re-rooting, resetting the input, and
+  // re-pointing the browsed host here makes "follow active pane" reliably go
+  // back.
   const followActive = () => {
     setFollow(true)
     if (activeCwd) {
       setCurPath(activeCwd)
       setPathValue(activeCwd)
     }
+    setCurHost(host)
   }
 
   // (Re)load the root whenever it changes — collapse everything and refetch.
+  // curHost is a dependency, not a closure capture, so a host change re-roots
+  // even when the path is identical: the per-host caches below are cleared
+  // first, never serving one host's listing for another's path.
   React.useEffect(() => {
     if (!curPath) return
     let cancelled = false
@@ -163,7 +187,7 @@ export function FilesTab({
     setErrorByPath({})
     setRootPath(null)
     api
-      .files(curPath)
+      .files(curPath, curHost ?? undefined)
       .then((data) => {
         if (cancelled) return
         setRootPath(data.path)
@@ -182,7 +206,7 @@ export function FilesTab({
     return () => {
       cancelled = true
     }
-  }, [curPath])
+  }, [curPath, curHost])
 
   // Poll the root directory every 5s so files that land after the tree first
   // loaded show up on their own — e.g. an attachment copied into a fresh agent's
@@ -203,7 +227,7 @@ export function FilesTab({
     const tick = () => {
       if (document.hidden || !rootRef.current?.clientWidth) return
       api
-        .files(rootPath)
+        .files(rootPath, curHost ?? undefined)
         .then((data) => {
           setChildrenByPath((prev) => {
             const cur = prev[rootPath]
@@ -217,23 +241,27 @@ export function FilesTab({
     }
     const id = setInterval(tick, 5000)
     return () => clearInterval(id)
-  }, [rootPath])
+  }, [rootPath, curHost])
 
-  // Fetch a directory's children into the cache (used on expand and refresh).
-  const loadDir = React.useCallback(async (dir: string) => {
-    try {
-      const data = await api.files(dir)
-      setChildrenByPath((prev) => ({ ...prev, [dir]: data.entries }))
-      setErrorByPath((prev) => {
-        if (!(dir in prev)) return prev
-        const next = { ...prev }
-        delete next[dir]
-        return next
-      })
-    } catch (e) {
-      setErrorByPath((prev) => ({ ...prev, [dir]: (e as Error).message }))
-    }
-  }, [])
+  // Fetch a directory's children into the cache (used on expand and refresh),
+  // on the host being browsed.
+  const loadDir = React.useCallback(
+    async (dir: string) => {
+      try {
+        const data = await api.files(dir, curHost ?? undefined)
+        setChildrenByPath((prev) => ({ ...prev, [dir]: data.entries }))
+        setErrorByPath((prev) => {
+          if (!(dir in prev)) return prev
+          const next = { ...prev }
+          delete next[dir]
+          return next
+        })
+      } catch (e) {
+        setErrorByPath((prev) => ({ ...prev, [dir]: (e as Error).message }))
+      }
+    },
+    [curHost]
+  )
 
   const toggleDir = (full: string) => {
     setExpanded((prev) => {
@@ -261,10 +289,11 @@ export function FilesTab({
   const submitPath = async (path: string) => {
     setFollow(false)
     try {
-      await api.files(path)
+      await api.files(path, curHost ?? undefined)
       setCurPath(path)
     } catch (e) {
-      if (/not a directory/i.test((e as Error).message)) onOpenFile(path)
+      if (/not a directory/i.test((e as Error).message))
+        onOpenFile(path, curHost)
       else setCurPath(path) // re-root so the tree surfaces the error
     }
   }
@@ -292,7 +321,7 @@ export function FilesTab({
       return
     }
     try {
-      await api.renameFile(renameTarget.full, name)
+      await api.renameFile(renameTarget.full, name, curHost ?? undefined)
       pruneExpanded(renameTarget.full)
       setRenameTarget(null)
       void loadDir(renameTarget.parent)
@@ -304,7 +333,7 @@ export function FilesTab({
   const doDelete = async () => {
     if (!deleteTarget) return
     try {
-      await api.deleteFile(deleteTarget.full)
+      await api.deleteFile(deleteTarget.full, curHost ?? undefined)
       pruneExpanded(deleteTarget.full)
       setDeleteTarget(null)
       void loadDir(deleteTarget.parent)
@@ -318,7 +347,7 @@ export function FilesTab({
   const uploadTo = async (dir: string, files: File[]) => {
     if (files.length === 0) return
     try {
-      const res = await api.uploadFiles(dir, files)
+      const res = await api.uploadFiles(dir, files, curHost ?? undefined)
       const n = res.files.length
       toast.success(`Uploaded ${n} file${n === 1 ? "" : "s"}`)
       setExpanded((prev) => (prev.has(dir) ? prev : new Set(prev).add(dir)))
@@ -331,7 +360,7 @@ export function FilesTab({
   // Trigger a browser download of a file via a synthetic anchor.
   const downloadFile = (full: string, name: string) => {
     const a = document.createElement("a")
-    a.href = api.downloadURL(full)
+    a.href = api.downloadURL(full, curHost ?? undefined)
     a.download = name
     document.body.appendChild(a)
     a.click()
@@ -373,7 +402,7 @@ export function FilesTab({
                 ? clickNavigates
                   ? navigate(full)
                   : toggleDir(full)
-                : onOpenFile(full)
+                : onOpenFile(full, curHost)
             }
             onRename={() => {
               setRenameTarget({ name: e.name, full, dir: e.dir, parent: dir })

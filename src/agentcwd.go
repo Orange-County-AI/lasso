@@ -269,40 +269,56 @@ func lastTranscriptCwd(data []byte) string {
 	return ""
 }
 
-// paneLeaderCwd resolves the cwd of the pane's foreground process-group LEADER:
-// the shell when the pane is idle, the harness while it runs. herdr's
-// foreground_cwd deliberately prefers a *descendant* whose cwd differs from the
-// shell's, which under an agent is whatever transient subprocess is running (a
-// plugin under ~/.claude/plugins/cache, a git hook) — enough to yank the file
-// viewer off the tree. Asking for the leader specifically keeps the answer
-// stable while still tracking a `cd repo && claude` that herdr's shell-reported
-// cwd never sees. "" when herdr predates pane.process_info or the cwd is
-// unreadable.
-func paneLeaderCwd(paneID string) string {
+// paneProcess is one foreground process of a pane, as herdr's
+// pane.process_info reports it. Argv is what makes an ssh attach recoverable
+// (see panehost.go); the rest resolves the pane's own cwd.
+type paneProcess struct {
+	PID  uint32   `json:"pid"`
+	Name string   `json:"name"`
+	Cwd  string   `json:"cwd"`
+	Argv []string `json:"argv"`
+}
+
+type paneProcessInfo struct {
+	ForegroundProcessGroupID uint32        `json:"foreground_process_group_id"`
+	ForegroundProcesses      []paneProcess `json:"foreground_processes"`
+}
+
+// paneForeground asks herdr what the pane is running. One call answers both
+// questions activeCwd has — where the foreground leader sits, and whether the
+// pane is really a window onto another host — so neither pays its own RPC. The
+// zero value is returned when herdr predates pane.process_info or the pane is
+// gone; every consumer reads that as "no answer".
+func paneForeground(paneID string) paneProcessInfo {
 	if paneID == "" {
-		return ""
+		return paneProcessInfo{}
 	}
 	res, err := herdrCall("pane.process_info", map[string]any{"pane_id": paneID})
 	if err != nil {
-		return ""
+		return paneProcessInfo{}
 	}
-	return leaderCwdFromProcessInfo(res)
+	return parsePaneProcessInfo(res)
 }
 
-func leaderCwdFromProcessInfo(res json.RawMessage) string {
+func parsePaneProcessInfo(res json.RawMessage) paneProcessInfo {
 	var r struct {
-		ProcessInfo struct {
-			ForegroundProcessGroupID uint32 `json:"foreground_process_group_id"`
-			ForegroundProcesses      []struct {
-				PID uint32 `json:"pid"`
-				Cwd string `json:"cwd"`
-			} `json:"foreground_processes"`
-		} `json:"process_info"`
+		ProcessInfo paneProcessInfo `json:"process_info"`
 	}
 	if json.Unmarshal(res, &r) != nil {
-		return ""
+		return paneProcessInfo{}
 	}
-	pi := r.ProcessInfo
+	return r.ProcessInfo
+}
+
+// leaderCwd is the cwd of the pane's foreground process-group LEADER: the shell
+// when the pane is idle, the harness while it runs. herdr's foreground_cwd
+// deliberately prefers a *descendant* whose cwd differs from the shell's, which
+// under an agent is whatever transient subprocess is running (a plugin under
+// ~/.claude/plugins/cache, a git hook) — enough to yank the file viewer off the
+// tree. Asking for the leader specifically keeps the answer stable while still
+// tracking a `cd repo && claude` that herdr's shell-reported cwd never sees.
+// "" when there is no foreground job or the cwd is unreadable.
+func leaderCwd(pi paneProcessInfo) string {
 	if pi.ForegroundProcessGroupID == 0 {
 		return ""
 	}
@@ -315,19 +331,33 @@ func leaderCwdFromProcessInfo(res json.RawMessage) string {
 }
 
 // activeCwd resolves the directory the file viewer follows for the focused pane,
-// most-authoritative first: the harness's own cwd (which the pane never sees),
-// then the pane's foreground leader, then herdr's pane cwds. The second return
-// is the Active.CwdSource label naming which one answered.
-func activeCwd(p pane) (string, string) {
-	leader := paneLeaderCwd(p.PaneID)
+// and the host that directory lives on.
+//
+// The ssh hop comes first: when the pane is an attach onto another host's herdr,
+// every local answer below is the ssh client's directory and none of them
+// describes what is on screen. Otherwise, most-authoritative first: the
+// harness's own cwd (which the pane never sees), then the pane's foreground
+// leader, then herdr's pane cwds — all on the active host, since that is whose
+// herdr reported the pane. The second return is the Active.CwdSource label
+// naming which resolver answered, prefixed "ssh:" when it answered on the far
+// side of an attach.
+func activeCwd(p pane) (cwd, source, host string) {
+	pi := paneForeground(p.PaneID)
+	if hop, ok := paneSSHHop(pi); ok {
+		if c, src := remoteAttachCwd(hop); c != "" {
+			return c, "ssh:" + src, hop.host
+		}
+	}
+	local := curBackend().Name()
+	leader := leaderCwd(pi)
 	if c := harnessCwd(curBackend(), p, leader); c != "" {
-		return c, "harness"
+		return c, "harness", local
 	}
 	if leader != "" {
-		return leader, "leader"
+		return leader, "leader", local
 	}
 	if paneCwdUsesForeground(p) {
-		return paneCwd(p), "foreground"
+		return paneCwd(p), "foreground", local
 	}
-	return paneCwd(p), "shell"
+	return paneCwd(p), "shell", local
 }

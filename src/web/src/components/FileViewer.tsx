@@ -28,9 +28,14 @@ const HILITE_CAP = 400 * 1024
 // raw editor and a rendered preview.
 export function FileViewer({
   path,
+  host,
   onClose,
 }: {
   path: string
+  // The host the file was opened from — captured at open time by the parent, so
+  // the viewer keeps reading, polling, and saving on that machine even if pane
+  // focus (and the tree) moves onto another host while it's open.
+  host: string | null
   onClose: () => void
 }) {
   const image = isImage(path)
@@ -68,11 +73,13 @@ export function FileViewer({
   textRef.current = text
   const dirtyRef = React.useRef(dirty)
   dirtyRef.current = dirty
-
   // Is this file dirty in the working tree? Derive its repo-relative path the
   // same way FilesPanel does and look it up in the shared (already-polled) diff
-  // metadata. Deleted files aren't viewable, so we ignore that status.
-  const { activeCwd } = useApp()
+  // metadata. Deleted files aren't viewable, so we ignore that status. That
+  // metadata describes the cwd on its own host, so it only speaks for this file
+  // when the viewer was opened on that same host — a viewer left open across a
+  // focus change must not borrow another host's status (or diff its cwd there).
+  const { activeCwd, cwdHost } = useApp()
   const diffData = useDiff().data ?? null
   const rel = React.useMemo(() => {
     if (!activeCwd) return null
@@ -81,6 +88,7 @@ export function FileViewer({
   }, [activeCwd, path])
   const fileDirty =
     !binary &&
+    host === cwdHost &&
     rel != null &&
     (diffData?.dirty ?? 0) > 0 &&
     (diffData?.files ?? []).some(
@@ -108,7 +116,7 @@ export function FileViewer({
     setError(null)
     setSaveError(null)
     api
-      .fileText(path)
+      .fileText(path, host ?? undefined)
       .then((t) => {
         if (cancelled) return
         setText(t)
@@ -118,7 +126,7 @@ export function FileViewer({
     return () => {
       cancelled = true
     }
-  }, [path, binary])
+  }, [path, host, binary])
 
   // Fetch the working-tree diff (vs HEAD) for this file and bar its changed
   // lines. "working" mode lines up with the on-disk file the viewer loads, so
@@ -130,13 +138,13 @@ export function FileViewer({
     }
     let cancelled = false
     api
-      .diffFile(activeCwd, rel, "working")
+      .diffFile(activeCwd, rel, "working", undefined, host ?? undefined)
       .then((res) => !cancelled && setChangedLines(changedNewLines(res.diff)))
       .catch(() => !cancelled && setChangedLines([]))
     return () => {
       cancelled = true
     }
-  }, [activeCwd, rel, fileDirty])
+  }, [activeCwd, rel, fileDirty, host])
 
   // Poll the open text file so external rewrites (an agent editing it, a build
   // regenerating it) surface without a manual page reload — mirroring the Files
@@ -150,7 +158,7 @@ export function FileViewer({
     const id = setInterval(() => {
       if (document.hidden || dirtyRef.current) return
       api
-        .fileText(path)
+        .fileText(path, host ?? undefined)
         .then((t) => {
           // Re-check the guards: the initial load must have landed, the editor
           // must still be clean, and the content must have actually changed.
@@ -164,7 +172,7 @@ export function FileViewer({
         })
     }, 5000)
     return () => clearInterval(id)
-  }, [path, binary])
+  }, [path, host, binary])
 
   // Poll a binary preview's on-disk signature (mtime + size) and bump the
   // cache-bust counter only when it actually changes, so a regenerated image or
@@ -173,12 +181,12 @@ export function FileViewer({
     if (!binary) return
     let alive = true
     let sig: string | null = null
-    api.fileSig(path).then((s) => {
+    api.fileSig(path, host ?? undefined).then((s) => {
       if (alive) sig = s
     })
     const id = setInterval(() => {
       if (document.hidden) return
-      api.fileSig(path).then((s) => {
+      api.fileSig(path, host ?? undefined).then((s) => {
         if (!alive || s === null) return
         if (sig === null) {
           sig = s
@@ -194,21 +202,21 @@ export function FileViewer({
       alive = false
       clearInterval(id)
     }
-  }, [path, binary])
+  }, [path, host, binary])
 
   const save = React.useCallback(async () => {
     if (draft == null || saving) return
     setSaving(true)
     setSaveError(null)
     try {
-      await api.writeFile(path, draft)
+      await api.writeFile(path, draft, host ?? undefined)
       setText(draft)
     } catch (e) {
       setSaveError((e as Error).message)
     } finally {
       setSaving(false)
     }
-  }, [path, draft, saving])
+  }, [path, host, draft, saving])
 
   // Closing discards unsaved edits, so confirm first.
   const requestClose = React.useCallback(() => {
@@ -233,7 +241,9 @@ export function FileViewer({
 
   // The binary preview URL, with a cache-bust suffix once the file has changed
   // on disk so the browser refetches instead of reusing the cached bytes.
-  const mediaURL = bust ? `${api.fileURL(path)}&v=${bust}` : api.fileURL(path)
+  const mediaURL = bust
+    ? `${api.fileURL(path, host ?? undefined)}&v=${bust}`
+    : api.fileURL(path, host ?? undefined)
 
   // Warn before a full page unload (browser close / reload) when dirty.
   React.useEffect(() => {

@@ -45,27 +45,27 @@ func TestLastTranscriptCwd(t *testing.T) {
 	}
 }
 
-func TestLeaderCwdFromProcessInfo(t *testing.T) {
+func TestLeaderCwd(t *testing.T) {
 	// The leader is claude; the second process is one of its Bash-tool shells,
 	// which is exactly the drift we must not follow.
 	res := json.RawMessage(`{"process_info":{"foreground_process_group_id":42,
 		"foreground_processes":[
 			{"pid":99,"name":"bash","cwd":"/home/u/.claude/plugins/cache"},
 			{"pid":42,"name":"claude","cwd":"/home/u/projects/app"}]}}`)
-	if got := leaderCwdFromProcessInfo(res); got != "/home/u/projects/app" {
-		t.Errorf("leaderCwdFromProcessInfo = %q, want the leader's cwd", got)
+	if got := leaderCwd(parsePaneProcessInfo(res)); got != "/home/u/projects/app" {
+		t.Errorf("leaderCwd = %q, want the leader's cwd", got)
 	}
 
 	// No leader in the list (its cwd was unreadable) -> no answer.
 	res = json.RawMessage(`{"process_info":{"foreground_process_group_id":42,
 		"foreground_processes":[{"pid":99,"name":"bash","cwd":"/tmp"}]}}`)
-	if got := leaderCwdFromProcessInfo(res); got != "" {
-		t.Errorf("leaderCwdFromProcessInfo without the leader = %q, want \"\"", got)
+	if got := leaderCwd(parsePaneProcessInfo(res)); got != "" {
+		t.Errorf("leaderCwd without the leader = %q, want \"\"", got)
 	}
 
 	// herdr too old for pane.process_info / no foreground job.
-	if got := leaderCwdFromProcessInfo(json.RawMessage(`{}`)); got != "" {
-		t.Errorf("leaderCwdFromProcessInfo of an empty result = %q, want \"\"", got)
+	if got := leaderCwd(parsePaneProcessInfo(json.RawMessage(`{}`))); got != "" {
+		t.Errorf("leaderCwd of an empty result = %q, want \"\"", got)
 	}
 }
 

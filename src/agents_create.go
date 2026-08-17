@@ -934,13 +934,11 @@ func globHasMeta(path string) bool { return strings.ContainsAny(path, "*?[") }
 // reqHostBackend resolves the backend a request targets via its ?host= param,
 // defaulting to the active host. Used by the upload + paste handlers so an
 // attachment or pasted image lands on the SELECTED host (the one the agent will
-// run on), not wherever the active backend happens to point during form editing.
+// run on), not wherever the active backend happens to point during form editing
+// — and by the sidebar's file/diff endpoints, whose host selector arrives the
+// same way.
 func reqHostBackend(r *http.Request) (Backend, error) {
-	host, ok := hostParam(r)
-	if !ok {
-		return nil, fmt.Errorf("host %q not available", host)
-	}
-	return gridHostBackend(host)
+	return namedHostBackend(r.URL.Query().Get("host"))
 }
 
 // moveAttachments moves staged attachments into the agent's work dir. Staging

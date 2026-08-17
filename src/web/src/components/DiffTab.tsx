@@ -13,10 +13,15 @@ import { cn } from "@/lib/utils"
 // endpoint (never byte-capped).
 export function DiffTab({
   repoPath,
+  host,
   data,
   error,
 }: {
   repoPath: string | null
+  // The host the repo lives on — the cwd the diff describes can sit on another
+  // host than the active one (an ssh-attached pane), and the lazy per-file
+  // fetches must land on the same machine as the metadata.
+  host: string | null
   data: DiffPayload | null
   error: string | null
 }) {
@@ -28,13 +33,14 @@ export function DiffTab({
   const files = data?.files ?? []
   const fileSig = files.map((f) => f.path).join("\n")
 
-  // Reset collapse tracking when the repo changes.
+  // Reset collapse tracking when the repo (or its host — same path, another
+  // machine) changes.
   // biome-ignore lint/correctness/useExhaustiveDependencies: repoPath is the trigger
   React.useEffect(() => {
     seenRef.current = new Set()
     setCollapsed(new Set())
     setAllCollapsed(true)
-  }, [repoPath])
+  }, [repoPath, host])
 
   // Newly-appearing files start collapsed (the lazy split means a collapsed
   // file costs nothing). fileSig is the trigger; the paths are read from the
@@ -134,6 +140,7 @@ export function DiffTab({
             <DiffFileBlock
               key={f.path}
               repoPath={activeCwd}
+              host={host}
               file={f}
               mode={mode}
               baseBranch={data.baseBranch}
@@ -154,6 +161,7 @@ type Body =
 
 function DiffFileBlock({
   repoPath,
+  host,
   file,
   mode,
   baseBranch,
@@ -161,6 +169,7 @@ function DiffFileBlock({
   onToggle,
 }: {
   repoPath: string
+  host: string | null
   file: DiffFileMeta
   mode: "branch" | "working"
   baseBranch?: string
@@ -189,7 +198,7 @@ function DiffFileBlock({
     let cancelled = false
     setBody({ state: "loading" })
     api
-      .diffFile(repoPath, file.path, mode, baseBranch)
+      .diffFile(repoPath, file.path, mode, baseBranch, host ?? undefined)
       .then((r) => {
         if (cancelled) return
         const parsed = parseDiff(r.diff)
@@ -203,7 +212,7 @@ function DiffFileBlock({
       cancelled = true
     }
     // file.add/file.del in deps so a polled content change refetches an open file.
-  }, [collapsed, repoPath, file.path, mode, baseBranch])
+  }, [collapsed, repoPath, file.path, mode, baseBranch, host])
 
   return (
     <div className={cn("dfile", kind && `dfile-${kind}`)}>
