@@ -2,24 +2,23 @@
 
 A web viewer for [herdr](https://herdr.dev) workspaces — a single Go binary that
 serves a two-pane UI over your tailnet: herdr's terminal alongside a live git
-diff, a file browser, and a grid of every pane herdr is running, across every
-host you're connected to. It also exposes an [MCP](https://modelcontextprotocol.io)
+diff and a file browser. It also exposes an [MCP](https://modelcontextprotocol.io)
 server at `/mcp` so an agent can spawn and drive other agents through lasso.
 
 ## What's in it
 
 Two resizable, collapsible columns:
 
-- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), a **Grid**
-  of every herdr pane (click to focus, right-click to rename/close,
-  ⌘/ctrl/shift-click to multi-select), and **Settings** (the lasso version and
-  whether an update is available, the herdr protocol/version with a one-click
-  `herdr update`, and the New-Agent defaults).
+- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
+  header row with the host switcher, the ⌘K pane search (every pane on every
+  host, plus past sessions to reopen) and **New Agent**.
 - **Right** — the git **Diff** of the focused pane's repo (working tree, or the
   branch vs. its base when clean), a **Files** browser that follows the active
   pane's directory and opens files in a markdown/code/image viewer, a **Browser**
-  web-preview iframe for a dev server, and a plain **Terminal** shell outside
-  herdr.
+  web-preview iframe for a dev server, a plain **Terminal** shell outside herdr,
+  and **Settings** (the lasso version and whether an update is available, the
+  herdr protocol/version with a one-click `herdr update`, and the New-Agent
+  defaults).
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
@@ -85,8 +84,8 @@ port that bumps if busy, so it never clashes with a production instance.
 One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
 (WebSocket), talks to the herdr server over its unix socket to track the focused
 pane and workspace layout, and pushes live state to the browser over SSE. It can
-drive herdr on the local box or on SSH-reachable hosts (the footer's host
-switcher / the Grid), so one lasso fronts a whole fleet. Each instance spawns its
+drive herdr on the local box or on SSH-reachable hosts through the footer's host
+switcher, so one lasso fronts a whole fleet. Each instance spawns its
 own ttyds on per-PID unix sockets, so several can run at once without colliding.
 The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
 plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.go`.

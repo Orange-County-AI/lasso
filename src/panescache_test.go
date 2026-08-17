@@ -8,39 +8,39 @@ import (
 	"time"
 )
 
-// resetGridCache clears the shared aggregation cache so a test starts cold.
-func resetGridCache(t *testing.T) {
+// resetPanesCache clears the shared aggregation cache so a test starts cold.
+func resetPanesCache(t *testing.T) {
 	t.Helper()
-	gridCache.mu.Lock()
-	gridCache.at, gridCache.data, gridCache.inflight = time.Time{}, gridPayload{}, nil
-	gridCache.mu.Unlock()
+	panesCache.mu.Lock()
+	panesCache.at, panesCache.data, panesCache.inflight = time.Time{}, panesPayload{}, nil
+	panesCache.mu.Unlock()
 }
 
-// A slow refresh must not queue every other caller behind it. Before, serveGrid
-// held gridCache.mu across the fetch, so a fetch that outran the 1.5s TTL turned
-// each waiter into the next refresher — /api/grid never answered again until
-// lasso was restarted.
-func TestGridSnapshotSharesOneRefresh(t *testing.T) {
-	resetGridCache(t)
-	orig := gridFetch
-	t.Cleanup(func() { gridFetch = orig; resetGridCache(t) })
+// A slow refresh must not queue every other caller behind it. Before,
+// serveAllPanes held panesCache.mu across the fetch, so a fetch that outran the
+// TTL made each waiter start another refresher and /api/all-panes stopped
+// answering until lasso restarted.
+func TestPanesSnapshotSharesOneRefresh(t *testing.T) {
+	resetPanesCache(t)
+	orig := panesFetch
+	t.Cleanup(func() { panesFetch = orig; resetPanesCache(t) })
 
 	var calls atomic.Int32
 	release := make(chan struct{})
-	gridFetch = func(context.Context) gridPayload {
+	panesFetch = func(context.Context) panesPayload {
 		calls.Add(1)
 		<-release
-		return gridPayload{Panes: []gridPane{{Host: "local", PaneID: "p1"}}}
+		return panesPayload{Panes: []hostPane{{Host: "local", PaneID: "p1"}}}
 	}
 
 	const callers = 5
 	var wg sync.WaitGroup
-	got := make([]gridPayload, callers)
+	got := make([]panesPayload, callers)
 	for i := range callers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got[i] = gridSnapshot(context.Background())
+			got[i] = panesSnapshot(context.Background())
 		}(i)
 	}
 
@@ -68,26 +68,26 @@ func TestGridSnapshotSharesOneRefresh(t *testing.T) {
 
 // A caller that gives up must not take the endpoint with it: it returns
 // promptly, and the refresh it was waiting on still lands for everyone else.
-func TestGridSnapshotHonorsCallerCancellation(t *testing.T) {
-	resetGridCache(t)
-	orig := gridFetch
-	t.Cleanup(func() { gridFetch = orig; resetGridCache(t) })
+func TestPanesSnapshotHonorsCallerCancellation(t *testing.T) {
+	resetPanesCache(t)
+	orig := panesFetch
+	t.Cleanup(func() { panesFetch = orig; resetPanesCache(t) })
 
 	release := make(chan struct{})
-	gridFetch = func(context.Context) gridPayload {
+	panesFetch = func(context.Context) panesPayload {
 		<-release
-		return gridPayload{Panes: []gridPane{{Host: "local", PaneID: "p1"}}}
+		return panesPayload{Panes: []hostPane{{Host: "local", PaneID: "p1"}}}
 	}
 
 	refreshed := make(chan struct{})
-	go func() { defer close(refreshed); gridSnapshot(context.Background()) }()
+	go func() { defer close(refreshed); panesSnapshot(context.Background()) }()
 	// Let it claim the refresh and block in the fetch.
 	time.Sleep(100 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	done := make(chan gridPayload, 1)
-	go func() { done <- gridSnapshot(ctx) }()
+	done := make(chan panesPayload, 1)
+	go func() { done <- panesSnapshot(ctx) }()
 
 	select {
 	case p := <-done:
@@ -98,7 +98,7 @@ func TestGridSnapshotHonorsCallerCancellation(t *testing.T) {
 		t.Fatal("a cancelled caller stayed blocked on the shared refresh")
 	}
 	close(release)
-	<-refreshed // let the refresh land before cleanup restores gridFetch
+	<-refreshed // let the refresh land before cleanup restores panesFetch
 }
 
 // The context bound on an ssh command is only real if Wait can't outlive it.

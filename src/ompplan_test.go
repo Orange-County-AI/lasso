@@ -202,12 +202,12 @@ func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 	}
 }
 
-// The grid feeds lasso's own pane rail and switcher, so it has to reach the
-// same verdict the MCP tools do — an agent the rail shows idle while wait_agent
-// calls it blocked is the contradiction the whole check exists to remove. The
-// grid runs on a poll, so it only screen-reads panes whose record says lasso
-// launched them in omp's plan mode.
-func TestGridHostPanesReportsOmpPlanGate(t *testing.T) {
+// The cross-host pane enumeration feeds lasso's ⌘K switcher, so it has to reach
+// the same verdict the MCP tools do — an agent the switcher shows idle while
+// wait_agent calls it blocked is the contradiction the whole check exists to
+// remove. The enumeration runs on a poll, so it only screen-reads panes whose
+// record says lasso launched them in omp's plan mode.
+func TestEnumerateHostPanesReportsOmpPlanGate(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
@@ -225,10 +225,10 @@ func TestGridHostPanesReportsOmpPlanGate(t *testing.T) {
 		}
 	}
 
-	b := &gridGateFake{memBackend: newMemBackend(), screen: ompPlanReviewScreen}
-	panes, err := gridHostPanes(b, "local", "local")
+	b := &panesGateFake{memBackend: newMemBackend(), screen: ompPlanReviewScreen}
+	panes, err := enumerateHostPanes(b, "local", "local")
 	if err != nil {
-		t.Fatalf("gridHostPanes: %v", err)
+		t.Fatalf("enumerateHostPanes: %v", err)
 	}
 	got := map[string]string{}
 	for _, p := range panes {
@@ -241,20 +241,20 @@ func TestGridHostPanesReportsOmpPlanGate(t *testing.T) {
 		t.Errorf("non-plan omp pane status = %q, want idle (lasso claims no gate for it)", got["p2"])
 	}
 	if b.reads["p2"] {
-		t.Error("the grid must not screen-read a pane whose record never asked for plan mode")
+		t.Error("the enumeration must not screen-read a pane whose record never asked for plan mode")
 	}
 }
 
-// gridGateFake answers the enumeration gridHostPanes makes: two idle omp panes,
-// both showing the same screen, and it records which panes were read so a test
-// can prove the poll didn't read the one it had no reason to.
-type gridGateFake struct {
+// panesGateFake answers the enumeration enumerateHostPanes makes: two idle omp
+// panes, both showing the same screen, and it records which panes were read so a
+// test can prove the poll didn't read the one it had no reason to.
+type panesGateFake struct {
 	*memBackend
 	screen string
 	reads  map[string]bool
 }
 
-func (b *gridGateFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *panesGateFake) HerdrCall(method string, params any) (json.RawMessage, error) {
 	switch method {
 	case "pane.list":
 		raw, _ := json.Marshal(map[string]any{"panes": []map[string]any{

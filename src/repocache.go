@@ -22,7 +22,7 @@ const (
 	branchCacheTTL = 5 * time.Minute
 
 	// warmInterval is how often the background warmer refreshes every host. It
-	// exceeds gridBackendIdle, so pooled ssh connections are still reaped between
+	// exceeds hostBackendIdle, so pooled ssh connections are still reaped between
 	// cycles rather than pinned open forever.
 	warmInterval = 2 * time.Minute
 
@@ -221,17 +221,17 @@ func warmAllHosts() {
 func warmHost(host string) {
 	key := hostCacheKey(host)
 	// Dial (or touch) the host's pooled backend FIRST, before any repo work:
-	// this is what pre-warms the SSH control master, so the first grid poll or
+	// this is what pre-warms the SSH control master, so the first pane poll or
 	// dialog open finds a live connection instead of paying the 0.2–0.7s
 	// handshake. Ordered ahead of the repo listing deliberately — that chain
 	// (settings + repo-state sqlite reads) can fail for reasons that have
 	// nothing to do with the connection, and the master should stay warm
 	// regardless. Pooled backends then outlive the idle TTL as long as warming
-	// keeps touching them (gridBackendIdle > warmInterval). A wedged connection
-	// is gridHostBackend's problem: it liveness-checks pooled entries on access
+	// keeps touching them (hostBackendIdle > warmInterval). A wedged connection
+	// is hostBackend's problem: it liveness-checks pooled entries on access
 	// and redials dead ones in place, so this hands back a healthy (or freshly
 	// re-dialed) backend.
-	be, err := gridHostBackend(key)
+	be, err := hostBackend(key)
 	if err != nil {
 		log.Printf("warm: backend for %s: %v", key, err)
 		return

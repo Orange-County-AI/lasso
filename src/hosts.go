@@ -559,8 +559,8 @@ func discoverHostsState(ctx context.Context, force bool) (hosts []HostInfo, prob
 	// refresh, or when nothing has completed a probe yet and returning now would
 	// mean returning an all-"probing" list. Once the store holds real results a
 	// read is a map lookup — so the background refresher's sweeps never tax the
-	// callers that poll discovery (the grid, the repo warmer) with a grace period
-	// for data they already have.
+	// callers that poll discovery (the pane aggregation, the repo warmer) with a
+	// grace period for data they already have.
 	if done != nil && (force || !anyHostSettled()) {
 		grace := hostProbeGrace
 		if force {

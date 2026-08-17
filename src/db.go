@@ -242,26 +242,11 @@ func getSetting(key string) (string, error) {
 }
 
 // uiState is the browser's persisted, global (host-agnostic) UI preferences:
-// Grid filters, right-sidebar layout, and usage-footer preferences. It's kept
-// server-side (one JSON blob in settings) rather than in localStorage so the UI
-// looks the same across browsers/devices reaching the same lasso.
+// right-sidebar layout and usage-footer preferences. It's kept server-side (one
+// JSON blob in settings) rather than in localStorage so the UI looks the same
+// across browsers/devices reaching the same lasso.
 type uiState struct {
-	GridAgentsOnly  bool     `json:"grid_agents_only"`
-	GridHiddenHosts []string `json:"grid_hidden_hosts"`
-	GridSelected    []string `json:"grid_selected"`
-	// GridMode is the Grid tab's visibility mode: "watch" (Multi) shows the
-	// panes toggled on in GridWatched, "select" (Single) shows one pane at a
-	// time (GridSelectPane). Anything else — including the retired "all" wall —
-	// reads as "watch" (normalized in getUIState).
-	GridMode string `json:"grid_mode"`
-	// GridWatched holds host|pane_id keys of the panes shown in Multi mode.
-	GridWatched []string `json:"grid_watched"`
-	// GridSelectPane is the host|pane_id shown in Select mode ("" = auto: the
-	// first candidate).
-	GridSelectPane string `json:"grid_select_pane"`
-	// GridRailAgentsOnly filters the Grid tab's pane rail to agent panes.
-	GridRailAgentsOnly bool `json:"grid_rail_agents_only"`
-	SidebarCollapsed   bool `json:"sidebar_collapsed"`
+	SidebarCollapsed bool `json:"sidebar_collapsed"`
 	// SidebarPct is the right sidebar's open width as a percentage of the panel
 	// group. Synced (rather than device-local) because the sidebar's footprint
 	// sets the shared herdr pty's width — tabs disagreeing about layout render
@@ -287,10 +272,6 @@ type uiState struct {
 // defaults true).
 func getUIState() (uiState, error) {
 	us := uiState{
-		GridHiddenHosts:     []string{},
-		GridSelected:        []string{},
-		GridMode:            "watch",
-		GridWatched:         []string{},
 		FilesClickNavigates: true,
 		UsageHidden:         []string{},
 		UsageOrder:          []string{},
@@ -304,23 +285,11 @@ func getUIState() (uiState, error) {
 		return us, err
 	}
 	_ = json.Unmarshal([]byte(v), &us)
-	if us.GridHiddenHosts == nil {
-		us.GridHiddenHosts = []string{}
-	}
-	if us.GridSelected == nil {
-		us.GridSelected = []string{}
-	}
-	if us.GridWatched == nil {
-		us.GridWatched = []string{}
-	}
 	if us.UsageHidden == nil {
 		us.UsageHidden = []string{}
 	}
 	if us.UsageOrder == nil {
 		us.UsageOrder = []string{}
-	}
-	if us.GridMode != "watch" && us.GridMode != "select" {
-		us.GridMode = "watch"
 	}
 	return us, nil
 }

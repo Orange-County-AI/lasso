@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { api, type GridPane } from "@/lib/api"
+import { api, type HostPane } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
@@ -19,10 +19,10 @@ import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 // cellKey uniquely identifies a row. Live panes are keyed by host+pane_id (pane
-// ids are only unique within a host) — the Grid's identity formula. Closed rows
-// have no live pane: recorded agents key by their record id, orphan worktree/
-// scratch dirs (no record, no pane) key by their host+cwd.
-const cellKey = (p: GridPane) => {
+// ids are only unique within a host). Closed rows have no live pane: recorded
+// agents key by their record id, orphan worktree/scratch dirs (no record, no
+// pane) key by their host+cwd.
+const cellKey = (p: HostPane) => {
   if (p.closed && p.agent_id) return `agent|${p.host}|${p.agent_id}`
   if (p.closed && p.cwd) return `dir|${p.host}|${p.cwd}`
   return `${p.host}|${p.pane_id}`
@@ -30,21 +30,21 @@ const cellKey = (p: GridPane) => {
 
 // The descriptive pane title shown bold at the top of each row. Prefer the
 // workspace label (e.g. "accessibility") over the bare herdr tab number.
-const primaryLabel = (p: GridPane) =>
+const primaryLabel = (p: HostPane) =>
   p.workspace_label || p.tab_label || p.pane_id
 
 // The most specific name *below* the workspace, shown as a badge to tell
 // sibling panes apart. Prefer the pane's own label (herdr's per-pane title);
 // fall back to the tab label — which, for an unnamed pane, is the name herdr
 // shows on its tab. "" when neither adds anything over the primary label.
-const detailLabel = (p: GridPane) => {
+const detailLabel = (p: HostPane) => {
   const detail = p.pane_label || p.tab_label
   return detail && detail !== primaryLabel(p) ? detail : ""
 }
 
 // Everything worth matching against, lowercased and joined. A query token is a
 // hit if it's a substring anywhere in here.
-const haystack = (p: GridPane) =>
+const haystack = (p: HostPane) =>
   [
     p.tab_label,
     p.pane_label,
@@ -60,19 +60,17 @@ const haystack = (p: GridPane) =>
     .join(" ")
     .toLowerCase()
 
-// PaneSwitcher: a Cmd+U command-palette over every herdr pane on every host.
-// Type to filter; ↑/↓ to move; Enter to open + focus the pane in the Herdr tab
-// (handing the keyboard straight to its terminal). Unlike the Grid's display
-// filters, this always searches the full pane set across all hosts.
+// PaneSwitcher: a Cmd+K command-palette over every herdr pane on every host.
+// Type to filter; ↑/↓ to move; Enter to open + focus the pane in the herdr
+// terminal (handing the keyboard straight to its xterm). It always searches the
+// full pane set across all hosts.
 export function PaneSwitcher({
   open,
   onOpenChange,
-  onFocusInHerdr,
   termWasFocused = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onFocusInHerdr: () => void
   // Whether the herdr terminal held keyboard focus when the palette opened. On a
   // cancel-close we re-focus its xterm so Esc'ing out of ⌘K leaves the keyboard
   // where it was, rather than stranding it on the (unfocusable-for-typing) iframe.
@@ -98,14 +96,14 @@ export function PaneSwitcher({
   // already hands focus to the pane's terminal) from a cancel.
   const chosenRef = React.useRef(false)
 
-  // Shares the Grid tab's query cache (same key), so opening right after viewing
-  // the Grid is instant; otherwise it fetches on open.
+  // Shares the prefetched cross-host pane cache (same key), so the palette is
+  // usually instant; otherwise it fetches on open.
   const q = useQuery({
-    queryKey: qk.grid,
-    queryFn: () => api.gridPanes(),
+    queryKey: qk.panes,
+    queryFn: () => api.allPanes(),
     enabled: open,
   })
-  const livePanes = q.data?.panes ?? [] // backend order = newest first (mirrors Grid)
+  const livePanes = q.data?.panes ?? [] // backend order = newest first
 
   // Past agents (every one lasso spawned). Only fetched when the Active filter is
   // off, since that's the only mode that surfaces closed ones.
@@ -121,7 +119,7 @@ export function PaneSwitcher({
   // host+cwd (an orphan dir that's currently open is already a live pane), so
   // nothing is listed twice.
   const closedAgents = React.useMemo(() => {
-    if (activeOnly) return [] as GridPane[]
+    if (activeOnly) return [] as HostPane[]
     const livePaneIds = new Set(livePanes.map((p) => `${p.host}|${p.pane_id}`))
     const liveCwds = new Set(
       livePanes.filter((p) => p.cwd).map((p) => `${p.host}|${p.cwd}`)
@@ -197,7 +195,7 @@ export function PaneSwitcher({
       ?.scrollIntoView({ block: "nearest" })
   }, [active, open])
 
-  const choose = (p: GridPane) => {
+  const choose = (p: HostPane) => {
     chosenRef.current = true
     onOpenChange(false)
     // Close first so the Dialog doesn't re-grab focus on unmount — then hand the
@@ -211,14 +209,14 @@ export function PaneSwitcher({
       api
         .reopenAgent(p.host, body)
         .then((np) => {
-          queryClient.invalidateQueries({ queryKey: qk.grid })
+          queryClient.invalidateQueries({ queryKey: qk.panes })
           queryClient.invalidateQueries({ queryKey: qk.agentHistory })
-          return focusPaneInHerdr(np, activeHost, onFocusInHerdr)
+          return focusPaneInHerdr(np, activeHost)
         })
         .catch((e) => toast.error(`reopen failed: ${(e as Error).message}`))
       return
     }
-    focusPaneInHerdr(p, activeHost, onFocusInHerdr).catch((e) =>
+    focusPaneInHerdr(p, activeHost).catch((e) =>
       toast.error(`focus failed: ${(e as Error).message}`)
     )
   }

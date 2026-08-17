@@ -58,9 +58,9 @@ func startHerdrSSHReaper(ctx context.Context) {
 // stops an orphaned one. All the files are PID-keyed, same as herdr's: a
 // lasso-ctl-<pid>-*.sock whose pid is dead is garbage — ask its master to exit
 // (dropping the sshd-side connection), then remove the socket file. The
-// companion forwarded-socket files (lasso-herdr-<pid>-*) and grid ttyd sockets
-// (lasso-gridterm-<pid>-*) of dead pids are plain unix socket files; just
-// remove them. Live pids (including our own) are never touched.
+// companion forwarded-socket files (lasso-herdr-<pid>-*) of dead pids are
+// plain unix socket files; just remove them. Live pids (including our own) are
+// never touched.
 func reapOrphanLassoSSH(ctx context.Context, tmpDir string) (removed int) {
 	deadPidFiles := func(pattern, prefix string) []string {
 		var out []string
@@ -86,7 +86,7 @@ func reapOrphanLassoSSH(ctx context.Context, tmpDir string) (removed int) {
 			removed++
 		}
 	}
-	for _, pattern := range []string{"lasso-herdr-*", "lasso-gridterm-*"} {
+	for _, pattern := range []string{"lasso-herdr-*"} {
 		prefix := strings.TrimSuffix(pattern, "*")
 		for _, f := range deadPidFiles(pattern, prefix) {
 			if os.Remove(f) == nil {

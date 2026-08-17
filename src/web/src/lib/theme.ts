@@ -1,28 +1,16 @@
 import { api, type ThemePayload } from "@/lib/api"
 import { getMode } from "@/lib/mode"
 
-// The fixed terminal iframes whose xterm.js theme we keep in sync with herdr's
-// (the left "Herdr" terminal and the right shell). The Grid tab's per-pane
-// terminals are matched by class instead — see termFrames.
+// The terminal iframes whose xterm.js theme we keep in sync with herdr's: the
+// left herdr terminal and the right shell.
 const TERM_FRAME_IDS = ["term", "shellframe"]
 
-// GRID_FRAME_CLASS marks each Grid cell's terminal iframe so it's re-themed
-// alongside the fixed terminals (its id is dynamic, one per host+pane).
-export const GRID_FRAME_CLASS = "gridterm"
-
-// termFrames collects every terminal iframe the theme should track: the two
-// fixed ones by id, plus every live Grid cell terminal by class.
 function termFrames(): HTMLIFrameElement[] {
   const out: HTMLIFrameElement[] = []
   for (const id of TERM_FRAME_IDS) {
     const el = document.getElementById(id) as HTMLIFrameElement | null
     if (el) out.push(el)
   }
-  out.push(
-    ...Array.from(
-      document.querySelectorAll<HTMLIFrameElement>(`iframe.${GRID_FRAME_CLASS}`)
-    )
-  )
   return out
 }
 
@@ -102,10 +90,9 @@ function setTermFontWhenReady(
 }
 
 // applyTermFont injects the Nerd Font @font-face into every terminal iframe and
-// points xterm at it. Mirrors applyTermTheme: iterates the same frames (fixed +
-// Grid cells), and retries while an iframe is still (re)connecting. Each fresh
-// xterm lives in a fresh iframe document, so the per-document guard re-arms on
-// ttyd reconnects.
+// points xterm at it. Mirrors applyTermTheme: iterates the same frames, and
+// retries while an iframe is still (re)connecting. Each fresh xterm lives in a
+// fresh iframe document, so the per-document guard re-arms on ttyd reconnects.
 export function applyTermFont(tries = 0) {
   let pending = false
   for (const el of termFrames()) {

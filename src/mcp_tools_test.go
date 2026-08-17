@@ -19,8 +19,8 @@ func targetRecords() []AgentRecord {
 // targetPanes are the host's live herdr panes: two lasso-owned (w1-1, w2-1) and
 // two foreign sessions lasso never created (a bot "Clem (OCAI)" and "Ticket
 // 500"), plus a bare shell that carries no agent.
-func targetPanes() []gridPane {
-	return []gridPane{
+func targetPanes() []hostPane {
+	return []hostPane{
 		{PaneID: "w1-1", WorkspaceID: "w1", WorkspaceLabel: "clem", Agent: "claude", AgentStatus: "idle", HasAgent: true},
 		{PaneID: "w2-1", WorkspaceID: "w2", WorkspaceLabel: "builder", Agent: "codex", AgentStatus: "working", HasAgent: true},
 		{PaneID: "w9-1", WorkspaceID: "w9", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working", HasAgent: true},
@@ -70,7 +70,7 @@ func TestResolveTargetByName(t *testing.T) {
 func TestResolveTargetNameAmbiguous(t *testing.T) {
 	// A foreign session sharing a lasso agent's name makes "clem" ambiguous: it
 	// must be refused with BOTH candidates listed, never guessed.
-	panes := append(targetPanes(), gridPane{PaneID: "w5-1", WorkspaceLabel: "clem", Agent: "claude", AgentStatus: "idle", HasAgent: true})
+	panes := append(targetPanes(), hostPane{PaneID: "w5-1", WorkspaceLabel: "clem", Agent: "claude", AgentStatus: "idle", HasAgent: true})
 	_, err := resolveTarget("local", "clem", targetRecords(), panes)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("clem ambiguity: err = %v, want an ambiguous-match error", err)
@@ -95,20 +95,20 @@ func TestResolveTargetNotFoundAndBareShell(t *testing.T) {
 
 func TestSidebarNameFallback(t *testing.T) {
 	// Workspace label wins; then the pane's own label; then the tab label.
-	if got := sidebarName(gridPane{WorkspaceLabel: "ws", PaneLabel: "pn", TabLabel: "tb"}); got != "ws" {
+	if got := sidebarName(hostPane{WorkspaceLabel: "ws", PaneLabel: "pn", TabLabel: "tb"}); got != "ws" {
 		t.Errorf("sidebarName = %q, want ws", got)
 	}
-	if got := sidebarName(gridPane{PaneLabel: "pn", TabLabel: "tb"}); got != "pn" {
+	if got := sidebarName(hostPane{PaneLabel: "pn", TabLabel: "tb"}); got != "pn" {
 		t.Errorf("sidebarName = %q, want pn", got)
 	}
-	if got := sidebarName(gridPane{TabLabel: "tb"}); got != "tb" {
+	if got := sidebarName(hostPane{TabLabel: "tb"}); got != "tb" {
 		t.Errorf("sidebarName = %q, want tb", got)
 	}
 	// Nothing labelled anywhere: the terminal title is the only name left.
-	if got := sidebarName(gridPane{TerminalTitle: "Check Norm outline wiki connection"}); got != "Check Norm outline wiki connection" {
+	if got := sidebarName(hostPane{TerminalTitle: "Check Norm outline wiki connection"}); got != "Check Norm outline wiki connection" {
 		t.Errorf("sidebarName = %q, want the terminal title", got)
 	}
-	if got := sidebarName(gridPane{}); got != "" {
+	if got := sidebarName(hostPane{}); got != "" {
 		t.Errorf("sidebarName = %q, want empty", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	if ai := agentInfoFrom("local", AgentRecord{ID: "a1", Title: "clem"}, "idle"); !ai.LassoCreated {
 		t.Error("agentInfoFrom should set lasso_created=true")
 	}
-	ai := agentInfoFromPane("local", gridPane{PaneID: "w9-1", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working"})
+	ai := agentInfoFromPane("local", hostPane{PaneID: "w9-1", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working"})
 	if ai.LassoCreated {
 		t.Error("agentInfoFromPane should set lasso_created=false")
 	}
@@ -128,7 +128,7 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	}
 	// With a terminal title the session keeps its sidebar name as the address but
 	// reports what it is actually working on as the title.
-	ai = agentInfoFromPane("norm", gridPane{
+	ai = agentInfoFromPane("norm", hostPane{
 		PaneID: "w3:p1", WorkspaceLabel: "norm", TerminalTitle: "Check Norm outline wiki connection",
 		Agent: "claude", AgentStatus: "idle",
 	})

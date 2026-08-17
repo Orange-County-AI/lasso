@@ -227,31 +227,29 @@ func hostParam(r *http.Request) (string, bool) {
 	if host == "" {
 		host = curBackend().Name()
 	}
-	return host, gridHostAllowed(host)
+	return host, hostAllowed(host)
 }
 
 // namedHostBackend resolves the backend a host selector names — the spine of
 // every endpoint that operates on a chosen host's filesystem (the sidebar's
 // file/diff endpoints, the upload/paste handlers). Empty means the active host,
-// and the gridHostAllowed gate refuses anything we may not drive (a bogus alias)
+// and the hostAllowed gate refuses anything we may not drive (a bogus alias)
 // before a single path byte is expanded or read.
 //
-// A selector that names the ACTIVE host resolves to the active backend itself,
-// not to the grid pool's separate connection for that alias. The pool is
-// deliberately distinct from the active backend so a host switch can't yank the
-// pty out from under a streaming grid terminal (see gridHostBackend) — a
-// one-shot stat/read/git has no such lifetime to protect, so it should use the
-// connection we already hold rather than open a second SSH master to the box we
-// are already driving.
+// A selector that names the active host resolves to the active backend itself,
+// not the host pool's separate connection for that alias. The pool remains
+// independent so RPC, file, diff, and agent-creation work can target a host
+// without switching the UI's active backend; a one-shot operation on the
+// active host should use the connection already held.
 func namedHostBackend(host string) (Backend, error) {
 	cur := curBackend()
 	if host == "" || host == cur.Name() {
 		return cur, nil
 	}
-	if !gridHostAllowed(host) {
+	if !hostAllowed(host) {
 		return nil, fmt.Errorf("host %q not available", host)
 	}
-	return gridHostBackend(host)
+	return hostBackend(host)
 }
 
 // hostDefaults reads host's creator defaults from host's own lasso.db.
@@ -317,7 +315,7 @@ func hostReposList(host string) (string, []repoEntry, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	be, err := gridHostBackend(host)
+	be, err := hostBackend(host)
 	if err != nil {
 		return "", nil, err
 	}
@@ -445,7 +443,7 @@ func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") +
 // piped on stdin so nothing rides the shell; jsonRows requests -json output for
 // a trailing SELECT. host must be a reachable, compatible remote.
 func remoteDB(host string, jsonRows bool, sql string) ([]byte, error) {
-	be, err := gridHostBackend(host)
+	be, err := hostBackend(host)
 	if err != nil {
 		return nil, err
 	}

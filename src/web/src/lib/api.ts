@@ -120,22 +120,15 @@ export interface Pane {
   agent_status?: string
 }
 
-// One pane in the Grid tab: a herdr pane on a specific host, enriched with
-// workspace/tab labels and whether herdr detects an agent in it. `host` is
-// "local" or an ssh-config alias and is the key for both attaching its terminal
-// and focusing it (switching the active host first when it isn't already active).
-// `terminal_id` is herdr's handle for a direct `terminal attach`.
-export interface GridPane {
+// One herdr pane on a specific host, enriched with workspace/tab labels and
+// whether herdr detects an agent in it — the row shape of /api/all-panes and
+// /api/agent-history. `host` is "local" or an ssh-config alias and is the key
+// for focusing the pane (switching the active host first when it isn't already
+// active).
+export interface HostPane {
   host: string
   host_label: string
-  // The physical box + account the host resolves to (via `ssh -G`; the local
-  // machine's own hostname/user for "local"). The pane rail groups by these so
-  // aliases pointing at one box — or several accounts on it — cluster together,
-  // mirroring the navbar host switcher. Absent when the alias didn't resolve.
-  host_hostname?: string
-  host_user?: string
   pane_id: string
-  terminal_id: string
   workspace_id?: string
   workspace_label?: string
   tab_id?: string
@@ -160,34 +153,18 @@ export interface GridPane {
   closed?: boolean
 }
 
-export interface GridPayload {
-  panes: GridPane[]
+export interface PanesPayload {
+  panes: HostPane[]
   // host → why its panes couldn't be listed (unreachable, protocol drift, …).
-  // The rest of the grid still renders; the UI shows these as per-host chips.
+  // Every other host's panes still come back; the UI reports these separately.
   errors?: Record<string, string>
 }
 
-// Persisted, global browser UI preferences (SQLite-backed): Grid tab filters,
-// sidebar layout, and footer preferences. The client reads the whole object and
-// writes patches, so navigating away and back — or opening lasso elsewhere —
-// restores the same view.
+// Persisted, global browser UI preferences (SQLite-backed): sidebar layout, the
+// Files tab's click behavior, and footer preferences. The client reads the whole
+// object and writes patches, so navigating away and back — or opening lasso
+// elsewhere — restores the same view.
 export interface UIState {
-  grid_agents_only: boolean
-  grid_hidden_hosts: string[]
-  // host|pane_id keys of the Grid tab's multi-selected cells, so the selection
-  // survives navigating away and back (or reloading).
-  grid_selected: string[]
-  // Grid tab visibility mode: "watch" (Multi) shows the panes toggled on in
-  // grid_watched, "select" (Single) shows one pane at a time
-  // (grid_select_pane). Legacy stored values (the retired "all" wall)
-  // normalize to "watch" server-side.
-  grid_mode: "watch" | "select"
-  // host|pane_id keys of the panes shown in Multi mode.
-  grid_watched: string[]
-  // host|pane_id of the pane shown in Select mode ("" = auto: first candidate).
-  grid_select_pane: string
-  // Filter the Grid tab's pane rail to agent panes.
-  grid_rail_agents_only: boolean
   sidebar_collapsed: boolean
   // The sidebar's open width (% of the panel group). Synced because the
   // sidebar's footprint sets the shared herdr pty's width. 0 = never set.
@@ -456,10 +433,10 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
   return (await r.json()) as T
 }
 
-// aggregateTimeout caps the two cross-host aggregations (the grid and the agent
-// history). They fan out over ssh, so they are the slowest reads in the app and
-// the ones with the most ways to stall; without a client bound, a backend that
-// stops answering leaves the Grid and the ⌘K palette on "Loading…" indefinitely
+// aggregateTimeout caps the two cross-host aggregations (every host's panes and
+// the agent history). They fan out over ssh, so they are the slowest reads in
+// the app and the ones with the most ways to stall; without a client bound, a
+// backend that stops answering leaves the ⌘K palette on "Loading…" indefinitely
 // with nothing to retry and nothing to report.
 const aggregateTimeout = 30_000
 
@@ -572,16 +549,16 @@ export const api = {
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
 
   // Every herdr pane across every reachable, protocol-compatible host (local +
-  // remotes), for the Grid tab. Aggregated server-side; per-host failures come
-  // back in `errors` rather than failing the whole request.
-  gridPanes: () => getJSON<GridPayload>("/api/grid", aggregateTimeout),
+  // remotes), for the ⌘K pane switcher. Aggregated server-side; per-host
+  // failures come back in `errors` rather than failing the whole request.
+  allPanes: () => getJSON<PanesPayload>("/api/all-panes", aggregateTimeout),
 
-  // Every agent lasso ever spawned (across hosts), shaped as GridPane rows so the
+  // Every agent lasso ever spawned (across hosts), shaped as HostPane rows so the
   // ⌘K switcher can list past agents next to live panes. AgentID is set; the
   // switcher treats a row whose host+pane_id isn't currently live as "closed" and
   // reopens it via reopenAgent on select.
   agentHistory: () =>
-    getJSON<{ agents: GridPane[] }>("/api/agent-history", aggregateTimeout),
+    getJSON<{ agents: HostPane[] }>("/api/agent-history", aggregateTimeout),
 
   // Re-open a past session's workspace: re-creates a herdr workspace at its work
   // dir and focuses it (does NOT relaunch the agent). Identify it by agent_id (a
@@ -589,78 +566,9 @@ export const api = {
   // orphan worktree/scratch dir with no record). Returns the new pane so the caller
   // can focus it through the normal pane-focus path.
   reopenAgent: (host: string, body: { agent_id?: string; work_dir?: string }) =>
-    postJSON<GridPane>("/api/agent/reopen", { host, ...body }),
+    postJSON<HostPane>("/api/agent/reopen", { host, ...body }),
 
-  // Ensure a ttyd is attached to one pane's terminal and return its proxy base
-  // path (the iframe src). Used to first-attach a visible cell; creates the ttyd
-  // if needed. Keepalives use gridTermTouch instead (see below).
-  gridTerm: (host: string, terminal_id: string) =>
-    postJSON<{ base: string }>("/api/grid/term", { host, terminal_id }),
-
-  // Bump a live grid terminal's idle timer WITHOUT creating one — the keepalive a
-  // mounted cell fires every KEEPALIVE_MS. Unlike gridTerm it can't resurrect an
-  // attach the cell just released, which is what kept a thin grid attach clamping
-  // the focused pane's width in the wide Herdr terminal. `alive` is false if the
-  // entry was reaped (the caller can re-attach via gridTerm while still visible).
-  // Always pass the `token` the caller's iframe is streaming from: attaches are
-  // shared across viewers, so the pane can be live under a NEWER token while this
-  // cell's own attach is dead and 404ing — `alive` reflects that only with a token.
-  gridTermTouch: (host: string, terminal_id: string, token = "") =>
-    postJSON<{ alive: boolean }>("/api/grid/term-touch", {
-      host,
-      terminal_id,
-      token,
-    }),
-
-  // Detach a pane's grid terminal (kills its ttyd). Called when a cell leaves
-  // the grid so the pane isn't held to the cell's narrow width while it's viewed
-  // full-size in the Herdr terminal. `keepalive` lets it complete even when fired
-  // from a React unmount/teardown. Best-effort — failures are ignored. `token`
-  // scopes the release to the attach this cell created, so a stale unmount
-  // release can't race a quick remount and kill the newer attach. `ifIdle` also
-  // spares an attach another viewer is still keepaliving — set it for the
-  // grace-deferred unmount release, whose whole risk is landing on a cell that
-  // some other tab/device is actively watching.
-  gridTermRelease: (
-    host: string,
-    terminal_id: string,
-    token = "",
-    ifIdle = false
-  ) =>
-    fetch("/api/grid/term-release", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host, terminal_id, token, if_idle: ifIdle }),
-      keepalive: true,
-    }).catch(() => {}),
-
-  // Tear down every grid terminal at once — the authoritative backstop fired when
-  // the Grid view is left, so no thin attach survives in the background to clamp a
-  // pane viewed full-size in Herdr (even if a per-cell release was dropped or raced
-  // a keepalive). `keepalive` lets it complete from a React unmount/teardown.
-  gridTermReleaseAll: () =>
-    fetch("/api/grid/term-release-all", {
-      method: "POST",
-      keepalive: true,
-    }).catch(() => {}),
-
-  // Rename the workspace a grid pane belongs to, on that pane's host.
-  gridRename: (host: string, workspace_id: string, label: string) =>
-    postJSON<{ ok: boolean }>("/api/grid/rename", {
-      host,
-      workspace_id,
-      label,
-    }),
-
-  // Close one or more grid panes (each tagged with its host — the selection can
-  // span hosts). Reports per-pane failures rather than failing the whole batch.
-  gridClose: (panes: { host: string; pane_id: string }[]) =>
-    postJSON<{ closed: number; errors?: Record<string, string> }>(
-      "/api/grid/close",
-      { panes }
-    ),
-
-  // Persisted UI preferences (grid, sidebar, and usage footer).
+  // Persisted UI preferences (sidebar layout, Files tab, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),
   // Patch semantics: send only the changed fields; the server merges into the
   // stored state (so stale tabs can't clobber fields they didn't touch) and

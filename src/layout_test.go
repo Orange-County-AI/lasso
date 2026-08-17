@@ -3,10 +3,10 @@ package main
 import "testing"
 
 // layoutSignature must change when workspaces are reordered (their `number`
-// flips), because the pane grid groups/sorts by that order — that's what makes
+// flips), because the pane list groups/sorts by that order — that's what makes
 // the sidebar re-render to match herdr after a reorder. It must NOT change on a
-// mere focus change, so a focus move doesn't trigger a full grid reload (the
-// focus highlight is updated separately).
+// mere focus change, so a focus move doesn't trigger a full pane-list reload
+// (the focused pane is tracked separately).
 func TestLayoutSignatureReorder(t *testing.T) {
 	panes := []pane{
 		{PaneID: "p1", WorkspaceID: "wa", TabID: "ta"},
@@ -24,7 +24,7 @@ func TestLayoutSignatureReorder(t *testing.T) {
 	sigA := layoutSignature(panes, original)
 	sigB := layoutSignature(panes, reordered)
 	if sigA == sigB {
-		t.Fatalf("signature unchanged after reorder; reorder would not refresh the grid\n got: %q", sigA)
+		t.Fatalf("signature unchanged after reorder; reorder would not refresh the pane list\n got: %q", sigA)
 	}
 
 	// stable input -> stable signature (no spurious reloads)
@@ -38,7 +38,7 @@ func TestLayoutSignatureIgnoresFocus(t *testing.T) {
 	unfocused := []pane{{PaneID: "p1", WorkspaceID: "wa", TabID: "ta", Focused: false}}
 	focused := []pane{{PaneID: "p1", WorkspaceID: "wa", TabID: "ta", Focused: true}}
 	if layoutSignature(unfocused, wss) != layoutSignature(focused, wss) {
-		t.Fatal("signature changed on focus alone; would cause a needless grid reload on every focus move")
+		t.Fatal("signature changed on focus alone; would cause a needless pane-list reload on every focus move")
 	}
 }
 
@@ -47,7 +47,7 @@ func TestLayoutSignatureMembership(t *testing.T) {
 	one := []pane{{PaneID: "p1", WorkspaceID: "wa", TabID: "ta"}}
 	two := append(append([]pane{}, one...), pane{PaneID: "p2", WorkspaceID: "wa", TabID: "tb"})
 	if layoutSignature(one, wss) == layoutSignature(two, wss) {
-		t.Fatal("signature unchanged after a pane was added; grid would miss the new pane")
+		t.Fatal("signature unchanged after a pane was added; the pane list would miss the new pane")
 	}
 	// pane ordering from herdr is not guaranteed stable — the signature must not
 	// depend on the input slice order (it sorts internally).

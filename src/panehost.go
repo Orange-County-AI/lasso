@@ -187,7 +187,7 @@ func hostAliasFor(dest string) string {
 	if host == "" {
 		return ""
 	}
-	if gridHostAllowed(host) {
+	if hostAllowed(host) {
 		return host
 	}
 	rows, _ := hostSnapshot()
@@ -278,7 +278,7 @@ func remoteAttachCwd(h sshHop) (cwd, source string) {
 }
 
 func resolveAttachCwd(h sshHop) (string, string) {
-	be, err := gridHostBackend(h.host)
+	be, err := hostBackend(h.host)
 	if err != nil {
 		return "", ""
 	}

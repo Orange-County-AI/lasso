@@ -141,9 +141,9 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 	if err := updateAgentTitle(rec.ID, host, title); err != nil {
 		log.Printf("agent %s on %s: auto-title record update failed: %v", rec.ID, host, err)
 	}
-	// The grid (and with it the sidebar) is served from a short-lived cache;
-	// drop it so the next 2.5s poll shows the new name instead of the old one.
-	invalidateGridCache()
+	// The cross-host pane listing is served from a short-lived cache; drop it so
+	// the next poll shows the new name instead of the old one.
+	invalidatePanesCache()
 	log.Printf("agent %s on %s: auto-titled %q -> %q", rec.ID, host, rec.Title, title)
 }
 
