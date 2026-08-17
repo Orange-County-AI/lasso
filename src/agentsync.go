@@ -13,8 +13,9 @@
 // the single writer of herdr's [theme].name in practice, and its hub poll
 // catches edits it didn't make, so no file-watching service is needed.
 //
-// Gated by the sync_agent_themes setting (default on); the Settings tab
-// exposes it as "Sync agent themes".
+// Gated by the sync_agent_themes setting (default on), which the Settings tab
+// exposes as "Sync agent themes", and by the per-host theme_sync_off deny-list
+// below, which switches off every theme write lasso makes to one host.
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"io/fs"
 	"log"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,11 +46,99 @@ func syncAgentThemesEnabled() bool {
 	return err != nil || on
 }
 
+// themeSyncOffKey holds the per-host opt-out: a JSON array of host names
+// ("local" or ssh aliases) lasso must write NO theme to at all — neither
+// herdr's [theme].name (syncRemoteTheme) nor any agent theme file
+// (syncAgentThemesVia). A deny-list, like uiState.UsageHidden, so a host added
+// to the ssh config later syncs by default rather than silently staying behind.
+//
+// It lives in the db of the machine lasso runs on, not in each host's own
+// lasso.db where hostconfig.go's creator settings live: it is this lasso's
+// policy about what it writes, and the gate has to answer for a host that is
+// asleep — a sqlite3 round trip over ssh on every theme change could not.
+const themeSyncOffKey = "theme_sync_off"
+
+// themeSyncOffHosts is the deny-list, sorted and never nil (the API serves it
+// as-is). A nil db (tests, shutdown) reads as "nothing disabled".
+func themeSyncOffHosts() []string {
+	if db == nil {
+		return []string{}
+	}
+	v, err := getSetting(themeSyncOffKey)
+	if err != nil || v == "" {
+		return []string{}
+	}
+	var hosts []string
+	if err := json.Unmarshal([]byte(v), &hosts); err != nil {
+		return []string{}
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+// themeSyncEnabledFor reports whether lasso may write themes to host. Hosts are
+// keyed as the Backend names them ("local" or an ssh alias); the empty host
+// means local. Unlisted hosts sync — the default.
+func themeSyncEnabledFor(host string) bool {
+	if isLocalHost(host) {
+		host = "local"
+	}
+	for _, h := range themeSyncOffHosts() {
+		if h == host {
+			return false
+		}
+	}
+	return true
+}
+
+// setThemeSyncFor adds host to the deny-list (on=false) or drops it (on=true).
+func setThemeSyncFor(host string, on bool) error {
+	if isLocalHost(host) {
+		host = "local"
+	}
+	cur := themeSyncOffHosts()
+	out := make([]string, 0, len(cur)+1)
+	for _, h := range cur {
+		if h != host {
+			out = append(out, h)
+		}
+	}
+	if !on {
+		out = append(out, host)
+	}
+	sort.Strings(out)
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return setSetting(themeSyncOffKey, string(b))
+}
+
+// convergeThemeSyncFor pushes the current theme onto a host whose sync was just
+// switched back on, so the checkbox takes effect now instead of at the next
+// theme or host switch. Best-effort and meant to run off the request path: a
+// host lasso can't reach right now just logs and converges later.
+func convergeThemeSyncFor(host string) {
+	rt := loadHerdrTheme("")
+	if isLocalHost(host) {
+		syncAgentThemesVia(localFsBackend(), rt)
+		return
+	}
+	b, err := namedHostBackend(host)
+	if err != nil {
+		log.Printf("theme:    %s not reachable to sync theme: %v", host, err)
+		return
+	}
+	if rb, ok := b.(*remoteBackend); ok {
+		syncRemoteTheme(rb, rt.Resolved)
+	}
+}
+
 // syncAgentThemesVia mirrors rt into the agent theme files on backend b.
 // Best-effort like syncRemoteTheme: every failure is logged, never propagated —
 // a theme switch must not fail because an agent's config dir is missing.
 func syncAgentThemesVia(b Backend, rt resolvedTheme) {
-	if b == nil || !syncAgentThemesEnabled() {
+	if b == nil || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
 		return
 	}
 	home, err := b.HomeDir()

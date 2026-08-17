@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -618,5 +621,160 @@ func TestOmpThemeBodyComplete(t *testing.T) {
 	}
 	if f.Colors["text"] != themes["nord"].ui.Text {
 		t.Errorf("a non-hex token should fall back to the built-in value, got %q", f.Colors["text"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// per-host theme sync (the theme_sync_off deny-list)
+// ---------------------------------------------------------------------------
+
+// themeSyncSpy reports a chosen host name and a temp home, counting HomeDir
+// calls so a test can prove the gate returns BEFORE any filesystem work — the
+// point of the deny-list is that a switched-off host is never touched, not that
+// its files are rewritten with the same bytes.
+type themeSyncSpy struct {
+	Backend
+	name      string
+	home      string
+	homeCalls int
+}
+
+func (b *themeSyncSpy) Name() string { return b.name }
+
+func (b *themeSyncSpy) HomeDir() (string, error) {
+	b.homeCalls++
+	return b.home, nil
+}
+
+// A host is synced unless it is on the deny-list; adding one leaves the others
+// alone, and re-enabling removes it (rather than recording an "on" entry that
+// would outlive the alias).
+func TestThemeSyncDenyList(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	for _, h := range []string{"", "local", "minime"} {
+		if !themeSyncEnabledFor(h) {
+			t.Errorf("themeSyncEnabledFor(%q) = false with nothing stored, want the default on", h)
+		}
+	}
+	if got := themeSyncOffHosts(); len(got) != 0 {
+		t.Errorf("deny-list = %v, want empty", got)
+	}
+
+	if err := setThemeSyncFor("minime", false); err != nil {
+		t.Fatalf("disable minime: %v", err)
+	}
+	if themeSyncEnabledFor("minime") {
+		t.Error("minime still syncs after being switched off")
+	}
+	if !themeSyncEnabledFor("local") || !themeSyncEnabledFor("gigachad") {
+		t.Error("switching one host off must not affect the others")
+	}
+
+	// The empty host is local, so it must not be recorded as its own entry.
+	if err := setThemeSyncFor("", false); err != nil {
+		t.Fatalf("disable local: %v", err)
+	}
+	if want := []string{"local", "minime"}; !slices.Equal(themeSyncOffHosts(), want) {
+		t.Errorf("deny-list = %v, want %v (sorted, local keyed once)", themeSyncOffHosts(), want)
+	}
+	if themeSyncEnabledFor("local") || themeSyncEnabledFor("") {
+		t.Error("local still syncs after being switched off through the empty host")
+	}
+
+	if err := setThemeSyncFor("minime", true); err != nil {
+		t.Fatalf("re-enable minime: %v", err)
+	}
+	if want := []string{"local"}; !slices.Equal(themeSyncOffHosts(), want) {
+		t.Errorf("deny-list = %v, want %v — re-enabling drops the entry", themeSyncOffHosts(), want)
+	}
+	if !themeSyncEnabledFor("minime") {
+		t.Error("minime doesn't sync again after being switched back on")
+	}
+}
+
+// syncAgentThemesVia writes nothing at all for a switched-off host, and resumes
+// for it once it's switched back on.
+func TestSyncAgentThemesViaHonorsDenyList(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	home := t.TempDir()
+	spy := &themeSyncSpy{Backend: &localBackend{}, name: "minime", home: home}
+	if err := setThemeSyncFor("minime", false); err != nil {
+		t.Fatalf("disable minime: %v", err)
+	}
+	syncAgentThemesVia(spy, resolveThemeByName("catppuccin"))
+	if spy.homeCalls != 0 {
+		t.Errorf("HomeDir called %d times for a switched-off host, want 0", spy.homeCalls)
+	}
+	if ents, err := os.ReadDir(home); err != nil || len(ents) != 0 {
+		t.Errorf("home = %v (err %v), want untouched", ents, err)
+	}
+
+	if err := setThemeSyncFor("minime", true); err != nil {
+		t.Fatalf("re-enable minime: %v", err)
+	}
+	syncAgentThemesVia(spy, resolveThemeByName("catppuccin"))
+	if spy.homeCalls != 1 {
+		t.Fatalf("HomeDir called %d times once switched back on, want 1", spy.homeCalls)
+	}
+	claude := filepath.Join(home, ".claude", "themes", "herdr.json")
+	if _, err := os.Stat(claude); err != nil {
+		t.Errorf("%s not written after switching sync back on: %v", claude, err)
+	}
+}
+
+// POST /api/theme-set flips one host's sync without touching the theme itself,
+// and refuses a host lasso can't address — an unnamed or bogus host must not
+// quietly land on "local".
+func TestServeThemeSetPerHostFlip(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+	stubSSHHosts(t, "minime")
+
+	post := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		serveThemeSet(rec, httptest.NewRequest(http.MethodPost, "/api/theme-set", strings.NewReader(body)))
+		return rec
+	}
+
+	rec := post(`{"theme_sync_host":"minime","theme_sync":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ThemeSyncOff []string `json:"theme_sync_off"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response isn't json: %v", err)
+	}
+	if want := []string{"minime"}; !slices.Equal(got.ThemeSyncOff, want) {
+		t.Errorf("theme_sync_off = %v, want %v", got.ThemeSyncOff, want)
+	}
+	if themeSyncEnabledFor("minime") {
+		t.Error("minime still syncs after the request switched it off")
+	}
+
+	for _, body := range []string{
+		`{"theme_sync":false}`,
+		`{"theme_sync_host":"no-such-host-xyz","theme_sync":false}`,
+	} {
+		if rec := post(body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", body, rec.Code)
+		}
+	}
+	if want := []string{"minime"}; !slices.Equal(themeSyncOffHosts(), want) {
+		t.Errorf("a refused request changed the deny-list: %v, want %v", themeSyncOffHosts(), want)
 	}
 }

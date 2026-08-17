@@ -219,8 +219,16 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 // socket) and asks the remote server to reload it, so the host renders in that
 // theme. Best-effort: any failure is logged and never blocks the caller (a host
 // switch or a Settings theme change). name is a canonical theme key.
+//
+// A host switched off in the theme_sync_off deny-list is left entirely alone —
+// its herdr config and its agents' theme files stay whatever that machine set
+// them to (see agentsync.go).
 func syncRemoteTheme(rb *remoteBackend, name string) {
 	if rb == nil || name == "" {
+		return
+	}
+	if !themeSyncEnabledFor(rb.alias) {
+		log.Printf("host:     theme sync to %s off (disabled for this host)", rb.alias)
 		return
 	}
 	cfg := filepath.Join(filepath.Dir(rb.remoteSock), "config.toml")

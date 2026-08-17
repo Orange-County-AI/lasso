@@ -388,6 +388,7 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
       </p>
       <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
+      <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
     </div>
   )
 }
@@ -395,7 +396,8 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
 // SyncAgentThemesToggle gates lasso's mirroring of the herdr theme into agent
 // CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json, omp's
 // themes/herdr.json — the one a running agent picks up live) on this host and
-// any connected remote host. Server-level setting, default on.
+// any connected remote host. Server-level setting, default on; a host switched
+// off below is excluded from it regardless.
 function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient()
   const mutation = useMutation({
@@ -416,6 +418,79 @@ function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
       />
       Sync agent themes (Claude Code, OpenCode, Oh My Pi)
     </label>
+  )
+}
+
+// ThemeSyncHosts is the per-host opt-out: an unchecked host is left entirely
+// alone by lasso's theme writes — neither herdr's [theme].name (which a host
+// switch would otherwise mirror onto it) nor its agents' theme files — so a
+// machine that is themed independently stops being dragged along. Every host
+// lasso can address is listed, reachable or not: the preference is stored here,
+// so an asleep laptop can be excluded before it next answers. Hidden when the
+// ssh config names no hosts, since then it only restates the toggle above.
+function ThemeSyncHosts({ active, off }: { active: boolean; off: string[] }) {
+  const queryClient = useQueryClient()
+  const hostsQuery = useQuery({
+    queryKey: ["hosts"],
+    queryFn: () => api.hosts(),
+    enabled: active,
+  })
+  const mutation = useMutation({
+    mutationFn: ({ host, on }: { host: string; on: boolean }) =>
+      api.setHostThemeSync(host, on),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["theme"] }),
+    onError: (e: Error) => toast.error(`Couldn't save: ${e.message}`),
+  })
+  const d = hostsQuery.data
+  // Local first, then aliases by name: /api/hosts orders reachable hosts ahead
+  // of unprobed ones, so taking its order would shuffle the grid under the
+  // cursor as probes land.
+  const rows = React.useMemo(
+    () => [
+      {
+        host: "local",
+        label: `${d?.local?.hostname || "local"} (this machine)`,
+      },
+      ...(d?.hosts ?? [])
+        .map((h) => ({ host: h.alias, label: h.alias }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ],
+    [d]
+  )
+  if (rows.length < 2) return null
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <span className={labelClass}>Sync theme to hosts</span>
+      {/* A fixed grid, not a wrapped row: with 13 hosts of wildly different name
+          lengths, flex-wrap staggers every line's checkboxes. Column count
+          follows the settings pane's own width (@container above). */}
+      <div className="grid @2xl:grid-cols-4 @md:grid-cols-3 grid-cols-2 gap-x-6 gap-y-1.5">
+        {rows.map((r) => (
+          <label
+            key={r.host}
+            className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-muted-foreground text-xs"
+            htmlFor={`settings-theme-sync-${r.host}`}
+            title={r.host}
+          >
+            <Checkbox
+              id={`settings-theme-sync-${r.host}`}
+              className="shrink-0"
+              checked={!off.includes(r.host)}
+              disabled={mutation.isPending}
+              onCheckedChange={(c) =>
+                mutation.mutate({ host: r.host, on: c === true })
+              }
+            />
+            <span className="truncate">{r.label}</span>
+          </label>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        An unchecked host keeps its own theme: lasso writes neither herdr's
+        config.toml nor any agent theme file there. Re-checking one pushes the
+        current theme to it right away if it's reachable.
+      </p>
+    </div>
   )
 }
 
