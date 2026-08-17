@@ -17,6 +17,10 @@ import (
 // general-purpose, so home is the better default and needs no dir created).
 type createTerminalReq struct {
 	Label string `json:"label"` // workspace name shown on the herdr tab; defaults to "terminal"
+	// Focus lands the user on the new terminal (default true — the web dialog
+	// wants you typing immediately). An API caller creating a terminal for
+	// someone else passes false so it doesn't yank every client's shared focus.
+	Focus *bool `json:"focus"`
 }
 
 type createTerminalResp struct {
@@ -39,10 +43,14 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		label = "terminal"
 	}
 	b := curBackend()
+	// Focus unless the caller opted out: herdr focus is session-global, so an
+	// unfocused create is the polite default for anything but the interactive
+	// "New Terminal" dialog (which leaves Focus nil).
+	focus := req.Focus == nil || *req.Focus
 	res, err := b.HerdrCall("workspace.create", map[string]any{
 		"cwd":   expandTildeOn(b, "~"),
 		"label": label,
-		"focus": true, // land the user on the new terminal immediately
+		"focus": focus,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("workspace.create: %v", err), http.StatusBadGateway)

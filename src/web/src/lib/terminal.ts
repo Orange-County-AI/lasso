@@ -596,14 +596,22 @@ export function whenTerminalReady(
   return stop
 }
 
-// Invoke cb whenever a terminal iframe's window gains keyboard focus (the user
-// clicked into it). Listening on the frame's own window is the only reliable
-// signal: the parent window's blur only fires on the FIRST hop into an iframe —
-// focus moving between two iframes never re-blurs the parent. Retries until
-// the frame window exists (the iframe may still be loading). Returns cleanup.
-export function onTerminalFocus(id: string, cb: () => void): () => void {
+// Invoke cb whenever a terminal iframe receives a genuine user gesture (a
+// click into it, or a keypress while it holds keyboard focus). Grid cells use
+// this to promote their pane to herdr's focused pane — and herdr's focus is
+// session-global, shared with every other lasso client and TUI, so the
+// trigger MUST be a real gesture. We deliberately do not listen for the frame
+// window's "focus" event: that also fires when the browser tab or window
+// regains focus with this iframe as its active element (alt-tab back, a tab
+// restore, a programmatic focusTerminalFrame), which silently re-pointed
+// herdr's focus at whatever cell was last used — possibly a working agent the
+// user never asked to look at. Listening on the frame's own window is the
+// only reliable signal (the parent window's blur only fires on the FIRST hop
+// into an iframe). Retries until the frame window exists (the iframe may
+// still be loading). Returns cleanup.
+export function onTerminalInteract(id: string, cb: () => void): () => void {
   let done = false
-  let tick: ReturnType<typeof setTimeout> | null = null
+  let tick: number | undefined
   let win: Window | null = null
   const attach = () => {
     if (done) return
@@ -611,20 +619,22 @@ export function onTerminalFocus(id: string, cb: () => void): () => void {
       const w = frameWindow(id)
       if (w) {
         win = w
-        w.addEventListener("focus", cb)
+        w.addEventListener("pointerdown", cb)
+        w.addEventListener("keydown", cb)
         return
       }
     } catch {
       /* same-origin; ignore */
     }
-    tick = setTimeout(attach, 200)
+    tick = window.setTimeout(attach, 200)
   }
   attach()
   return () => {
     done = true
-    if (tick) clearTimeout(tick)
+    clearTimeout(tick)
     try {
-      win?.removeEventListener("focus", cb)
+      win?.removeEventListener("pointerdown", cb)
+      win?.removeEventListener("keydown", cb)
     } catch {
       /* ignore */
     }

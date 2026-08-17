@@ -682,7 +682,8 @@ func withinLassoWorkTrees(b Backend, dir string) bool {
 
 // serveAgentReopen re-opens the workspace for a previously-spawned agent whose
 // herdr pane was closed: it creates a fresh herdr workspace rooted at the stored
-// work dir (the worktree/scratch dir still on disk) and focuses it. It does NOT
+// work dir (the worktree/scratch dir still on disk) and, unless the caller
+// passes focus:false, focuses it. It does NOT
 // relaunch the agent — per the design, reopening just lands you back in the
 // directory; the user starts claude (e.g. `claude --continue`) themselves. The
 // record is re-pointed at the new workspace/pane so it shows as live again, and
@@ -696,6 +697,11 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 		Host    string `json:"host"`
 		AgentID string `json:"agent_id"`
 		WorkDir string `json:"work_dir"`
+		// Focus lands the user on the reopened workspace (default true — the
+		// ⌘K switcher reopens to jump there). An API caller reopening in the
+		// background passes false so it doesn't move every client's shared
+		// herdr focus.
+		Focus *bool `json:"focus"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -750,7 +756,7 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	res, err := b.HerdrCall("workspace.create", map[string]any{
 		"cwd":   workDir,
 		"label": label,
-		"focus": true,
+		"focus": req.Focus == nil || *req.Focus,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("workspace.create: %v", err), http.StatusBadGateway)

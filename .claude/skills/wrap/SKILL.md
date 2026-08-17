@@ -106,6 +106,20 @@ mise cache clear
 lasso update        # swaps the release binary in place
 ```
 
+**`lasso update` atomically replaces the running binary (`replaceSelf` renames
+the new bytes over `os.Executable()`) — it does NOT update mise metadata.** On
+titan the daemon's exe resolves through the mise shim into a versioned install
+dir (e.g. `installs/ubi-52labs-lasso/2.9.7/lasso`), so after an update the
+directory name and the `~/.config/mise/config.toml` pin still claim the old
+version while the bytes are the new release (verified 2026-08-17: dir named
+2.9.7 served 2.9.11). Any later `mise install`/`upgrade`/`prune` on that tool
+silently rolls prod back to the pinned version. Keep the pin honest — re-pin to
+the version just released:
+
+```bash
+mise use -g "ubi:52labs/lasso@$VER"
+```
+
 **`lasso update` only auto-restarts a *pidfile-managed* daemon.** When lasso is
 run under a supervisor (prod is a systemd `--user` unit), the built-in restart
 no-ops and the running daemon keeps serving the **old** binary — `/api/version`
