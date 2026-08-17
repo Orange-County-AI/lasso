@@ -1490,6 +1490,24 @@ func gitOutLocal(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// gitErrNoRepo reports whether a gitOut failure means "there is no repo here" —
+// the directory is a plain folder, or it's gone — rather than "the backend could
+// not run git at all". Only the former is a normal answer for a pane parked in a
+// plain directory; an ssh transport failure must stay a real error so the UI can
+// say so instead of silently reporting "no changes".
+func gitErrNoRepo(err error) bool {
+	s := strings.ToLower(err.Error())
+	// `git -C /plain/dir rev-parse` → "fatal: not a git repository (or any of the
+	// parent directories): .git"
+	// `git -C /gone     rev-parse` → "fatal: cannot change to '/gone': No such file or directory"
+	//
+	// Deliberately not matching a bare "no such file or directory": ssh emits that
+	// for a dead control socket, and swallowing it would turn a broken remote host
+	// into a fake "clean, no repo".
+	return strings.Contains(s, "not a git repository") ||
+		strings.Contains(s, "cannot change to")
+}
+
 // serveDiff returns the git diff for the repo containing ?path=. Modes selected
 // by ?mode=:
 //   - auto (default): working-tree changes when the tree is dirty, otherwise the
@@ -1517,7 +1535,17 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 
 	root, err := gitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
-		http.Error(w, "not a git repo: "+err.Error(), http.StatusBadGateway)
+		if gitErrNoRepo(err) {
+			// A pane sitting in a plain directory is not an error condition. Answer
+			// the shape the client expects with isRepo:false so it renders an empty
+			// state instead of retrying a 502 every 2.5s forever.
+			writeJSON(w, map[string]any{
+				"repo": "", "branch": "", "files": []diffFile{},
+				"isRepo": false, "isBranchDiff": false, "baseBranch": "", "dirty": 0,
+			})
+			return
+		}
+		http.Error(w, "git: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	root = strings.TrimSpace(root)
@@ -1553,7 +1581,7 @@ func serveDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"repo": root, "branch": branch, "files": files,
+		"repo": root, "branch": branch, "files": files, "isRepo": true,
 		"isBranchDiff": isBranchDiff, "baseBranch": baseBranch, "dirty": dirty,
 	})
 }
@@ -1581,7 +1609,14 @@ func serveDiffFile(w http.ResponseWriter, r *http.Request) {
 
 	root, err := gitOut(path, "rev-parse", "--show-toplevel")
 	if err != nil {
-		http.Error(w, "not a git repo: "+err.Error(), http.StatusBadGateway)
+		// Only reachable in a race (the worktree removed while a file row is
+		// expanded) — the file list is empty for a non-repo — but it must not 502
+		// there either.
+		if gitErrNoRepo(err) {
+			writeJSON(w, map[string]any{"diff": "", "truncated": false})
+			return
+		}
+		http.Error(w, "git: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	root = strings.TrimSpace(root)
