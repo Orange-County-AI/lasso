@@ -251,11 +251,13 @@ function Shell() {
   const [paletteFromTerm, setPaletteFromTerm] = React.useState(false)
   // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
   // the collapsed-sidebar indicator stay live even when the Files panel is
-  // hidden or the sidebar boots collapsed. `gitReady` gates the badge until we
-  // have a real answer for the active repo.
+  // hidden or the sidebar boots collapsed. `gitReady` gates the badge on the
+  // active pane actually being in a repo — GitStatusBadge renders a green
+  // "clean" dot for ready && dirty === 0, which would be a lie for a plain
+  // directory like $HOME.
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
-  const gitReady = diff.data != null
+  const gitReady = diff.data?.isRepo === true
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
   const ui = useUIState()
 

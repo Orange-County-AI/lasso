@@ -85,7 +85,10 @@ export function DiffTab({
           <Pill tone="accent" multiline>
             {activeCwd || "—"}
           </Pill>
-          {data && (
+          {/* Gated on isRepo: a non-repo answers 200 with dirty:0, and an
+              unqualified "clean" pill would claim a clean working tree for a
+              plain directory that has no working tree at all. */}
+          {data?.isRepo && (
             <Pill tone={data.dirty ? "warn" : "good"}>
               {data.dirty ? `${data.dirty} dirty` : "clean"}
             </Pill>
@@ -122,6 +125,8 @@ export function DiffTab({
           <div className="empty">no active directory yet</div>
         ) : !data ? (
           <div className="empty">loading diff…</div>
+        ) : !data.isRepo ? (
+          <div className="empty">not a git repository</div>
         ) : files.length === 0 ? (
           <div className="empty">
             {data.isBranchDiff
