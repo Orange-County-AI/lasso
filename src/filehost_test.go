@@ -148,18 +148,32 @@ func TestFileEndpointsDefaultToLocal(t *testing.T) {
 	}
 }
 
-// ~ expands against the RESOLVED backend, not the active one: the active
-// backend here claims a sentinel home, but with no host selector the resolved
-// backend is the real local one — so the 404 for ~/missing must name the real
-// home, never the sentinel. (The old code expanded before resolving, which on
-// a remote-active session turned a remote ~/x into the active host's home.)
-func TestServeFilesTildeExpandsOnResolvedBackend(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		t.Skipf("no local home dir to expand against: %v", err)
+// An omitted (or active-naming) selector resolves to the ACTIVE backend itself,
+// so a one-shot read uses the connection we already hold instead of opening a
+// second one to the host we are already driving — and so the tilde below expands
+// against that host's home.
+func TestNamedHostBackendDefaultsToActiveBackend(t *testing.T) {
+	active := &fakeHomeBackend{home: t.TempDir()}
+	swapBackend(t, active)
+
+	for _, sel := range []string{"", "local"} {
+		be, err := namedHostBackend(sel)
+		if err != nil {
+			t.Fatalf("namedHostBackend(%q) = error %v", sel, err)
+		}
+		if be != Backend(active) {
+			t.Errorf("namedHostBackend(%q) returned a different backend than the active one", sel)
+		}
 	}
+}
+
+// ~ expands against the backend the request RESOLVED to, not a hardcoded local
+// home: with no selector that's the active backend, whose home here is a
+// sentinel. (The old code expanded before resolving, so a remote ~/x became the
+// active host's home — the same defect in the other direction.)
+func TestServeFilesTildeExpandsOnResolvedBackend(t *testing.T) {
 	sentinel := t.TempDir()
-	swapBackend(t, &fakeHomeBackend{home: sentinel})
+	swapBackend(t, &fakeHomeBackend{Backend: &localBackend{}, home: sentinel})
 
 	rec := httptest.NewRecorder()
 	serveFiles(rec, httptest.NewRequest(http.MethodGet, "/api/files?path=~/no-such-entry-xyz", nil))
@@ -167,10 +181,7 @@ func TestServeFilesTildeExpandsOnResolvedBackend(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), filepath.Join(home, "no-such-entry-xyz")) {
-		t.Errorf("body %q does not name the resolved (local) home %q", rec.Body.String(), home)
-	}
-	if strings.Contains(rec.Body.String(), sentinel) {
-		t.Errorf("body %q expanded ~ against the ACTIVE backend's home %q; want the resolved backend's", rec.Body.String(), sentinel)
+	if want := filepath.Join(sentinel, "no-such-entry-xyz"); !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("body %q does not name the resolved backend's home %q", rec.Body.String(), want)
 	}
 }
