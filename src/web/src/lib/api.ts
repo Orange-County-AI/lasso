@@ -227,6 +227,11 @@ export interface DiffPayload {
   isBranchDiff?: boolean
   dirty?: number
   files: DiffFileMeta[]
+  // False when the active pane's cwd is not a git repo (a plain directory, or a
+  // scratch agent's workdir). Not an error — the diff view just has nothing to
+  // show, so the backend answers 200 with this flag rather than a 502 the client
+  // would retry forever.
+  isRepo: boolean
 }
 
 export interface FileDiff {

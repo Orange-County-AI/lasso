@@ -14,7 +14,11 @@ export function useDiff() {
     queryKey: qk.diff(host ?? "", activeCwd ?? ""),
     queryFn: () => api.diff(activeCwd as string),
     enabled: !!activeCwd,
-    refetchInterval: 2500,
+    // A 2.5s poll retries by definition; the client-wide retry:1 only doubled the
+    // request rate. And a genuine failure here is an ssh exec against a host that
+    // isn't answering — back off rather than re-dial it 24x a minute.
+    retry: false,
+    refetchInterval: (q) => (q.state.status === "error" ? 15_000 : 2_500),
     staleTime: 1500,
   })
 }
