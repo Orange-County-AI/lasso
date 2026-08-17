@@ -1,8 +1,9 @@
 import { EditorView } from "@codemirror/view"
 import CodeMirror from "@uiw/react-codemirror"
+import type { ElementContent } from "hast"
 import { Eye, Pencil, Save, X } from "lucide-react"
 import * as React from "react"
-import ReactMarkdown from "react-markdown"
+import ReactMarkdown, { type Components } from "react-markdown"
 import rehypeHighlight from "rehype-highlight"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
@@ -332,6 +333,7 @@ export function FileViewer({
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
+              components={MD_COMPONENTS}
             >
               {draft}
             </ReactMarkdown>
@@ -346,6 +348,114 @@ export function FileViewer({
         )}
       </div>
     </div>
+  )
+}
+
+// Recursively collect the text of a hast subtree. rehype-highlight has already
+// run by the time components render, so a fence's <code> may hold a tree of
+// tokenized <span>s rather than a single text node — we want the source back.
+function hastText(nodes: ElementContent[] | undefined): string {
+  if (!nodes) return ""
+  let out = ""
+  for (const n of nodes) {
+    if (n.type === "text") out += n.value
+    else if (n.type === "element") out += hastText(n.children)
+  }
+  return out
+}
+
+// The only markdown component override: a ```mermaid fence renders as a diagram,
+// every other fence falls through to the untouched <pre> that rehype-highlight
+// produced. We hook <pre> rather than <code> so the diagram replaces the whole
+// block (a <div>/<svg> inside a <pre> is invalid nesting, and the code panel's
+// background would frame the diagram).
+const MD_COMPONENTS = {
+  pre({ node, children, ...rest }) {
+    const code = node?.children?.[0]
+    if (code?.type === "element" && code.tagName === "code") {
+      const cls = code.properties?.className
+      const langs = Array.isArray(cls) ? cls.map(String) : []
+      if (langs.includes("language-mermaid"))
+        return <MermaidDiagram chart={hastText(code.children)} />
+    }
+    return <pre {...rest}>{children}</pre>
+  },
+} satisfies Components
+
+// The resolved light/dark chrome, read off the html class that lib/mode.ts owns
+// (the single chokepoint for the OS-, user- and herdr-driven answers alike) and
+// kept live with an observer, since nothing publishes it to React.
+function useDarkChrome(): boolean {
+  const [dark, setDark] = React.useState(() =>
+    document.documentElement.classList.contains("dark")
+  )
+  React.useEffect(() => {
+    const el = document.documentElement
+    const obs = new MutationObserver(() =>
+      setDark(el.classList.contains("dark"))
+    )
+    obs.observe(el, { attributes: true, attributeFilter: ["class"] })
+    return () => obs.disconnect()
+  }, [])
+  return dark
+}
+
+// A rendered mermaid diagram. mermaid is a ~2.5MB parser+renderer, so it's
+// pulled in by a dynamic import inside the effect — a markdown file with no
+// mermaid in it never loads it. securityLevel "strict" is load-bearing: the
+// returned SVG is injected into the DOM and the markdown is untrusted repo
+// content, so labels are escaped and click/script directives are dropped.
+// suppressErrorRendering keeps mermaid from appending its own error graphic to
+// the document body when a diagram doesn't parse — we show the message
+// alongside the original source instead, so a bad block stays readable and
+// doesn't take the rest of the preview down.
+function MermaidDiagram({ chart }: { chart: string }) {
+  const dark = useDarkChrome()
+  const [svg, setSvg] = React.useState<string | null>(null)
+  const [err, setErr] = React.useState<string | null>(null)
+  // mermaid.render needs a DOM-id-safe, unique id; useId's own value contains
+  // colons, which break the selectors mermaid builds from it.
+  const id = `mmd-${React.useId().replace(/[^a-zA-Z0-9]/g, "")}`
+
+  React.useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          suppressErrorRendering: true,
+          theme: dark ? "dark" : "default",
+        })
+        const { svg } = await mermaid.render(id, chart)
+        if (cancelled) return
+        setSvg(svg)
+        setErr(null)
+      } catch (e) {
+        if (cancelled) return
+        setSvg(null)
+        setErr(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [chart, dark, id])
+
+  if (err != null)
+    return (
+      <div className="md-mermaid-error">
+        <div className="md-mermaid-msg">mermaid: {err}</div>
+        <pre>
+          <code>{chart}</code>
+        </pre>
+      </div>
+    )
+  if (svg == null) return <div className="md-mermaid md-mermaid-loading" />
+  return (
+    // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid emits an SVG string, sanitized by its own securityLevel "strict"
+    <div className="md-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />
   )
 }
 

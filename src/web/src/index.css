@@ -550,6 +550,30 @@
 .md-body img {
   max-width: 100%;
 }
+/* mermaid diagrams: the SVG carries its own (theme-matched) colors, so this
+   only has to keep a wide diagram inside the column and scroll it if it can't
+   shrink. min-height reserves a little space while the parser loads. */
+.md-body .md-mermaid {
+  margin: 0.8em 0;
+  overflow-x: auto;
+}
+.md-body .md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.md-body .md-mermaid-loading {
+  min-height: 2em;
+}
+/* mermaid's parse errors are multi-line, with a ^ caret under the offending
+   token — pre-wrap keeps that alignment instead of collapsing it to one run. */
+.md-body .md-mermaid-msg {
+  color: var(--h-warn);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  margin-bottom: 0.4em;
+}
 
 /* diff viewer */
 .difflist {
