@@ -220,9 +220,11 @@ function Shell() {
     }
   }, [])
 
-  // Warm the cross-host pane list in the background on load so the first ⌘K
-  // pane-switcher search is instant instead of waiting on a fresh fetch. Shares
-  // qk.panes with the switcher, so both reuse one cache.
+  // Warm the pane list in the background on load so the first ⌘K pane-switcher
+  // search is instant instead of waiting on a fresh fetch. Shares qk.panes with
+  // the switcher, so both reuse one cache — the fetch spans every host (that
+  // aggregation is also what reconciles agent records server-side); the switcher
+  // lists the active host's rows out of it.
   React.useEffect(() => {
     void queryClient.prefetchQuery({
       queryKey: qk.panes,
@@ -543,10 +545,12 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
-        {/* ⌘K pane switcher — searches every pane on every host and focuses the
-          chosen one in the herdr terminal. focusPaneInHerdr pushes a history
-          entry for the host it lands on (never the pane — herdr owns that), so
-          Back returns to the host the jump started from. */}
+        {/* ⌘K pane switcher — searches the ACTIVE host's panes, which with
+          herdr-mirror running covers the fleet (other machines' workspaces are
+          mirrored in as local panes), and focuses the chosen one in the herdr
+          terminal. focusPaneInHerdr still pushes the landing host's history
+          entry; same-host now, so pushQueryParam collapses it into a replace
+          rather than a dead Back step. */}
         <PaneSwitcher
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
