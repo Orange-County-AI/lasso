@@ -41,20 +41,21 @@ const hostBackendIdle = 30 * time.Minute
 // heals it.
 const hostHealthEvery = 10 * time.Second
 
-// hostBackend returns a backend for RPC against host without disturbing the
-// active backend: "local" uses the local socket; compatible remotes use an
-// independently pooled, idle-reaped remote backend on its own socket-tagged SSH
-// master. The pool serves RPC, file, diff, and agent-creation work against a
-// host without switching the UI's active host; the repo cache warmer also
-// pre-warms it.
+// hostBackend returns the connection to host: "local" uses the local socket;
+// a compatible remote uses the pooled, idle-reaped remote backend on its own
+// SSH master. The pool serves RPC, file, diff, and agent-creation work against
+// any host, the repo cache warmer pre-warms it, and — since a switch adopts the
+// entry rather than dialing beside it (see serveHostSwitch) — it also holds the
+// ACTIVE host's connection. Exactly one per host.
 //
-// The pool stays separate from the active backend even for the host that IS
-// active. Reusing it would save one SSH master, but a host switch tears the
-// active backend down and rebuilds it (see serveHostSwitch), which would kill
-// whatever long remote op — worktree.create, an agent boot, an SFTP upload — was
-// riding it. Pooled entries have no such lifetime: they only idle-reap. The
-// one-shot stat/read/git path has nothing to protect, so namedHostBackend
-// short-circuits the active host onto the connection we already hold instead.
+// It used to be deliberately separate from the active backend, because a switch
+// tore the active backend down and rebuilt it, which would have killed whatever
+// long remote op — worktree.create, an agent boot, an SFTP upload — was riding
+// it. A switch no longer tears anything down: connections die only on idle
+// reaping (which skips the active host) or a failed liveness check. So the
+// second master per host bought nothing and cost a full ssh handshake every
+// time the user came back to a host. namedHostBackend still short-circuits the
+// active host onto the connection we already hold.
 //
 // A cached backend is liveness-checked (throttled by hostHealthEvery) before
 // being handed out. Its SSH master can die after a network drop, sshd restart,
@@ -92,7 +93,7 @@ func hostBackend(host string) (Backend, error) {
 
 	// Dial (or wait for a concurrent dial of) a fresh connection. The per-host
 	// mutex — never the global pool lock, which must stay cheap for touch/evict/
-	// reap — serializes same-host dials: a new backend reuses the SAME PID+tag
+	// reap — serializes same-host dials: a new backend reuses the SAME PID+host
 	// socket paths, so two dials at once (or a dial racing a teardown) would
 	// clobber each other's control master.
 	mu := hostDialMu(host)
@@ -112,13 +113,24 @@ func hostBackend(host string) (Backend, error) {
 		return nil, fmt.Errorf("host %s not available", host)
 	}
 	_, wantProto := localProtocol()
-	rb, err := newRemoteBackend(srvCtx, host, hi.Socket, wantProto, "hostpool")
+	rb, err := newRemoteBackend(srvCtx, host, hi.Socket, wantProto)
 	if err != nil {
 		return nil, err
 	}
 	hostPool.mu.Lock()
 	hostPool.entries[host] = &hostPoolEntry{backend: rb, lastUsed: time.Now(), lastOK: time.Now()}
 	hostPool.mu.Unlock()
+	// Redialing the ACTIVE host replaces the connection the active backend and
+	// the hub's event subscription are riding (a switch adopts this very entry),
+	// so re-point both. Without this, a master that died under the active host —
+	// laptop sleep, network drop, sshd restart — left the UI polling a socket
+	// that no longer exists until the user switched away and back.
+	if curBackend().Name() == host {
+		setBackend(rb)
+		if srvHub != nil {
+			srvHub.startSub()
+		}
+	}
 	startHostPoolReaper()
 	return rb, nil
 }
@@ -199,6 +211,10 @@ func closeBackendsOnExit() {
 	_ = curBackend().Close()
 }
 
+// reapHostBackends drops pool entries no one has touched for hostBackendIdle.
+// The ACTIVE host is never a candidate: its entry IS the active backend, whose
+// only "use" between switches is the hub's event stream, which reads the
+// forwarded socket directly rather than through hostBackend.
 func reapHostBackends() {
 	now := time.Now()
 	type deadEntry struct {
@@ -206,9 +222,10 @@ func reapHostBackends() {
 		backend *remoteBackend
 	}
 	var dead []deadEntry
+	activeHost := curBackend().Name()
 	hostPool.mu.Lock()
 	for host, e := range hostPool.entries {
-		if now.Sub(e.lastUsed) > hostBackendIdle {
+		if host != activeHost && now.Sub(e.lastUsed) > hostBackendIdle {
 			dead = append(dead, deadEntry{host, e.backend})
 			delete(hostPool.entries, host)
 		}

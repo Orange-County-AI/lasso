@@ -147,6 +147,28 @@ func TestLightThemesAreLight(t *testing.T) {
 	}
 }
 
+// herdrConfigIn must answer what herdr itself reads, from the environment of the
+// machine that reads it — and must never fall back to the socket's directory,
+// the guess that silently misdirected every theme write to a host whose herdr
+// keeps its socket outside its config dir (workspace boxes: /dev/shm/herdr/).
+func TestHerdrConfigIn(t *testing.T) {
+	cases := []struct {
+		name                      string
+		configPath, xdgHome, home string
+		want                      string
+	}{
+		{"explicit path wins", "/etc/herdr.toml", "/x/config", "/home/dev", "/etc/herdr.toml"},
+		{"xdg beats home", "", "/x/config", "/home/dev", "/x/config/herdr/config.toml"},
+		{"home default", "", "", "/home/dev", "/home/dev/.config/herdr/config.toml"},
+		{"mac home", "", "", "/Users/stephanfitzpatrick", "/Users/stephanfitzpatrick/.config/herdr/config.toml"},
+	}
+	for _, c := range cases {
+		if got := herdrConfigIn(c.configPath, c.xdgHome, c.home); got != c.want {
+			t.Errorf("%s: herdrConfigIn(%q, %q, %q) = %q, want %q", c.name, c.configPath, c.xdgHome, c.home, got, c.want)
+		}
+	}
+}
+
 func TestConfigParseAndCustomOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.toml")

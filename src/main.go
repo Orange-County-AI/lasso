@@ -177,23 +177,18 @@ func runServer() {
 	ctx, cancelBackends := context.WithCancel(context.Background())
 	defer cancelBackends()
 
-	// When we spawn ttyd ourselves, give each instance its own private unix
-	// socket (keyed by PID) instead of a shared TCP port — so a prod instance
-	// and several dev instances can run at once without ever colliding on a
-	// port or, worse, silently proxying onto each other's terminal. Only the
-	// external-ttyd path (-spawn-ttyd=false) still uses *ttydPort. We resolve the
-	// path here (the proxy needs it) but defer the spawn until after the web port
-	// binds, so a startup failure doesn't leak an orphaned ttyd.
-	// Two ttyds when we spawn our own: the herdr terminal (/terminal/) and a plain
-	// out-of-herdr shell (/shell/, the right-column Terminal tab). Each gets its
-	// own private unix socket keyed by PID. The external-ttyd path
-	// (-spawn-ttyd=false) only wires the herdr terminal to *ttydPort; the shell
-	// terminal is viewer-spawned only, so it's absent in that mode.
-	var ttydSock, shellSock string
-	if *spawnTtyd {
-		ttydSock = filepath.Join(os.TempDir(), fmt.Sprintf("lasso-ttyd-%d.sock", os.Getpid()))
-		shellSock = filepath.Join(os.TempDir(), fmt.Sprintf("lasso-shell-%d.sock", os.Getpid()))
-	}
+	// When we spawn ttyd ourselves, every terminal gets its own private unix
+	// socket (keyed by lasso's PID and the host it serves) instead of a shared
+	// TCP port — so a prod instance and several dev instances can run at once
+	// without ever colliding on a port or, worse, silently proxying onto each
+	// other's terminal. Only the external-ttyd path (-spawn-ttyd=false) still
+	// uses *ttydPort. The paths belong to the ttydRoles (switch.go), which own
+	// one ttyd per host for each of the two roles: the herdr terminal
+	// (/terminal/) and a plain out-of-herdr shell (/shell/, the right-column
+	// Terminal tab). The spawn is deferred until after the web port binds, so a
+	// startup failure doesn't leak an orphaned ttyd. The external-ttyd path only
+	// wires the herdr terminal to *ttydPort; the shell terminal is
+	// viewer-spawned only, so it's absent in that mode.
 
 	hub := newHub()
 	srvHub = hub
@@ -207,7 +202,7 @@ func runServer() {
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
-		proxy = unixSocketProxy(ttydSock)
+		proxy = unixSocketProxy(func() string { return terminals.herdr.activeSock() })
 	} else {
 		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
 		proxy = httputil.NewSingleHostReverseProxy(target)
@@ -216,7 +211,7 @@ func runServer() {
 	mux := http.NewServeMux()
 	mux.Handle("/terminal/", proxy)
 	if *spawnTtyd {
-		mux.Handle("/shell/", unixSocketProxy(shellSock))
+		mux.Handle("/shell/", unixSocketProxy(func() string { return terminals.shell.activeSock() }))
 	}
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, hub.snapshot())
@@ -342,20 +337,25 @@ func runServer() {
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
 	// log.Fatalf bypasses).
 	if *spawnTtyd {
-		// Each terminal is owned by a manager so it can be respawned with a new
-		// command when the active host changes (left: herdr / `herdr --remote`,
-		// right: local shell / `ssh <host>`). The first spawn here runs the local
-		// host's commands; a host switch later restarts both via the managers.
-		terminals.herdr = newTtydManager(ctx, ttydSock, "/terminal")
-		terminals.shell = newTtydManager(ctx, shellSock, "/shell")
-		if err := terminals.herdr.restart(termPrefix()+curBackend().TermCmd(), curBackend().TermEnv()); err != nil {
+		// Each role owns one ttyd PER HOST (left: herdr / `herdr --remote`,
+		// right: local shell / `ssh <host>`), so a host switch points the role at
+		// another instance instead of respawning one in place. The first spawn
+		// here is the local host's pair; a switch spawns the target's on its
+		// first visit and reuses it forever after (see switch.go's ttydRole).
+		terminals.herdr = newTtydRole(ctx, "ttyd", "/terminal")
+		terminals.shell = newTtydRole(ctx, "shell", "/shell")
+		cur := curBackend()
+		if err := terminals.herdr.activate(cur.Name(), termPrefix()+cur.TermCmd(), cur.TermEnv()); err != nil {
 			log.Fatalf("ttyd: %v", err)
 		}
 		// Out-of-herdr shell: env stripped of the HERDR_* session markers so
 		// commands like `herdr update` (which refuse to run inside a session) work.
-		if err := terminals.shell.restart(curBackend().ShellCmd(), outsideHerdrEnv()); err != nil {
+		if err := terminals.shell.activate(cur.Name(), cur.ShellCmd(), outsideHerdrEnv()); err != nil {
 			log.Fatalf("ttyd (shell): %v", err)
 		}
+		// Retire terminals for hosts that drop out of rotation (see ttydIdle).
+		go terminals.herdr.sweepIdle()
+		go terminals.shell.sweepIdle()
 	}
 
 	// Probe the ssh-config hosts in the background from startup and keep
@@ -401,8 +401,8 @@ func runServer() {
 	}
 	log.Printf("UI:       http://%s", *listenAddr)
 	if *spawnTtyd {
-		log.Printf("terminal: ttyd@%s running %q (proxied at /terminal/)", ttydSock, *termCmd)
-		log.Printf("shell:    ttyd@%s running %q (proxied at /shell/)", shellSock, shellCommand())
+		log.Printf("terminal: ttyd@%s running %q (proxied at /terminal/)", terminals.herdr.activeSock(), *termCmd)
+		log.Printf("shell:    ttyd@%s running %q (proxied at /shell/)", terminals.shell.activeSock(), shellCommand())
 	} else {
 		log.Printf("terminal: ttyd@127.0.0.1:%d (external) running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	}
@@ -456,20 +456,52 @@ func listenWithFallback(addr string, dev bool, span int) (net.Listener, string, 
 // ttyd child process
 // ---------------------------------------------------------------------------
 
+// ttydDialWait bounds how long a proxied request waits for the active host's
+// ttyd socket. A remount arriving while an instance is still binding — or
+// during the pointer flip of a host switch — waits instead of 502ing, which is
+// what the browser's iframe reload used to race.
+const ttydDialWait = 3 * time.Second
+
 // unixSocketProxy reverse-proxies to one of our ttyds over its private unix
 // socket. The host in the URL is a placeholder — the custom DialContext ignores
 // it and dials the socket. WS upgrades work because the hijacked conn is dialed
 // through the same Transport.
-func unixSocketProxy(sock string) *httputil.ReverseProxy {
+//
+// sock is resolved per request, not captured: each ttydRole serves a different
+// socket per host and a switch re-points it, so the path is only known at dial
+// time (and is empty until the first spawn, which happens after the mux is
+// wired).
+func unixSocketProxy(sock func() string) *httputil.ReverseProxy {
 	p := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "ttyd.sock"})
 	p.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
+			deadline := time.Now().Add(ttydDialWait)
+			for {
+				var err error = errNoTtyd
+				if path := sock(); path != "" {
+					var c net.Conn
+					if c, err = d.DialContext(ctx, "unix", path); err == nil {
+						return c, nil
+					}
+				}
+				if time.Now().After(deadline) {
+					return nil, err
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
 		},
 	}
 	return p
 }
+
+// errNoTtyd is what a dial reports when the active host has no terminal at all
+// (startup before the first spawn, or a spawn that failed).
+var errNoTtyd = errors.New("no ttyd for the active host")
 
 // shellCommand resolves the command for the out-of-herdr Terminal tab:
 // -shell-cmd if set, else $SHELL, else bash, else sh.
@@ -1100,10 +1132,9 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 // [theme].name in the LOCAL herdr config.toml — the single source of truth both
 // already follow: the hub re-resolves the config every poll (bumping theme_rev
 // so the browser repaints chrome + terminals), and the running herdr server is
-// asked to reload its config over the API socket. When a remote host is the
-// active backend, the change is mirrored onto it too (same as a host switch), so
-// its terminals track the theme — unless that host's theme sync is switched off
-// (theme_sync_off, also edited here).
+// asked to reload its config over the API socket. The resolved theme then fans
+// out to every settled, usable host so mirrored terminals and their agent CLIs
+// stay in step even when their host was never made the active backend.
 func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1173,14 +1204,10 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
 		log.Printf("theme:    herdr reload-config: %v", err)
 	}
-	// Mirror the new theme into local agents' theme files (opencode, Claude
-	// Code, omp, …). Resolved from the config we just wrote so [theme.custom]
-	// overrides are honored.
-	syncAgentThemesVia(localFsBackend(), loadHerdrTheme(""))
-	// If we're driving a remote host, mirror the theme onto it as well.
-	if rb, ok := curBackend().(*remoteBackend); ok {
-		syncRemoteTheme(rb, name)
-	}
+	// Fan the resolved theme out after the local config write so [theme.custom]
+	// overrides reach local and settled remote agents. Off the request path:
+	// remote SFTP writes can wait on ssh latency.
+	go syncThemeEverywhere(loadHerdrTheme(""))
 	// Skip the poll wait so the browser's theme_rev bump (and repaint) is
 	// near-immediate.
 	srvHub.kick()
@@ -2064,13 +2091,32 @@ func (h *hub) kick() {
 	}
 }
 
-// bumpTermRev increments the terminal-reload counter so the next SSE frame tells
-// the browser to reload the terminal iframes (their ttyd sessions were respawned
-// against the new host).
+// bumpTermRev increments the terminal-reload counter and pushes it to every SSE
+// client RIGHT AWAY, along with the host that is now active.
+//
+// It used to only bump the counter and let the next poll carry it, which meant
+// the browser learned about a switch one full pane poll later — the poll runs
+// herdr RPCs against the host just switched to, so a cross-host switch spent
+// ~1s with the OLD host's terminal still on screen before the iframe remounted.
+// The panes in this frame are the previous host's for that one beat; the poll
+// that follows (kick, called right after) replaces them.
 func (h *hub) bumpTermRev() {
 	h.mu.Lock()
 	h.termRev++
+	h.cur.TermRev = h.termRev
+	h.cur.Host = curBackend().Name()
+	cur := h.cur
+	clients := make([]chan Active, 0, len(h.clients))
+	for c := range h.clients {
+		clients = append(clients, c)
+	}
 	h.mu.Unlock()
+	for _, c := range clients {
+		select {
+		case c <- cur:
+		default:
+		}
+	}
 }
 
 // bumpUIStateRev broadcasts a UI-prefs revision bump to every SSE client
@@ -2150,9 +2196,9 @@ func (h *hub) run(ctx context.Context) {
 				log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
 			}
 			// An edit to herdr's config.toml made outside lasso (herdr's own
-			// theme popup, a hand edit) lands here — keep local agents' theme
-			// files in step too. Async so the poll loop never blocks on I/O.
-			go syncAgentThemesVia(localFsBackend(), rt)
+			// theme popup, a hand edit) must reach every settled host too, not
+			// only local agents. Async so the poll loop never blocks on I/O.
+			go syncThemeEverywhere(rt)
 		}
 		a.PanesRev = h.rev
 		a.ThemeRev = h.themeRev
