@@ -41,6 +41,7 @@ type remoteBackend struct {
 	ctlPath    string // ssh ControlMaster control socket (local)
 	localSock  string // local end of the forwarded herdr socket
 	home       string // remote $HOME, for ~-expansion
+	herdrCfg   string // where herdr on the remote reads config.toml
 	protocol   int    // remote herdr protocol (verified == local at connect)
 	version    string // remote herdr version (for display)
 
@@ -149,20 +150,18 @@ func (b *remoteBackend) ctlOpts() []string {
 // verifies the forwarded socket answers `ping` with a protocol matching the
 // local one, and resolves the remote home dir. parent is the root context: the
 // backend tears itself down when parent is cancelled (process exit) or when
-// Close is called (host switch). On any failure it cleans up and returns the
-// error so the caller can roll back to the previous backend.
-// nameTag disambiguates on-disk control/forward socket filenames so a backend
-// opened for one purpose cannot clobber another to the same host: the
-// active-host backend (serveHostSwitch) passes "", while the host pool passes
-// "hostpool", letting both hold a live connection to the same alias at once.
-func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int, nameTag string) (*remoteBackend, error) {
+// Close is called (an idle-reaped or unhealthy pool entry). On any failure it
+// cleans up and returns the error so the caller can roll back.
+//
+// The socket filenames carry lasso's pid and the alias, and nothing else: there
+// is exactly one connection per host now that a host switch adopts the pooled
+// one (see hostBackend), so no second backend to the same alias exists to
+// clobber these paths.
+func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int) (*remoteBackend, error) {
 	if remoteSock == "" {
 		return nil, fmt.Errorf("no remote herdr socket for %s", alias)
 	}
 	tag := sanitizeAlias(alias)
-	if nameTag != "" {
-		tag += "-" + nameTag
-	}
 	b := &remoteBackend{
 		alias:      alias,
 		remoteSock: remoteSock,
@@ -224,9 +223,16 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 	}
 	b.version, b.protocol = ver, proto
 
-	// Resolve the remote home for ~-expansion (rides the master, cheap).
-	if home, herr := b.runOut("printf %s \"$HOME\""); herr == nil {
-		b.home = strings.TrimSpace(home)
+	// Resolve the remote $HOME (for ~-expansion) and the env that decides where
+	// herdr on that host reads config.toml, in ONE round trip on the fresh
+	// master (both are cheap; see herdrConfigPath below).
+	if out, herr := b.runOut(`printf '%s\n%s\n%s\n' "$HOME" "$XDG_CONFIG_HOME" "$HERDR_CONFIG_PATH"`); herr == nil {
+		lines := strings.Split(out, "\n")
+		for len(lines) < 3 {
+			lines = append(lines, "")
+		}
+		b.home = strings.TrimSpace(lines[0])
+		b.herdrCfg = herdrConfigIn(strings.TrimSpace(lines[2]), strings.TrimSpace(lines[1]), b.home)
 	}
 
 	// Tie teardown to the root context so process exit (Ctrl-C) cleans up every
@@ -335,6 +341,12 @@ func (b *remoteBackend) GitOut(dir string, args ...string) (string, error) {
 	}
 	return b.runOut(strings.Join(parts, " "))
 }
+
+// herdrConfigPath is the config.toml the remote herdr READS — resolved from that
+// host's own environment at connect (see newRemoteBackend), because the answer
+// is the remote's, not ours. Empty only if the probe failed, in which case the
+// caller has nothing safe to write and should skip.
+func (b *remoteBackend) herdrConfigPath() string { return b.herdrCfg }
 
 func (b *remoteBackend) HomeDir() (string, error) {
 	if b.home != "" {

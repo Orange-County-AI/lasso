@@ -389,13 +389,32 @@ func normalizeThemeName(name string) string {
 	return n
 }
 
-// herdrConfigPath returns the path to config.toml, honoring HERDR_CONFIG_PATH
-// and otherwise sitting alongside the socket.
+// herdrConfigPath returns the path to the LOCAL config.toml, resolved the way
+// herdr resolves it (see herdrConfigIn).
 func herdrConfigPath() string {
-	if p := os.Getenv("HERDR_CONFIG_PATH"); p != "" {
-		return p
+	return herdrConfigIn(os.Getenv("HERDR_CONFIG_PATH"), os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
+}
+
+// herdrConfigIn resolves herdr's config.toml from one machine's environment:
+// $HERDR_CONFIG_PATH wins, else $XDG_CONFIG_HOME/herdr/config.toml, else
+// $HOME/.config/herdr/config.toml — herdr's own order, which is why the values
+// have to come from the machine that READS the file (see
+// remoteBackend.herdrConfigPath).
+//
+// It deliberately does not look beside the socket, which is where lasso used to
+// guess. That only ever worked because the default socket happens to live in
+// herdr's config dir: on a host where herdr puts its socket elsewhere — every
+// agent-workspace box, where it lands in /dev/shm/herdr/ — a theme write went to
+// a config.toml nothing reads, so the remote herdr TUI kept its old palette
+// while lasso logged a successful sync.
+func herdrConfigIn(configPath, xdgConfigHome, home string) string {
+	if configPath != "" {
+		return configPath
 	}
-	return filepath.Join(filepath.Dir(*herdrSock), "config.toml")
+	if xdgConfigHome != "" {
+		return filepath.Join(xdgConfigHome, "herdr", "config.toml")
+	}
+	return filepath.Join(home, ".config", "herdr", "config.toml")
 }
 
 // loadHerdrTheme resolves the active theme. If forceName != "" and != "auto" it

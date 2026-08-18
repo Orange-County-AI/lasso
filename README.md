@@ -86,8 +86,12 @@ One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
 (WebSocket), talks to the herdr server over its unix socket to track the focused
 pane and workspace layout, and pushes live state to the browser over SSE. It can
 drive herdr on the local box or on SSH-reachable hosts through the footer's host
-switcher, so one lasso fronts a whole fleet. Each instance spawns its
-own ttyds on per-PID unix sockets, so several can run at once without colliding.
+switcher, so one lasso fronts a whole fleet. Each instance spawns its own ttyds on
+unix sockets keyed by PID **and host**, so several instances can run at once
+without colliding and so a host keeps its terminal warm: switching back to a host
+you were on re-points the proxy at a ttyd that is already bound instead of
+respawning one, and one SSH connection per host serves both the terminal and
+host-addressed work.
 The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
 plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.go`.
 
@@ -103,13 +107,16 @@ own monochrome design system, not herdr's palette. It follows your **system
 light/dark** preference (`prefers-color-scheme`), overridable in Settings →
 Appearance (System / Light / Dark, persisted per device).
 
-When lasso drives a **remote host**, a theme change is mirrored onto that machine
-too — `[theme].name` in its herdr config — and into the agent CLIs' own theme
-files on every host lasso syncs (Claude Code, OpenCode, Oh My Pi, ghostty), so
-agents render in step with herdr. Settings → Herdr theme switches that off: "Sync
-agent themes" for the agent CLIs everywhere, or "Sync theme to hosts" per host,
-which leaves an unchecked machine's herdr config and agent themes entirely alone
-(re-checking it pushes the current theme straight back).
+A theme change is pushed to **every reachable host**, in parallel — not just the
+one lasso is currently driving — since panes from other machines are on screen
+the whole time through herdr-mirror. Each host gets `[theme].name` in the
+config.toml its own herdr reads (resolved from that host's environment, not
+guessed from the socket's directory) and the agent CLIs' own theme files (Claude
+Code, OpenCode, Oh My Pi, ghostty), so agents render in step with herdr. Settings
+→ Herdr theme switches that off: "Sync agent themes" for the agent CLIs
+everywhere, or "Sync theme to hosts" per host, which leaves an unchecked
+machine's herdr config and agent themes entirely alone (re-checking it pushes the
+current theme straight back).
 
 ## Updating
 

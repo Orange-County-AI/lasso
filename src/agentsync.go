@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -114,12 +115,38 @@ func setThemeSyncFor(host string, on bool) error {
 	return setSetting(themeSyncOffKey, string(b))
 }
 
-// convergeThemeSyncFor pushes the current theme onto a host whose sync was just
-// switched back on, so the checkbox takes effect now instead of at the next
-// theme or host switch. Best-effort and meant to run off the request path: a
-// host lasso can't reach right now just logs and converges later.
-func convergeThemeSyncFor(host string) {
-	rt := loadHerdrTheme("")
+// themeFanoutConcurrency keeps one theme click from opening an ssh master to
+// every configured alias at once. Theme writes wait on SFTP/ssh latency, so six
+// concurrent hosts keeps the common fleet responsive without a connection burst.
+const themeFanoutConcurrency = 6
+
+// themeFanoutMu serializes complete fan-outs. The theme-set endpoint and hub
+// poll can notice the same change together; their writers skip unchanged bytes,
+// making the second pass nearly free once the first has finished.
+var themeFanoutMu sync.Mutex
+
+// themeFanoutHosts returns settled, usable remote hosts lasso may write to.
+// Checking the deny-list here, before namedHostBackend dials, preserves an
+// opt-out even when a host has no existing pooled connection.
+func themeFanoutHosts(rows []HostInfo) []string {
+	hosts := make([]string, 0, len(rows))
+	for _, hi := range rows {
+		if hi.Alias == "" || isLocalHost(hi.Alias) || hi.State != "" ||
+			!hi.Reachable || !hi.Running || !hi.Compatible ||
+			!themeSyncEnabledFor(hi.Alias) {
+			continue
+		}
+		hosts = append(hosts, hi.Alias)
+	}
+	return hosts
+}
+
+// syncThemeToHost pushes rt to one host. It is best-effort: a remote lasso
+// cannot reach logs its failure and leaves the next theme convergence to retry.
+func syncThemeToHost(host string, rt resolvedTheme) {
+	if !themeSyncEnabledFor(host) {
+		return
+	}
 	if isLocalHost(host) {
 		syncAgentThemesVia(localFsBackend(), rt)
 		return
@@ -132,6 +159,37 @@ func convergeThemeSyncFor(host string) {
 	if rb, ok := b.(*remoteBackend); ok {
 		syncRemoteTheme(rb, rt.Resolved)
 	}
+}
+
+// syncThemeEverywhere mirrors rt locally and across each settled usable host.
+// Callers run it off their request/poll paths because remote SFTP writes can
+// wait on ssh; the concurrency cap avoids a fleet-wide connection burst.
+func syncThemeEverywhere(rt resolvedTheme) {
+	themeFanoutMu.Lock()
+	defer themeFanoutMu.Unlock()
+
+	rows, _ := hostSnapshot()
+	hosts := append([]string{"local"}, themeFanoutHosts(rows)...)
+	sem := make(chan struct{}, themeFanoutConcurrency)
+	var wg sync.WaitGroup
+	for _, host := range hosts {
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			syncThemeToHost(host, rt)
+		}(host)
+	}
+	wg.Wait()
+}
+
+// convergeThemeSyncFor pushes the current theme onto a host whose sync was just
+// switched back on, so the checkbox takes effect now instead of at the next
+// theme or host switch. Best-effort and meant to run off the request path: a
+// host lasso can't reach right now just logs and converges later.
+func convergeThemeSyncFor(host string) {
+	syncThemeToHost(host, loadHerdrTheme(""))
 }
 
 // syncAgentThemesVia mirrors rt into the agent theme files on backend b.

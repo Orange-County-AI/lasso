@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -776,5 +777,72 @@ func TestServeThemeSetPerHostFlip(t *testing.T) {
 	}
 	if want := []string{"minime"}; !slices.Equal(themeSyncOffHosts(), want) {
 		t.Errorf("a refused request changed the deny-list: %v, want %v", themeSyncOffHosts(), want)
+	}
+}
+
+// syncThemeEverywhere always includes local even when discovery has no remote
+// rows. HOME points the local backend at a temp tree so the write is hermetic.
+func TestSyncThemeEverywhereWritesLocal(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetHostStore(t)
+	t.Cleanup(func() { resetHostStore(t) })
+
+	syncThemeEverywhere(resolveThemeByName("nord"))
+
+	path := filepath.Join(home, ".claude", "themes", "herdr.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("local theme %s was not written: %v", path, err)
+	}
+}
+
+// A deny-listed host is excluded before the fan-out reaches namedHostBackend,
+// which is what prevents an opted-out alias from being dialed merely to sync it.
+func TestThemeFanoutHostsHonorsDenyList(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+	if err := setThemeSyncFor("ticketsocket", false); err != nil {
+		t.Fatalf("disable ticketsocket: %v", err)
+	}
+
+	rows := []HostInfo{
+		{Alias: "ticket500", Reachable: true, Running: true, Compatible: true},
+		{Alias: "ticketsocket", Reachable: true, Running: true, Compatible: true},
+		{Alias: "probeing", Reachable: true, Running: true, Compatible: true, State: hostProbing},
+		{Alias: "down", Running: true, Compatible: true},
+		{Alias: "old", Reachable: true, Running: true},
+		{Alias: "local", Reachable: true, Running: true, Compatible: true},
+	}
+	if want := []string{"ticket500"}; !slices.Equal(themeFanoutHosts(rows), want) {
+		t.Errorf("themeFanoutHosts() = %v, want %v", themeFanoutHosts(rows), want)
+	}
+}
+
+// Concurrent triggers serialize complete fan-outs; each pass sees the same
+// bytes and finishes without interleaving local theme-file writes.
+func TestSyncThemeEverywhereConcurrent(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetHostStore(t)
+	t.Cleanup(func() { resetHostStore(t) })
+
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			syncThemeEverywhere(resolveThemeByName("catppuccin"))
+		}()
+	}
+	wg.Wait()
+
+	path := filepath.Join(home, ".config", "opencode", "themes", "herdr.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("local theme %s was not written: %v", path, err)
 	}
 }
