@@ -39,7 +39,10 @@ type harnessDef struct {
 	EffortLevels []string `json:"effort_levels,omitempty"`
 	// ModelSuggestions seed the creator's free-text model field. They are
 	// suggestions only — anything the user types is passed through, since
-	// model names churn far faster than lasso releases.
+	// model names churn far faster than lasso releases. For omp the served list
+	// is not this one: hostHarnesses replaces it with the models that host's omp
+	// assigns to a role (ompmodels.go), and this entry is the fallback for a host
+	// where omp isn't set up.
 	ModelSuggestions []string `json:"model_suggestions"`
 	buildCmd         func(o launchOpts) string
 }
@@ -112,9 +115,11 @@ var harnesses = []harnessDef{
 		// listed (they're real choices a user wants) but "auto" goes last so the
 		// ladder itself stays cheapest-first.
 		EffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"},
-		// Prefer exact provider/id selectors here: OMP users commonly authenticate
-		// both the API and subscription providers, where a bare model id can match
-		// more than one catalog entry.
+		// The FALLBACK list, served only for a host where omp has never run: the
+		// real one is that host's own role assignments (hostHarnesses). Exact
+		// provider/id selectors either way — OMP users commonly authenticate both
+		// the API and subscription providers, where a bare model id can match more
+		// than one catalog entry.
 		ModelSuggestions: []string{
 			"openai-codex/gpt-5.6-sol",
 			"openai-codex/gpt-5.6-terra",
