@@ -99,6 +99,22 @@ func TestCreateParamsMCPFieldsAreDeclaredBothWays(t *testing.T) {
 	}
 }
 
+// MCP callers do not receive /api/agent-config, so the model field's schema
+// description is their discovery surface for the preferred OMP selectors.
+// Model remains free text: this pins discoverability, not an allowlist.
+func TestCreateAgentMCPDescribesOmpModelSuggestions(t *testing.T) {
+	field, ok := createInType.FieldByName("Model")
+	if !ok {
+		t.Fatal("createAgentIn.Model is missing")
+	}
+	description := field.Tag.Get("jsonschema")
+	for _, want := range harnessByID("omp").ModelSuggestions {
+		if !strings.Contains(description, want) {
+			t.Errorf("createAgentIn.Model schema does not mention OMP suggestion %q: %q", want, description)
+		}
+	}
+}
+
 // TestCreateParamsMCPValuesReachTheReq proves the mapping actually runs, not
 // just that the names line up. Declaring a field in createAgentIn and then
 // forgetting it in toCreateReq drops the value just as silently as never

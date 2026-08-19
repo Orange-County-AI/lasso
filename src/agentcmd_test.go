@@ -405,6 +405,22 @@ func TestHarnessIDsUnique(t *testing.T) {
 	}
 }
 
+// The create-agent form reads these suggestions from /api/agent-config. Keep
+// the OMP list provider-qualified so choosing one is deterministic even when
+// both API and subscription providers expose the same bare model id.
+func TestOmpModelSuggestions(t *testing.T) {
+	want := []string{
+		"openai-codex/gpt-5.6-sol",
+		"openai-codex/gpt-5.6-terra",
+		"anthropic/claude-fable-5",
+		"anthropic/claude-opus-5",
+	}
+	got := harnessByID("omp").ModelSuggestions
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("OMP model suggestions = %q, want %q", got, want)
+	}
+}
+
 // The remote provisioning script installs herdr's agent-state integration for
 // every harness lasso can spawn. The list is substituted from the registry, so
 // a newly added harness can't be left screen-scraped on remote hosts.
