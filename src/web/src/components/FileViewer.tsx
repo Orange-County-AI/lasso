@@ -31,6 +31,8 @@ export function FileViewer({
   path,
   host,
   onClose,
+  initialDraft,
+  onDraftChange,
 }: {
   path: string
   // The host the file was opened from — captured at open time by the parent, so
@@ -38,6 +40,14 @@ export function FileViewer({
   // focus (and the tree) moves onto another host while it's open.
   host: string | null
   onClose: () => void
+  // An unsaved buffer carried over from an earlier mount of this same file. The
+  // sidebar keeps its state per herdr pane, so selecting another agent unmounts
+  // this editor; without the hand-off, in-flight edits would vanish silently on
+  // a pane switch — the close path at least confirms first.
+  initialDraft?: string | null
+  // Reports the unsaved buffer (null once it matches disk again) so the parent
+  // can hold it for this pane.
+  onDraftChange?: (draft: string | null) => void
 }) {
   const image = isImage(path)
   const pdf = isPdf(path)
@@ -48,6 +58,9 @@ export function FileViewer({
   // serves these via http.ServeContent, which honors Range requests so the
   // browser can seek/stream video.
   const binary = image || pdf || video
+  // Consumed once, by the initial load below; after that the editor owns the
+  // buffer and a reload means the file (or its host) actually changed.
+  const carry = React.useRef(initialDraft ?? null)
 
   // `text` is the last-saved content; `draft` is what's in the editor. They
   // diverge exactly when there are unsaved edits.
@@ -74,6 +87,13 @@ export function FileViewer({
   textRef.current = text
   const dirtyRef = React.useRef(dirty)
   dirtyRef.current = dirty
+
+  // Hold the unsaved buffer above this component, so a pane switch (which
+  // unmounts the viewer) doesn't drop it. Cleared as soon as it matches disk.
+  React.useEffect(() => {
+    onDraftChange?.(dirty ? draft : null)
+  }, [dirty, draft, onDraftChange])
+
   // Is this file dirty in the working tree? Derive its repo-relative path the
   // same way FilesPanel does and look it up in the shared (already-polled) diff
   // metadata. Deleted files aren't viewable, so we ignore that status. That
@@ -120,8 +140,10 @@ export function FileViewer({
       .fileText(path, host ?? undefined)
       .then((t) => {
         if (cancelled) return
+        const restored = carry.current
+        carry.current = null
         setText(t)
-        setDraft(t)
+        setDraft(restored ?? t)
       })
       .catch((e: Error) => !cancelled && setError(e.message))
     return () => {
