@@ -405,9 +405,11 @@ func TestHarnessIDsUnique(t *testing.T) {
 	}
 }
 
-// The create-agent form reads these suggestions from /api/agent-config. Keep
-// the OMP list provider-qualified so choosing one is deterministic even when
-// both API and subscription providers expose the same bare model id.
+// The compiled-in OMP list is the fallback the form gets for a host without omp
+// (the live list comes from that host's role assignments — see
+// TestOmpRoleModels / hostHarnesses). Keep it provider-qualified so choosing one
+// is deterministic even when both API and subscription providers expose the same
+// bare model id.
 func TestOmpModelSuggestions(t *testing.T) {
 	want := []string{
 		"openai-codex/gpt-5.6-sol",

@@ -412,10 +412,15 @@ func hostAgentConfig(host string) (*LassoConfig, error) {
 	c.BranchPrefix = def.BranchPrefix
 	c.DefaultAgent = def.DefaultAgent
 	c.ScratchSetup = def.ScratchSetup
-	// The harness registry is compiled in and host-independent (loadLassoConfig
-	// already attached it), so nothing here reaches out to the host's own CLI
-	// config — the creator leaves model/effort unset and lets each CLI apply
-	// whatever it's configured with.
+	// The registry loadLassoConfig attached is the compiled-in table. One part of
+	// it IS host-specific: omp's model suggestions, which come from the models
+	// that host's omp assigns to a role (hostHarnesses / ompmodels.go). An
+	// unreachable host — or one without omp — keeps the compiled-in list rather
+	// than failing the whole config read. Nothing here preselects a model or
+	// effort: the creator still leaves both unset so each CLI applies its own.
+	if b, err := hostBackend(host); err == nil {
+		c.Harnesses = hostHarnesses(b)
+	}
 	return c, nil
 }
 
