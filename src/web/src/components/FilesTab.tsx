@@ -72,6 +72,18 @@ const hasChangesUnder = (changes: Map<string, FileChange>, dir: string) => {
   return false
 }
 
+// What the tab remembers for one herdr pane: where it was browsing, on which
+// host, whether it was still following that pane's cwd, and which directories
+// were open. The parent stashes it per pane and hands it back on remount, so
+// selecting an agent again returns you to its tree rather than the last one's.
+export type FilesTabState = {
+  path: string | null
+  host: string | null
+  follow: boolean
+  pathValue: string
+  expanded: string[]
+}
+
 // The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
 // active pane (by default). Clicking a directory either re-roots the tree into
 // it or expands it in place, per the persisted files_click_navigates pref
@@ -83,6 +95,8 @@ export function FilesTab({
   onOpenFile,
   changes,
   host,
+  initial,
+  onStateChange,
 }: {
   viewerPath: string | null
   // `path` is joined by the host the tree was browsing when the file was
@@ -97,25 +111,43 @@ export function FilesTab({
   // differs from the active host — every listing and mutation below addresses
   // it, or we'd browse one machine and write another.
   host: string | null
+  // This pane's saved state, or null for a pane not browsed yet. Read once, at
+  // mount — the parent keys the tab by pane, so a switch remounts it.
+  initial: FilesTabState | null
+  // Published on every change, so the parent can stash it against this pane.
+  onStateChange: (s: FilesTabState) => void
 }) {
   const { activeCwd } = useApp()
   // When true, clicking a folder re-roots the tree into it; when false it
   // expands in place. Persisted server-side and toggled from the header.
   const clickNavigates = useUIState().files_click_navigates
-  const [curPath, setCurPath] = React.useState<string | null>(null)
+  // Seeded from this pane's saved state; falling back to the active cwd (rather
+  // than null) so a pane visited for the first time starts loading its own
+  // directory immediately instead of painting "waiting for herdr…" for a frame.
+  const [curPath, setCurPath] = React.useState<string | null>(
+    initial?.path ?? activeCwd
+  )
   // The host being browsed. TAB STATE, not a live read of `host`: like curPath
   // it follows the active pane while `follow` is on and freezes the moment the
   // user steers (types a path, navigates into a dir, goes up) — every request
   // the tab makes is addressed to it.
-  const [curHost, setCurHost] = React.useState<string | null>(null)
-  const [follow, setFollow] = React.useState(true)
-  const [pathValue, setPathValue] = React.useState("")
+  // Seeded like curPath, and from the pane's cwd host rather than null, so the
+  // first listing is already addressed to the right machine: a pane that is an
+  // ssh window onto another host would otherwise fetch once against the active
+  // host before the follow effect below corrected it.
+  const [curHost, setCurHost] = React.useState<string | null>(
+    initial?.host ?? host
+  )
+  const [follow, setFollow] = React.useState(initial?.follow ?? true)
+  const [pathValue, setPathValue] = React.useState(initial?.pathValue ?? "")
   // The canonical root path (as the server cleaned it) and its parent, for the
   // ".." re-root row.
   const [rootPath, setRootPath] = React.useState<string | null>(null)
   const [rootParent, setRootParent] = React.useState<string | null>(null)
   // Per-directory lazy state, all keyed by absolute path.
-  const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = React.useState<Set<string>>(
+    () => new Set(initial?.expanded)
+  )
   const [childrenByPath, setChildrenByPath] = React.useState<
     Record<string, FileEntry[]>
   >({})
@@ -129,6 +161,15 @@ export function FilesTab({
   const [dropTarget, setDropTarget] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
+  // The saved state, held for as long as the tree is still rooted where it was
+  // saved: the (re)root effect collapses the tree on every root change, which
+  // on this restoring mount would throw away exactly what we came back for.
+  const restoreRef = React.useRef(initial)
+  // Directories that restore left expanded and whose listings therefore still
+  // need refetching — the expansion survived the remount, the caches didn't —
+  // plus the root they were already refetched for.
+  const restoreDirs = React.useRef<string[] | null>(null)
+  const restoredFor = React.useRef<string | null>(null)
 
   // Keep the path input scrolled to its end — the tail of the path is the
   // useful part — whenever the value changes or the input gets (re)laid out
@@ -182,7 +223,17 @@ export function FilesTab({
   React.useEffect(() => {
     if (!curPath) return
     let cancelled = false
-    setExpanded(new Set())
+    // Keep the restored expansion while the root is the one it was saved
+    // against; any other root — including a re-root away from it — collapses
+    // the tree as before, and retires the restore.
+    const restore = restoreRef.current
+    if (restore?.path === curPath && restore.host === curHost) {
+      restoreDirs.current = restore.expanded
+    } else {
+      restoreRef.current = null
+      restoreDirs.current = null
+      setExpanded(new Set())
+    }
     setChildrenByPath({})
     setErrorByPath({})
     setRootPath(null)
@@ -262,6 +313,28 @@ export function FilesTab({
     },
     [curHost]
   )
+
+  // Re-list the directories a restore brought back expanded, once the root has
+  // landed. Guarded by the root it ran for rather than by consuming the list,
+  // so a re-run can't drop the refetch and leave those rows on "loading…".
+  React.useEffect(() => {
+    const dirs = restoreDirs.current
+    if (!rootPath || !dirs || restoredFor.current === rootPath) return
+    restoredFor.current = rootPath
+    for (const dir of dirs) void loadDir(dir)
+  }, [rootPath, loadDir])
+
+  // Hand this pane's browsed state to the parent on every change, so selecting
+  // the pane again restores it.
+  React.useEffect(() => {
+    onStateChange({
+      path: curPath,
+      host: curHost,
+      follow,
+      pathValue,
+      expanded: [...expanded],
+    })
+  }, [curPath, curHost, follow, pathValue, expanded, onStateChange])
 
   const toggleDir = (full: string) => {
     setExpanded((prev) => {
