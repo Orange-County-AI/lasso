@@ -112,15 +112,14 @@ var harnesses = []harnessDef{
 		// listed (they're real choices a user wants) but "auto" goes last so the
 		// ladder itself stays cheapest-first.
 		EffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"},
-		// omp resolves --model as a pattern against the authenticated provider
-		// catalogs — exact provider/id, exact bare id, then fuzzy/substring — so
-		// a bare "opus" finds whichever claude-opus the user is logged into.
+		// Prefer exact provider/id selectors here: OMP users commonly authenticate
+		// both the API and subscription providers, where a bare model id can match
+		// more than one catalog entry.
 		ModelSuggestions: []string{
-			"opus",
-			"sonnet",
-			"gpt-5.5",
-			"gemini-3.1-pro",
-			"anthropic/claude-opus-4-8",
+			"openai-codex/gpt-5.6-sol",
+			"openai-codex/gpt-5.6-terra",
+			"anthropic/claude-fable-5",
+			"anthropic/claude-opus-5",
 		},
 		buildCmd: ompCommand,
 	},
