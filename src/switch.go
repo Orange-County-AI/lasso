@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -334,45 +335,65 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 	writeHostResult(w, newB)
 }
 
-// syncRemoteTheme writes theme name into the config.toml the remote herdr reads
-// and asks that server to reload it, so the host renders in that theme.
-// Best-effort: any failure is logged and never blocks the caller (a host switch
-// or a theme change). name is a canonical theme key.
+// syncRemoteTheme writes theme name into the config.toml the remote herdr reads,
+// mirrors it into that host's agent CLI theme files, and asks its herdr to reload
+// so the TUI repaints. name is a canonical theme key. It returns the joined
+// failure of the file writes; every caller treats it as best-effort (a host
+// switch, a theme change, a convergence push) and lets the next pass retry.
+//
+// The three steps are independent and all three are attempted: an unwritable
+// herdr config must not cost the host its ghostty palette, and the reload is the
+// LAST thing, not a gate — asking a herdr to reload used to happen before the
+// agent themes were written, so any host whose herdr could not be reached (one
+// speaking a protocol this build refuses, reached over a files-only connection)
+// silently kept a month-old ghostty theme. A reload lasso cannot make is a stale
+// TUI until that herdr restarts, nothing more, so it is logged and not returned.
 //
 // A host switched off in the theme_sync_off deny-list is left entirely alone —
 // its herdr config and its agents' theme files stay whatever that machine set
 // them to (see agentsync.go).
-func syncRemoteTheme(rb *remoteBackend, name string) {
-	if rb == nil || name == "" {
-		return
+func syncRemoteTheme(t themeTarget, name string) error {
+	if t == nil || name == "" {
+		return nil
 	}
-	if !themeSyncEnabledFor(rb.alias) {
-		log.Printf("host:     theme sync to %s off (disabled for this host)", rb.alias)
-		return
+	host := t.Name()
+	if !themeSyncEnabledFor(host) {
+		log.Printf("host:     theme sync to %s off (disabled for this host)", host)
+		return nil
 	}
+	var errs []error
 	// The path comes from the remote's environment, never from the socket's
 	// directory: herdr picks its socket independently of its config dir, and on
 	// every agent-workspace box (socket in /dev/shm/herdr/) the socket-adjacent
 	// guess wrote a config.toml nothing reads — the sync logged success while the
 	// remote TUI kept its old palette.
-	cfg := rb.herdrConfigPath()
-	if cfg == "" {
-		log.Printf("host:     theme sync to %s skipped: herdr config path unknown", rb.alias)
-		return
+	switch cfg := t.herdrConfigPath(); {
+	case cfg == "":
+		log.Printf("host:     herdr theme name on %s skipped: config path unknown", host)
+		errs = append(errs, errors.New("herdr config path unknown"))
+	default:
+		if err := writeHerdrThemeNameVia(t, cfg, name); err != nil {
+			log.Printf("host:     herdr theme name on %s failed: %v", host, err)
+			errs = append(errs, err)
+		}
 	}
-	if err := writeHerdrThemeNameVia(rb, cfg, name); err != nil {
-		log.Printf("host:     theme sync to %s failed: %v", rb.alias, err)
-		return
+	// Mirror the theme into the host's agent CLIs too (opencode, Claude Code,
+	// omp, ghostty). Resolved by name only — the remote's own [theme.custom]
+	// tokens stay herdr's business.
+	if err := syncAgentThemesVia(t, resolveThemeByName(name)); err != nil {
+		errs = append(errs, err)
 	}
-	if _, err := rb.HerdrCall("server.reload_config", map[string]any{}); err != nil {
-		log.Printf("host:     theme reload on %s failed: %v", rb.alias, err)
-		return
+	// Only a host with a herdr this lasso can speak to has a socket to ask.
+	if t.HerdrSock() != "" {
+		if _, err := t.HerdrCall("server.reload_config", map[string]any{}); err != nil {
+			log.Printf("host:     theme reload on %s failed: %v", host, err)
+		}
 	}
-	log.Printf("host:     synced theme %q -> %s", name, rb.alias)
-	// Mirror the theme into the remote host's agent CLIs too (opencode, Claude
-	// Code, omp). Resolved by name only — the remote's own [theme.custom] tokens
-	// stay herdr's business.
-	syncAgentThemesVia(rb, resolveThemeByName(name))
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	log.Printf("host:     synced theme %q -> %s", name, host)
+	return nil
 }
 
 // writeHostResult reports the now-active host plus its herdr version/protocol.

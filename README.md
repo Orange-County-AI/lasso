@@ -112,8 +112,19 @@ one lasso is currently driving — since panes from other machines are on screen
 the whole time through herdr-mirror. Each host gets `[theme].name` in the
 config.toml its own herdr reads (resolved from that host's environment, not
 guessed from the socket's directory) and the agent CLIs' own theme files (Claude
-Code, OpenCode, Oh My Pi, ghostty), so agents render in step with herdr. Settings
-→ Herdr theme switches that off: "Sync agent themes" for the agent CLIs
+Code, OpenCode, Oh My Pi, ghostty), so agents render in step with herdr.
+
+**Reachable over ssh is the only requirement.** A theme write is file I/O, so a
+host running a herdr this lasso can't drive — one a release behind, or stopped —
+is written over a files-only ssh connection instead of being skipped, and only
+the "reload your config" nudge to its herdr is lost (that host repaints when its
+herdr restarts). A host that was **asleep or unreachable** when the theme changed
+catches up on its own: every completed host probe compares the theme lasso last
+wrote there against the live one and pushes if they differ, so a laptop converges
+within a refresh cycle of coming back rather than staying behind until the next
+theme change.
+
+Settings → Herdr theme switches that off: "Sync agent themes" for the agent CLIs
 everywhere, or "Sync theme to hosts" per host, which leaves an unchecked
 machine's herdr config and agent themes entirely alone (re-checking it pushes the
 current theme straight back).

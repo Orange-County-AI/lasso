@@ -6,8 +6,20 @@
 // ~/.omp/agent/themes/herdr.json (pinned in both of its mode slots, and the one
 // mirror a running agent picks up live), and lasso's settings.json
 // (.theme.resolved, read by claude-contextline) — so agents render in step with
-// herdr. Writes go through the Backend interface, so the active remote host gets
+// herdr. Writes go through the Backend interface, so every reachable host gets
 // the same treatment over SFTP (see syncRemoteTheme).
+//
+// Reach and convergence are the two things this file gets right on purpose:
+//
+//   - Reach: a theme write needs ssh, not a herdr this lasso can drive. A host
+//     running a mismatched protocol (or no herdr at all) is written over a
+//     files-only connection (newRemoteFileBackend); only the reload nudge is
+//     skipped. Gating file writes on protocol compatibility is what left two
+//     Macs a month behind the fleet's palette.
+//   - Convergence: every completed host probe (convergeThemeOnProbe, called from
+//     putHost) compares the theme lasso last wrote to a host against the live
+//     one, so a machine asleep or unreachable during a theme change catches up
+//     on its next probe instead of waiting for the next change.
 //
 // This subsumes the old per-machine herdr-theme-sync watcher daemons: lasso is
 // the single writer of herdr's [theme].name in practice, and its hub poll
@@ -125,15 +137,31 @@ const themeFanoutConcurrency = 6
 // making the second pass nearly free once the first has finished.
 var themeFanoutMu sync.Mutex
 
-// themeFanoutHosts returns settled, usable remote hosts lasso may write to.
-// Checking the deny-list here, before namedHostBackend dials, preserves an
-// opt-out even when a host has no existing pooled connection.
+// themeSem bounds concurrent theme writes server-wide, so the fan-out and the
+// per-host convergence pushes (convergeThemeOnProbe) share one budget instead of
+// each keeping its own — a sweep that finds ten stale hosts must not open ten
+// ssh masters beside a fan-out already running.
+var themeSem = make(chan struct{}, themeFanoutConcurrency)
+
+// themeFanoutHosts returns the settled, reachable remote hosts lasso may write a
+// theme to. Reachable is the whole bar on purpose: every theme write is file I/O
+// over SFTP (ghostty's theme, Claude's, opencode's, omp's, herdr's config.toml),
+// which needs ssh and nothing else.
+//
+// It used to also demand a RUNNING, PROTOCOL-COMPATIBLE herdr, and that is how a
+// fleet silently drifted apart: a box one herdr release behind (protocol 19 vs
+// 20) was dropped from every fan-out and kept whatever palette it had when it
+// last matched — observed on a Mac stuck three weeks and a theme behind, its
+// ghostty still dark against a light herdr. Compatibility decides whether lasso
+// can DRIVE a host, not whether it may write a file on one.
+//
+// Checking the deny-list here, before themeBackend dials, preserves an opt-out
+// even when a host has no existing pooled connection.
 func themeFanoutHosts(rows []HostInfo) []string {
 	hosts := make([]string, 0, len(rows))
 	for _, hi := range rows {
 		if hi.Alias == "" || isLocalHost(hi.Alias) || hi.State != "" ||
-			!hi.Reachable || !hi.Running || !hi.Compatible ||
-			!themeSyncEnabledFor(hi.Alias) {
+			!hi.Reachable || !themeSyncEnabledFor(hi.Alias) {
 			continue
 		}
 		hosts = append(hosts, hi.Alias)
@@ -141,43 +169,83 @@ func themeFanoutHosts(rows []HostInfo) []string {
 	return hosts
 }
 
-// syncThemeToHost pushes rt to one host. It is best-effort: a remote lasso
-// cannot reach logs its failure and leaves the next theme convergence to retry.
+// themeTarget is what writing a theme to a host needs: file I/O, the path herdr
+// on that host reads its config from, and — when HerdrSock is non-empty — a live
+// herdr to ask for a reload.
+type themeTarget interface {
+	Backend
+	herdrConfigPath() string
+}
+
+// themeBackend returns a connection to host for theme writes plus the release to
+// call when they're done. A host lasso can drive answers from the pool: its
+// master is already up, stays up, and carries a herdr that can be asked to
+// reload. A host lasso cannot drive — herdr stopped, or speaking a protocol this
+// build refuses — gets a throwaway files-only connection instead of being
+// skipped, and the caller closes it.
+func themeBackend(host string) (themeTarget, func(), error) {
+	if hi, ok := findHost(host); ok && hi.Reachable && hi.Running && hi.Compatible {
+		b, err := namedHostBackend(host)
+		if err == nil {
+			if t, ok := b.(themeTarget); ok {
+				return t, func() {}, nil
+			}
+		} else {
+			log.Printf("theme:    %s: no pooled connection (%v) — writing theme files over a fresh ssh connection", host, err)
+		}
+	}
+	rb, err := newRemoteFileBackend(srvCtx, host)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rb, func() { _ = rb.Close() }, nil
+}
+
+// syncThemeToHost pushes rt to one host and records the result (themeSynced), so
+// a host that failed or was skipped is retried by the next convergence pass. It
+// is best-effort: a host lasso cannot reach logs and is left for that retry.
 func syncThemeToHost(host string, rt resolvedTheme) {
 	if !themeSyncEnabledFor(host) {
 		return
 	}
 	if isLocalHost(host) {
-		syncAgentThemesVia(localFsBackend(), rt)
+		if err := syncAgentThemesVia(localFsBackend(), rt); err != nil {
+			forgetThemeSynced(host)
+			return
+		}
+		markThemeSynced(host, rt.Resolved)
 		return
 	}
-	b, err := namedHostBackend(host)
+	t, release, err := themeBackend(host)
 	if err != nil {
+		forgetThemeSynced(host)
 		log.Printf("theme:    %s not reachable to sync theme: %v", host, err)
 		return
 	}
-	if rb, ok := b.(*remoteBackend); ok {
-		syncRemoteTheme(rb, rt.Resolved)
+	defer release()
+	if err := syncRemoteTheme(t, rt.Resolved); err != nil {
+		forgetThemeSynced(host)
+		return
 	}
+	markThemeSynced(host, rt.Resolved)
 }
 
-// syncThemeEverywhere mirrors rt locally and across each settled usable host.
+// syncThemeEverywhere mirrors rt locally and across each settled reachable host.
 // Callers run it off their request/poll paths because remote SFTP writes can
-// wait on ssh; the concurrency cap avoids a fleet-wide connection burst.
+// wait on ssh; themeSem caps the fleet-wide connection burst.
 func syncThemeEverywhere(rt resolvedTheme) {
 	themeFanoutMu.Lock()
 	defer themeFanoutMu.Unlock()
 
 	rows, _ := hostSnapshot()
 	hosts := append([]string{"local"}, themeFanoutHosts(rows)...)
-	sem := make(chan struct{}, themeFanoutConcurrency)
 	var wg sync.WaitGroup
 	for _, host := range hosts {
 		wg.Add(1)
 		go func(host string) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			themeSem <- struct{}{}
+			defer func() { <-themeSem }()
 			syncThemeToHost(host, rt)
 		}(host)
 	}
@@ -189,37 +257,145 @@ func syncThemeEverywhere(rt resolvedTheme) {
 // theme or host switch. Best-effort and meant to run off the request path: a
 // host lasso can't reach right now just logs and converges later.
 func convergeThemeSyncFor(host string) {
-	syncThemeToHost(host, loadHerdrTheme(""))
+	forgetThemeSynced(host) // it was denied, so whatever we last wrote is moot
+	syncThemeToHost(host, liveTheme())
 }
 
-// syncAgentThemesVia mirrors rt into the agent theme files on backend b.
-// Best-effort like syncRemoteTheme: every failure is logged, never propagated —
-// a theme switch must not fail because an agent's config dir is missing.
-func syncAgentThemesVia(b Backend, rt resolvedTheme) {
-	if b == nil || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
+// liveTheme is the theme lasso is painting right now: the hub's, which follows
+// herdr's config.toml live (or the one -theme pinned), and a fresh read of that
+// config before the hub exists.
+func liveTheme() resolvedTheme {
+	if srvHub != nil {
+		return srvHub.themeSnapshot()
+	}
+	return loadHerdrTheme(*themeName)
+}
+
+// themeSynced records the theme name lasso last WROTE to each host, plus which
+// hosts have a convergence push in flight. It is the whole mechanism behind
+// catching a host up: a machine asleep when the user picked a palette used to
+// keep the old one until the next theme change or host switch, because nothing
+// ever revisited it — the way a laptop ended up three weeks behind the fleet.
+// Now every completed host probe (convergeThemeOnProbe) compares this record
+// against the live theme, so a machine converges within a refresh cycle of
+// coming back and a host already in step costs nothing.
+//
+// Deliberately in memory, not the settings table: it records what THIS process
+// wrote and can vouch for, so a restarted lasso reconciles the fleet once
+// rather than trusting a note on disk about files it never saw.
+var themeSynced struct {
+	mu       sync.Mutex
+	by       map[string]string // host -> theme name last written successfully
+	inFlight map[string]bool   // hosts with a convergence push running
+}
+
+func markThemeSynced(host, name string) {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	if themeSynced.by == nil {
+		themeSynced.by = map[string]string{}
+	}
+	themeSynced.by[host] = name
+}
+
+// forgetThemeSynced drops a host's record so the next probe retries it.
+func forgetThemeSynced(host string) {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	delete(themeSynced.by, host)
+}
+
+// claimThemeConverge reports whether this caller should push name to host: true
+// only when the last write there wasn't already name and no push is in flight.
+// The in-flight half matters because probes arrive in bursts (a sweep, then the
+// footer's refresh) and a push takes seconds — without it one stale host would
+// be written by several goroutines at once.
+func claimThemeConverge(host, name string) bool {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	if themeSynced.inFlight[host] || themeSynced.by[host] == name {
+		return false
+	}
+	if themeSynced.inFlight == nil {
+		themeSynced.inFlight = map[string]bool{}
+	}
+	themeSynced.inFlight[host] = true
+	return true
+}
+
+func releaseThemeConverge(host string) {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	delete(themeSynced.inFlight, host)
+}
+
+// syncThemeToHostFn is the seam convergence pushes go through, so the probe path
+// can be driven in tests without ssh (mirroring hosts.go's probeHostFn).
+var syncThemeToHostFn = syncThemeToHost
+
+// convergeThemeOnProbe pushes the live theme onto a host whose probe just landed
+// and whose theme lasso has not already written there. Called from putHost, so
+// the background refresher's sweep IS the reconcile loop: a host that was
+// asleep, unreachable, or failed mid-write during a theme change catches up on
+// its next probe rather than waiting for the next theme change.
+//
+// Runs in a goroutine and holds a themeSem slot for the duration, so a sweep
+// that finds the whole fleet stale (a fresh lasso, whose record is empty by
+// design) converges it in waves instead of one ssh burst.
+func convergeThemeOnProbe(hi HostInfo) {
+	if srvHub == nil || db == nil { // not a running server: boot, CLI, tests
 		return
+	}
+	if hi.Alias == "" || isLocalHost(hi.Alias) || hi.State != "" || !hi.Reachable {
+		return
+	}
+	if !syncAgentThemesEnabled() || !themeSyncEnabledFor(hi.Alias) {
+		return
+	}
+	rt := liveTheme()
+	if rt.Resolved == "" || !claimThemeConverge(hi.Alias, rt.Resolved) {
+		return
+	}
+	go func() {
+		defer releaseThemeConverge(hi.Alias)
+		themeSem <- struct{}{}
+		defer func() { <-themeSem }()
+		syncThemeToHostFn(hi.Alias, rt)
+	}()
+}
+
+// syncAgentThemesVia mirrors rt into the agent theme files on backend b. Every
+// CLI is attempted whatever the others did — one missing config dir must not
+// cost the rest their palette — and the joined failure is returned so the caller
+// knows whether this host is actually in step (syncThemeToHost records it, and a
+// host that isn't is retried on its next probe). Callers that only want the
+// side effect can ignore it; nothing here is fatal to a theme switch.
+func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
+	if b == nil || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
+		return nil
 	}
 	home, err := b.HomeDir()
 	if err != nil || home == "" {
 		log.Printf("theme:    agent sync on %s: no home dir: %v", b.Name(), err)
-		return
+		if err == nil {
+			err = errors.New("empty home dir")
+		}
+		return err
 	}
 	light := luminance(rt.ui.PanelBg) > 0.5
-	if err := syncOpencodeTheme(b, home, rt); err != nil {
-		log.Printf("theme:    opencode sync on %s: %v", b.Name(), err)
+	var errs []error
+	step := func(cli string, err error) {
+		if err != nil {
+			log.Printf("theme:    %s sync on %s: %v", cli, b.Name(), err)
+			errs = append(errs, fmt.Errorf("%s: %w", cli, err))
+		}
 	}
-	if err := syncClaudeTheme(b, home, rt, light); err != nil {
-		log.Printf("theme:    claude sync on %s: %v", b.Name(), err)
-	}
-	if err := syncOmpTheme(b, home, rt); err != nil {
-		log.Printf("theme:    omp sync on %s: %v", b.Name(), err)
-	}
-	if err := syncGhosttyTheme(b, home, rt); err != nil {
-		log.Printf("theme:    ghostty sync on %s: %v", b.Name(), err)
-	}
-	if err := syncLassoResolved(b, home, light); err != nil {
-		log.Printf("theme:    lasso appearance sync on %s: %v", b.Name(), err)
-	}
+	step("opencode", syncOpencodeTheme(b, home, rt))
+	step("claude", syncClaudeTheme(b, home, rt, light))
+	step("omp", syncOmpTheme(b, home, rt))
+	step("ghostty", syncGhosttyTheme(b, home, rt))
+	step("lasso appearance", syncLassoResolved(b, home, light))
+	return errors.Join(errs...)
 }
 
 // resolveThemeByName resolves a canonical theme key (no custom overrides — used

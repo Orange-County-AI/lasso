@@ -426,14 +426,17 @@ func anyHostSettled() bool {
 }
 
 // putHost publishes one host's row, making it visible to every subsequent read
-// immediately — this is what "hosts appear as they resolve" comes down to.
+// immediately — this is what "hosts appear as they resolve" comes down to — and
+// hands the fresh row to the theme converger, which is how a machine that missed
+// a theme change catches up (see convergeThemeOnProbe).
 func putHost(hi HostInfo) {
 	hostStore.mu.Lock()
-	defer hostStore.mu.Unlock()
 	if hostStore.entries == nil {
 		hostStore.entries = map[string]HostInfo{}
 	}
 	hostStore.entries[hi.Alias] = hi
+	hostStore.mu.Unlock()
+	convergeThemeOnProbe(hi)
 }
 
 // beginSweep claims the right to run a sweep. It returns the channel that
