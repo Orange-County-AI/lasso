@@ -797,8 +797,13 @@ func TestSyncThemeEverywhereWritesLocal(t *testing.T) {
 	}
 }
 
-// A deny-listed host is excluded before the fan-out reaches namedHostBackend,
-// which is what prevents an opted-out alias from being dialed merely to sync it.
+// A deny-listed host is excluded before the fan-out reaches themeBackend, which
+// is what prevents an opted-out alias from being dialed merely to sync it. Every
+// other reachable, settled host is in — including one running a herdr this build
+// refuses to speak to ("old") and one running no herdr at all ("stopped"):
+// writing a theme file is SFTP, and gating it on protocol agreement is how two
+// Macs sat a month behind the fleet's palette. Unreachable ("down") and
+// still-probing ("probeing") rows are no verdict, so they wait for one.
 func TestThemeFanoutHostsHonorsDenyList(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	if err := openDB(); err != nil {
@@ -815,9 +820,10 @@ func TestThemeFanoutHostsHonorsDenyList(t *testing.T) {
 		{Alias: "probeing", Reachable: true, Running: true, Compatible: true, State: hostProbing},
 		{Alias: "down", Running: true, Compatible: true},
 		{Alias: "old", Reachable: true, Running: true},
+		{Alias: "stopped", Reachable: true},
 		{Alias: "local", Reachable: true, Running: true, Compatible: true},
 	}
-	if want := []string{"ticket500"}; !slices.Equal(themeFanoutHosts(rows), want) {
+	if want := []string{"ticket500", "old", "stopped"}; !slices.Equal(themeFanoutHosts(rows), want) {
 		t.Errorf("themeFanoutHosts() = %v, want %v", themeFanoutHosts(rows), want)
 	}
 }

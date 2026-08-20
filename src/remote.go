@@ -161,17 +161,48 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 	if remoteSock == "" {
 		return nil, fmt.Errorf("no remote herdr socket for %s", alias)
 	}
+	return dialRemote(parent, alias, remoteSock, wantProtocol)
+}
+
+// newRemoteFileBackend opens a FILES-ONLY connection to alias: the same control
+// master, SFTP and remote-command plumbing as newRemoteBackend, but no forwarded
+// herdr socket and no protocol check. HerdrCall on it fails by construction, so
+// a caller must treat talking to that host's herdr as optional.
+//
+// It exists for work that is pure file I/O on a host lasso cannot DRIVE: today
+// the theme sync, which has to keep a machine's ghostty/Claude/opencode/omp
+// theme files in step with herdr even when that machine runs a herdr whose
+// protocol this build refuses to speak (see agentsync.go).
+//
+// It is never pooled and never becomes the active backend — the caller Closes
+// it — and its control socket carries a "-files" suffix so it cannot collide
+// with the one pooled master per host that hostBackend owns.
+func newRemoteFileBackend(parent context.Context, alias string) (*remoteBackend, error) {
+	return dialRemote(parent, alias, "", 0)
+}
+
+// dialRemote is the body both constructors share. An empty remoteSock means
+// files-only: no -L forward, no readiness ping, no version/protocol.
+func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol int) (*remoteBackend, error) {
+	filesOnly := remoteSock == ""
 	tag := sanitizeAlias(alias)
+	if filesOnly {
+		tag += "-files"
+	}
 	b := &remoteBackend{
 		alias:      alias,
 		remoteSock: remoteSock,
 		ctlPath:    filepath.Join(os.TempDir(), fmt.Sprintf("lasso-ctl-%d-%s.sock", os.Getpid(), tag)),
-		localSock:  filepath.Join(os.TempDir(), fmt.Sprintf("lasso-herdr-%d-%s.sock", os.Getpid(), tag)),
 		done:       make(chan struct{}),
+	}
+	if !filesOnly {
+		b.localSock = filepath.Join(os.TempDir(), fmt.Sprintf("lasso-herdr-%d-%s.sock", os.Getpid(), tag))
 	}
 	// Clear stale sockets a crashed prior run may have left so ssh can bind.
 	_ = os.Remove(b.ctlPath)
-	_ = os.Remove(b.localSock)
+	if b.localSock != "" {
+		_ = os.Remove(b.localSock)
+	}
 
 	// Open the control master and the forwarded herdr socket. -fNT backgrounds
 	// the master after authentication, so this returns once the forward is up.
@@ -201,9 +232,11 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=4",
 		"-fNT",
-		"-L", b.localSock + ":" + b.remoteSock,
-		alias,
 	}
+	if !filesOnly {
+		args = append(args, "-L", b.localSock+":"+b.remoteSock)
+	}
+	args = append(args, alias)
 	out, err := sshCmd(mctx, args...).CombinedOutput()
 	if err != nil {
 		b.killMaster()
@@ -216,12 +249,14 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 
 	// Wait for the forwarded socket to accept connections and answer ping with a
 	// matching protocol (doubles as the compatibility re-check).
-	ver, proto, perr := b.waitForSocket(parent, wantProtocol)
-	if perr != nil {
-		b.killMaster()
-		return nil, perr
+	if !filesOnly {
+		ver, proto, perr := b.waitForSocket(parent, wantProtocol)
+		if perr != nil {
+			b.killMaster()
+			return nil, perr
+		}
+		b.version, b.protocol = ver, proto
 	}
-	b.version, b.protocol = ver, proto
 
 	// Resolve the remote $HOME (for ~-expansion) and the env that decides where
 	// herdr on that host reads config.toml, in ONE round trip on the fresh
@@ -243,7 +278,11 @@ func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProt
 		<-ctx.Done()
 		b.teardown()
 	}()
-	log.Printf("host:     connected to %s (herdr %s, protocol %d) via %s", alias, ver, proto, b.localSock)
+	if filesOnly {
+		log.Printf("host:     connected to %s for files only (no herdr socket)", alias)
+	} else {
+		log.Printf("host:     connected to %s (herdr %s, protocol %d) via %s", alias, b.version, b.protocol, b.localSock)
+	}
 	return b, nil
 }
 
@@ -274,10 +313,16 @@ func (b *remoteBackend) waitForSocket(ctx context.Context, wantProtocol int) (st
 	return "", 0, fmt.Errorf("herdr socket on %s not reachable: %v", b.alias, lastErr)
 }
 
-func (b *remoteBackend) Name() string      { return b.alias }
+func (b *remoteBackend) Name() string { return b.alias }
+
+// HerdrSock is empty on a files-only connection (newRemoteFileBackend), which is
+// how a caller tells there is no herdr on the far end to talk to.
 func (b *remoteBackend) HerdrSock() string { return b.localSock }
 
 func (b *remoteBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	if b.localSock == "" {
+		return nil, fmt.Errorf("no herdr connection to %s (files-only)", b.alias)
+	}
 	return herdrCallSock(b.localSock, method, params)
 }
 
