@@ -141,19 +141,23 @@ const (
 	// agent-attach resolves herdr without assuming ~/.local/bin is on the
 	// remote non-interactive shell's PATH, then execs the resolved binary. This
 	// exact wrapper is the only shell command we accept as attach authority.
-	herdrResolverAttachPrefix = `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach '`
-	herdrResolverAttachSuffix = `' --takeover`
+	herdrResolverAttachPrefix         = `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach '`
+	herdrResolverAttachOrdinarySuffix = `'`
+	herdrResolverAttachTakeoverSuffix = `' --takeover`
 )
 
 // herdrResolverAttachTarget recognizes agent-attach's bounded remote command.
 // It deliberately is not a shell parser: arbitrary shell text that happens to
 // mention `herdr agent attach` must never repoint Lasso at another filesystem.
 func herdrResolverAttachTarget(command string) (string, bool) {
-	target, ok := strings.CutPrefix(command, herdrResolverAttachPrefix)
+	rest, ok := strings.CutPrefix(command, herdrResolverAttachPrefix)
 	if !ok {
 		return "", false
 	}
-	target, ok = strings.CutSuffix(target, herdrResolverAttachSuffix)
+	target, ok := strings.CutSuffix(rest, herdrResolverAttachTakeoverSuffix)
+	if !ok {
+		target, ok = strings.CutSuffix(rest, herdrResolverAttachOrdinarySuffix)
+	}
 	if !ok || !safeResolverAttachTarget(target) {
 		return "", false
 	}

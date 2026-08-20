@@ -59,6 +59,11 @@ func TestHerdrAttachTarget(t *testing.T) {
 		// The remote command arrives as one string when it was quoted.
 		{cmd: []string{"herdr agent attach norm"}, target: "norm", ok: true},
 		{
+			cmd:    []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub'`},
+			target: "stub",
+			ok:     true,
+		},
+		{
 			cmd:    []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`},
 			target: "stub",
 			ok:     true,
@@ -77,6 +82,9 @@ func TestHerdrAttachTarget(t *testing.T) {
 		// wrapper and a safe literal target are accepted.
 		{cmd: []string{`echo ready; H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`}},
 		{cmd: []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub;touch' --takeover`}},
+		{cmd: []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --read-only`}},
+		{cmd: []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover --read-only`}},
+		{cmd: []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' `}},
 	}
 	for _, c := range cases {
 		target, ok := herdrAttachTarget(c.cmd)
@@ -176,7 +184,7 @@ func TestPaneSSHHop(t *testing.T) {
 // attach authority.
 func TestPaneSSHHopAgentAttachResolverCommand(t *testing.T) {
 	swapBackend(t, &paneHostNamedBackend{name: "ticket500"})
-	remoteCommand := `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`
+	remoteCommand := `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub'`
 	attach := paneProcessInfo{
 		ForegroundProcessGroupID: 10,
 		ForegroundProcesses: []paneProcess{
