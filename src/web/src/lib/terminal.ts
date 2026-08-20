@@ -48,6 +48,19 @@ interface XTerm {
   __herdrResizeGate?: boolean
 }
 export type TerminalInputMode = "herdr" | "shell"
+// The herdr terminal may display a pane attached to another host even though
+// ttyd itself runs on the active host. ActiveState.cwd_host is Lasso's
+// structured answer for that focused pane's filesystem; the plain shell still
+// belongs to the active backend.
+export function terminalPasteHost(
+  inputMode: TerminalInputMode,
+  activeHost: string | null,
+  paneFilesystemHost: string | null
+): string | undefined {
+  const host =
+    inputMode === "herdr" ? paneFilesystemHost || activeHost : activeHost
+  return host || undefined
+}
 
 interface TermWindow extends Window {
   term?: XTerm
@@ -369,7 +382,8 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
 export function wireTerminalIframe(
   id: string,
   suppressContext: boolean,
-  inputMode: TerminalInputMode
+  inputMode: TerminalInputMode,
+  pasteHost: () => string | undefined
 ) {
   let win: TermWindow | null
   let doc: WiredDoc | null
@@ -429,7 +443,7 @@ export function wireTerminalIframe(
       e.preventDefault()
       e.stopPropagation()
       try {
-        const { path } = await api.pasteImage(file)
+        const { path } = await api.pasteImage(file, pasteHost())
         const term = win?.term
         if (term && typeof term.paste === "function") term.paste(`${path} `)
       } catch {
@@ -449,14 +463,15 @@ export function wireTerminalIframe(
 export function bootTermFrame(
   id: string,
   suppressContext: boolean,
-  inputMode: TerminalInputMode
+  inputMode: TerminalInputMode,
+  pasteHost: () => string | undefined
 ) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
-    wireTerminalIframe(id, suppressContext, inputMode)
+    wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
     mountTerminalKeyBar(id)
   }
   el.addEventListener("load", onLoad)
@@ -465,7 +480,7 @@ export function bootTermFrame(
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
-  wireTerminalIframe(id, suppressContext, inputMode) // in case it already loaded
+  wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
   mountTerminalKeyBar(id) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }

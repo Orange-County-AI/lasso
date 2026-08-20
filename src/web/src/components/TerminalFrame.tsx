@@ -1,10 +1,11 @@
 import * as React from "react"
 
-import { HOST_CHANGED_EVENT } from "@/lib/app-store"
+import { HOST_CHANGED_EVENT, useApp } from "@/lib/app-store"
 import {
   bootTermFrame,
   refitTerminal,
   type TerminalInputMode,
+  terminalPasteHost,
 } from "@/lib/terminal"
 
 // A ttyd terminal iframe (the herdr terminal at /terminal/ or the out-of-herdr
@@ -25,6 +26,13 @@ export function TerminalFrame({
   inputMode: TerminalInputMode
   hidden: boolean
 }) {
+  const { host, cwdHost } = useApp()
+  // Focus can move between an ordinary local pane and a nested remote attach
+  // without remounting ttyd. Keep the upload target live behind the one paste
+  // listener installed in the iframe document.
+  const pasteHostRef = React.useRef<string | undefined>(undefined)
+  pasteHostRef.current = terminalPasteHost(inputMode, host, cwdHost)
+
   // Bump on a host switch to remount the iframe onto the new host's ttyd
   // session. We remount (fresh element via React key) rather than reloading the
   // existing frame's document: reloading runs ttyd's beforeunload handler, which
@@ -42,7 +50,8 @@ export function TerminalFrame({
   // fresh iframe element, so bootTermFrame must re-run to wire the new one.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey re-runs boot on iframe remount
   React.useEffect(
-    () => bootTermFrame(id, suppressContext, inputMode),
+    () =>
+      bootTermFrame(id, suppressContext, inputMode, () => pasteHostRef.current),
     [id, suppressContext, inputMode, reloadKey]
   )
 
