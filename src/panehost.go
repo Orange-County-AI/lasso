@@ -137,6 +137,46 @@ var herdrValueFlags = map[string]bool{
 	"-s":                   true,
 }
 
+const (
+	// agent-attach resolves herdr without assuming ~/.local/bin is on the
+	// remote non-interactive shell's PATH, then execs the resolved binary. This
+	// exact wrapper is the only shell command we accept as attach authority.
+	herdrResolverAttachPrefix = `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach '`
+	herdrResolverAttachSuffix = `' --takeover`
+)
+
+// herdrResolverAttachTarget recognizes agent-attach's bounded remote command.
+// It deliberately is not a shell parser: arbitrary shell text that happens to
+// mention `herdr agent attach` must never repoint Lasso at another filesystem.
+func herdrResolverAttachTarget(command string) (string, bool) {
+	target, ok := strings.CutPrefix(command, herdrResolverAttachPrefix)
+	if !ok {
+		return "", false
+	}
+	target, ok = strings.CutSuffix(target, herdrResolverAttachSuffix)
+	if !ok || !safeResolverAttachTarget(target) {
+		return "", false
+	}
+	return target, true
+}
+
+// safeResolverAttachTarget accepts the agent names and pane/terminal ids herdr
+// emits while rejecting quoting, whitespace, controls, and shell metacharacters.
+func safeResolverAttachTarget(target string) bool {
+	if target == "" || len(target) > 256 {
+		return false
+	}
+	for _, r := range target {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.', r == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // herdrAttachTarget reads an ssh remote command as a herdr attach. It returns
 // the agent `herdr agent attach <target>` names — a name, pane id or terminal
 // id, all of which herdr accepts — and true for any attach; "" with true for a
@@ -146,8 +186,13 @@ var herdrValueFlags = map[string]bool{
 // a herdr session.
 func herdrAttachTarget(cmd []string) (string, bool) {
 	// `ssh host "herdr agent attach x"` arrives as one argument, since the
-	// remote command is a string the far shell parses.
+	// remote command is a string the far shell parses. agent-attach's resolver
+	// wrapper also arrives as one argument, but only its exact bounded shape is
+	// authoritative.
 	if len(cmd) == 1 {
+		if target, ok := herdrResolverAttachTarget(cmd[0]); ok {
+			return target, true
+		}
 		cmd = strings.Fields(cmd[0])
 	}
 	if len(cmd) == 0 || filepath.Base(cmd[0]) != "herdr" {

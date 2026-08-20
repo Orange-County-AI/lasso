@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+type paneHostNamedBackend struct {
+	Backend
+	name string
+}
+
+func (b *paneHostNamedBackend) Name() string { return b.name }
+
 func TestSSHDest(t *testing.T) {
 	cases := []struct {
 		argv []string
@@ -51,6 +58,11 @@ func TestHerdrAttachTarget(t *testing.T) {
 		{cmd: []string{"/home/u/.local/bin/herdr", "agent", "attach", "w5:p1"}, target: "w5:p1", ok: true},
 		// The remote command arrives as one string when it was quoted.
 		{cmd: []string{"herdr agent attach norm"}, target: "norm", ok: true},
+		{
+			cmd:    []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`},
+			target: "stub",
+			ok:     true,
+		},
 		// Session-level attaches follow the far side's focused pane.
 		{cmd: []string{"herdr"}, ok: true},
 		{cmd: []string{"herdr", "--session", "fleet"}, ok: true},
@@ -61,6 +73,10 @@ func TestHerdrAttachTarget(t *testing.T) {
 		{cmd: nil},
 		{cmd: []string{"tail", "-f", "/var/log/syslog"}},
 		{cmd: []string{"bash", "-lc", "herdr agent attach norm"}},
+		// Shell text is not attach authority: only agent-attach's exact resolver
+		// wrapper and a safe literal target are accepted.
+		{cmd: []string{`echo ready; H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`}},
+		{cmd: []string{`H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub;touch' --takeover`}},
 	}
 	for _, c := range cases {
 		target, ok := herdrAttachTarget(c.cmd)
@@ -151,6 +167,27 @@ func TestPaneSSHHop(t *testing.T) {
 	}
 	if hop, ok := paneSSHHop(unknown); ok {
 		t.Errorf("paneSSHHop(unknown host) = (%+v, true), want no hop", hop)
+	}
+}
+
+// The production dashboard helper resolves herdr on the remote host before
+// execing it. SSH preserves that resolver as one remote-command argv element;
+// recognizing only this bounded shape keeps arbitrary shell text from becoming
+// attach authority.
+func TestPaneSSHHopAgentAttachResolverCommand(t *testing.T) {
+	swapBackend(t, &paneHostNamedBackend{name: "ticket500"})
+	remoteCommand := `H=$(command -v herdr 2>/dev/null || printf %s "$HOME/.local/bin/herdr"); exec "$H" agent attach 'stub' --takeover`
+	attach := paneProcessInfo{
+		ForegroundProcessGroupID: 10,
+		ForegroundProcesses: []paneProcess{
+			{PID: 10, Name: "bash", Cwd: "/home/stephan", Argv: []string{"bash", "/home/stephan/.local/bin/agent-attach", "ticket500", "stub"}},
+			{PID: 11, Name: "ssh", Cwd: "/home/stephan", Argv: []string{"ssh", "-t", "-o", "ConnectTimeout=10", "ticket500", remoteCommand}},
+		},
+	}
+
+	hop, ok := paneSSHHop(attach)
+	if !ok || hop.host != "ticket500" || hop.agent != "stub" {
+		t.Fatalf("paneSSHHop(production resolver attach) = (%+v, %v), want host ticket500 agent stub", hop, ok)
 	}
 }
 
