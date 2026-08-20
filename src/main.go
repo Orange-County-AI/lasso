@@ -1346,7 +1346,26 @@ func outsideHerdrEnv() []string {
 // actually being set true when rows are dropped (it was hardcoded false before,
 // and lasso doesn't read it). No method lasso calls changed shape, so adopting
 // it is value-only, the same as prior bumps.
-const lassoHerdrProtocol = 19
+// Bumped 19→20 for herdr 0.8.2 (protocol 20 first ships in the v0.8.2 tag; there
+// is no v0.8.1). Same shape of change as 17→18/18→19: the bump commit is
+// "fix: forward pane terminal bells" (#2498, 6f311498), which adds a
+// ServerMessage::TerminalBell{count} variant to the *TUI client↔server* bincode
+// envelope — a surface lasso does not speak — and herdr's own changelog names
+// exactly that reason ("Bumped the client/server protocol version to 20 for pane
+// terminal bell forwarding"). On the JSON socket API lasso does speak, v0.8.0 →
+// v0.8.2 is purely additive: 143 lines added and 3 changed in
+// docs/next/api/herdr-api.schema.json, and all three changed lines are additions
+// (the schema's own `protocol` number, `bgra` joining the image-format enum, and
+// `pane_visible` joining pane_graphics_info's required set — a kitty-graphics
+// event lasso doesn't consume).
+//
+// Verified against a RELEASE-provisioned 0.8.2 (a workspace box, not this
+// machine's locally patched build): ping pongs protocol 20 with
+// capabilities.live_handoff + detached_server_daemon, and every method lasso
+// calls answers in its existing shape — pane.list, pane.get, pane.read
+// {pane_id,source}, workspace.list, tab.list, agent.list, and events.subscribe
+// with lasso's own 13-subscription payload (-> subscription_started).
+const lassoHerdrProtocol = 20
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
 // build targets, the protocol the installed herdr daemon reports over its socket,
