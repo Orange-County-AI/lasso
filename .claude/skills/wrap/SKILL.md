@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: "Wrap up a finished feature in a lasso worktree: merge the current branch to local main, cut a release (bump version + push tag), run `lasso update` once the release publishes, then close the calling agent with `lasso closeme`. Use when the user says \"wrap\", \"/wrap\", \"wrap it up\", \"ship it\", or asks to finalize/land/release a completed feature from inside a lasso agent."
+description: "Wrap up a finished feature in a lasso worktree: merge the current branch to local main, cut a release (bump version + push tag), run `lasso update` once the release publishes, then close this agent's own herdr pane. Use when the user says \"wrap\", \"/wrap\", \"wrap it up\", \"ship it\", or asks to finalize/land/release a completed feature from inside a lasso agent."
 ---
 
 # wrap — land a finished feature, release, update, and close out
@@ -10,7 +10,7 @@ holds a *completed* feature. It takes that branch all the way to a published
 release and then closes the agent. The final step kills this agent's terminal, so
 everything else must succeed first.
 
-End-to-end: **merge → bump → push → tag → wait for release → `lasso update` → `lasso closeme`.**
+End-to-end: **merge → bump → push → tag → wait for release → `lasso update` → close own herdr pane.**
 
 This repo has **no auto-push git hook** — merging to local `main` does *not* reach
 GitHub on its own, and the GitHub Release is what `lasso update` pulls from. So we
@@ -123,7 +123,7 @@ mise use -g "ubi:52labs/lasso@$VER"
 **`lasso update` only auto-restarts a *pidfile-managed* daemon.** When lasso is
 run under a supervisor (prod is a systemd `--user` unit), the built-in restart
 no-ops and the running daemon keeps serving the **old** binary — `/api/version`
-then stays stale and a later `closeme` would land on a half-applied update. So
+then stays stale and closing out would land on a half-applied update. So
 restart explicitly via whatever owns the process:
 
 ```bash
@@ -142,29 +142,31 @@ override via `$LASSO_LISTEN`:
 curl -s "http://${LASSO_LISTEN:-127.0.0.1:8090}/api/version"
 ```
 
-Confirm it reports `v$VER`. If it still doesn't, do **not** proceed to `closeme` —
+Confirm it reports `v$VER`. If it still doesn't, do **not** close the pane —
 stop and report. (Manual recovery: `mise upgrade lasso` then restart via the
 supervisor above, and re-check `/api/version`.)
 
 ## 7. Close this agent — do this LAST
 
-This terminates the agent's herdr pane, so nothing after it runs. Only reach here
-once steps 1–6 succeeded.
+Close **this agent's own herdr pane**. That terminates the terminal this agent is
+running in, so nothing after it runs. Only reach here once steps 1–6 succeeded.
 
 ```bash
-lasso closeme    # reads $HERDR_PANE_ID, soft-closes this agent
+herdr pane close "$HERDR_PANE_ID"   # confirm with `herdr pane current` if unset
 ```
+
+Never close a pane that isn't this agent's.
 
 ## Summary to print before closing
 
-Right before `lasso closeme`, tell the user what happened: merged `<feature>` →
+Right before closing the pane, tell the user what happened: merged `<feature>` →
 `main`, released `v<VER>`, ran `lasso update` (now serving `v<VER>`), and closing
-the agent. After `closeme` the connection drops — that's success, not an error.
+the agent. After the pane closes the connection drops — that's success, not an error.
 
 ## Notes / gotchas
 
 - Each step is checked: if a command fails, **stop and report** rather than barrelling
-  to `closeme`. A half-finished wrap that still closed the agent is the worst outcome.
+  to the close. A half-finished wrap that still closed the agent is the worst outcome.
 - The agent's terminal is a herdr pane; herdr is a separate daemon from lasso, so
   the pane survives the `lasso update` daemon restart and updating mid-wrap is safe.
 - **wrap never touches the herdr binary.** `lasso update` only swaps the lasso
