@@ -84,6 +84,15 @@ func promptTitle(s string) string {
 	return ""
 }
 
+// untitledAgent names an agent created with neither a prompt nor a title. The
+// prompt is optional — spawning an agent that just sits at its CLI waiting for
+// you is a legitimate create — but the title is not: it is the workspace label,
+// the branch name and the work dir's slug. So a promptless create gets this
+// placeholder instead of a 400, and uniqueBranch/uniqueChildDir keep successive
+// ones apart (untitled-agent, untitled-agent-2, …). It is deliberately NOT
+// handed to the agent as an instruction — see agentPrompt.
+const untitledAgent = "Untitled agent"
+
 // uniqueChildDir returns an absolute path under parent based on slug, suffixing
 // -2, -3, … if the name is already taken on the active host.
 func uniqueChildDir(parent, slug string) string {
@@ -317,10 +326,15 @@ type createAgentReq struct {
 	// name a host explicitly, so creation targets that host's backend directly
 	// rather than requiring an active-host switch first. That prevents a request
 	// from riding an unrelated, possibly unavailable active backend.
-	Host         string `json:"host"`
-	Type         string `json:"type"`   // "git" | "scratch"
-	Prompt       string `json:"prompt"` // the agent's instruction; its first line is the title
-	Title        string `json:"title"`  // optional explicit title override; defaults to the prompt's first line
+	Host string `json:"host"`
+	Type string `json:"type"` // "git" | "scratch"
+	// Prompt is the agent's initial instruction, and its first line is the
+	// title. Optional: an agent created with no prompt boots its CLI idle,
+	// waiting for whoever opens the pane (or a send_agent).
+	Prompt string `json:"prompt"`
+	// Title is an optional explicit override; it defaults to the prompt's first
+	// line, and to untitledAgent when there is no prompt to take one from.
+	Title        string `json:"title"`
 	Repo         string `json:"repo"`
 	BaseBranch   string `json:"base_branch"`
 	BranchPrefix string `json:"branch_prefix"`
@@ -429,7 +443,11 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		req.Title = promptTitle(req.Prompt)
 	}
 	if req.Title == "" {
-		return AgentRecord{}, &createErr{http.StatusBadRequest, errors.New("prompt required")}
+		// Neither a prompt nor a title: the agent still needs a name to hang its
+		// workspace label, branch and work dir on (see untitledAgent). Nothing to
+		// auto-title from either — autoTitleAgent reads the prompt body, and the
+		// guard below skips it when there is none.
+		req.Title = untitledAgent
 	}
 	if req.Agent == "" {
 		req.Agent = "claude"
@@ -970,22 +988,27 @@ func copyOnBackend(cur Backend, src, dst string) {
 
 // agentPrompt builds the prompt handed to the agent: the full prompt verbatim
 // (stored in Description; its first line is also the title), plus a pointer to
-// any notes/attachments that landed in the work dir. Falls back to the title
-// when no prompt body was stored (e.g. a title-only record).
+// any notes/attachments that landed in the work dir.
+//
+// A record with no prompt body yields no prompt at all — every harness builder
+// omits the operand for an empty prompt, so the CLI comes up idle. The title is
+// NOT substituted for a missing body: it is a display label, and for a
+// promptless create a placeholder one (untitledAgent), so typing it at the
+// agent would invent a task nobody asked for. Notes and attachments still
+// stand on their own — they were staged into the work dir, and saying so is
+// the whole instruction when the user gave no other.
 func agentPrompt(rec AgentRecord) string {
-	var b strings.Builder
-	body := rec.Description
-	if body == "" {
-		body = rec.Title
+	var parts []string
+	if rec.Description != "" {
+		parts = append(parts, rec.Description)
 	}
-	b.WriteString(body)
 	if rec.Notes != "" {
-		b.WriteString("\n\nSee NOTES.md for additional notes.")
+		parts = append(parts, "See NOTES.md for additional notes.")
 	}
 	if len(rec.Attachments) > 0 {
-		b.WriteString("\n\nAttachments: " + strings.Join(rec.Attachments, ", "))
+		parts = append(parts, "Attachments: "+strings.Join(rec.Attachments, ", "))
 	}
-	return b.String()
+	return strings.Join(parts, "\n\n")
 }
 
 // maxTypedLaunch is the largest launch command paneRun will type inline.
