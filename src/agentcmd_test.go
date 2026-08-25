@@ -5,19 +5,29 @@ import (
 	"testing"
 )
 
-// agentPrompt hands the agent the full prompt verbatim (stored in Description;
-// its first line is also the title), falling back to the title when no prompt
-// body was stored, plus pointers to any notes/attachments.
-func TestAgentPromptLeadsWithTitle(t *testing.T) {
+// agentPrompt hands the agent the full prompt verbatim (stored in Description)
+// plus pointers to any notes/attachments. A record with no prompt body yields
+// no prompt at all: the title is a display label — a placeholder one for an
+// agent created with no prompt — so substituting it would invent a task.
+func TestAgentPrompt(t *testing.T) {
 	cases := []struct {
 		name string
 		rec  AgentRecord
 		want string
 	}{
 		{
-			name: "title only (no prompt body)",
-			rec:  AgentRecord{Title: "Add dark mode"},
-			want: "Add dark mode",
+			name: "no prompt body: the title is not an instruction",
+			rec:  AgentRecord{Title: untitledAgent},
+			want: "",
+		},
+		{
+			name: "no prompt body, but notes and attachments stand alone",
+			rec: AgentRecord{
+				Title:       untitledAgent,
+				Notes:       "see thread",
+				Attachments: []string{"a.png"},
+			},
+			want: "See NOTES.md for additional notes.\n\nAttachments: a.png",
 		},
 		{
 			name: "full prompt verbatim",
@@ -28,9 +38,10 @@ func TestAgentPromptLeadsWithTitle(t *testing.T) {
 			want: "Add dark mode\ntoggle in settings",
 		},
 		{
-			name: "notes + attachments appended",
+			name: "notes + attachments appended to the prompt",
 			rec: AgentRecord{
 				Title:       "Add dark mode",
+				Description: "Add dark mode",
 				Notes:       "see thread",
 				Attachments: []string{"a.png", "b.png"},
 			},

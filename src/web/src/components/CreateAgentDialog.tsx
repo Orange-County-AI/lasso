@@ -619,11 +619,12 @@ export function CreateAgentDialog({
     },
   })
 
+  // The prompt is optional: creating with an empty one launches the agent's CLI
+  // idle in its fresh worktree/workspace, waiting for whatever you type into the
+  // pane. The server then names the agent "Untitled agent" (nothing to derive a
+  // title from) and slugs the branch/dir off that.
   const canSubmit =
-    !createMutation.isPending &&
-    !pastingImage &&
-    prompt.trim().length > 0 &&
-    (type === "scratch" || !!repo)
+    !createMutation.isPending && !pastingImage && (type === "scratch" || !!repo)
 
   const submit = () => {
     if (!canSubmit) return
@@ -732,7 +733,9 @@ export function CreateAgentDialog({
               ))}
             </div>
 
-            <Field label="Prompt" htmlFor="agent-prompt">
+            {/* Optional — an empty prompt creates the worktree/workspace and
+                launches the agent's CLI with no instruction at all. */}
+            <Field label="Prompt (optional)" htmlFor="agent-prompt">
               <div className="flex flex-col gap-2">
                 <div className="relative">
                   <textarea

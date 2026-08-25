@@ -236,3 +236,41 @@ func TestBootAgentStagesLongPromptAndCloseCleansUp(t *testing.T) {
 		t.Errorf("staged prompt file must be removed on close: %s", path)
 	}
 }
+
+// The mirror case: an agent created with no prompt must launch with no
+// instruction at all, so its CLI comes up idle waiting for whoever opens the
+// pane. The placeholder title in particular must not ride the launch line as a
+// task, and there is nothing to stage.
+func TestBootAgentLaunchesAPromptlessAgentIdle(t *testing.T) {
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	b := &promptBootFake{memBackend: newMemBackend()}
+	rec := AgentRecord{
+		ID:       "idleboot1",
+		Host:     "local",
+		Type:     "scratch",
+		Agent:    "claude",
+		Title:    untitledAgent,
+		WorkDir:  "/work",
+		RootPane: "p1",
+	}
+	bootAgent(b, "local", rec, "")
+
+	b.mu.Lock()
+	sends := append([]string(nil), b.sends...)
+	b.mu.Unlock()
+	if len(sends) == 0 {
+		t.Fatal("bootAgent never sent the launch command")
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(sends[0], "\x15"), "\n")
+	if want := agentCommand("claude", launchOpts{}); body != want {
+		t.Errorf("promptless launch line = %q, want the bare CLI line %q", body, want)
+	}
+	if _, ok := b.files[agentPromptPath(b, rec.ID)]; ok {
+		t.Error("a promptless agent must not stage a prompt file")
+	}
+}

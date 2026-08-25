@@ -83,6 +83,46 @@ func TestCreateGitAgentUsesUniqueBranchLeafForWorktreeDir(t *testing.T) {
 	}
 }
 
+// The prompt is optional: creating an agent with nothing typed at all is a
+// legitimate "give me a worktree with an agent sitting in it" — the CLI comes
+// up idle. The create still needs a NAME (workspace label, branch, work dir),
+// so it falls back to untitledAgent instead of rejecting the request, which is
+// what it used to do (400 "prompt required").
+func TestCreateAgentWithNoPromptIsUntitledRatherThanRejected(t *testing.T) {
+	lasso := t.TempDir()
+	t.Setenv("LASSO_DIR", lasso)
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(closeTestDB)
+
+	b := &createAgentBackend{memBackend: newMemBackend()}
+	prev := curBackend()
+	setBackend(b)
+	t.Cleanup(func() { setBackend(prev) })
+
+	rec, err := createAgent(b, createAgentReq{
+		Type: "git", Repo: "/repo/app", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("createAgent with no prompt: %v", err)
+	}
+	if rec.Title != untitledAgent {
+		t.Errorf("title = %q, want %q", rec.Title, untitledAgent)
+	}
+	// The placeholder title names the agent; it must not become a prompt body.
+	if rec.Description != "" {
+		t.Errorf("description = %q, want empty — no prompt was given", rec.Description)
+	}
+	if rec.Branch != "untitled-agent" {
+		t.Errorf("branch = %q, want %q", rec.Branch, "untitled-agent")
+	}
+	want := filepath.Join(lasso, "worktrees", "app", "untitled-agent")
+	if rec.WorkDir != want {
+		t.Errorf("work_dir = %q, want %q", rec.WorkDir, want)
+	}
+}
+
 // bootFake is a backend whose agent-boot RPCs are controllable: worktree/
 // workspace create return a real root pane, but the pane reads that launchAgentInPane
 // waits on block until the test releases them, and pane.send_text (the agent-launch
