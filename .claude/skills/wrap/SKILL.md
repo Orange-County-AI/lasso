@@ -148,8 +148,10 @@ supervisor above, and re-check `/api/version`.)
 
 ## 7. Close this agent — do this LAST
 
-Close **this agent's own herdr pane**. That terminates the terminal this agent is
-running in, so nothing after it runs. Only reach here once steps 1–6 succeeded.
+Close **this agent's own herdr pane**. Herdr can perform this self-close
+directly; no `close_agent` MCP call or lasso round-trip is required. This
+terminates the terminal this agent is running in, so nothing after it runs. Only
+reach here once steps 1–6 succeeded.
 
 ```bash
 herdr pane close "$HERDR_PANE_ID"   # confirm with `herdr pane current` if unset

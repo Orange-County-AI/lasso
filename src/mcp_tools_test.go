@@ -1,12 +1,51 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestMCPMetadataDoesNotRecommendTincan(t *testing.T) {
+	srv := httptest.NewServer(newMCPHandler())
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	client := mcp.NewClient(&mcp.Implementation{Name: "metadata-test", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             srv.URL,
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect to MCP server: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	init := session.InitializeResult()
+	if init == nil {
+		t.Fatal("MCP initialize returned no metadata")
+	}
+	if strings.Contains(strings.ToLower(init.Instructions), "tincan") {
+		t.Fatalf("MCP instructions still recommend tincan: %q", init.Instructions)
+	}
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list MCP tools: %v", err)
+	}
+	for _, tool := range tools.Tools {
+		if strings.Contains(strings.ToLower(tool.Description), "tincan") {
+			t.Errorf("%s description still recommends tincan: %q", tool.Name, tool.Description)
+		}
+	}
+}
 
 // targetRecords are the host's lasso-created agents.
 func targetRecords() []AgentRecord {

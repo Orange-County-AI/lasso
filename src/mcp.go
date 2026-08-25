@@ -29,23 +29,14 @@ import (
 // request the one shared server (lasso has a single global herdr/state surface,
 // so there's nothing per-connection to scope).
 // mcpInstructions is surfaced to the model once per MCP session through
-// initialize, so the tincan preference belongs here rather than repeated in
-// every tool description.
+// initialize, so shared guidance belongs here rather than repeated in every
+// tool description.
 const mcpInstructions = `Lasso orchestrates coding agents in herdr panes: spawn them, inspect them, and manage their lifecycle.
 
-Prefer tincan for agent-to-agent coordination when it is available. Check with command -v tincan; if present, use it for peer messaging instead of send_agent or message_agent.
-Use tincan agents to find peers across the local roster and reachable peer rosters.
-Use tincan send <name>@<host> "text" to message one peer, for example tincan send jessica@titan "build is green".
-Reply to the envelope's exact from address with --reply-to <id>.
-Inside a herdr pane, identity comes from $HERDR_PANE_ID; never pass --from there.
-Tincan is durable and store-and-forward, survives a busy or restarting peer, carries a reply envelope with an idempotency id, and routes across hosts over its own ssh links.
-
-When tincan is absent, or the target is a foreign herdr session tincan does not know, fall back to lasso's messaging tools.
 send_agent types into the pane immediately and can interleave with an in-flight turn, so use it to drive an agent you just spawned.
 message_agent queues in lasso and delivers when the recipient is idle, so it never interleaves.
 
-Keep using lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, get_agent, read_agent, and wait_agent.
-Tincan is a message transport, not an agent lifecycle manager; it cannot spawn, inspect, or kill agents.
+Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, get_agent, read_agent, send_agent, message_agent, and wait_agent.
 
 Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.`
 
