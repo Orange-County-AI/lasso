@@ -13,9 +13,9 @@ import (
 // (non-git agents); staged attachment uploads land in ~/.lasso/uploads.
 //
 // The store is host-local: it belongs to the machine lasso runs on, while the
-// creation itself routes through curBackend() so it targets whichever herdr host
+// creation itself routes through defaultBackend() so it targets whichever herdr host
 // is active. Selections that name a repo/branch on that host are therefore keyed
-// by the active host name (curBackend().Name()).
+// by the active host name (defaultBackend().Name()).
 
 // LassoConfig is the shape of the /api/agent-config response, assembled for a
 // given host from the database.

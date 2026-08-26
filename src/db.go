@@ -21,9 +21,9 @@ import (
 // existing config.yaml is imported once on first open (see migrateFromYAML).
 //
 // The database is host-LOCAL: it belongs to the machine lasso runs on, the same
-// way the old config.yaml did. But creation routes through curBackend() to the
+// way the old config.yaml did. But creation routes through defaultBackend() to the
 // active herdr host, so anything that names a repo/branch/path on that host is
-// keyed by the active host name (curBackend().Name(): "local" or an ssh alias).
+// keyed by the active host name (defaultBackend().Name(): "local" or an ssh alias).
 // That keeps a local repo path from being suggested while a remote host is
 // selected. Pure user settings (branch prefix, default agent, …) stay global.
 //

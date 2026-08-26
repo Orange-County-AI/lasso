@@ -18,11 +18,13 @@ func fastBackoff(t *testing.T) {
 	t.Cleanup(func() { closeBackoffBase, closeBackoffMax, closePace = ob, om, op })
 }
 
-// stubCloser swaps paneCloser for the duration of a test.
+// stubCloser swaps paneCloser for the duration of a test. The stub ignores the
+// backend: these cases are about the retry policy, not about which host it runs
+// against.
 func stubCloser(t *testing.T, fn func(id string) error) {
 	t.Helper()
 	prev := paneCloser
-	paneCloser = fn
+	paneCloser = func(_ Backend, id string) error { return fn(id) }
 	t.Cleanup(func() { paneCloser = prev })
 }
 
@@ -36,7 +38,7 @@ func TestClosePaneRetriesTransient(t *testing.T) {
 		}
 		return nil
 	})
-	if err := closePane(context.Background(), "p1"); err != nil {
+	if err := closePane(context.Background(), &localBackend{}, "p1"); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if calls != 3 {
@@ -51,7 +53,7 @@ func TestClosePaneNotFoundIsSuccess(t *testing.T) {
 		calls++
 		return &herdrError{Code: "pane_not_found", Message: "pane p1 not found"}
 	})
-	if err := closePane(context.Background(), "p1"); err != nil {
+	if err := closePane(context.Background(), &localBackend{}, "p1"); err != nil {
 		t.Fatalf("pane_not_found should be treated as closed, got %v", err)
 	}
 	if calls != 1 {
@@ -66,7 +68,7 @@ func TestClosePaneInvalidRequestFailsFast(t *testing.T) {
 		calls++
 		return &herdrError{Code: "invalid_request", Message: "missing field"}
 	})
-	if err := closePane(context.Background(), ""); err == nil {
+	if err := closePane(context.Background(), &localBackend{}, ""); err == nil {
 		t.Fatal("invalid_request should fail, not be swallowed")
 	}
 	if calls != 1 {
@@ -81,7 +83,7 @@ func TestClosePaneGivesUpAfterAttempts(t *testing.T) {
 		calls++
 		return &herdrError{Code: "internal", Message: "still busy"}
 	})
-	if err := closePane(context.Background(), "p1"); err == nil {
+	if err := closePane(context.Background(), &localBackend{}, "p1"); err == nil {
 		t.Fatal("expected failure after exhausting retries")
 	}
 	if calls != closeAttempts {
@@ -98,7 +100,7 @@ func TestClosePaneHonorsContextCancel(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := closePane(ctx, "p1"); err == nil {
+	if err := closePane(ctx, &localBackend{}, "p1"); err == nil {
 		t.Fatal("expected ctx cancellation to surface")
 	}
 	if calls != 1 {
@@ -111,6 +113,10 @@ func TestClosePaneHonorsContextCancel(t *testing.T) {
 // counts as closed, the broken one is reported.
 func TestServeCloseBulkPartial(t *testing.T) {
 	fastBackoff(t)
+	// The handler resolves a backend per request now; the stub closer ignores
+	// which, but a request with no resolvable host is a 502 before it gets there.
+	setDefaultBackend(&localBackend{})
+	t.Cleanup(func() { setDefaultBackend(nil) })
 	stubCloser(t, func(id string) error {
 		switch id {
 		case "gone":

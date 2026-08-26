@@ -48,9 +48,9 @@ func (b *fakeHomeBackend) HomeDir() (string, error) { return b.home, nil }
 // previous one on cleanup (the convention the other handler tests use).
 func swapBackend(t *testing.T, b Backend) {
 	t.Helper()
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 }
 
 // A ?host= we may not drive is refused with 502 before any filesystem read: the

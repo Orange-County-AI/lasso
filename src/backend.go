@@ -11,13 +11,13 @@ import (
 	"time"
 )
 
-// Backend is the host lasso is currently driving. The whole app talks to "a
-// host" through this interface: the local machine (localBackend, the default)
-// or a herdr daemon on another box reached over SSH (remoteBackend). Every
+// Backend is one host lasso can drive: the local machine (localBackend) or a
+// herdr daemon on another box reached over SSH (remoteBackend). Every
 // per-request handler — herdr RPC, file browsing/editing, git diff, the paste
-// scratch dir — routes through curBackend() so switching hosts is a single
-// pointer swap (see serveHostSwitch) rather than threading a host through every
-// call site.
+// scratch dir — runs against the backend its REQUEST resolves to (reqBackend,
+// reqhost.go), because "which host" is now a property of the calling browser tab
+// rather than of the process. hostBackend/namedHostBackend own the one
+// connection per host that they all share.
 type Backend interface {
 	// Name is "local" or the ssh-config host alias.
 	Name() string
@@ -63,20 +63,37 @@ type Backend interface {
 	Close() error
 }
 
-// active holds the backend every handler currently routes through. It starts as
-// localBackend (see main) and is swapped under the lock by serveHostSwitch.
+// active holds the DEFAULT backend: the host lasso booted on (local, or -host),
+// which answers for any caller that names none — a fresh browser tab before it
+// has chosen, an MCP whoami, a background job. It is immutable at runtime; a tab
+// selecting another host changes only that tab, never this. (Tests swap it via
+// setDefaultBackend to stand a fake host up as the default.)
+//
+// It used to be "the active host", swapped by POST /api/host, which is precisely
+// what made two tabs on two machines impossible: the second tab's switch moved
+// the first tab's terminal, pane list, and file viewer out from under it.
 var active struct {
 	mu sync.RWMutex
 	b  Backend
 }
 
-func curBackend() Backend {
+func defaultBackend() Backend {
 	active.mu.RLock()
 	defer active.mu.RUnlock()
 	return active.b
 }
 
-func setBackend(b Backend) {
+// defaultHostName is the default host's name, or "local" before one is
+// installed (a CLI subcommand, a test) — for callers that want a name to report
+// rather than a connection to use.
+func defaultHostName() string {
+	if b := defaultBackend(); b != nil {
+		return b.Name()
+	}
+	return "local"
+}
+
+func setDefaultBackend(b Backend) {
 	active.mu.Lock()
 	active.b = b
 	active.mu.Unlock()

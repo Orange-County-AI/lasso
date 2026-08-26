@@ -23,7 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { api, type HostInfo, type HostsPayload } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
+import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, type HostGroup, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
 import { getQueryParam, setQueryParam } from "@/lib/url"
@@ -189,7 +189,7 @@ export function HostSwitcher({
       setSwitching(true)
       const label = alias === "local" ? localLabel : alias
       try {
-        await api.switchHost(alias)
+        await moveTabToHost(alias)
         toast.success(`Switched to ${label}`)
       } catch (e) {
         toast.error(`Couldn't switch to ${label}: ${(e as Error).message}`)

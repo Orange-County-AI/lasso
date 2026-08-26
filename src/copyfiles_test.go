@@ -32,7 +32,7 @@ func newMemBackend() *memBackend {
 }
 
 // Name identifies the (single) fake host. The embedded nil Backend would panic
-// here, and host-scoped DB lookups key off curBackend().Name().
+// here, and host-scoped DB lookups key off defaultBackend().Name().
 func (b *memBackend) Name() string { return "local" }
 
 func (b *memBackend) mkdirAllAncestors(p string) {

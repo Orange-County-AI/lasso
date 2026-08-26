@@ -35,9 +35,9 @@ func decodeDiff(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 }
 
 func TestServeDiffPlainDirectoryIsNotAnError(t *testing.T) {
-	prev := curBackend()
-	setBackend(&localBackend{})
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(&localBackend{})
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	// A pane parked in /home/stephan is a normal plain-directory case.
 	rec := getDiff(t, t.TempDir())
@@ -58,9 +58,9 @@ func TestServeDiffPlainDirectoryIsNotAnError(t *testing.T) {
 }
 
 func TestServeDiffRepoReportsIsRepo(t *testing.T) {
-	prev := curBackend()
-	setBackend(&localBackend{})
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(&localBackend{})
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	dir := t.TempDir()
 	if err := exec.Command("git", "init", "-q", dir).Run(); err != nil {
@@ -77,9 +77,9 @@ func TestServeDiffRepoReportsIsRepo(t *testing.T) {
 }
 
 func TestServeDiffBackendFailureStays502(t *testing.T) {
-	prev := curBackend()
-	setBackend(gitFailBackend{&localBackend{}})
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(gitFailBackend{&localBackend{}})
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	// An unreachable host must not masquerade as a clean non-repo; that made this
 	// bug look like an SSH problem.
@@ -90,9 +90,9 @@ func TestServeDiffBackendFailureStays502(t *testing.T) {
 }
 
 func TestServeDiffMissingDirectoryIsNotAnError(t *testing.T) {
-	prev := curBackend()
-	setBackend(&localBackend{})
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(&localBackend{})
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	dir := filepath.Join(t.TempDir(), "gone")
 	rec := getDiff(t, dir)

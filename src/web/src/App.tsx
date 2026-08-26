@@ -428,7 +428,7 @@ function Shell() {
             <div className="relative flex min-h-0 flex-1 flex-col">
               <TerminalFrame
                 id="term"
-                src="/terminal/"
+                base="/terminal"
                 title="Herdr terminal"
                 suppressContext
                 inputMode="herdr"
@@ -528,7 +528,7 @@ function Shell() {
                 <Pane show={rightView === "terminal"}>
                   <TerminalFrame
                     id="shellframe"
-                    src="/shell/"
+                    base="/shell"
                     title="Terminal (outside herdr)"
                     suppressContext={false}
                     inputMode="shell"

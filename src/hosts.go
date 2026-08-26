@@ -633,7 +633,12 @@ func serveHosts(w http.ResponseWriter, r *http.Request) {
 	ver, proto := localProtocol()
 
 	var p hostsPayload
-	p.Active = curBackend().Name()
+	// "Active" is this tab's host — the switcher highlights what THIS tab is on,
+	// not a process-wide selection, which no longer exists.
+	p.Active = requestHost(r)
+	if p.Active == "" {
+		p.Active = defaultBackend().Name()
+	}
 	p.Local.Version = ver
 	p.Local.Protocol = proto
 	p.Local.Hostname = localHostname()

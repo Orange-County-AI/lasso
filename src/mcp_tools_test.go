@@ -285,9 +285,9 @@ func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
 	t.Cleanup(closeTestDB)
 
 	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	in := createAgentIn{
 		Type:   "scratch",
@@ -338,9 +338,9 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	t.Cleanup(closeTestDB)
 
 	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	in := createAgentIn{Type: "scratch", Title: "planner", Prompt: "plan it", Agent: "claude", PlanMode: true}
 	rec, err := createAgent(b, in.toCreateReq())
@@ -383,9 +383,9 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 	t.Cleanup(closeTestDB)
 
 	b := &launchFake{memBackend: newMemBackend(), cli: "omp ", launched: make(chan struct{})}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	in := createAgentIn{Type: "scratch", Title: "omp planner", Prompt: "plan it", Agent: "omp", PlanMode: true}
 	rec, err := createAgent(b, in.toCreateReq())

@@ -34,9 +34,9 @@ func TestCreateTerminalFocus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &terminalCreateBackend{memBackend: newMemBackend()}
-			prev := curBackend()
-			setBackend(b)
-			t.Cleanup(func() { setBackend(prev) })
+			prev := defaultBackend()
+			setDefaultBackend(b)
+			t.Cleanup(func() { setDefaultBackend(prev) })
 
 			req := httptest.NewRequest(http.MethodPost, "/api/create-terminal", strings.NewReader(tc.body))
 			res := httptest.NewRecorder()

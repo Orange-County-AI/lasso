@@ -120,15 +120,21 @@ func hostBackend(host string) (Backend, error) {
 	hostPool.mu.Lock()
 	hostPool.entries[host] = &hostPoolEntry{backend: rb, lastUsed: time.Now(), lastOK: time.Now()}
 	hostPool.mu.Unlock()
-	// Redialing the ACTIVE host replaces the connection the active backend and
-	// the hub's event subscription are riding (a switch adopts this very entry),
-	// so re-point both. Without this, a master that died under the active host —
-	// laptop sleep, network drop, sshd restart — left the UI polling a socket
-	// that no longer exists until the user switched away and back.
-	if curBackend().Name() == host {
-		setBackend(rb)
-		if srvHub != nil {
-			srvHub.startSub()
+	// A redial replaces the connection anything already on this host is riding.
+	// Re-point the default backend if this IS the default host, and re-point the
+	// host's feed (its poll and its herdr event subscription) if a tab is
+	// watching it. Without this, a master that died under a watched host —
+	// laptop sleep, network drop, sshd restart — left those tabs polling a
+	// socket that no longer exists until the user navigated away and back.
+	if defaultBackend().Name() == host {
+		setDefaultBackend(rb)
+	}
+	if srvHub != nil {
+		srvHub.mu.RLock()
+		f := srvHub.feeds[host]
+		srvHub.mu.RUnlock()
+		if f != nil {
+			f.repoint(rb)
 		}
 	}
 	startHostPoolReaper()
@@ -208,13 +214,17 @@ func closeBackendsOnExit() {
 	for _, e := range entries {
 		_ = e.backend.Close()
 	}
-	_ = curBackend().Close()
+	_ = defaultBackend().Close()
 }
 
 // reapHostBackends drops pool entries no one has touched for hostBackendIdle.
-// The ACTIVE host is never a candidate: its entry IS the active backend, whose
-// only "use" between switches is the hub's event stream, which reads the
-// forwarded socket directly rather than through hostBackend.
+// A host still IN USE is never a candidate — the default host, a host some tab
+// is watching, or one with a resident terminal (see hostInUse) — because their
+// "use" between requests is an event stream and a ttyd child, both of which read
+// the forwarded socket directly rather than through hostBackend and so never
+// refresh lastUsed. This used to test "is this the active host?", which had
+// exactly one answer and would now reap a second tab's connection out from
+// under it.
 func reapHostBackends() {
 	now := time.Now()
 	type deadEntry struct {
@@ -222,10 +232,9 @@ func reapHostBackends() {
 		backend *remoteBackend
 	}
 	var dead []deadEntry
-	activeHost := curBackend().Name()
 	hostPool.mu.Lock()
 	for host, e := range hostPool.entries {
-		if host != activeHost && now.Sub(e.lastUsed) > hostBackendIdle {
+		if !hostInUse(host) && now.Sub(e.lastUsed) > hostBackendIdle {
 			dead = append(dead, deadEntry{host, e.backend})
 			delete(hostPool.entries, host)
 		}
@@ -334,7 +343,7 @@ func invalidatePanesCache() {
 // transiently failed discovery probe; its live connection is better evidence
 // than a flapped probe.
 func hostAllowed(host string) bool {
-	if host == "local" || host == curBackend().Name() || hostPoolHas(host) {
+	if host == "local" || host == defaultBackend().Name() || hostPoolHas(host) {
 		return true
 	}
 	hi, ok := findHost(host)

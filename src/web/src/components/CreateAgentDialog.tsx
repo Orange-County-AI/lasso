@@ -22,7 +22,7 @@ import {
   type HarnessDef,
   type HostInfo,
 } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
+import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
@@ -556,12 +556,12 @@ export function CreateAgentDialog({
       // host, rewriting their paths in the prompt we submit, so the agent on that
       // host can actually read them. No-op when they're already there.
       const finalPrompt = await rehomePastedImages(prompt, selectedHost)
-      // Land the user on the new agent by switching the active backend to the
-      // picked host — the herdr terminal then points at it. Deferred to here
-      // (not on dropdown change) so previewing another host's repos while
-      // editing doesn't yank the terminal onto it.
+      // Land the user on the new agent by moving THIS TAB to the picked host —
+      // its herdr terminal then points at it, and other tabs are untouched.
+      // Deferred to here (not on dropdown change) so previewing another host's
+      // repos while editing doesn't yank the terminal onto it.
       if (selectedHost !== (activeHost ?? "local")) {
-        await api.switchHost(selectedHost)
+        await moveTabToHost(selectedHost)
       }
       let uploadDir: string | undefined
       let attachments: string[] | undefined
@@ -572,7 +572,7 @@ export function CreateAgentDialog({
       }
       const payload: CreateAgentPayload = {
         // Target the picked host's backend directly (server resolves it via
-        // hostBackend), independent of the UI's active host.
+        // hostBackend), independent of the host this tab is viewing.
         host: selectedHost,
         type,
         prompt: finalPrompt.trim(),

@@ -1,16 +1,25 @@
 // Typed wrappers around lasso's Go HTTP API. Every endpoint the original
 // index.html called via fetch() lives here, so components never build URLs by
 // hand. Paths are same-origin (the Go server, or Vite's dev proxy onto it).
+//
+// Every request goes through hostFetch, which attaches THIS tab's host
+// (lib/host.ts). That is what lets two tabs sit on two machines: the server
+// holds no active host any more, so a handler learns which one to run against
+// from the request itself.
+
+import { hostFetch } from "./host"
 
 export interface ActiveState {
   cwd?: string
   pane_id?: string
   panes_rev?: number
   theme_rev?: number
-  // Active host ("local" or an ssh-config alias) and a counter that bumps on
-  // every host switch so the browser can reload the terminal iframes.
+  // The host this stream is for ("local" or an ssh-config alias) and its URL
+  // path segment, which addresses that host's terminals at /terminal/<slug>/.
+  // The slug is served rather than derived here because the server disambiguates
+  // aliases that sanitize to the same string.
   host?: string
-  term_rev?: number
+  host_slug?: string
   // Bumps whenever the persisted UI prefs change (any tab saving /api/ui-state)
   // so every open tab refetches and converges.
   ui_state_rev?: number
@@ -430,7 +439,7 @@ export interface CreateAgentPayload {
 async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
   let r: Response
   try {
-    r = await fetch(
+    r = await hostFetch(
       url,
       timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined
     )
@@ -454,7 +463,7 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
 const aggregateTimeout = 30_000
 
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
+  const r = await hostFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -464,14 +473,14 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
 }
 
 // withHost appends ?host=/&host= to a config endpoint so it targets a specific
-// host's own settings (its lasso.db). Omitted = the backend's active host.
+// host's own settings (its lasso.db). Omitted = this tab's own host.
 function withHost(url: string, host?: string): string {
   if (!host) return url
   return `${url}${url.includes("?") ? "&" : "?"}host=${encodeURIComponent(host)}`
 }
 
-// The host switch currently in flight (if any) — see api.switchHost.
-let hostSwitch: {
+// The host attach currently in flight (if any) — see api.attachHost.
+let hostAttach: {
   host: string
   promise: Promise<{ active: string; version: string; protocol: number }>
 } | null = null
@@ -510,19 +519,20 @@ export const api = {
   hosts: (refresh = false) =>
     getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
 
-  // Switch the active host ("local" or an alias). The backend re-points herdr
-  // RPC, file/diff ops, and respawns the terminals at the new host.
+  // Attach THIS tab to a host ("local" or an alias): the server resolves and
+  // pools its connection and makes sure its terminals are spawned, then reports
+  // the herdr version/protocol to expect. It mutates nothing shared — the tab
+  // records its own choice (setTabHost) and sends it on every later request —
+  // so a second tab on another machine is unaffected.
   //
-  // Client-side, switches are coalesced: a same-host request while one is in
-  // flight shares its promise, and a different-host request queues behind it.
-  // The server allows only one switch at a time (409 "a host switch is already
-  // in progress"), and focus paths judge "already there?" from SSE state that
-  // lags an in-flight switch by seconds — so without this, clicking into a
-  // cell mid-switch fired a duplicate switch whose 409 surfaced as a
-  // scary-but-harmless "focus failed" toast.
-  switchHost: (host: string) => {
-    if (hostSwitch?.host === host) return hostSwitch.promise
-    const prev = hostSwitch?.promise.catch(() => {}) ?? Promise.resolve()
+  // Client-side, attaches are still coalesced: a same-host request while one is
+  // in flight shares its promise, and a different-host request queues behind it.
+  // A remote host's first attach spawns two ttyds and can take a beat, and focus
+  // paths judge "already there?" from SSE state that lags it — so without this,
+  // clicking into a cell mid-attach fired a duplicate.
+  attachHost: (host: string) => {
+    if (hostAttach?.host === host) return hostAttach.promise
+    const prev = hostAttach?.promise.catch(() => {}) ?? Promise.resolve()
     const promise = prev.then(() =>
       postJSON<{ active: string; version: string; protocol: number }>(
         "/api/host",
@@ -530,9 +540,9 @@ export const api = {
       )
     )
     const entry = { host, promise }
-    hostSwitch = entry
+    hostAttach = entry
     const clear = () => {
-      if (hostSwitch === entry) hostSwitch = null
+      if (hostAttach === entry) hostAttach = null
     }
     promise.then(clear, clear)
     return promise
@@ -634,13 +644,13 @@ export const api = {
     form.append("dir", dir)
     if (host) form.append("host", host)
     for (const f of files) form.append("files", f, f.name)
-    const r = await fetch("/api/file-upload", { method: "POST", body: form })
+    const r = await hostFetch("/api/file-upload", { method: "POST", body: form })
     if (!r.ok) throw await httpError(r)
     return r.json()
   },
 
   fileText: async (path: string, host?: string) => {
-    const r = await fetch(api.fileURL(path, host))
+    const r = await hostFetch(api.fileURL(path, host))
     if (!r.ok) throw await httpError(r)
     return r.text()
   },
@@ -651,7 +661,7 @@ export const api = {
   // treats that as "no change observed").
   fileSig: async (path: string, host?: string): Promise<string | null> => {
     try {
-      const r = await fetch(api.fileURL(path, host), { method: "HEAD" })
+      const r = await hostFetch(api.fileURL(path, host), { method: "HEAD" })
       if (!r.ok) return null
       const lm = r.headers.get("last-modified") ?? ""
       const len = r.headers.get("content-length") ?? ""
@@ -732,7 +742,7 @@ export const api = {
   // Write a pasted image to the target host (defaults to active) and return the
   // path on that host to insert into the description.
   pasteImage: async (file: Blob, host?: string): Promise<{ path: string }> => {
-    const r = await fetch(withHost("/api/paste-image", host), {
+    const r = await hostFetch(withHost("/api/paste-image", host), {
       method: "POST",
       headers: { "Content-Type": file.type || "image/png" },
       body: file,
@@ -791,7 +801,7 @@ export const api = {
   ): Promise<{ upload_dir: string; files: string[] }> => {
     const form = new FormData()
     for (const f of files) form.append("files", f, f.name)
-    const r = await fetch(withHost("/api/agent-upload", host), {
+    const r = await hostFetch(withHost("/api/agent-upload", host), {
       method: "POST",
       body: form,
     })
