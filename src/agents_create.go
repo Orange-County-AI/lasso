@@ -30,7 +30,7 @@ import (
 //   - scratch agent → a plain workspace rooted at a fresh ~/.lasso/scratch dir,
 //                     then the scratch setup script + agent.
 //
-// Everything routes through curBackend() so it targets the active herdr host;
+// Everything routes through defaultBackend() so it targets the active herdr host;
 // settings + records persist locally via config.go.
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ func uniqueChildDir(parent, slug string) string {
 	if slug == "" {
 		slug = "agent"
 	}
-	cur := curBackend()
+	cur := defaultBackend()
 	candidate := filepath.Join(parent, slug)
 	for i := 2; ; i++ {
 		if _, err := cur.Stat(candidate); err != nil && os.IsNotExist(err) {
@@ -375,12 +375,16 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Create on the requested host (default: active). A non-active host uses its
-	// own backend directly, as do the MCP create_agent tool and upload/paste
-	// handlers, so an explicitly named host never depends on a UI host switch.
+	// Create on the host the request names, else the calling tab's own host, else
+	// the default. Every host uses its own pooled backend directly, as do the MCP
+	// create_agent tool and the upload/paste handlers, so creation never depended
+	// on a UI host switch and does not now depend on which tab is asking.
 	host := req.Host
 	if host == "" {
-		host = curBackend().Name()
+		host = requestHost(r)
+	}
+	if host == "" {
+		host = defaultBackend().Name()
 	}
 	if !hostAllowed(host) {
 		// Not a transient-tunnel failure — surface it (a retry can't help), so the
@@ -388,13 +392,10 @@ func serveCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not available", http.StatusBadRequest)
 		return
 	}
-	be := curBackend()
-	if host != be.Name() {
-		var err error
-		if be, err = hostBackend(host); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	be, err := namedHostBackend(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	rec, err := createAgent(be, req)
 	if err != nil {
@@ -943,13 +944,14 @@ func globHasMeta(path string) bool { return strings.ContainsAny(path, "*?[") }
 // this: on a remote backend it would look for the local staging path on the
 // remote box and silently drop every attachment.
 // reqHostBackend resolves the backend a request targets via its ?host= param,
-// defaulting to the active host. Used by the upload + paste handlers so an
-// attachment or pasted image lands on the SELECTED host (the one the agent will
-// run on), not wherever the active backend happens to point during form editing
-// — and by the sidebar's file/diff endpoints, whose host selector arrives the
-// same way.
+// falling back to the calling tab's own host. Used by the upload + paste
+// handlers so an attachment or pasted image lands on the SELECTED host (the one
+// the agent will run on), not on whichever host the tab is currently viewing —
+// and by the sidebar's file/diff endpoints, whose host selector arrives the same
+// way. Since ?host= is also how a tab announces itself, the two collapse into
+// one lookup here.
 func reqHostBackend(r *http.Request) (Backend, error) {
-	return namedHostBackend(r.URL.Query().Get("host"))
+	return namedHostBackend(requestHost(r))
 }
 
 // moveAttachments moves staged attachments into the agent's work dir. Staging

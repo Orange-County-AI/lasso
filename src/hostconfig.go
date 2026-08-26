@@ -219,38 +219,47 @@ func branchList(be Backend, path string) (local, remote []string, def string) {
 // in-process db is its own state). Empty defaults to local.
 func isLocalHost(host string) bool { return host == "" || host == "local" }
 
-// hostParam resolves the ?host= target for a host-scoped config request,
-// defaulting to the active host, and reports whether we may drive it (local, the
-// active host, or a reachable + compatible remote).
+// hostParam resolves the target for a host-scoped config request — its ?host=
+// param, else the calling tab's own host, else the default one — and reports
+// whether we may drive it (local, or a reachable + compatible remote).
 func hostParam(r *http.Request) (string, bool) {
-	host := r.URL.Query().Get("host")
+	host := requestHost(r)
 	if host == "" {
-		host = curBackend().Name()
+		host = defaultBackend().Name()
 	}
 	return host, hostAllowed(host)
 }
 
 // namedHostBackend resolves the backend a host selector names — the spine of
 // every endpoint that operates on a chosen host's filesystem (the sidebar's
-// file/diff endpoints, the upload/paste handlers). Empty means the active host,
+// file/diff endpoints, the upload/paste handlers). Empty means the DEFAULT host,
 // and the hostAllowed gate refuses anything we may not drive (a bogus alias)
 // before a single path byte is expanded or read.
 //
-// A selector that names the active host resolves to the active backend itself,
-// not the host pool's separate connection for that alias. The pool remains
-// independent so RPC, file, diff, and agent-creation work can target a host
-// without switching the UI's active backend; a one-shot operation on the
-// active host should use the connection already held.
+// A selector naming the default host resolves to the default backend itself
+// rather than dialing the pool for that alias — the one connection we already
+// hold. Every other host comes from the pool, which holds exactly one connection
+// per host shared by every tab on it.
 func namedHostBackend(host string) (Backend, error) {
-	cur := curBackend()
+	cur := defaultBackend()
+	if cur == nil {
+		// Before main installs it, or in a test that never stood one up. An
+		// error beats a nil Backend that panics at the first method call.
+		return nil, fmt.Errorf("no default host")
+	}
 	if host == "" || host == cur.Name() {
 		return cur, nil
 	}
 	if !hostAllowed(host) {
 		return nil, fmt.Errorf("host %q not available", host)
 	}
-	return hostBackend(host)
+	return hostBackendFn(host)
 }
+
+// hostBackendFn resolves a non-default host's connection. A package var so
+// handler and feed tests can stand a fake fleet up without an ssh master — the
+// same seam setDefaultBackend gives for the default host.
+var hostBackendFn = hostBackend
 
 // hostDefaults reads host's creator defaults from host's own lasso.db.
 func hostDefaults(host string) (creatorDefaults, error) {

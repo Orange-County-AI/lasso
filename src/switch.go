@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/http"
 	"os"
@@ -59,15 +60,21 @@ type ttydInstance struct {
 
 // ttydRole owns one terminal role — the left herdr terminal (/terminal) or the
 // right shell tab (/shell) — across every host lasso has driven. Each host gets
-// its OWN ttyd on its own socket path, so a host switch only re-points the role
-// at another instance (unixSocketProxy resolves activeSock per request).
+// its OWN ttyd, on its own socket AND its own proxy path (/terminal/<slug>/),
+// because the browser is what picks between them now: a tab viewing norm loads
+// /terminal/norm/ while the tab beside it loads /terminal/titan/, and both are
+// live at once.
 //
-// The single-socket predecessor respawned in place on every switch, and that
-// respawn was the dominant cost of switching: the new ttyd could not bind until
-// the old one had released the shared path, which measured ~2.8s of a ~3.9s
-// switch (ttyd drops its client, SIGHUPs the child `herdr --remote`, then
-// unlinks), serially for both roles, on the request path. The browser's remount
-// raced that gap and 502'd against a socket that no longer existed.
+// The role used to carry an `active` host and the proxy dialled whichever
+// instance that named, which is exactly the global that made per-tab hosts
+// impossible — one tab switching host re-pointed every other tab's terminal.
+// The instances were already per host; only the pointer had to go.
+//
+// The single-socket predecessor to THAT respawned in place on every switch, and
+// that respawn was the dominant cost of switching: the new ttyd could not bind
+// until the old one had released the shared path, which measured ~2.8s of a
+// ~3.9s switch (ttyd drops its client, SIGHUPs the child `herdr --remote`, then
+// unlinks), serially for both roles, on the request path.
 type ttydRole struct {
 	parent      context.Context
 	name        string // socket filename stem ("ttyd", "shell")
@@ -76,7 +83,7 @@ type ttydRole struct {
 
 	mu     sync.Mutex
 	inst   map[string]*ttydInstance // keyed by backend name ("local" or an alias)
-	active string                   // the backend name this role currently serves
+	bySlug map[string]string        // url path segment -> backend name
 }
 
 func newTtydRole(parent context.Context, name, basePath string) *ttydRole {
@@ -86,31 +93,51 @@ func newTtydRole(parent context.Context, name, basePath string) *ttydRole {
 		basePath:    basePath,
 		waitTimeout: ttydSpawnTimeout,
 		inst:        map[string]*ttydInstance{},
+		bySlug:      map[string]string{},
 	}
+}
+
+// hostSlug is the URL path segment (and socket filename component) for a host.
+// sanitizeAlias alone is not injective — "a.b" and "a_b" collapse together — and
+// a collision now means two hosts sharing one terminal rather than merely one
+// odd filename, so an altered alias carries a short digest of the original.
+func hostSlug(host string) string {
+	s := sanitizeAlias(host)
+	if s == host {
+		return s
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(host))
+	return fmt.Sprintf("%s-%08x", s, h.Sum32())
 }
 
 // sockPath is the private socket for one host's instance of this role. It
 // carries lasso's pid (so concurrent prod/dev instances can't cross-connect)
-// and the host, so two instances can never contend for a path — the property
-// the old shared path lacked.
+// and the host, so two instances can never contend for a path.
 func (r *ttydRole) sockPath(host string) string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("lasso-%s-%d-%s.sock", r.name, os.Getpid(), sanitizeAlias(host)))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("lasso-%s-%d-%s.sock", r.name, os.Getpid(), hostSlug(host)))
 }
 
-// activate points the role at host, spawning its ttyd (running command with
-// env) only when it isn't already resident. A resident instance is reused as
-// is: nothing is killed and the switch pays nothing for this role.
-func (r *ttydRole) activate(host, command string, env []string) error {
+// ensure makes host's ttyd resident, spawning it (running command with env) only
+// when it isn't already. A resident instance is reused as is: a tab arriving on
+// a host someone else already has open pays nothing.
+//
+// Each instance is spawned with its OWN base path, /<role>/<slug>, so ttyd's
+// asset and websocket URLs resolve back to the same instance the iframe loaded.
+func (r *ttydRole) ensure(host, command string, env []string) error {
+	if r == nil {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if e := r.inst[host]; e != nil {
 		e.lastActive = time.Now()
-		r.active = host
 		return nil
 	}
+	slug := hostSlug(host)
 	sock := r.sockPath(host)
 	ctx, cancel := context.WithCancel(r.parent)
-	if err := startTtyd(ctx, sock, r.basePath, command, env); err != nil {
+	if err := startTtyd(ctx, sock, r.basePath+"/"+slug, command, env); err != nil {
 		cancel()
 		return err
 	}
@@ -119,46 +146,68 @@ func (r *ttydRole) activate(host, command string, env []string) error {
 		return fmt.Errorf("timed out waiting for ttyd socket %s to open", sock)
 	}
 	r.inst[host] = &ttydInstance{sock: sock, cancel: cancel, lastActive: time.Now()}
-	r.active = host
+	r.bySlug[slug] = host
 	r.evictLocked()
 	return nil
 }
 
-// activeSock is the socket the proxy dials right now — empty when the role has
-// no instance yet (the mux is wired before the first spawn, so the proxy asks
-// before there is an answer). Nil-receiver safe for the same reason.
-func (r *ttydRole) activeSock() string {
+// sockForSlug is the socket the proxy dials for a /<role>/<slug>/… request, and
+// marks that instance as freshly used so idle reaping leaves it alone. Empty
+// when no such instance exists (a stale iframe for a retired host, or a request
+// that beat the first spawn). Nil-receiver safe: the mux is wired before any
+// spawn.
+func (r *ttydRole) sockForSlug(slug string) string {
 	if r == nil {
 		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if e := r.inst[r.active]; e != nil {
-		return e.sock
+	host, ok := r.bySlug[slug]
+	if !ok {
+		return ""
 	}
-	return ""
+	e := r.inst[host]
+	if e == nil {
+		return ""
+	}
+	e.lastActive = time.Now()
+	return e.sock
+}
+
+// resident reports whether host's terminal is currently spawned. hostInUse asks,
+// so a host with a live terminal keeps its connection.
+func (r *ttydRole) resident(host string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inst[host] != nil
 }
 
 // retireLocked stops one instance and forgets it. The teardown it triggers is
 // asynchronous (startTtyd's ctx watcher signals the process group): it costs
-// seconds, and with per-host socket paths nothing ever waits on that path again
-// — the whole reason a switch no longer blocks on a terminal dying.
+// seconds, and with per-host socket paths nothing ever waits on that path again.
 func (r *ttydRole) retireLocked(host string, why string) {
 	e := r.inst[host]
 	if e == nil {
 		return
 	}
 	delete(r.inst, host)
+	delete(r.bySlug, hostSlug(host))
 	log.Printf("ttyd:     retired %s terminal for %s (%s)", r.basePath, host, why)
 	e.cancel()
 }
 
 // evictLocked retires the least-recently-active instances above ttydWarmHosts.
+// A host a tab is actually watching is never a candidate, however long its
+// terminal has sat idle — with several tabs open, "least recently active" is no
+// longer a proxy for "nobody is looking at it".
 func (r *ttydRole) evictLocked() {
 	for len(r.inst) > ttydWarmHosts {
 		oldest := ""
 		for host, e := range r.inst {
-			if host == r.active {
+			if hostWatched(host) {
 				continue
 			}
 			if oldest == "" || e.lastActive.Before(r.inst[oldest].lastActive) {
@@ -172,14 +221,35 @@ func (r *ttydRole) evictLocked() {
 	}
 }
 
-// retireIdleLocked retires every instance nobody returned to within ttydIdle.
-// The active one is exempt however long it sits: it is what the proxy dials.
+// retireIdleLocked retires every instance nobody returned to within ttydIdle. A
+// watched host is exempt however long it sits: it is what some tab's iframe is
+// pointed at.
 func (r *ttydRole) retireIdleLocked(now time.Time) {
 	for host, e := range r.inst {
-		if host != r.active && now.Sub(e.lastActive) > ttydIdle {
+		if !hostWatched(host) && now.Sub(e.lastActive) > ttydIdle {
 			r.retireLocked(host, "idle")
 		}
 	}
+}
+
+// hostWatched reports whether host is the default one or has a tab watching it.
+// Deliberately NOT hostInUse, which also counts a resident terminal — that would
+// make every terminal exempt from the reaping this decides.
+func hostWatched(host string) bool {
+	// Nil before main installs the default backend, and in tests that exercise
+	// eviction without standing a host up.
+	if b := defaultBackend(); b != nil && b.Name() == host {
+		return true
+	}
+	if srvHub == nil {
+		return false
+	}
+	for _, h := range srvHub.feedHosts() {
+		if h == host {
+			return true
+		}
+	}
+	return false
 }
 
 // sweepIdle runs retireIdleLocked until the role's parent context (the server's
@@ -200,28 +270,24 @@ func (r *ttydRole) sweepIdle() {
 	}
 }
 
-// terminals holds the two roles (nil when -spawn-ttyd=false). A host switch
-// points both at the new host.
+// terminals holds the two roles (nil when -spawn-ttyd=false).
 var terminals struct {
 	herdr *ttydRole // left "Herdr" terminal (/terminal)
 	shell *ttydRole // right shell tab (/shell)
 }
 
-// applyBackendToTerminals points both terminals at backend b, spawning that
-// host's pair the first time it is visited: the left terminal runs b.TermCmd()
-// (local herdr, or `herdr --remote <host>`); the shell tab runs b.ShellCmd()
-// (local shell, or `ssh <host>`) with the herdr session markers stripped.
-func applyBackendToTerminals(b Backend) {
-	if terminals.herdr != nil {
-		if err := terminals.herdr.activate(b.Name(), termPrefix()+b.TermCmd(), b.TermEnv()); err != nil {
-			log.Printf("ttyd (terminal) on %s: %v", b.Name(), err)
-		}
+// ensureTerminals makes backend b's pair of terminals resident: the left one
+// runs b.TermCmd() (local herdr, or `herdr --remote <host>`); the shell tab runs
+// b.ShellCmd() (local shell, or `ssh <host>`) with the herdr session markers
+// stripped. Idempotent, so a tab arriving on a warm host pays nothing.
+func ensureTerminals(b Backend) error {
+	if err := terminals.herdr.ensure(b.Name(), termPrefix()+b.TermCmd(), b.TermEnv()); err != nil {
+		return fmt.Errorf("terminal on %s: %w", b.Name(), err)
 	}
-	if terminals.shell != nil {
-		if err := terminals.shell.activate(b.Name(), b.ShellCmd(), outsideHerdrEnv()); err != nil {
-			log.Printf("ttyd (shell) on %s: %v", b.Name(), err)
-		}
+	if err := terminals.shell.ensure(b.Name(), b.ShellCmd(), outsideHerdrEnv()); err != nil {
+		return fmt.Errorf("shell on %s: %w", b.Name(), err)
 	}
+	return nil
 }
 
 // waitSocketUp polls until the socket file exists, or the timeout elapses.
@@ -238,10 +304,19 @@ func waitSocketUp(sock string, timeout time.Duration) bool {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/host — switch the active host
+// POST /api/host — attach THIS tab to a host
 // ---------------------------------------------------------------------------
 
-func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
+// serveHostAttach prepares a host for a browser tab that is moving onto it:
+// resolves (and pools) its connection, spawns its terminals if they aren't warm
+// already, and reports the herdr version/protocol the tab should expect.
+//
+// It replaces a handler that SWITCHED a process-wide active host. Nothing here
+// mutates shared state any more — the tab records its own choice and sends it on
+// every subsequent request (reqhost.go) — so two tabs can attach to two hosts
+// and neither disturbs the other. The default host is unaffected either way: a
+// fresh tab and an MCP whoami still see the host lasso booted on.
+func serveHostAttach(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
@@ -259,53 +334,33 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !switchMu.TryLock() {
-		http.Error(w, "a host switch is already in progress", http.StatusConflict)
-		return
-	}
-	defer switchMu.Unlock()
-
-	prev := curBackend()
-	if target == prev.Name() {
-		writeHostResult(w, prev) // no-op: already there
-		return
-	}
-
-	// Resolve the new backend. On failure prev stays active — the caller is
-	// unaffected.
-	var newB Backend
+	var b Backend
 	if target == "local" {
-		newB = &localBackend{sock: *herdrSock}
+		b = &localBackend{sock: *herdrSock}
 	} else {
 		hi, ok := findHost(target)
 		if !ok || !hi.Reachable || !hi.Running || !hi.Compatible {
 			http.Error(w, "host not available (no compatible herdr server)", http.StatusBadRequest)
 			return
 		}
-		// Adopt the POOLED connection rather than dialing a second control
-		// master to the same host. lasso used to hold two per host — one for the
-		// active backend, one for host-addressed RPC/file/diff work — and tore
-		// the active one down 2s after switching away, so switching back paid a
-		// full ssh handshake (~1s of a measured 3.9s switch) while a healthy
-		// connection to that very host sat in the pool. One connection per host,
-		// owned by the pool, makes a switch back to a warm host free; the pool
-		// liveness-checks it on access and idle-reaps it, and never reaps the
-		// active host (see hostBackend / reapHostBackends).
-		b, err := hostBackend(target)
+		// One pooled connection per host, shared by every tab on it and by all
+		// host-addressed RPC/file/diff work. Attaching a second tab to a host
+		// someone already has open is free.
+		pooled, err := hostBackend(target)
 		if err != nil {
 			http.Error(w, "connect "+target+": "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		rb, ok := b.(*remoteBackend)
+		rb, ok := pooled.(*remoteBackend)
 		if !ok { // only "local" is not a remote backend, and it took the branch above
 			http.Error(w, "connect "+target+": no remote connection", http.StatusBadGateway)
 			return
 		}
-		newB = rb
+		b = rb
 		// Mirror the local machine's theme onto the target host's herdr — but in
-		// the BACKGROUND, off the switch's critical path. It's ~2 SSH round trips
+		// the BACKGROUND, off the attach's critical path. It's ~2 SSH round trips
 		// (write config + reload_config), and blocking on it made every cross-host
-		// focus feel ~2s slower for a purely cosmetic change: the ttyd palette comes
+		// move feel ~2s slower for a purely cosmetic change: the ttyd palette comes
 		// from lasso's LOCAL resolved theme (startTtyd's -t theme=), not from the
 		// remote herdr, so terminals already render correctly; this only repaints
 		// the remote herdr TUI's own chrome, which can lag a beat harmlessly.
@@ -316,23 +371,26 @@ func serveHostSwitch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Swap, then re-point every host-bound subsystem at the new backend.
-	setBackend(newB)
-	invalidatePaneList()          // drop stale pane data from the old host
-	applyBackendToTerminals(newB) // point both terminals at the new host
+	// Spawn this host's terminals before answering, so the iframe the tab is
+	// about to point at /terminal/<slug>/ finds a socket bound rather than a 502.
+	// Serialized per host inside ensure(); two tabs attaching at once share one
+	// spawn.
+	if *spawnTtyd {
+		if err := ensureTerminals(b); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	// Start the host's feed now (and kick it) so the tab's SSE stream primes with
+	// real state instead of the seeded empty frame.
 	if srvHub != nil {
-		srvHub.startSub()    // re-subscribe events against the new socket
-		srvHub.bumpTermRev() // tell the browser to reload the terminal iframes
-		srvHub.kick()        // push fresh state without waiting for the poll tick
+		if f, err := srvHub.feed(b.Name()); err == nil {
+			f.kick()
+		}
 	}
 
-	// The previous backend is NOT torn down: local Close is a no-op, and a
-	// remote one is the host's pool entry, which outlives the switch so coming
-	// back is free and so a long remote op (worktree.create, an agent boot, an
-	// SFTP upload) started on the old host survives leaving it.
-
-	log.Printf("host:     switched to %s", newB.Name())
-	writeHostResult(w, newB)
+	log.Printf("host:     tab attached to %s", b.Name())
+	writeHostResult(w, b)
 }
 
 // syncRemoteTheme writes theme name into the config.toml the remote herdr reads,

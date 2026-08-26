@@ -126,7 +126,7 @@ func runServer() {
 
 	// Start out driving the local herdr daemon. The footer's host switcher swaps
 	// this for a remoteBackend (and back) at runtime via /api/host.
-	setBackend(&localBackend{sock: *herdrSock})
+	setDefaultBackend(&localBackend{sock: *herdrSock})
 
 	// Open the host-local state DB (~/.lasso/lasso.db), migrating a legacy
 	// config.yaml on first run. Fatal if it can't open — the creator depends on it.
@@ -202,7 +202,7 @@ func runServer() {
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
-		proxy = unixSocketProxy(func() string { return terminals.herdr.activeSock() })
+		proxy = ttydProxy(func() *ttydRole { return terminals.herdr })
 	} else {
 		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
 		proxy = httputil.NewSingleHostReverseProxy(target)
@@ -211,10 +211,15 @@ func runServer() {
 	mux := http.NewServeMux()
 	mux.Handle("/terminal/", proxy)
 	if *spawnTtyd {
-		mux.Handle("/shell/", unixSocketProxy(func() string { return terminals.shell.activeSock() }))
+		mux.Handle("/shell/", ttydProxy(func() *ttydRole { return terminals.shell }))
 	}
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, hub.snapshot())
+		a, err := hub.snapshot(requestHost(r))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, a)
 	})
 	mux.HandleFunc("/api/theme", func(w http.ResponseWriter, r *http.Request) {
 		rt := hub.themeSnapshot()
@@ -255,7 +260,7 @@ func runServer() {
 	mux.HandleFunc("/api/version", serveVersion)
 	mux.HandleFunc("/api/usage", serveUsage)
 	mux.HandleFunc("/api/hosts", serveHosts)
-	mux.HandleFunc("/api/host", serveHostSwitch)
+	mux.HandleFunc("/api/host", serveHostAttach)
 	mux.HandleFunc("/api/agent-config", serveAgentConfig)
 	mux.HandleFunc("/api/repo-config", serveRepoConfig)
 	mux.HandleFunc("/api/repos", serveRepos)
@@ -344,14 +349,13 @@ func runServer() {
 		// first visit and reuses it forever after (see switch.go's ttydRole).
 		terminals.herdr = newTtydRole(ctx, "ttyd", "/terminal")
 		terminals.shell = newTtydRole(ctx, "shell", "/shell")
-		cur := curBackend()
-		if err := terminals.herdr.activate(cur.Name(), termPrefix()+cur.TermCmd(), cur.TermEnv()); err != nil {
+		// The default host's pair, spawned eagerly so the first tab's iframes
+		// find a bound socket. A tab moving to another host spawns that host's
+		// pair through POST /api/host (serveHostAttach), and both stay resident.
+		// The shell's env is stripped of the HERDR_* session markers so commands
+		// like `herdr update` (which refuse to run inside a session) work.
+		if err := ensureTerminals(defaultBackend()); err != nil {
 			log.Fatalf("ttyd: %v", err)
-		}
-		// Out-of-herdr shell: env stripped of the HERDR_* session markers so
-		// commands like `herdr update` (which refuse to run inside a session) work.
-		if err := terminals.shell.activate(cur.Name(), cur.ShellCmd(), outsideHerdrEnv()); err != nil {
-			log.Fatalf("ttyd (shell): %v", err)
 		}
 		// Retire terminals for hosts that drop out of rotation (see ttydIdle).
 		go terminals.herdr.sweepIdle()
@@ -401,8 +405,9 @@ func runServer() {
 	}
 	log.Printf("UI:       http://%s", *listenAddr)
 	if *spawnTtyd {
-		log.Printf("terminal: ttyd@%s running %q (proxied at /terminal/)", terminals.herdr.activeSock(), *termCmd)
-		log.Printf("shell:    ttyd@%s running %q (proxied at /shell/)", terminals.shell.activeSock(), shellCommand())
+		slug := hostSlug(defaultBackend().Name())
+		log.Printf("terminal: ttyd running %q (proxied at /terminal/%s/)", *termCmd, slug)
+		log.Printf("shell:    ttyd running %q (proxied at /shell/%s/)", shellCommand(), slug)
 	} else {
 		log.Printf("terminal: ttyd@127.0.0.1:%d (external) running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	}
@@ -462,24 +467,57 @@ func listenWithFallback(addr string, dev bool, span int) (net.Listener, string, 
 // what the browser's iframe reload used to race.
 const ttydDialWait = 3 * time.Second
 
-// unixSocketProxy reverse-proxies to one of our ttyds over its private unix
-// socket. The host in the URL is a placeholder — the custom DialContext ignores
-// it and dials the socket. WS upgrades work because the hijacked conn is dialed
-// through the same Transport.
+// ttydSlugKey carries the host slug from the Director (which sees the request,
+// and so the host in its URL) down to DialContext (which sees only a context).
+// The two halves of a reverse proxy cannot otherwise talk, and picking the
+// instance now depends on the request rather than on a process-wide pointer.
+type ttydSlugKey struct{}
+
+// ttydProxy reverse-proxies /<role>/<slug>/… to THAT host's ttyd over its
+// private unix socket. The host in the outbound URL is a placeholder — the
+// custom DialContext ignores it and dials the socket. WS upgrades work because
+// the hijacked conn is dialed through the same Transport.
 //
-// sock is resolved per request, not captured: each ttydRole serves a different
-// socket per host and a switch re-points it, so the path is only known at dial
-// time (and is empty until the first spawn, which happens after the mux is
-// wired).
-func unixSocketProxy(sock func() string) *httputil.ReverseProxy {
+// The slug in the path is what selects the instance, so two tabs on two hosts
+// load two different terminals from the same origin at the same time. It used to
+// dial whichever socket the role called "active", which is why a second tab
+// could not have a terminal of its own.
+//
+// The socket is resolved per request, not captured: an instance may not be
+// spawned yet when the mux is wired, and may be retired and respawned later.
+func ttydProxy(role func() *ttydRole) *httputil.ReverseProxy {
 	p := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "ttyd.sock"})
+	director := p.Director
+	p.Director = func(req *http.Request) {
+		director(req)
+		// /terminal/<slug>/rest → <slug>. ttyd was spawned with -b
+		// /terminal/<slug>, so its own asset and websocket URLs carry the slug
+		// too and land back on the same instance; the path is passed through
+		// untouched.
+		slug := ""
+		if parts := strings.SplitN(strings.TrimPrefix(req.URL.Path, "/"), "/", 3); len(parts) >= 2 {
+			slug = parts[1]
+		}
+		// The outbound URL's host must be UNIQUE PER SLUG. http.Transport pools
+		// keep-alive connections by that host, and with a single placeholder for
+		// every instance the second host's request was served down the first
+		// host's already-open connection — its ttyd answered 404, because the
+		// path did not match the base it was spawned with. DialContext ignores
+		// the address entirely; this exists only to key the pool.
+		req.URL.Host = slug + ".ttyd.invalid"
+		*req = *req.WithContext(context.WithValue(req.Context(), ttydSlugKey{}, slug))
+	}
 	p.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			deadline := time.Now().Add(ttydDialWait)
 			for {
+				// Re-resolved every pass: an instance still binding its socket
+				// (a remount racing its own spawn) is found by a later retry
+				// instead of 502ing, which is what this wait is for.
 				var err error = errNoTtyd
-				if path := sock(); path != "" {
+				slug, _ := ctx.Value(ttydSlugKey{}).(string)
+				if path := role().sockForSlug(slug); path != "" {
 					var c net.Conn
 					if c, err = d.DialContext(ctx, "unix", path); err == nil {
 						return c, nil
@@ -499,9 +537,10 @@ func unixSocketProxy(sock func() string) *httputil.ReverseProxy {
 	return p
 }
 
-// errNoTtyd is what a dial reports when the active host has no terminal at all
-// (startup before the first spawn, or a spawn that failed).
-var errNoTtyd = errors.New("no ttyd for the active host")
+// errNoTtyd is what a dial reports when the requested host has no terminal at
+// all: a spawn that failed, a stale iframe still pointed at a retired host, or a
+// request that beat the first spawn.
+var errNoTtyd = errors.New("no ttyd for that host")
 
 // shellCommand resolves the command for the out-of-herdr Terminal tab:
 // -shell-cmd if set, else $SHELL, else bash, else sh.
@@ -595,11 +634,15 @@ func (e *herdrError) Error() string {
 	return "herdr error: " + e.Code
 }
 
-// herdrCall does one request/response round-trip against the active host's herdr
-// socket. The dial/encode/decode logic lives in herdrCallSock (backend.go), which
-// both backends share; this routes to whichever host is active.
+// herdrCall does one request/response round-trip against the DEFAULT host's
+// herdr socket. The dial/encode/decode logic lives in herdrCallSock (backend.go),
+// which both backends share.
+//
+// Request-path code must not use this: a handler runs against the host its
+// caller named (reqBackend), and this one answers for the boot host whoever is
+// asking. It survives for background work that legitimately has no caller.
 func herdrCall(method string, params any) (json.RawMessage, error) {
-	return curBackend().HerdrCall(method, params)
+	return defaultBackend().HerdrCall(method, params)
 }
 
 type pane struct {
@@ -671,36 +714,69 @@ func paneCwdUsesForeground(p pane) bool {
 // that land close together from each paying the full cost. Event-driven
 // refreshes invalidate the cache first (see invalidatePaneList) so focus
 // changes never serve a stale snapshot.
-var paneListCache struct {
+// The cache is keyed BY HOST, and the per-host entry carries its own mutex. Two
+// tabs on two machines poll concurrently and must not serve each other titan's
+// panes under norm's name, nor queue behind each other on a lock: the coalescing
+// that makes this cache worth having is per host, since the slow call it
+// coalesces is one host's pane.list.
+type paneListCacheEntry struct {
 	mu   sync.Mutex
 	at   time.Time
 	data json.RawMessage
 	err  error
 }
 
+var paneListCache struct {
+	mu     sync.Mutex
+	byHost map[string]*paneListCacheEntry
+}
+
 const paneListTTL = 400 * time.Millisecond
 
-func herdrPaneList() (json.RawMessage, error) {
+// paneCacheFor returns host's cache slot, creating it on first use.
+func paneCacheFor(host string) *paneListCacheEntry {
 	paneListCache.mu.Lock()
 	defer paneListCache.mu.Unlock()
-	if !paneListCache.at.IsZero() && time.Since(paneListCache.at) < paneListTTL {
-		return paneListCache.data, paneListCache.err
+	if paneListCache.byHost == nil {
+		paneListCache.byHost = map[string]*paneListCacheEntry{}
+	}
+	e := paneListCache.byHost[host]
+	if e == nil {
+		e = &paneListCacheEntry{}
+		paneListCache.byHost[host] = e
+	}
+	return e
+}
+
+func herdrPaneList(be Backend) (json.RawMessage, error) {
+	e := paneCacheFor(be.Name())
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.at.IsZero() && time.Since(e.at) < paneListTTL {
+		return e.data, e.err
 	}
 	// The call is made under the lock on purpose: concurrent callers coalesce
 	// onto this one in-flight request rather than firing parallel slow calls.
-	data, err := herdrCall("pane.list", map[string]any{})
-	paneListCache.at = time.Now()
-	paneListCache.data, paneListCache.err = data, err
+	data, err := be.HerdrCall("pane.list", map[string]any{})
+	e.at = time.Now()
+	e.data, e.err = data, err
 	return data, err
 }
 
-// invalidatePaneList drops the cached pane.list so the next call refetches. The
-// hub calls this on every herdr event: an event means pane state changed, so a
-// cached snapshot would be stale.
-func invalidatePaneList() {
+// invalidatePaneList drops host's cached pane.list so the next call refetches.
+// Each host's feed calls it on every herdr event from THAT host: an event means
+// that host's pane state changed, so its cached snapshot would be stale — and no
+// other host's is affected.
+func invalidatePaneList(host string) {
 	paneListCache.mu.Lock()
-	paneListCache.at = time.Time{}
+	e := paneListCache.byHost[host]
 	paneListCache.mu.Unlock()
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.at = time.Time{}
+	e.mu.Unlock()
 }
 
 type workspace struct {
@@ -724,9 +800,9 @@ type Active struct {
 	PanesRev       int    `json:"panes_rev"`    // bumps when workspace order or pane membership changes
 	ThemeRev       int    `json:"theme_rev"`    // bumps when herdr's resolved theme changes (config.toml edited)
 	HerdrUp        bool   `json:"herdr_up"`     // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
-	Host           string `json:"host"`         // active host: "local" or an ssh-config alias
+	Host           string `json:"host"`         // the host THIS stream is for: "local" or an ssh-config alias
+	HostSlug       string `json:"host_slug"`    // Host's URL path segment, so the browser can address /terminal/<slug>/ without re-deriving it
 	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's herdr; the sidebar browses Cwd on this host
-	TermRev        int    `json:"term_rev"`     // bumps on host switch so the browser reloads the terminal iframes
 	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
 }
 
@@ -734,8 +810,8 @@ type Active struct {
 // signature captures workspace order + pane membership (see layoutSignature), so
 // the caller can detect when the pane list needs to re-render — e.g. after a
 // workspace is reordered in herdr — independently of focus changes.
-func fetchActive() (Active, string, error) {
-	res, err := herdrPaneList()
+func fetchActive(be Backend) (Active, string, error) {
+	res, err := herdrPaneList(be)
 	if err != nil {
 		return Active{}, "", err
 	}
@@ -751,7 +827,7 @@ func fetchActive() (Active, string, error) {
 	var wl struct {
 		Workspaces []workspace `json:"workspaces"`
 	}
-	if res, err := herdrCall("workspace.list", map[string]any{}); err == nil {
+	if res, err := be.HerdrCall("workspace.list", map[string]any{}); err == nil {
 		_ = json.Unmarshal(res, &wl)
 	}
 	sig := layoutSignature(pl.Panes, wl.Workspaces)
@@ -778,8 +854,8 @@ func fetchActive() (Active, string, error) {
 		PaneID: fp.PaneID, WorkspaceID: fp.WorkspaceID,
 		TabID: fp.TabID, Agent: agent, AgentStatus: status,
 	}
-	a.Cwd, a.CwdSource, a.CwdHost = activeCwd(*fp)
-	a.TabLabel = tabLabel(fp.TabID)
+	a.Cwd, a.CwdSource, a.CwdHost = activeCwd(be, *fp)
+	a.TabLabel = tabLabel(be, fp.TabID)
 	for _, w := range wl.Workspaces {
 		if w.WorkspaceID == a.WorkspaceID {
 			a.WorkspaceLabel = w.Label
@@ -810,8 +886,8 @@ func layoutSignature(panes []pane, wss []workspace) string {
 }
 
 // tabLabel fetches a tab's display label (best effort, "" on failure).
-func tabLabel(tabID string) string {
-	res, err := herdrCall("tab.get", map[string]any{"tab_id": tabID})
+func tabLabel(be Backend, tabID string) string {
+	res, err := be.HerdrCall("tab.get", map[string]any{"tab_id": tabID})
 	if err != nil {
 		return ""
 	}
@@ -846,8 +922,8 @@ type paneView struct {
 
 // fetchPanes lists every pane and joins in workspace/tab labels, returning them
 // grouped by workspace (then tab) order — the order herdr itself shows.
-func fetchPanes() ([]paneView, error) {
-	res, err := herdrPaneList()
+func fetchPanes(be Backend) ([]paneView, error) {
+	res, err := herdrPaneList(be)
 	if err != nil {
 		return nil, err
 	}
@@ -863,7 +939,7 @@ func fetchPanes() ([]paneView, error) {
 		number int
 	}
 	tabs := map[string]meta{}
-	if r, err := herdrCall("tab.list", map[string]any{}); err == nil {
+	if r, err := be.HerdrCall("tab.list", map[string]any{}); err == nil {
 		var tl struct {
 			Tabs []struct {
 				TabID  string `json:"tab_id"`
@@ -878,7 +954,7 @@ func fetchPanes() ([]paneView, error) {
 		}
 	}
 	wss := map[string]meta{}
-	if r, err := herdrCall("workspace.list", map[string]any{}); err == nil {
+	if r, err := be.HerdrCall("workspace.list", map[string]any{}); err == nil {
 		var wl struct {
 			Workspaces []struct {
 				WorkspaceID string `json:"workspace_id"`
@@ -921,7 +997,12 @@ func fetchPanes() ([]paneView, error) {
 }
 
 func servePanes(w http.ResponseWriter, r *http.Request) {
-	panes, err := fetchPanes()
+	be, err := reqBackend(r, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	panes, err := fetchPanes(be)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -949,11 +1030,16 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace_id and tab_id required", http.StatusBadRequest)
 		return
 	}
-	if _, err := herdrCall("workspace.focus", map[string]any{"workspace_id": req.WorkspaceID}); err != nil {
+	be, err := reqBackend(r, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := be.HerdrCall("workspace.focus", map[string]any{"workspace_id": req.WorkspaceID}); err != nil {
 		http.Error(w, "workspace.focus: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := herdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
+	if _, err := be.HerdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
 		http.Error(w, "tab.focus: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -980,7 +1066,12 @@ func serveRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab_id and non-empty label required", http.StatusBadRequest)
 		return
 	}
-	if _, err := herdrCall("tab.rename", map[string]any{"tab_id": req.TabID, "label": req.Label}); err != nil {
+	be, err := reqBackend(r, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := be.HerdrCall("tab.rename", map[string]any{"tab_id": req.TabID, "label": req.Label}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1006,13 +1097,18 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace_id and non-empty label required", http.StatusBadRequest)
 		return
 	}
-	if _, err := herdrCall("workspace.rename", map[string]any{"workspace_id": req.WorkspaceID, "label": req.Label}); err != nil {
+	be, err := reqBackend(r, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := be.HerdrCall("workspace.rename", map[string]any{"workspace_id": req.WorkspaceID, "label": req.Label}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	// Keep the agent record's title — the address list_agents and message_agent
 	// surface over MCP — in step with what the pane listings now show.
-	_ = updateAgentTitleByWorkspace(curBackend().Name(), req.WorkspaceID, req.Label)
+	_ = updateAgentTitleByWorkspace(be.Name(), req.WorkspaceID, req.Label)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -1030,16 +1126,16 @@ var (
 	closePace        = 25 * time.Millisecond  // breather between distinct panes
 )
 
-// paneCloser performs a single pane.close round-trip. A package var so tests can
-// substitute a fake herdr without a live socket.
-var paneCloser = func(id string) error {
-	_, err := herdrCall("pane.close", map[string]any{"pane_id": id})
+// paneCloser performs a single pane.close round-trip against be. A package var
+// so tests can substitute a fake herdr without a live socket.
+var paneCloser = func(be Backend, id string) error {
+	_, err := be.HerdrCall("pane.close", map[string]any{"pane_id": id})
 	return err
 }
 
-// closePane closes one pane on the active backend (see closePaneWith).
-func closePane(ctx context.Context, id string) error {
-	return closePaneWith(ctx, paneCloser, id)
+// closePane closes one pane on be (see closePaneWith).
+func closePane(ctx context.Context, be Backend, id string) error {
+	return closePaneWith(ctx, func(id string) error { return paneCloser(be, id) }, id)
 }
 
 // closePaneWith closes one pane via closer, absorbing the two flaky cases: a
@@ -1112,6 +1208,11 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pane_ids required", http.StatusBadRequest)
 		return
 	}
+	be, err := reqBackend(r, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	ctx := r.Context()
 	closed := make([]string, 0, len(req.PaneIDs))
 	errs := map[string]string{}
@@ -1119,7 +1220,7 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 		if i > 0 && !sleepCtx(ctx, closePace) { // backpressure between panes
 			break
 		}
-		if err := closePane(ctx, id); err != nil {
+		if err := closePane(ctx, be, id); err != nil {
 			errs[id] = err.Error()
 		} else {
 			closed = append(closed, id)
@@ -1210,7 +1311,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	go syncThemeEverywhere(loadHerdrTheme(""))
 	// Skip the poll wait so the browser's theme_rev bump (and repaint) is
 	// near-immediate.
-	srvHub.kick()
+	srvHub.kick("") // every tab, whatever host it is on, repaints on the new theme
 	writeJSON(w, map[string]any{"ok": true, "name": name})
 }
 
@@ -1956,17 +2057,33 @@ func isBinary(b []byte) bool {
 	return false
 }
 
-// subscribeEvents opens a long-lived connection subscribed to herdr events and
-// signals `trigger` whenever one arrives (the hub then re-fetches state).
-// Reconnects on failure. Beyond the *.focused events that drive the active-pane
-// view, it listens to the workspace/tab/pane lifecycle events — notably
-// workspace.updated, which fires when workspaces are reordered — so the pane
-// list's order and membership stay live.
-func subscribeEvents(ctx context.Context, trigger chan<- struct{}) {
+// subscribeEvents opens a long-lived connection subscribed to ONE host's herdr
+// events and signals `trigger` whenever one arrives (that host's feed then
+// re-fetches state). Reconnects on failure. Beyond the *.focused events that
+// drive the active-pane view, it listens to the workspace/tab/pane lifecycle
+// events — notably workspace.updated, which fires when workspaces are reordered
+// — so the pane list's order and membership stay live.
+//
+// The backend is read through a function, not captured: the host pool can redial
+// a dead master under us, and each reconnect must pick up the socket the pool
+// currently holds rather than the one this goroutine started on.
+func subscribeEvents(ctx context.Context, be func() Backend, trigger chan<- struct{}) {
 	for ctx.Err() == nil {
-		conn, err := net.Dial("unix", curBackend().HerdrSock())
+		sock := be().HerdrSock()
+		if sock == "" {
+			// A backend with no socket to subscribe to (a files-only connection,
+			// a fake in a test). The feed's poll still runs; there is just no
+			// event stream to shorten its latency.
+			if !sleepCtx(ctx, time.Second) {
+				return
+			}
+			continue
+		}
+		conn, err := net.Dial("unix", sock)
 		if err != nil {
-			time.Sleep(time.Second)
+			if !sleepCtx(ctx, time.Second) {
+				return
+			}
 			continue
 		}
 		// Close the conn when ctx is cancelled (host switch / shutdown) so the
@@ -2032,46 +2149,53 @@ func notifyUI(n notice) {
 	}
 }
 
+// hub owns what is GLOBAL to the server — the resolved theme, the UI-prefs
+// revision, and the one-shot notice fan-out — plus the registry of per-host
+// feeds (hostfeed.go) that own everything host-scoped.
+//
+// The split is the point: theme and UI prefs are properties of this lasso, so
+// every tab sees the same ones whatever host it is on, while panes, focus, cwd
+// and herdr liveness belong to a host and reach only the tabs watching it.
 type hub struct {
-	mu         sync.RWMutex
-	cur        Active
-	rev        int    // pane-list layout revision (bumped when lastSig changes)
-	lastSig    string // last seen layout signature
-	themeRev   int    // theme revision (bumped when the resolved theme changes)
-	termRev    int    // host-switch revision (bumped so the browser reloads terminals)
-	uiStateRev int    // UI-prefs revision (bumped on every /api/ui-state save)
-	curTheme   resolvedTheme
-	clients    map[chan Active]struct{}
-	// noticeClients is the same client set as clients, subscribed to one-shot
-	// notices. Kept as its own channel per client rather than folded into Active
-	// because a notice is an EVENT, not state: Active is snapshot-replaced on
-	// every poll and re-sent on connect, which would replay (or silently drop) a
-	// toast instead of delivering it exactly once.
-	noticeClients map[chan notice]struct{}
+	rootCtx context.Context
 
-	// Event subscription, restarted against the new socket on a host switch.
-	rootCtx   context.Context
-	trigger   chan struct{}
-	subMu     sync.Mutex
-	subCancel context.CancelFunc
+	mu         sync.RWMutex
+	themeRev   int // theme revision (bumped when the resolved theme changes)
+	uiStateRev int // UI-prefs revision (bumped on every /api/ui-state save)
+	curTheme   resolvedTheme
+	feeds      map[string]*hostFeed
+	// noticeClients is every connected tab, subscribed to one-shot notices. Kept
+	// as its own channel per client rather than folded into Active because a
+	// notice is an EVENT, not state: Active is snapshot-replaced on every poll
+	// and re-sent on connect, which would replay (or silently drop) a toast
+	// instead of delivering it exactly once. Global, not per feed: a notice is
+	// about lasso, not about a host.
+	noticeClients map[chan notice]struct{}
 }
 
 // newHub seeds the hub's theme with the one resolved at startup, so the first
 // poll only bumps themeRev if config.toml has actually changed since boot.
 func newHub() *hub {
-	// Seed HerdrUp=true so a browser connecting before the first poll doesn't
-	// briefly flash the "herdr disconnected" state.
 	return &hub{
-		cur:           Active{HerdrUp: true},
+		// Replaced by run(). Seeded so a hub built outside main — a test, a CLI
+		// path — can start feeds without a nil parent context.
+		rootCtx:       context.Background(),
 		curTheme:      theme,
-		clients:       map[chan Active]struct{}{},
+		feeds:         map[string]*hostFeed{},
 		noticeClients: map[chan notice]struct{}{},
 	}
 }
 
-// notify fans a notice out to every connected tab. Non-blocking per client (a
-// stalled reader drops the toast rather than wedging the caller), matching how
-// state frames are pushed.
+// revs reads the two global revision counters feeds stamp into every frame.
+func (h *hub) revs() (themeRev, uiStateRev int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.themeRev, h.uiStateRev
+}
+
+// notify fans a notice out to every connected tab, whatever host it is on.
+// Non-blocking per client (a stalled reader drops the toast rather than wedging
+// the caller), matching how state frames are pushed.
 func (h *hub) notify(n notice) {
 	h.mu.RLock()
 	clients := make([]chan notice, 0, len(h.noticeClients))
@@ -2087,216 +2211,128 @@ func (h *hub) notify(n notice) {
 	}
 }
 
-// startSub (re)starts the herdr event subscription under a fresh child of the
-// hub's root context, cancelling any prior one. Called once at boot and again on
-// every host switch so the stream attaches to the new host's (forwarded) socket.
-func (h *hub) startSub() {
-	h.subMu.Lock()
-	defer h.subMu.Unlock()
-	if h.subCancel != nil {
-		h.subCancel()
+// kick forces a near-immediate refresh of host's feed, used after a mutation so
+// its result is pushed without waiting for the poll tick. An empty host kicks
+// every running feed — the right shape for a change that could have touched any
+// of them (a theme write, whose repaint every tab wants now).
+func (h *hub) kick(host string) {
+	if host == "" {
+		h.eachFeed((*hostFeed).kick)
+		return
 	}
-	sctx, cancel := context.WithCancel(h.rootCtx)
-	h.subCancel = cancel
-	go subscribeEvents(sctx, h.trigger)
-}
-
-// kick forces a near-immediate refresh (non-blocking), used after a host switch
-// so the new host's state is pushed without waiting for the poll tick.
-func (h *hub) kick() {
-	select {
-	case h.trigger <- struct{}{}:
-	default:
-	}
-}
-
-// bumpTermRev increments the terminal-reload counter and pushes it to every SSE
-// client RIGHT AWAY, along with the host that is now active.
-//
-// It used to only bump the counter and let the next poll carry it, which meant
-// the browser learned about a switch one full pane poll later — the poll runs
-// herdr RPCs against the host just switched to, so a cross-host switch spent
-// ~1s with the OLD host's terminal still on screen before the iframe remounted.
-// The panes in this frame are the previous host's for that one beat; the poll
-// that follows (kick, called right after) replaces them.
-func (h *hub) bumpTermRev() {
-	h.mu.Lock()
-	h.termRev++
-	h.cur.TermRev = h.termRev
-	h.cur.Host = curBackend().Name()
-	cur := h.cur
-	clients := make([]chan Active, 0, len(h.clients))
-	for c := range h.clients {
-		clients = append(clients, c)
-	}
-	h.mu.Unlock()
-	for _, c := range clients {
-		select {
-		case c <- cur:
-		default:
-		}
+	h.mu.RLock()
+	f := h.feeds[host]
+	h.mu.RUnlock()
+	if f != nil {
+		f.kick()
 	}
 }
 
 // bumpUIStateRev broadcasts a UI-prefs revision bump to every SSE client
 // immediately (no herdr refetch — the prefs live in lasso's own db). Tabs
 // refetch /api/ui-state when the rev moves, so starring a pane or collapsing
-// the sidebar in one tab converges every other open tab within a beat.
+// the sidebar in one tab converges every other open tab within a beat,
+// including tabs sitting on a different host.
 func (h *hub) bumpUIStateRev() {
 	h.mu.Lock()
 	h.uiStateRev++
-	h.cur.UIStateRev = h.uiStateRev
-	cur := h.cur
-	clients := make([]chan Active, 0, len(h.clients))
-	for c := range h.clients {
-		clients = append(clients, c)
-	}
 	h.mu.Unlock()
-	for _, c := range clients {
-		select {
-		case c <- cur:
-		default:
-		}
-	}
+	h.eachFeed((*hostFeed).pushCurrent)
 }
 
-func (h *hub) snapshot() Active             { h.mu.RLock(); defer h.mu.RUnlock(); return h.cur }
+// snapshot is host's current state, starting that host's feed if nothing is
+// watching it yet. The first frame it returns may be the seeded empty one, which
+// the SSE stream replaces a beat later.
+func (h *hub) snapshot(host string) (Active, error) {
+	f, err := h.feed(host)
+	if err != nil {
+		return Active{}, err
+	}
+	return f.snapshot(), nil
+}
+
 func (h *hub) themeSnapshot() resolvedTheme { h.mu.RLock(); defer h.mu.RUnlock(); return h.curTheme }
 
+// run watches herdr's config.toml for theme changes for the life of the server.
+// This is all that is left of the old global poll loop: everything else it did
+// was host-scoped and now lives in hostFeed.run, one per watched host.
+//
+// It stays on the hub rather than being duplicated per feed because the config
+// it reads is the LOCAL one — the single source of truth both lasso and herdr
+// follow — so re-resolving it once per watched host would multiply a file read,
+// a theme diff, and a fleet-wide theme sync by the number of hosts open in tabs.
 func (h *hub) run(ctx context.Context) {
 	h.rootCtx = ctx
-	h.trigger = make(chan struct{}, 1)
-	trigger := h.trigger
-	h.startSub()
+	// Keep the default host's feed warm from boot: it is what a fresh tab lands
+	// on, and paying a cold pane.list on first paint is the one case where the
+	// on-demand feed would be felt.
+	if _, err := h.feed(""); err != nil {
+		log.Printf("feed:     default host: %v", err)
+	}
 	ticker := time.NewTicker(*pollEvery)
 	defer ticker.Stop()
-
-	refresh := func() {
-		a, sig, err := fetchActive()
-		if err != nil {
-			// herdr's socket is unreachable (closed in the terminal). Keep the
-			// last-known state but mark it stale, and notify clients once on the
-			// up->down transition so the sidebar can show a disconnected cue.
-			h.mu.Lock()
-			var down Active
-			var clients []chan Active
-			if h.cur.HerdrUp {
-				h.cur.HerdrUp = false
-				down = h.cur
-				for c := range h.clients {
-					clients = append(clients, c)
-				}
-			}
-			h.mu.Unlock()
-			for _, c := range clients {
-				select {
-				case c <- down:
-				default:
-				}
-			}
-			return
-		}
-		a.HerdrUp = true
-		// Re-resolve herdr's theme from config.toml every tick (cheap file read +
-		// parse) so an edit to [theme].name is picked up live. Done outside the
-		// lock to avoid holding it during I/O.
-		rt := loadHerdrTheme(*themeName)
-		h.mu.Lock()
-		if sig != h.lastSig {
-			h.lastSig = sig
-			h.rev++
-		}
-		if rt != h.curTheme {
-			h.curTheme = rt
-			h.themeRev++
-			if rt.Customized {
-				log.Printf("theme:    reloaded %q -> %s (+custom overrides)", rt.Name, rt.Resolved)
-			} else {
-				log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
-			}
-			// An edit to herdr's config.toml made outside lasso (herdr's own
-			// theme popup, a hand edit) must reach every settled host too, not
-			// only local agents. Async so the poll loop never blocks on I/O.
-			go syncThemeEverywhere(rt)
-		}
-		a.PanesRev = h.rev
-		a.ThemeRev = h.themeRev
-		a.TermRev = h.termRev
-		a.UIStateRev = h.uiStateRev
-		a.Host = curBackend().Name()
-		// activeCwd fills CwdHost only when a resolver knows the host; an empty
-		// one (no focused pane, or a resolver that can't tell) defaults to the
-		// active host so the browser always has a concrete host to browse.
-		if a.CwdHost == "" {
-			a.CwdHost = a.Host
-		}
-		changed := a != h.cur
-		h.cur = a
-		clients := make([]chan Active, 0, len(h.clients))
-		for c := range h.clients {
-			clients = append(clients, c)
-		}
-		h.mu.Unlock()
-		if changed {
-			for _, c := range clients {
-				select {
-				case c <- a:
-				default:
-				}
-			}
-		}
-	}
-
-	// Coalesce bursts of herdr events: rapid focus changes (cycling tabs, moving
-	// panes) each emit an event, and refresh() is dominated by the ~1s pane.list.
-	// A short debounce collapses a burst into a single refresh once it settles —
-	// capturing the final state — instead of running one slow refresh per event.
-	refresh()
-	var debounce <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-trigger:
-			invalidatePaneList() // an event means pane state changed; refetch, don't serve the cache
-			if debounce == nil {
-				debounce = time.After(eventDebounce)
-			}
-		case <-debounce:
-			debounce = nil
-			refresh()
 		case <-ticker.C:
-			refresh()
+			h.refreshTheme()
 		}
 	}
 }
 
-// eventDebounce is the quiet window the hub waits after the first herdr event
-// before refreshing, so a burst of events yields one refresh of the settled
-// state. Kept well under human perception so a single focus change still feels
-// immediate.
-const eventDebounce = 120 * time.Millisecond
+// refreshTheme re-resolves herdr's theme from config.toml (a cheap file read +
+// parse) so an edit to [theme].name is picked up live, bumping themeRev and
+// pushing it to every tab when it moves.
+func (h *hub) refreshTheme() {
+	rt := loadHerdrTheme(*themeName) // outside the lock: it does I/O
+	h.mu.Lock()
+	if rt == h.curTheme {
+		h.mu.Unlock()
+		return
+	}
+	h.curTheme = rt
+	h.themeRev++
+	h.mu.Unlock()
+	if rt.Customized {
+		log.Printf("theme:    reloaded %q -> %s (+custom overrides)", rt.Name, rt.Resolved)
+	} else {
+		log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
+	}
+	// An edit to herdr's config.toml made outside lasso (herdr's own theme
+	// popup, a hand edit) must reach every settled host too, not only local
+	// agents. Async so this loop never blocks on I/O.
+	go syncThemeEverywhere(rt)
+	h.eachFeed((*hostFeed).pushCurrent)
+}
 
+// serveSSE streams one tab's state. The tab names its host (?host=, since an
+// EventSource cannot set a header), and the stream carries THAT host's frames
+// plus the global notices — so two tabs on two machines each get their own
+// machine's panes over their own subscription.
 func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "no flush", http.StatusInternalServerError)
 		return
 	}
+	f, ch, unwatch, err := h.watch(requestHost(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer unwatch()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch := make(chan Active, 4)
 	nch := make(chan notice, 8)
 	h.mu.Lock()
-	h.clients[ch] = struct{}{}
 	h.noticeClients[nch] = struct{}{}
-	cur := h.cur
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
-		delete(h.clients, ch)
 		delete(h.noticeClients, nch)
 		h.mu.Unlock()
 	}()
@@ -2311,7 +2347,7 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: notice\ndata: %s\n\n", b)
 		fl.Flush()
 	}
-	send(cur) // prime with current state
+	send(f.snapshot()) // prime with current state
 
 	keep := time.NewTicker(25 * time.Second)
 	defer keep.Stop()

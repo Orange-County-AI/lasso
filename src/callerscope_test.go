@@ -321,9 +321,9 @@ func containedFleet(t *testing.T) *mcp.CallToolRequest {
 	})
 	stubPeers(t, nil, nil)
 	// list_hosts reports the active host, which only a running server sets.
-	prev := curBackend()
-	setBackend(local)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(local)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 	return callerReq("c-gigachad", "gigachad", scopeSelf)
 }
 

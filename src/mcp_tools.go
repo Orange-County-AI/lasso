@@ -540,7 +540,10 @@ type hostEntry struct {
 }
 
 type listHostsOut struct {
-	Active string      `json:"active"` // the host the lasso UI currently drives
+	// The host lasso booted on, which answers for any caller that names none.
+	// It is NOT "the host the UI is on": each browser tab picks its own now, and
+	// a tab moving to another machine does not move this.
+	Active string      `json:"active"`
 	Hosts  []hostEntry `json:"hosts"`
 	// Probing reports that at least one host has state "probing", i.e. this list
 	// is a partial answer that will fill in. Call again in a second or two for
@@ -553,7 +556,7 @@ func listHostsTool(ctx context.Context, req *mcp.CallToolRequest, in listHostsIn
 	cs := callerFrom(req)
 	hosts, probing := discoverHostsState(ctx, in.Refresh)
 	out := listHostsOut{
-		Active:  curBackend().Name(),
+		Active:  defaultHostName(),
 		Probing: probing,
 		Hosts:   []hostEntry{},
 	}

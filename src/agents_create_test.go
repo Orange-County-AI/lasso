@@ -47,9 +47,9 @@ func TestCreateGitAgentUsesUniqueBranchLeafForWorktreeDir(t *testing.T) {
 	existing := filepath.Join(lasso, "worktrees", "app", "fix-login-a1b2")
 	b.dirs[existing] = true
 
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	reqBody := `{
 		"type": "git",
@@ -97,9 +97,9 @@ func TestCreateAgentWithNoPromptIsUntitledRatherThanRejected(t *testing.T) {
 	t.Cleanup(closeTestDB)
 
 	b := &createAgentBackend{memBackend: newMemBackend()}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	rec, err := createAgent(b, createAgentReq{
 		Type: "git", Repo: "/repo/app", BaseBranch: "main",
@@ -180,9 +180,9 @@ func TestCreateAgentReturnsBeforeBootAndRecordsBootFailure(t *testing.T) {
 	// runs first (LIFO).
 	t.Cleanup(b.releaseBoot)
 
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	start := time.Now()
 	rec, err := createAgent(b, createAgentReq{Type: "scratch", Title: "Boot test", Prompt: "boot test"})
@@ -322,9 +322,9 @@ func TestCreateAgentResumesInterruptedCreate(t *testing.T) {
 		t.Fatalf("appendAgent: %v", err)
 	}
 
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	rec, err := createAgent(b, createAgentReq{
 		Type: "git", Title: "Fix login", Prompt: "Fix login",

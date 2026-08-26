@@ -255,9 +255,9 @@ func TestCreateAgentDropsPlanModeForHarnessWithoutOne(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 	b := &createAgentBackend{memBackend: newMemBackend()}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	rec, err := createAgent(b, createAgentReq{
 		Type: "scratch", Title: "codex planner", Prompt: "plan it",

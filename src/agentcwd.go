@@ -289,11 +289,11 @@ type paneProcessInfo struct {
 // pane is really a window onto another host — so neither pays its own RPC. The
 // zero value is returned when herdr predates pane.process_info or the pane is
 // gone; every consumer reads that as "no answer".
-func paneForeground(paneID string) paneProcessInfo {
+func paneForeground(be Backend, paneID string) paneProcessInfo {
 	if paneID == "" {
 		return paneProcessInfo{}
 	}
-	res, err := herdrCall("pane.process_info", map[string]any{"pane_id": paneID})
+	res, err := be.HerdrCall("pane.process_info", map[string]any{"pane_id": paneID})
 	if err != nil {
 		return paneProcessInfo{}
 	}
@@ -337,20 +337,20 @@ func leaderCwd(pi paneProcessInfo) string {
 // every local answer below is the ssh client's directory and none of them
 // describes what is on screen. Otherwise, most-authoritative first: the
 // harness's own cwd (which the pane never sees), then the pane's foreground
-// leader, then herdr's pane cwds — all on the active host, since that is whose
-// herdr reported the pane. The second return is the Active.CwdSource label
-// naming which resolver answered, prefixed "ssh:" when it answered on the far
-// side of an attach.
-func activeCwd(p pane) (cwd, source, host string) {
-	pi := paneForeground(p.PaneID)
+// leader, then herdr's pane cwds — all on be, since that is whose herdr reported
+// the pane. The second return is the Active.CwdSource label naming which
+// resolver answered, prefixed "ssh:" when it answered on the far side of an
+// attach.
+func activeCwd(be Backend, p pane) (cwd, source, host string) {
+	pi := paneForeground(be, p.PaneID)
 	if hop, ok := paneSSHHop(pi); ok {
 		if c, src := remoteAttachCwd(hop); c != "" {
 			return c, "ssh:" + src, hop.host
 		}
 	}
-	local := curBackend().Name()
+	local := be.Name()
 	leader := leaderCwd(pi)
-	if c := harnessCwd(curBackend(), p, leader); c != "" {
+	if c := harnessCwd(be, p, leader); c != "" {
 		return c, "harness", local
 	}
 	if leader != "" {

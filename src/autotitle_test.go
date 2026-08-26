@@ -237,9 +237,9 @@ func TestCreateAgentAutoTitlesAPromptDerivedTitle(t *testing.T) {
 	called := newTitlerSpy(t, "Generated title")
 
 	b := &createAgentBackend{memBackend: newMemBackend()}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	if _, err := createAgent(b, createAgentReq{
 		Type: "scratch", Prompt: "the login page redirects in a loop after SSO", NoFocus: true,
@@ -260,9 +260,9 @@ func TestCreateAgentLeavesAnExplicitTitleAlone(t *testing.T) {
 	called := newTitlerSpy(t, "Generated title")
 
 	b := &createAgentBackend{memBackend: newMemBackend()}
-	prev := curBackend()
-	setBackend(b)
-	t.Cleanup(func() { setBackend(prev) })
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
 
 	rec, err := createAgent(b, createAgentReq{
 		Type: "scratch", Title: "Chosen name", Prompt: "a long machine-written prompt", NoFocus: true,
@@ -303,6 +303,11 @@ func newTitlerSpy(t *testing.T, title string) <-chan struct{} {
 // frame — get the event name or the shape wrong and the toast silently never
 // fires, which is indistinguishable from the failure never happening.
 func TestHubNoticeReachesTheEventStream(t *testing.T) {
+	// The stream is per host now, so it needs a host to resolve to. Its poll
+	// against a herdr that isn't there just marks the feed down; the notice
+	// fan-out under test is global and unaffected.
+	setDefaultBackend(&localBackend{})
+	t.Cleanup(func() { setDefaultBackend(nil) })
 	h := newHub()
 	srv := httptest.NewServer(http.HandlerFunc(h.serveSSE))
 	t.Cleanup(srv.Close)
@@ -328,8 +333,11 @@ func TestHubNoticeReachesTheEventStream(t *testing.T) {
 
 	h.notify(notice{Level: "error", Title: "Couldn't auto-title", Detail: "claude: not installed"})
 
+	// The host feed pushes its own "active" frames on the same stream, so skip
+	// past any that arrive before the notice rather than reading the first frame
+	// and asserting on it.
 	var event, data string
-	for event == "" || data == "" {
+	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
 			t.Fatalf("read notice frame: %v", err)
@@ -337,12 +345,13 @@ func TestHubNoticeReachesTheEventStream(t *testing.T) {
 		switch {
 		case strings.HasPrefix(line, "event: "):
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+			data = ""
 		case strings.HasPrefix(line, "data: "):
 			data = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
 		}
-	}
-	if event != "notice" {
-		t.Errorf("event = %q, want notice", event)
+		if event == "notice" && data != "" {
+			break
+		}
 	}
 	var got notice
 	if err := json.Unmarshal([]byte(data), &got); err != nil {

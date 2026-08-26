@@ -21,6 +21,9 @@ type createTerminalReq struct {
 	// wants you typing immediately). An API caller creating a terminal for
 	// someone else passes false so it doesn't yank every client's shared focus.
 	Focus *bool `json:"focus"`
+	// Host names the machine to create the terminal on; empty means the calling
+	// tab's own host (and, for a caller that names none, the default one).
+	Host string `json:"host"`
 }
 
 type createTerminalResp struct {
@@ -42,7 +45,11 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 	if label == "" {
 		label = "terminal"
 	}
-	b := curBackend()
+	b, err := reqBackend(r, req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	// Focus unless the caller opted out: herdr focus is session-global, so an
 	// unfocused create is the polite default for anything but the interactive
 	// "New Terminal" dialog (which leaves Focus nil).
