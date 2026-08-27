@@ -323,11 +323,21 @@ var panesCache struct {
 
 const panesCacheTTL = 1500 * time.Millisecond
 
-// paneHostTimeout bounds one host's contribution to the aggregation. Generous
-// against the slow-but-alive case — a cold redial is a handshake plus a socket
-// readiness wait — but finite, so a host that has stopped answering can only
-// cost this much per poll instead of the whole endpoint.
-const paneHostTimeout = 20 * time.Second
+// paneHostTimeout bounds one host's contribution to the aggregation. Sized just
+// past the ssh dial that bounds a cold redial (ConnectTimeout=8 plus handshake
+// and socket readiness): waiting longer cannot rescue a host whose dial has
+// already given up, and every extra second is one the endpoint spends hung. A
+// host that overruns degrades to its last-good panes and its dial is left to
+// finish in the background, so the next poll — 1.5s later — finds it warm.
+const paneHostTimeout = 10 * time.Second
+
+// paneHostConcurrency bounds concurrent host queries. It must cover the whole
+// fleet in ONE wave: the semaphore is taken before each host's deadline starts,
+// so with fewer slots than hosts a single stalled host does not just cost its
+// own timeout, it postpones every host queued behind it — turning one dead box
+// into a multiple of paneHostTimeout. Still bounded, so a fleet that grows past
+// this cannot open unlimited ssh channels at once.
+const paneHostConcurrency = 16
 
 // invalidatePanesCache drops the cached aggregation after a pane-changing
 // operation so the next /api/all-panes request refetches without waiting for TTL.
@@ -801,24 +811,42 @@ func paneErrText(err error) string {
 // fetchAllPanes queries every compatible host concurrently and merges their
 // panes. A host that cannot be listed serves fresh last-known panes alongside an
 // error rather than vanishing from the switcher.
-// Local is always included; remotes come from the (cached) host discovery
-// probe, plus any host we still hold a pooled connection to (a live connection
-// outranks a transiently-failed probe).
-func fetchAllPanes(ctx context.Context) panesPayload {
-	targets := []paneTarget{{host: "local", label: localHostname()}}
+
+// paneTargets picks the hosts one aggregation queries. Local is always included;
+// remotes come from the (cached) discovery probe, plus any host we still hold a
+// pooled connection to — EXCEPT one discovery has settled against.
+//
+// That exception is the whole point. A pooled entry outranks a probe that has
+// not settled: that is the transiently-failed case the pool fallback exists for,
+// and a live socket is the better evidence. It must not outrank a SETTLED
+// negative (State == "", so the booleans are authoritative), because a box that
+// has gone away — asleep, off the tailnet — keeps its pool entry long after it
+// stops answering. Dialing through that entry buys nothing but paneHostTimeout
+// of dead air, on every poll, for a host discovery already knows is gone.
+func paneTargets(localLabel string, discovered []HostInfo, pooled []string) []paneTarget {
+	targets := []paneTarget{{host: "local", label: localLabel}}
 	seen := map[string]bool{"local": true}
-	for _, hi := range discoverHosts(ctx, false) {
-		if hi.Reachable && hi.Running && hi.Compatible {
+	condemned := map[string]bool{}
+	for _, hi := range discovered {
+		switch {
+		case hi.Reachable && hi.Running && hi.Compatible:
 			targets = append(targets, paneTarget{host: hi.Alias, label: hi.Alias})
 			seen[hi.Alias] = true
+		case hi.State == "":
+			condemned[hi.Alias] = true
 		}
 	}
-	for _, host := range hostPoolHosts() {
-		if !seen[host] {
+	for _, host := range pooled {
+		if !seen[host] && !condemned[host] {
 			targets = append(targets, paneTarget{host: host, label: host})
 			seen[host] = true
 		}
 	}
+	return targets
+}
+
+func fetchAllPanes(ctx context.Context) panesPayload {
+	targets := paneTargets(localHostname(), discoverHosts(ctx, false), hostPoolHosts())
 
 	type result struct {
 		panes []hostPane
@@ -826,7 +854,7 @@ func fetchAllPanes(ctx context.Context) panesPayload {
 		host  string
 	}
 	results := make([]result, len(targets))
-	sem := make(chan struct{}, 6) // bound concurrent host queries
+	sem := make(chan struct{}, paneHostConcurrency) // bound concurrent host queries
 	var wg sync.WaitGroup
 	for i, t := range targets {
 		wg.Add(1)
