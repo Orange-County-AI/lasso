@@ -275,6 +275,39 @@ function ProviderGroup({ provider }: { provider: UsageProvider }) {
   )
 }
 
+function ProviderGroups({
+  providers,
+  compact,
+}: {
+  providers: UsageProvider[]
+  compact: boolean
+}) {
+  return providers.map((provider, index) => (
+    <Fragment key={provider.name}>
+      {index > 0 ? (
+        compact ? (
+          <span
+            className="mx-2 flex-none text-muted-foreground/60"
+            aria-hidden
+          >
+            ·
+          </span>
+        ) : (
+          <span
+            className="mx-5 h-4 w-px flex-none bg-muted-foreground/50"
+            aria-hidden
+          />
+        )
+      ) : null}
+      {compact ? (
+        <CompactProviderGroup provider={provider} />
+      ) : (
+        <ProviderGroup provider={provider} />
+      )}
+    </Fragment>
+  ))
+}
+
 export function UsageFooter() {
   const { data, isError } = useUsage()
   const ui = useUIState()
@@ -304,39 +337,25 @@ export function UsageFooter() {
       {/* The footer is the scroll viewport; the inner row is `w-max` so it sizes
           to its content — `mx-auto` then centers it when it fits and collapses
           the margins (letting it scroll left/right) when it's wider than the
-          screen. `no-scrollbar` keeps the slim bar from growing a scrollbar. */}
+          screen. `no-scrollbar` keeps the slim bar from growing a scrollbar.
+          Small screens always use the compact row; the saved preference applies
+          from the desktop breakpoint upward. */}
       <footer className="no-scrollbar flex-none overflow-x-auto border-border border-t bg-card">
         <div
           className={cn(
             "mx-auto flex w-max items-center py-1 font-label text-[11px] uppercase",
-            compact ? "px-3 tracking-wide" : "px-4 tracking-wider"
+            compact
+              ? "px-3 tracking-wide"
+              : "hidden px-4 tracking-wider md:flex"
           )}
         >
-          {providers.map((p, i) => (
-            <Fragment key={p.name}>
-              {i > 0 ? (
-                compact ? (
-                  <span
-                    className="mx-2 flex-none text-muted-foreground/60"
-                    aria-hidden
-                  >
-                    ·
-                  </span>
-                ) : (
-                  <span
-                    className="mx-5 h-4 w-px flex-none bg-muted-foreground/50"
-                    aria-hidden
-                  />
-                )
-              ) : null}
-              {compact ? (
-                <CompactProviderGroup provider={p} />
-              ) : (
-                <ProviderGroup provider={p} />
-              )}
-            </Fragment>
-          ))}
+          <ProviderGroups providers={providers} compact={compact} />
         </div>
+        {!compact ? (
+          <div className="mx-auto flex w-max items-center px-3 py-1 font-label text-[11px] uppercase tracking-wide md:hidden">
+            <ProviderGroups providers={providers} compact />
+          </div>
+        ) : null}
       </footer>
     </TooltipProvider>
   )
