@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Combobox } from "@/components/ui/combobox"
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -224,6 +225,12 @@ export function NewDialog({
   // Set when the dialog closes because a pane was just created, so the close
   // handler hands keyboard focus to Herdr instead of restoring the trigger.
   const createdRef = React.useRef(false)
+  const modeTabsRef = React.useRef<HTMLDivElement>(null)
+  const agentTypeTabsRef = React.useRef<HTMLDivElement>(null)
+  const focusHerdrOnEscapeRef = React.useRef(false)
+  const promptRef = React.useRef<HTMLTextAreaElement>(null)
+  const gitTypeTabRef = React.useRef<HTMLButtonElement>(null)
+  const scratchTypeTabRef = React.useRef<HTMLButtonElement>(null)
 
   // Pick a fresh random Prompt placeholder each time the dialog opens — a little
   // personality on the blank canvas, without the distraction of it animating.
@@ -231,6 +238,22 @@ export function NewDialog({
     if (!open) return
     setPlaceholderIdx(Math.floor(Math.random() * PROMPT_PLACEHOLDERS.length))
   }, [open])
+
+  // Agent creation begins in the prompt; Terminal begins on its selector. Both
+  // cases stay keyboard-first when opened or changed via ⌘O/⌘I.
+  React.useEffect(() => {
+    if (!open) return
+    const frame = requestAnimationFrame(() => {
+      if (tab === "agent") {
+        promptRef.current?.focus()
+      } else {
+        modeTabsRef.current
+          ?.querySelector<HTMLElement>('[data-state="active"]')
+          ?.focus()
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open, tab])
 
   // The form targets a host the user picks (defaults to the active host). Each
   // host's config/repos live in its own lasso.db, so the queries are keyed and
@@ -338,7 +361,21 @@ export function NewDialog({
   const [pastedImages, setPastedImages] = React.useState<
     { path: string; blob: Blob; host: string }[]
   >([])
-  const promptRef = React.useRef<HTMLTextAreaElement>(null)
+
+  // Tab and Shift+Tab move keyboard focus between the two agent types; manual
+  // activation leaves the choice unchanged until Enter or Space confirms it.
+  const onAgentTypeTabKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>
+  ) => {
+    if (event.key !== "Tab") return
+    if (!event.shiftKey && event.target === gitTypeTabRef.current) {
+      event.preventDefault()
+      scratchTypeTabRef.current?.focus()
+    } else if (event.shiftKey && event.target === scratchTypeTabRef.current) {
+      event.preventDefault()
+      gitTypeTabRef.current?.focus()
+    }
+  }
 
   // The launchable-harness registry (compiled into the backend) drives the
   // AI-agent dropdown, plan-mode visibility, and model suggestions.
@@ -681,41 +718,65 @@ export function NewDialog({
       </DialogTrigger>
       <DialogContent
         className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
+        showCloseButton={false}
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          if (tab === "agent") {
+            promptRef.current?.focus()
+          } else {
+            modeTabsRef.current
+              ?.querySelector<HTMLElement>('[data-state="active"]')
+              ?.focus()
+          }
+        }}
+        onEscapeKeyDown={() => {
+          focusHerdrOnEscapeRef.current = true
+        }}
         onCloseAutoFocus={(e) => {
-          // On a create-driven close, hand the keyboard to the herdr terminal —
-          // the new agent's pane is already focused there. Otherwise (cancel /
-          // Esc) let Radix restore focus to the trigger as usual.
-          if (createdRef.current) {
-            createdRef.current = false
+          // A successful creation or Esc should return the keyboard to Herdr;
+          // other dismissals retain Radix's normal focus restoration.
+          const focusHerdr = createdRef.current || focusHerdrOnEscapeRef.current
+          createdRef.current = false
+          focusHerdrOnEscapeRef.current = false
+          if (focusHerdr) {
             e.preventDefault()
             focusHerdrTerminal()
           }
         }}
       >
-        <DialogHeader>
-          <DialogTitle>New</DialogTitle>
-        </DialogHeader>
         <Tabs
           value={tab}
           onValueChange={(value) => onTabChange(value as NewDialogTab)}
           className="min-h-0 flex-1 gap-4 overflow-hidden"
         >
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="agent">
-              Agent
-              <kbd className="font-mono text-[10px] text-muted-foreground">
-                ⌘O
-              </kbd>
-            </TabsTrigger>
-            <TabsTrigger value="terminal">
-              Terminal
-              <kbd className="font-mono text-[10px] text-muted-foreground">
-                ⌘I
-              </kbd>
-            </TabsTrigger>
-          </TabsList>
+          <DialogHeader className="flex-row items-center gap-3">
+            <DialogTitle className="shrink-0">New</DialogTitle>
+            <TabsList
+              ref={modeTabsRef}
+              className="grid min-w-0 flex-1 grid-cols-2"
+            >
+              <TabsTrigger value="agent">
+                Agent
+                <kbd className="font-mono text-[10px] text-muted-foreground">
+                  ⌘O
+                </kbd>
+              </TabsTrigger>
+              <TabsTrigger value="terminal">
+                Terminal
+                <kbd className="font-mono text-[10px] text-muted-foreground">
+                  ⌘I
+                </kbd>
+              </TabsTrigger>
+            </TabsList>
+            <DialogClose asChild>
+              <Button variant="ghost" size="icon-sm" className="shrink-0">
+                <X />
+                <span className="sr-only">Close</span>
+              </Button>
+            </DialogClose>
+          </DialogHeader>
           <TabsContent
             value="agent"
             forceMount
@@ -738,17 +799,25 @@ export function NewDialog({
               }}
               className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
             >
-              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-                <Tabs
-                  value={type}
-                  onValueChange={(value) => setType(value as AgentType)}
+              <Tabs
+                value={type}
+                onValueChange={(value) => setType(value as AgentType)}
+                activationMode="manual"
+              >
+                <TabsList
+                  ref={agentTypeTabsRef}
+                  onKeyDown={onAgentTypeTabKeyDown}
+                  className="grid w-full grid-cols-2"
                 >
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="git">Git</TabsTrigger>
-                    <TabsTrigger value="scratch">Scratch</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-
+                  <TabsTrigger ref={gitTypeTabRef} value="git">
+                    Git
+                  </TabsTrigger>
+                  <TabsTrigger ref={scratchTypeTabRef} value="scratch">
+                    Scratch
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
                 {/* Optional — an empty prompt creates the worktree/workspace and
                 launches the agent's CLI with no instruction at all. */}
                 <Field label="Prompt (optional)" htmlFor="agent-prompt">
@@ -768,7 +837,6 @@ export function NewDialog({
                         onPaste={onPromptPaste}
                         disabled={pastingImage}
                         placeholder={PROMPT_PLACEHOLDERS[placeholderIdx]}
-                        autoFocus
                       />
                       {pastingImage && (
                         <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 text-muted-foreground text-sm">
