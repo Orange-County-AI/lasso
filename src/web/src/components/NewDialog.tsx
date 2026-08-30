@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Plus, X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
+import { NewTerminalForm } from "@/components/NewTerminalForm"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Combobox } from "@/components/ui/combobox"
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ApiError,
   api,
@@ -198,37 +200,30 @@ function hostUsable(h: HostInfo): boolean {
   return h.reachable && h.running && h.compatible
 }
 
-export function CreateAgentDialog({
+export type NewDialogTab = "agent" | "terminal"
+
+export function NewDialog({
+  open,
+  onOpenChange,
+  tab,
+  onTabChange,
   variant = "button",
 }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  tab: NewDialogTab
+  onTabChange: (tab: NewDialogTab) => void
   // "button" — the inline outline button on a panel header.
   // "floating" — a pill matching the host switcher, for the bottom-left footer.
   // "header" — a compact button for the left column's header row.
   variant?: "button" | "floating" | "header"
 }) {
-  const [open, setOpen] = React.useState(false)
   const [showAdvanced, setShowAdvanced] = React.useState(false)
   const [placeholderIdx, setPlaceholderIdx] = React.useState(0)
   const queryClient = useQueryClient()
-  // Set when the dialog closes because an agent was just created, so the close
-  // handler hands keyboard focus to the herdr terminal instead of letting Radix
-  // restore it to the trigger (which would force the user to click the pane).
+  // Set when the dialog closes because a pane was just created, so the close
+  // handler hands keyboard focus to Herdr instead of restoring the trigger.
   const createdRef = React.useRef(false)
-
-  // Cmd+O opens the creator. Bound to the non-"button" variants (the
-  // header / floating triggers) so the shortcut has a single owner even when the
-  // Agents-tab button is also mounted.
-  React.useEffect(() => {
-    if (variant === "button") return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "o") {
-        e.preventDefault()
-        setOpen(true)
-      }
-    }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
-  }, [variant])
 
   // Pick a fresh random Prompt placeholder each time the dialog opens — a little
   // personality on the blank canvas, without the distraction of it animating.
@@ -605,7 +600,7 @@ export function CreateAgentDialog({
       // bare workspace_id has no tab to focus anyway — /api/focus requires both
       // ids, so this call always 400'd and was swallowed.
       createdRef.current = true
-      setOpen(false)
+      onOpenChange(false)
       reset()
       // The creator just updated this host's remembered selections + agent log,
       // so refetch them (prefix-match clears every host's cached config).
@@ -643,7 +638,7 @@ export function CreateAgentDialog({
     pastedImages.find((im) => im.path === p)?.host ?? selectedHost
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         {variant === "header" ? (
           // Prominent (but unfilled) button for the left column's tab-strip
@@ -651,29 +646,36 @@ export function CreateAgentDialog({
           // faint tint, so it reads as the row's primary action without a solid fill.
           <button
             type="button"
+            onClick={() => onTabChange("agent")}
             className="my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 @min-[400px]/lnav:px-2.5 px-2 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
-            title="create a new agent (⌘O)"
+            title="create an agent or terminal (⌘O / ⌘I)"
           >
             <Plus className="size-3.5" />
             {/* Label collapses to a bare "+" only when the strip is genuinely
                 tight — tracked against the `/lnav` container, not the viewport. */}
-            <span className="@min-[400px]/lnav:inline hidden">New Agent</span>
+            <span className="@min-[400px]/lnav:inline hidden">New</span>
           </button>
         ) : variant === "floating" ? (
           // Mirrors the HostSwitcher pill so the two footer controls read as a
           // pair (see App.tsx, where this sits to the host button's right).
           <button
             type="button"
+            onClick={() => onTabChange("agent")}
             className="flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
-            title="create a new agent (⌘O)"
+            title="create an agent or terminal (⌘O / ⌘I)"
           >
             <Plus className="size-3" />
-            <span className="font-medium">New Agent</span>
+            <span className="font-medium">New</span>
           </button>
         ) : (
-          <Button size="sm" variant="outline" className="gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1"
+            onClick={() => onTabChange("agent")}
+          >
             <Plus className="size-4" />
-            New Agent
+            New
           </Button>
         )}
       </DialogTrigger>
@@ -693,390 +695,429 @@ export function CreateAgentDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle>New Agent</DialogTitle>
+          <DialogTitle>New</DialogTitle>
         </DialogHeader>
-
-        {/* A real <form> lets the comboboxes keep their own Enter (item select)
+        <Tabs
+          value={tab}
+          onValueChange={(value) => onTabChange(value as NewDialogTab)}
+          className="min-h-0 flex-1 gap-4 overflow-hidden"
+        >
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="agent">
+              Agent
+              <kbd className="font-mono text-[10px] text-muted-foreground">
+                ⌘O
+              </kbd>
+            </TabsTrigger>
+            <TabsTrigger value="terminal">
+              Terminal
+              <kbd className="font-mono text-[10px] text-muted-foreground">
+                ⌘I
+              </kbd>
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent
+            value="agent"
+            forceMount
+            className="flex min-h-0 flex-col data-[state=inactive]:hidden"
+          >
+            {/* A real <form> lets the comboboxes keep their own Enter (item select)
             while the prompt <textarea> inserts a newline. The keydown handler
             adds Cmd/Ctrl+Enter as an always-submit, including from the prompt and
             comboboxes. */}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            submit()
-          }}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
-        >
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-            {/* Type toggle */}
-            <div className="flex gap-2">
-              {(["git", "scratch"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setType(t)}
-                  className={cn(
-                    "flex-1 rounded-md border bg-background px-3 py-1.5 text-sm capitalize transition-all",
-                    type === t
-                      ? "border-primary bg-primary/15 text-primary shadow-elev-sm"
-                      : "border-border text-muted-foreground shadow-well hover:border-primary/50 hover:bg-primary/10 hover:text-foreground"
-                  )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                submit()
+              }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
+            >
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+                <Tabs
+                  value={type}
+                  onValueChange={(value) => setType(value as AgentType)}
                 >
-                  {t}
-                </button>
-              ))}
-            </div>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="git">Git</TabsTrigger>
+                    <TabsTrigger value="scratch">Scratch</TabsTrigger>
+                  </TabsList>
+                </Tabs>
 
-            {/* Optional — an empty prompt creates the worktree/workspace and
+                {/* Optional — an empty prompt creates the worktree/workspace and
                 launches the agent's CLI with no instruction at all. */}
-            <Field label="Prompt (optional)" htmlFor="agent-prompt">
-              <div className="flex flex-col gap-2">
-                <div className="relative">
-                  <textarea
-                    ref={promptRef}
-                    id="agent-prompt"
-                    className={cn(
-                      fieldClass,
-                      "resize-none",
-                      pastingImage && "opacity-50"
-                    )}
-                    rows={6}
-                    value={prompt}
-                    onChange={(e) => onPromptChange(e.target.value)}
-                    onPaste={onPromptPaste}
-                    disabled={pastingImage}
-                    placeholder={PROMPT_PLACEHOLDERS[placeholderIdx]}
-                    autoFocus
-                  />
-                  {pastingImage && (
-                    <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 text-muted-foreground text-sm">
-                      Uploading image…
+                <Field label="Prompt (optional)" htmlFor="agent-prompt">
+                  <div className="flex flex-col gap-2">
+                    <div className="relative">
+                      <textarea
+                        ref={promptRef}
+                        id="agent-prompt"
+                        className={cn(
+                          fieldClass,
+                          "resize-none",
+                          pastingImage && "opacity-50"
+                        )}
+                        rows={6}
+                        value={prompt}
+                        onChange={(e) => onPromptChange(e.target.value)}
+                        onPaste={onPromptPaste}
+                        disabled={pastingImage}
+                        placeholder={PROMPT_PLACEHOLDERS[placeholderIdx]}
+                        autoFocus
+                      />
+                      {pastingImage && (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 text-muted-foreground text-sm">
+                          Uploading image…
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                {pastedImagePaths.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {pastedImagePaths.map((path) => (
-                      <a
-                        key={path}
-                        href={api.fileURL(path, hostForImage(path))}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block rounded border border-border bg-card p-1 transition-opacity hover:opacity-80"
-                      >
-                        <img
-                          src={api.fileURL(path, hostForImage(path))}
-                          alt={path}
-                          className="h-16 w-auto max-w-32 object-contain"
-                        />
-                      </a>
-                    ))}
+                    {pastedImagePaths.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {pastedImagePaths.map((path) => (
+                          <a
+                            key={path}
+                            href={api.fileURL(path, hostForImage(path))}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded border border-border bg-card p-1 transition-opacity hover:opacity-80"
+                          >
+                            <img
+                              src={api.fileURL(path, hostForImage(path))}
+                              alt={path}
+                              className="h-16 w-auto max-w-32 object-contain"
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </Field>
+
+                <Field label="Host" htmlFor="agent-host">
+                  <select
+                    id="agent-host"
+                    className={fieldClass}
+                    value={selectedHost}
+                    onChange={(e) => setSelectedHost(e.target.value)}
+                  >
+                    {hostGroups.map((g) => {
+                      // Flat "<host> · <user>" for a single-account box; inside an
+                      // optgroup the family/host is the group label, so options lead
+                      // with the account name — the alias follows in parens unless
+                      // it's just the group name plus that account.
+                      const text = (
+                        o: {
+                          alias: string
+                          label: string
+                          user: string
+                          disabled: boolean
+                        },
+                        inGroup: boolean
+                      ) => {
+                        const name = inGroup ? o.label : o.alias
+                        const extra = inGroup
+                          ? o.alias !== o.label &&
+                            !o.alias.endsWith(`-${o.label}`)
+                            ? ` (${o.alias})`
+                            : ""
+                          : o.user
+                            ? ` · ${o.user}`
+                            : ""
+                        return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
+                      }
+                      if (g.opts.length === 1) {
+                        const o = g.opts[0]
+                        return (
+                          <option
+                            key={o.value}
+                            value={o.value}
+                            disabled={o.disabled}
+                          >
+                            {text(o, false)}
+                          </option>
+                        )
+                      }
+                      return (
+                        <optgroup key={g.box} label={g.box}>
+                          {g.opts.map((o) => (
+                            <option
+                              key={o.value}
+                              value={o.value}
+                              disabled={o.disabled}
+                            >
+                              {text(o, true)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )
+                    })}
+                  </select>
+                </Field>
+
+                {type === "git" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Repository" htmlFor="agent-repo">
+                      <Combobox
+                        id="agent-repo"
+                        items={repos.map((r) => ({
+                          value: r.path,
+                          label: r.name,
+                        }))}
+                        value={repo}
+                        onValueChange={setRepo}
+                        placeholder="Select a repository…"
+                        filterPlaceholder="Filter repositories…"
+                        showFullLabelOnHover
+                        emptyText={
+                          reposError
+                            ? "Couldn't load repos."
+                            : "No repos found."
+                        }
+                      />
+                      {reposError && (
+                        <p className="mt-1 text-[11px] text-destructive">
+                          {reposError}
+                        </p>
+                      )}
+                    </Field>
+
+                    <Field label="Base branch" htmlFor="agent-base">
+                      <Combobox
+                        id="agent-base"
+                        items={branches.map((b) => ({ value: b, label: b }))}
+                        value={baseBranch}
+                        onValueChange={setBaseBranch}
+                        placeholder="Select a base branch…"
+                        filterPlaceholder="Filter branches…"
+                        emptyText="No branches found."
+                      />
+                    </Field>
                   </div>
                 )}
-              </div>
-            </Field>
 
-            <Field label="Host" htmlFor="agent-host">
-              <select
-                id="agent-host"
-                className={fieldClass}
-                value={selectedHost}
-                onChange={(e) => setSelectedHost(e.target.value)}
-              >
-                {hostGroups.map((g) => {
-                  // Flat "<host> · <user>" for a single-account box; inside an
-                  // optgroup the family/host is the group label, so options lead
-                  // with the account name — the alias follows in parens unless
-                  // it's just the group name plus that account.
-                  const text = (
-                    o: {
-                      alias: string
-                      label: string
-                      user: string
-                      disabled: boolean
-                    },
-                    inGroup: boolean
-                  ) => {
-                    const name = inGroup ? o.label : o.alias
-                    const extra = inGroup
-                      ? o.alias !== o.label && !o.alias.endsWith(`-${o.label}`)
-                        ? ` (${o.alias})`
-                        : ""
-                      : o.user
-                        ? ` · ${o.user}`
-                        : ""
-                    return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
-                  }
-                  if (g.opts.length === 1) {
-                    const o = g.opts[0]
-                    return (
-                      <option
-                        key={o.value}
-                        value={o.value}
-                        disabled={o.disabled}
-                      >
-                        {text(o, false)}
-                      </option>
-                    )
-                  }
-                  return (
-                    <optgroup key={g.box} label={g.box}>
-                      {g.opts.map((o) => (
-                        <option
-                          key={o.value}
-                          value={o.value}
-                          disabled={o.disabled}
+                {/* Advanced */}
+                <button
+                  type="button"
+                  className="flex w-fit items-center gap-1 self-start rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
+                  onClick={() => setShowAdvanced((s) => !s)}
+                >
+                  <ChevronDown
+                    className={cn(
+                      "size-4 transition-transform",
+                      showAdvanced && "rotate-180"
+                    )}
+                  />
+                  Advanced
+                </button>
+
+                {showAdvanced && (
+                  <div className="flex flex-col gap-3 border-border border-l pl-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="AI agent" htmlFor="agent-agent">
+                        <select
+                          id="agent-agent"
+                          className={fieldClass}
+                          value={agent}
+                          onChange={(e) => {
+                            setAgent(e.target.value)
+                            // Model names and effort levels are both harness-specific
+                            // (claude's "opus"/"max" mean nothing to codex), so a
+                            // switch clears them back to "pass no flag" rather than
+                            // carrying over a value the new CLI can't take.
+                            setModel("")
+                            setEffort("")
+                          }}
                         >
-                          {text(o, true)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )
-                })}
-              </select>
-            </Field>
-
-            {type === "git" && (
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Repository" htmlFor="agent-repo">
-                  <Combobox
-                    id="agent-repo"
-                    items={repos.map((r) => ({ value: r.path, label: r.name }))}
-                    value={repo}
-                    onValueChange={setRepo}
-                    placeholder="Select a repository…"
-                    filterPlaceholder="Filter repositories…"
-                    showFullLabelOnHover
-                    emptyText={
-                      reposError ? "Couldn't load repos." : "No repos found."
-                    }
-                  />
-                  {reposError && (
-                    <p className="mt-1 text-[11px] text-destructive">
-                      {reposError}
-                    </p>
-                  )}
-                </Field>
-
-                <Field label="Base branch" htmlFor="agent-base">
-                  <Combobox
-                    id="agent-base"
-                    items={branches.map((b) => ({ value: b, label: b }))}
-                    value={baseBranch}
-                    onValueChange={setBaseBranch}
-                    placeholder="Select a base branch…"
-                    filterPlaceholder="Filter branches…"
-                    emptyText="No branches found."
-                  />
-                </Field>
-              </div>
-            )}
-
-            {/* Advanced */}
-            <button
-              type="button"
-              className="flex w-fit items-center gap-1 self-start rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
-              onClick={() => setShowAdvanced((s) => !s)}
-            >
-              <ChevronDown
-                className={cn(
-                  "size-4 transition-transform",
-                  showAdvanced && "rotate-180"
-                )}
-              />
-              Advanced
-            </button>
-
-            {showAdvanced && (
-              <div className="flex flex-col gap-3 border-border border-l pl-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="AI agent" htmlFor="agent-agent">
-                    <select
-                      id="agent-agent"
-                      className={fieldClass}
-                      value={agent}
-                      onChange={(e) => {
-                        setAgent(e.target.value)
-                        // Model names and effort levels are both harness-specific
-                        // (claude's "opus"/"max" mean nothing to codex), so a
-                        // switch clears them back to "pass no flag" rather than
-                        // carrying over a value the new CLI can't take.
-                        setModel("")
-                        setEffort("")
-                      }}
-                    >
-                      {harnesses.map((h) => (
-                        <option key={h.id} value={h.id}>
-                          {h.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Model" htmlFor="agent-model">
-                    {/* Free text + suggestions: model names churn faster than
+                          {harnesses.map((h) => (
+                            <option key={h.id} value={h.id}>
+                              {h.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Model" htmlFor="agent-model">
+                        {/* Free text + suggestions: model names churn faster than
                         releases, so the list is a hint, not a constraint. The
                         editable combobox always shows every suggestion on open
                         (unlike a native datalist, which hides them once the
                         field holds a complete value). */}
-                    <EditableCombobox
-                      id="agent-model"
-                      value={model}
-                      onValueChange={setModel}
-                      suggestions={harness.model_suggestions ?? []}
-                      placeholder="default"
-                      // Blank means "pass no --model flag", so the list needs a
-                      // row that returns to it after a model has been picked.
-                      emptyOption="default"
-                    />
-                  </Field>
-                </div>
-                {/* Only harnesses whose CLI takes an effort knob list levels
+                        <EditableCombobox
+                          id="agent-model"
+                          value={model}
+                          onValueChange={setModel}
+                          suggestions={harness.model_suggestions ?? []}
+                          placeholder="default"
+                          // Blank means "pass no --model flag", so the list needs a
+                          // row that returns to it after a model has been picked.
+                          emptyOption="default"
+                        />
+                      </Field>
+                    </div>
+                    {/* Only harnesses whose CLI takes an effort knob list levels
                     (claude, codex); elsewhere the select is hidden rather than
                     offering a setting that goes nowhere. */}
-                {!!harness.effort_levels?.length && (
-                  <Field label="Thinking effort" htmlFor="agent-effort">
-                    <select
-                      id="agent-effort"
-                      className={fieldClass}
-                      value={effort}
-                      onChange={(e) => setEffort(e.target.value)}
-                    >
-                      {/* Blank = pass no flag, so the CLI applies its own
+                    {!!harness.effort_levels?.length && (
+                      <Field label="Thinking effort" htmlFor="agent-effort">
+                        <select
+                          id="agent-effort"
+                          className={fieldClass}
+                          value={effort}
+                          onChange={(e) => setEffort(e.target.value)}
+                        >
+                          {/* Blank = pass no flag, so the CLI applies its own
                           default — same wording as the Model placeholder. */}
-                      <option value="">default</option>
-                      {harness.effort_levels.map((lvl) => (
-                        <option key={lvl} value={lvl}>
-                          {lvl}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
-                {/* Plan mode only exists on harnesses that support it (claude,
+                          <option value="">default</option>
+                          {harness.effort_levels.map((lvl) => (
+                            <option key={lvl} value={lvl}>
+                              {lvl}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
+                    {/* Plan mode only exists on harnesses that support it (claude,
                     opencode, omp); hide the toggle elsewhere rather than
                     offering a no-op. */}
-                {harness.supports_plan_mode && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="agent-plan-mode"
-                      checked={planMode}
-                      onCheckedChange={(v) => setPlanMode(v === true)}
-                      // Checkboxes toggle on Space by ARIA convention; this form
-                      // is otherwise Enter-driven, so accept Enter to toggle too.
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault()
-                          setPlanMode((v) => !v)
-                        }
-                      }}
-                    />
-                    <label
-                      htmlFor="agent-plan-mode"
-                      className="cursor-pointer text-sm"
-                    >
-                      Start in plan mode
-                    </label>
-                  </div>
-                )}
-                <Field label="Extra CLI args" htmlFor="agent-extra-args">
-                  <Input
-                    id="agent-extra-args"
-                    className="bg-background font-mono dark:bg-background"
-                    value={extraArgs}
-                    onChange={(e) => setExtraArgs(e.target.value)}
-                    placeholder="appended to the launch command"
-                  />
-                </Field>
-                {type === "git" && (
-                  <>
-                    <Field label="Branch prefix" htmlFor="agent-prefix">
-                      <Input
-                        id="agent-prefix"
-                        className="bg-background dark:bg-background"
-                        value={prefix}
-                        onChange={(e) => setPrefix(e.target.value)}
-                        placeholder="feat/"
-                      />
-                    </Field>
-                    <Field label="Branch name" htmlFor="agent-branch">
-                      <Input
-                        id="agent-branch"
-                        className="bg-background dark:bg-background"
-                        value={branchName}
-                        onChange={(e) => setBranchName(e.target.value)}
-                        placeholder={autoBranch || "auto-generated"}
-                      />
-                    </Field>
-                    {effectiveBranch && (
-                      <p className="-mt-1 font-mono text-muted-foreground text-xs">
-                        branch: {effectiveBranch}
-                      </p>
-                    )}
-                  </>
-                )}
-                <Field label="Attachments" htmlFor="agent-files">
-                  <input
-                    id="agent-files"
-                    type="file"
-                    multiple
-                    className={cn(
-                      fieldClass,
-                      "cursor-pointer text-muted-foreground file:mr-2.5 file:cursor-pointer file:rounded file:border-0 file:bg-accent file:px-2 file:py-0.5 file:font-medium file:text-foreground file:text-sm"
-                    )}
-                    onChange={(e) =>
-                      setFiles((prev) => [
-                        ...prev,
-                        ...Array.from(e.target.files ?? []),
-                      ])
-                    }
-                  />
-                </Field>
-                {files.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {files.map((f, i) => (
-                      <span
-                        key={`${f.name}-${f.size}-${f.lastModified}`}
-                        className="inline-flex items-center gap-1 rounded border border-border bg-card px-1.5 py-0.5 text-xs"
-                      >
-                        {f.name}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setFiles((prev) => prev.filter((_, j) => j !== i))
-                          }
-                          className="text-muted-foreground hover:text-foreground"
+                    {harness.supports_plan_mode && (
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="agent-plan-mode"
+                          checked={planMode}
+                          onCheckedChange={(v) => setPlanMode(v === true)}
+                          // Checkboxes toggle on Space by ARIA convention; this form
+                          // is otherwise Enter-driven, so accept Enter to toggle too.
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              setPlanMode((v) => !v)
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor="agent-plan-mode"
+                          className="cursor-pointer text-sm"
                         >
-                          <X className="size-3" />
-                        </button>
-                      </span>
-                    ))}
+                          Start in plan mode
+                        </label>
+                      </div>
+                    )}
+                    <Field label="Extra CLI args" htmlFor="agent-extra-args">
+                      <Input
+                        id="agent-extra-args"
+                        className="bg-background font-mono dark:bg-background"
+                        value={extraArgs}
+                        onChange={(e) => setExtraArgs(e.target.value)}
+                        placeholder="appended to the launch command"
+                      />
+                    </Field>
+                    {type === "git" && (
+                      <>
+                        <Field label="Branch prefix" htmlFor="agent-prefix">
+                          <Input
+                            id="agent-prefix"
+                            className="bg-background dark:bg-background"
+                            value={prefix}
+                            onChange={(e) => setPrefix(e.target.value)}
+                            placeholder="feat/"
+                          />
+                        </Field>
+                        <Field label="Branch name" htmlFor="agent-branch">
+                          <Input
+                            id="agent-branch"
+                            className="bg-background dark:bg-background"
+                            value={branchName}
+                            onChange={(e) => setBranchName(e.target.value)}
+                            placeholder={autoBranch || "auto-generated"}
+                          />
+                        </Field>
+                        {effectiveBranch && (
+                          <p className="-mt-1 font-mono text-muted-foreground text-xs">
+                            branch: {effectiveBranch}
+                          </p>
+                        )}
+                      </>
+                    )}
+                    <Field label="Attachments" htmlFor="agent-files">
+                      <input
+                        id="agent-files"
+                        type="file"
+                        multiple
+                        className={cn(
+                          fieldClass,
+                          "cursor-pointer text-muted-foreground file:mr-2.5 file:cursor-pointer file:rounded file:border-0 file:bg-accent file:px-2 file:py-0.5 file:font-medium file:text-foreground file:text-sm"
+                        )}
+                        onChange={(e) =>
+                          setFiles((prev) => [
+                            ...prev,
+                            ...Array.from(e.target.files ?? []),
+                          ])
+                        }
+                      />
+                    </Field>
+                    {files.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {files.map((f, i) => (
+                          <span
+                            key={`${f.name}-${f.size}-${f.lastModified}`}
+                            className="inline-flex items-center gap-1 rounded border border-border bg-card px-1.5 py-0.5 text-xs"
+                          >
+                            {f.name}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFiles((prev) =>
+                                  prev.filter((_, j) => j !== i)
+                                )
+                              }
+                              className="text-muted-foreground hover:text-foreground"
+                            >
+                              <X className="size-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          {/* Drop the shared footer's muted bar/border — it reads as a stray
+              {/* Drop the shared footer's muted bar/border — it reads as a stray
               block once the form's content is short. */}
-          <DialogFooter className="border-t-0 bg-transparent pt-0">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!canSubmit}>
-              {createMutation.isPending ? "Creating…" : "Create agent"}
-            </Button>
-          </DialogFooter>
-        </form>
+              <DialogFooter className="border-t-0 bg-transparent pt-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={!canSubmit}>
+                  {createMutation.isPending ? "Creating…" : "Create agent"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </TabsContent>
+          <TabsContent
+            value="terminal"
+            forceMount
+            className="flex min-h-0 flex-col data-[state=inactive]:hidden"
+          >
+            <NewTerminalForm
+              open={open}
+              active={tab === "terminal"}
+              onCancel={() => onOpenChange(false)}
+              onCreated={() => {
+                createdRef.current = true
+                onOpenChange(false)
+              }}
+            />
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   )

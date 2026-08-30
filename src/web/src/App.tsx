@@ -13,11 +13,10 @@ import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { BrowserTab } from "@/components/BrowserTab"
-import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
-import { NewTerminalDialog } from "@/components/NewTerminalDialog"
+import { NewDialog, type NewDialogTab } from "@/components/NewDialog"
 import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
@@ -185,7 +184,8 @@ function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
   const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
-  const [newTermOpen, setNewTermOpen] = React.useState(false)
+  const [newOpen, setNewOpen] = React.useState(false)
+  const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   // Whether the herdr terminal held focus when ⌘K opened the palette, captured
   // at keypress (before Radix moves focus into the dialog) so a cancel-close can
@@ -285,7 +285,7 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // ⌘K → pane switcher, ⌘I → new terminal, ⌘\ → toggle the sidebar, ⌘/ →
+  // ⌘K → pane switcher, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
   // never clobbers terminal control keys like Ctrl-H (backspace). The
   // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
@@ -302,9 +302,10 @@ function Shell() {
         e.preventDefault()
         setPaletteFromTerm(document.activeElement?.id === "term")
         setPaletteOpen(true)
-      } else if (k === "i") {
+      } else if (k === "o" || k === "i") {
         e.preventDefault()
-        setNewTermOpen(true)
+        setNewTab(k === "o" ? "agent" : "terminal")
+        setNewOpen(true)
       } else if (k === "/") {
         e.preventDefault()
         setShortcutsOpen(true)
@@ -376,11 +377,9 @@ function Shell() {
             className="flex h-full min-h-0 flex-col"
           >
             {/* The left column's header row. It is not a tab strip: the column
-                is always the herdr terminal, so the row just carries the host
-                picker, the ⌘K search affordance and New Agent. Styled with the
-                sidebar's strip classes so both columns share one chrome, and
-                `@container/lnav` makes it the container the search / New-Agent
-                labels shrink against (see their `@min-[…]/lnav:` classes). */}
+                is always the Herdr terminal, so the row carries the host picker,
+                ⌘K search, and the shared New agent/terminal action. Styled with
+                the sidebar's strip classes so both columns share one chrome. */}
             <div
               className={cn(
                 stripClass,
@@ -396,13 +395,17 @@ function Shell() {
                   }}
                 />
               </div>
-              {/* New Agent sits at the far-right of the row; when the sidebar
-                  is collapsed the git status + expand control follow it. */}
+              {/* New sits at the far-right of the row; when the sidebar is
+                  collapsed the git status + expand control follow it. The
+                  dialog hands keyboard focus to a newly created pane. */}
               <div className="ml-2 flex items-center gap-1.5">
-                {/* The new agent's pane becomes herdr's focused pane, so the
-                    terminal below already shows it — the dialog's own close
-                    handler hands it the keyboard. */}
-                <CreateAgentDialog variant="header" />
+                <NewDialog
+                  open={newOpen}
+                  onOpenChange={setNewOpen}
+                  tab={newTab}
+                  onTabChange={setNewTab}
+                  variant="header"
+                />
                 {collapsed && (
                   <>
                     {/* Git status at a glance while the file viewer is hidden:
@@ -556,9 +559,6 @@ function Shell() {
           onOpenChange={setPaletteOpen}
           termWasFocused={paletteFromTerm}
         />
-        {/* ⌘I new-terminal prompt — names + spins up a bare herdr workspace (no
-          agent) and drops the user into its shell. */}
-        <NewTerminalDialog open={newTermOpen} onOpenChange={setNewTermOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />

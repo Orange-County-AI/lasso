@@ -265,7 +265,7 @@ export function SettingsTab({
             These settings live in {host}'s own ~/.lasso/lasso.db.
           </p>
         </div>
-        <AgentCreatorSettings active={active} host={host} />
+        <CreationSettings active={active} host={host} />
       </div>
     </div>
   )
@@ -685,16 +685,9 @@ export function ShortcutsDialog({
   )
 }
 
-// AgentCreatorSettings edits a host's creator defaults and each repo's
-// copy-files + setup, persisted via /api/agent-config and /api/repo-config for
-// the given host (its own lasso.db).
-function AgentCreatorSettings({
-  active,
-  host,
-}: {
-  active: boolean
-  host: string
-}) {
+// CreationSettings edits one host's agent and terminal defaults plus each
+// repository's copy-files/setup settings.
+function CreationSettings({ active, host }: { active: boolean; host: string }) {
   const queryClient = useQueryClient()
 
   const configQuery = useQuery({
@@ -707,6 +700,23 @@ function AgentCreatorSettings({
     queryFn: () => api.repos(host),
     enabled: active,
   })
+  const workspacesQuery = useQuery({
+    queryKey: qk.workspaces(host),
+    queryFn: () => api.workspaces(host),
+    enabled: active,
+    staleTime: 0,
+  })
+  const workspaces = workspacesQuery.data?.workspaces ?? []
+  const workspaceLabels = React.useMemo(() => {
+    const labels = [
+      "~",
+      ...workspaces
+        .slice()
+        .sort((a, b) => a.number - b.number)
+        .map((workspace) => workspace.label),
+    ]
+    return [...new Set(labels)]
+  }, [workspaces])
   const repos = reposQuery.data?.repos ?? []
 
   // Defaults (editable copies, re-seeded whenever the selected host's config
@@ -715,6 +725,13 @@ function AgentCreatorSettings({
   const [reposRoot, setReposRoot] = React.useState("")
   const [defaultAgent, setDefaultAgent] = React.useState("")
   const [scratchSetup, setScratchSetup] = React.useState("")
+  const [defaultTerminalWorkspace, setDefaultTerminalWorkspace] =
+    React.useState("~")
+  const terminalWorkspaceOptions = workspaceLabels.includes(
+    defaultTerminalWorkspace
+  )
+    ? workspaceLabels
+    : [defaultTerminalWorkspace, ...workspaceLabels]
   const seededHostRef = React.useRef<string | null>(null)
   React.useEffect(() => {
     if (seededHostRef.current === host || !configQuery.data) return
@@ -723,6 +740,9 @@ function AgentCreatorSettings({
     // Empty string is meaningful: "Auto (use last used)". Don't coerce to claude.
     setDefaultAgent(configQuery.data.default_agent ?? "")
     setScratchSetup(configQuery.data.scratch_setup || "")
+    setDefaultTerminalWorkspace(
+      configQuery.data.default_terminal_workspace || "~"
+    )
   }, [configQuery.data, host])
 
   // Per-repo settings.
@@ -762,6 +782,7 @@ function AgentCreatorSettings({
           repos_root: reposRoot,
           default_agent: defaultAgent,
           scratch_setup: scratchSetup,
+          default_terminal_workspace: defaultTerminalWorkspace,
         },
         host
       ),
@@ -792,14 +813,20 @@ function AgentCreatorSettings({
   // otherwise leaves the panel showing placeholder defaults and an empty repo
   // list — indistinguishable from a host that genuinely has none. Surface it.
   const readError =
-    configQuery.isError || reposQuery.isError
-      ? ((configQuery.error ?? reposQuery.error) as Error).message
+    configQuery.isError || reposQuery.isError || workspacesQuery.isError
+      ? (
+          (configQuery.error ??
+            reposQuery.error ??
+            workspacesQuery.error) as Error
+        ).message
       : null
 
   const dirtyDefaults =
     !!configQuery.data &&
     ((configQuery.data.repos_root || "") !== reposRoot ||
       (configQuery.data.default_agent ?? "") !== defaultAgent ||
+      (configQuery.data.default_terminal_workspace || "~") !==
+        defaultTerminalWorkspace ||
       (configQuery.data.scratch_setup || "") !== scratchSetup)
 
   const dirtyRepo = (() => {
@@ -811,7 +838,7 @@ function AgentCreatorSettings({
   const flushDefaults = useDebouncedSave(
     dirtyDefaults,
     () => saveDefaultsMutation.mutate(),
-    [reposRoot, defaultAgent, scratchSetup]
+    [reposRoot, defaultAgent, defaultTerminalWorkspace, scratchSetup]
   )
   const flushRepo = useDebouncedSave(dirtyRepo, () => {
     if (repoPath) saveRepoMutation.mutate()
@@ -839,7 +866,7 @@ function AgentCreatorSettings({
           Couldn't load {host}'s settings: {readError}
         </div>
       )}
-      <div className="flex @2xl:flex-row flex-col gap-4">
+      <div className="grid @2xl:grid-cols-2 grid-cols-1 gap-4">
         <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <h3 className="font-medium text-foreground text-sm">
@@ -904,8 +931,41 @@ function AgentCreatorSettings({
             />
           </Field>
         </section>
+        <section className="flex min-w-0 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-medium text-foreground text-sm">
+              New terminal defaults
+            </h3>
+            <SaveStatus
+              state={defaultsStatus}
+              onRetry={() => saveDefaultsMutation.mutate()}
+            />
+          </div>
 
-        <section className="flex min-w-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
+          <Field
+            label="Default workspace"
+            hint="Selected when the New terminal form opens on this host. If it is missing, the form offers to create it."
+            htmlFor="settings-default-terminal-workspace"
+          >
+            <select
+              id="settings-default-terminal-workspace"
+              className={fieldClass}
+              value={defaultTerminalWorkspace}
+              onChange={(event) =>
+                setDefaultTerminalWorkspace(event.target.value)
+              }
+              onBlur={flushDefaults}
+            >
+              {terminalWorkspaceOptions.map((label) => (
+                <option key={label} value={label}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </section>
+
+        <section className="@2xl:col-span-2 flex min-w-0 flex-col gap-3 rounded-lg border border-border p-4 shadow-sm">
           <div className="flex items-start justify-between gap-2">
             <div className="flex flex-col gap-0.5">
               <h3 className="font-medium text-foreground text-sm">

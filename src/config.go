@@ -30,6 +30,9 @@ type LassoConfig struct {
 	// It may be empty — "no preset default" — in which case the creator falls
 	// back to LastAgent.
 	DefaultAgent string `json:"default_agent"`
+	// DefaultTerminalWorkspace is the workspace label preselected by the new
+	// terminal form. Labels survive Herdr session restarts; defaults to "~".
+	DefaultTerminalWorkspace string `json:"default_terminal_workspace"`
 	// LastRepo is the repo path selected last time on this host, preselected next.
 	LastRepo string `json:"last_repo,omitempty"`
 	// LastAgent is the AI agent chosen last time on this host (the fallback when
@@ -214,15 +217,16 @@ func loadLassoConfig(host string) (*LassoConfig, error) {
 		return nil, err
 	}
 	return &LassoConfig{
-		ReposRoot:     s.ReposRoot,
-		BranchPrefix:  s.BranchPrefix,
-		DefaultAgent:  s.DefaultAgent,
-		ScratchSetup:  s.ScratchSetup,
-		LastRepo:      hs.LastRepo,
-		LastAgent:     hs.LastAgent,
-		LastAgentType: hs.LastAgentType,
-		Harnesses:     harnesses,
-		Repos:         repos,
-		Agents:        agents,
+		ReposRoot:                s.ReposRoot,
+		BranchPrefix:             s.BranchPrefix,
+		DefaultAgent:             s.DefaultAgent,
+		DefaultTerminalWorkspace: s.DefaultTerminalWorkspace,
+		ScratchSetup:             s.ScratchSetup,
+		LastRepo:                 hs.LastRepo,
+		LastAgent:                hs.LastAgent,
+		LastAgentType:            hs.LastAgentType,
+		Harnesses:                harnesses,
+		Repos:                    repos,
+		Agents:                   agents,
 	}, nil
 }
