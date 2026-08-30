@@ -180,7 +180,9 @@ export function Combobox({
                   </button>
                 )
                 if (!showFullLabelOnHover) {
-                  return <React.Fragment key={opt.value}>{option}</React.Fragment>
+                  return (
+                    <React.Fragment key={opt.value}>{option}</React.Fragment>
+                  )
                 }
                 return (
                   <Tooltip key={opt.value}>

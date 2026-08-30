@@ -187,16 +187,17 @@ func openDB() error {
 // appSettings is the typed view of the four settings keys the creator uses.
 // DefaultAgent may be "" — meaning "no preset default, fall back to last used".
 type appSettings struct {
-	ReposRoot    string
-	BranchPrefix string
-	DefaultAgent string
-	ScratchSetup string
+	ReposRoot                string
+	BranchPrefix             string
+	DefaultAgent             string
+	DefaultTerminalWorkspace string
+	ScratchSetup             string
 }
 
 // getSettings reads the settings keys, applying the same default repos_root the
 // old applyConfigDefaults did. DefaultAgent is intentionally NOT defaulted.
 func getSettings() (appSettings, error) {
-	s := appSettings{ReposRoot: "~/projects"}
+	s := appSettings{ReposRoot: "~/projects", DefaultTerminalWorkspace: "~"}
 	rows, err := db.Query("SELECT key, value FROM settings")
 	if err != nil {
 		return s, err
@@ -216,6 +217,10 @@ func getSettings() (appSettings, error) {
 			s.BranchPrefix = v
 		case "default_agent":
 			s.DefaultAgent = v
+		case "default_terminal_workspace":
+			if v != "" {
+				s.DefaultTerminalWorkspace = v
+			}
 		case "scratch_setup":
 			s.ScratchSetup = v
 		}

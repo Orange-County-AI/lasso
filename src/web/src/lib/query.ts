@@ -21,6 +21,7 @@ export const queryClient = new QueryClient({
 export const qk = {
   agentConfig: (host: string) => ["agent-config", host] as const,
   repos: (host: string) => ["repos", host] as const,
+  workspaces: (host: string) => ["workspaces", host] as const,
   repoBranches: (host: string, path: string) =>
     ["repo-branches", host, path] as const,
   panes: ["all-panes"] as const,
@@ -45,6 +46,7 @@ export const qk = {
 export function invalidateHostScoped() {
   queryClient.invalidateQueries({ queryKey: ["agent-config"] })
   queryClient.invalidateQueries({ queryKey: ["repos"] })
+  queryClient.invalidateQueries({ queryKey: ["workspaces"] })
   queryClient.invalidateQueries({ queryKey: ["repo-branches"] })
   queryClient.invalidateQueries({ queryKey: qk.version })
 }

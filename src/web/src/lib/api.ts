@@ -128,6 +128,13 @@ export interface Pane {
   agent?: string
   agent_status?: string
 }
+export interface Workspace {
+  workspace_id: string
+  label: string
+  number: number
+  tab_count: number
+  focused: boolean
+}
 
 // One herdr pane on a specific host, enriched with workspace/tab labels and
 // whether herdr detects an agent in it — the row shape of /api/all-panes and
@@ -371,6 +378,7 @@ export interface AgentConfig {
   repos_root: string
   branch_prefix: string
   default_agent: string
+  default_terminal_workspace: string
   last_repo?: string
   last_agent?: string
   // The server's compiled-in agent registry — drives the creator's AI-agent
@@ -434,6 +442,22 @@ export interface CreateAgentPayload {
   plan_mode: boolean
   attachments?: string[]
   upload_dir?: string
+}
+export interface CreateTerminalPayload {
+  host?: string
+  command: string
+  workspace_id?: string
+  workspace_name?: string
+  tab_name?: string
+  focus?: boolean
+}
+
+export interface CreateTerminalResult {
+  workspace_id: string
+  tab_id?: string
+  root_pane: string
+  command_error?: string
+  tab_name_error?: string
 }
 
 async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
@@ -644,7 +668,10 @@ export const api = {
     form.append("dir", dir)
     if (host) form.append("host", host)
     for (const f of files) form.append("files", f, f.name)
-    const r = await hostFetch("/api/file-upload", { method: "POST", body: form })
+    const r = await hostFetch("/api/file-upload", {
+      method: "POST",
+      body: form,
+    })
     if (!r.ok) throw await httpError(r)
     return r.json()
   },
@@ -759,13 +786,16 @@ export const api = {
   agentConfig: (host?: string) =>
     getJSON<AgentConfig>(withHost("/api/agent-config", host)),
 
-  // Update the global creator defaults (repos_root, branch_prefix,
-  // default_agent, scratch_setup); omitted fields are left unchanged.
+  // Update the host-scoped creation defaults; omitted fields are unchanged.
   saveAgentConfig: (
     cfg: Partial<
       Pick<
         AgentConfig,
-        "repos_root" | "branch_prefix" | "default_agent" | "scratch_setup"
+        | "repos_root"
+        | "branch_prefix"
+        | "default_agent"
+        | "default_terminal_workspace"
+        | "scratch_setup"
       >
     >,
     host?: string
@@ -813,12 +843,12 @@ export const api = {
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
 
-  // Create a bare herdr workspace running just a shell (no agent). Interactive
-  // callers keep focus=true so the user can type immediately; automation can
-  // pass false without moving herdr's session-global focus.
-  createTerminal: (label: string, focus = true) =>
-    postJSON<{ workspace_id: string; root_pane: string }>(
-      "/api/create-terminal",
-      { label, focus }
-    ),
+  // Live Herdr workspaces on one host, for terminal creation and defaults.
+  workspaces: (host?: string) =>
+    getJSON<{ workspaces: Workspace[] }>(withHost("/api/workspaces", host)),
+
+  // Create a bare terminal in an existing workspace or as the root of a new
+  // workspace. A blank command leaves the shell prompt untouched.
+  createTerminal: (payload: CreateTerminalPayload) =>
+    postJSON<CreateTerminalResult>("/api/create-terminal", payload),
 }

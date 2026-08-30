@@ -47,8 +47,7 @@ export function EditableCombobox({
   const listRef = React.useRef<HTMLDivElement>(null)
 
   const filtered = React.useMemo(() => {
-    const items =
-      emptyOption === undefined ? suggestions : ["", ...suggestions]
+    const items = emptyOption === undefined ? suggestions : ["", ...suggestions]
     const q = value.trim().toLowerCase()
     if (!typing || !q) return items
     // The empty row is dropped while filtering: it matches no query, and a

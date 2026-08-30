@@ -26,20 +26,22 @@ import (
 // creatorDefaults is the JSON shape of the four creator settings, shared by the
 // CLI and the provider. The tags match LassoConfig so either decodes it.
 type creatorDefaults struct {
-	ReposRoot    string `json:"repos_root"`
-	BranchPrefix string `json:"branch_prefix"`
-	DefaultAgent string `json:"default_agent"`
-	ScratchSetup string `json:"scratch_setup"`
+	ReposRoot                string `json:"repos_root"`
+	BranchPrefix             string `json:"branch_prefix"`
+	DefaultAgent             string `json:"default_agent"`
+	DefaultTerminalWorkspace string `json:"default_terminal_workspace"`
+	ScratchSetup             string `json:"scratch_setup"`
 }
 
 // defaultsPatch is the POST body for updating creator defaults; a nil field is
 // left unchanged, while a non-nil empty string clears it (e.g. "no preset
 // default agent" — fall back to the last-used one).
 type defaultsPatch struct {
-	ReposRoot    *string `json:"repos_root"`
-	BranchPrefix *string `json:"branch_prefix"`
-	DefaultAgent *string `json:"default_agent"`
-	ScratchSetup *string `json:"scratch_setup"`
+	ReposRoot                *string `json:"repos_root"`
+	BranchPrefix             *string `json:"branch_prefix"`
+	DefaultAgent             *string `json:"default_agent"`
+	DefaultTerminalWorkspace *string `json:"default_terminal_workspace"`
+	ScratchSetup             *string `json:"scratch_setup"`
 }
 
 // repoConfigPatch is the POST body for a repo's per-repo settings.
@@ -62,6 +64,7 @@ func applyDefaults(p defaultsPatch) error {
 		{"repos_root", p.ReposRoot},
 		{"branch_prefix", p.BranchPrefix},
 		{"default_agent", p.DefaultAgent},
+		{"default_terminal_workspace", p.DefaultTerminalWorkspace},
 		{"scratch_setup", p.ScratchSetup},
 	} {
 		if u.val == nil {
@@ -265,7 +268,13 @@ var hostBackendFn = hostBackend
 func hostDefaults(host string) (creatorDefaults, error) {
 	if isLocalHost(host) {
 		s, err := getSettings()
-		return creatorDefaults{s.ReposRoot, s.BranchPrefix, s.DefaultAgent, s.ScratchSetup}, err
+		return creatorDefaults{
+			ReposRoot:                s.ReposRoot,
+			BranchPrefix:             s.BranchPrefix,
+			DefaultAgent:             s.DefaultAgent,
+			DefaultTerminalWorkspace: s.DefaultTerminalWorkspace,
+			ScratchSetup:             s.ScratchSetup,
+		}, err
 	}
 	raw, err := remoteDB(host, true, `SELECT key, value FROM settings;`)
 	if err != nil {
@@ -294,6 +303,7 @@ func hostSetDefaults(host string, p defaultsPatch) error {
 		{"repos_root", p.ReposRoot},
 		{"branch_prefix", p.BranchPrefix},
 		{"default_agent", p.DefaultAgent},
+		{"default_terminal_workspace", p.DefaultTerminalWorkspace},
 		{"scratch_setup", p.ScratchSetup},
 	} {
 		if u.val == nil {
@@ -420,6 +430,7 @@ func hostAgentConfig(host string) (*LassoConfig, error) {
 	c.ReposRoot = def.ReposRoot
 	c.BranchPrefix = def.BranchPrefix
 	c.DefaultAgent = def.DefaultAgent
+	c.DefaultTerminalWorkspace = def.DefaultTerminalWorkspace
 	c.ScratchSetup = def.ScratchSetup
 	// The registry loadLassoConfig attached is the compiled-in table. One part of
 	// it IS host-specific: omp's model suggestions, which come from the models
@@ -534,7 +545,7 @@ func parseRepoConfigRows(raw []byte) ([]RepoConfig, error) {
 // defaultsFromRows folds settings key/value rows into creatorDefaults, applying
 // the same repos_root default getSettings uses.
 func defaultsFromRows(rows []struct{ Key, Value string }) creatorDefaults {
-	d := creatorDefaults{ReposRoot: "~/projects"}
+	d := creatorDefaults{ReposRoot: "~/projects", DefaultTerminalWorkspace: "~"}
 	for _, r := range rows {
 		switch r.Key {
 		case "repos_root":
@@ -545,6 +556,10 @@ func defaultsFromRows(rows []struct{ Key, Value string }) creatorDefaults {
 			d.BranchPrefix = r.Value
 		case "default_agent":
 			d.DefaultAgent = r.Value
+		case "default_terminal_workspace":
+			if r.Value != "" {
+				d.DefaultTerminalWorkspace = r.Value
+			}
 		case "scratch_setup":
 			d.ScratchSetup = r.Value
 		}

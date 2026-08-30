@@ -268,6 +268,7 @@ func runServer() {
 	mux.HandleFunc("/api/create-agent", serveCreateAgent)
 	mux.HandleFunc("/api/auto-title", serveAutoTitle)
 	mux.HandleFunc("/api/create-terminal", serveCreateTerminal)
+	mux.HandleFunc("/api/workspaces", serveWorkspaces)
 	mux.HandleFunc("/api/agent-upload", serveAgentUpload)
 	mux.HandleFunc("/api/host-update", serveHostUpdate)
 	mux.HandleFunc("/api/host-provision", serveHostProvision)
