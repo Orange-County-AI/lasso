@@ -68,6 +68,7 @@ interface TermWindow extends Window {
 interface WiredDoc extends Document {
   __herdrWired?: boolean
   __touchScrollWired?: boolean
+  __longPressRightClickWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -375,6 +376,121 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
   )
 }
 
+// A stationary one-finger hold in the Herdr terminal emits the same mouse
+// sequence as a desktop right-click. Movement cancels before touch scrolling
+// starts, and a handled hold consumes touchend so iOS cannot follow it with a
+// synthetic left-click. The dial lives outside `.xterm`, so its holds never
+// enter this path.
+function wireLongPressRightClick(doc: WiredDoc, win: TermWindow) {
+  if (
+    doc.__longPressRightClickWired ||
+    !win.matchMedia?.("(pointer: coarse)").matches
+  )
+    return
+  doc.__longPressRightClickWired = true
+
+  const holdMs = 500
+  const moveTolerance = 10
+  let timer: number | undefined
+  let touchID: number | null = null
+  let startX = 0
+  let startY = 0
+  let target: Element | null = null
+  let fired = false
+
+  const reset = () => {
+    if (timer !== undefined) win.clearTimeout(timer)
+    timer = undefined
+    touchID = null
+    target = null
+    fired = false
+  }
+
+  doc.addEventListener(
+    "touchstart",
+    (event: TouchEvent) => {
+      reset()
+      if (event.touches.length !== 1) return
+      const origin = event.target as Element | null
+      if (!origin?.closest?.(".xterm")) return
+
+      const touch = event.touches[0]
+      touchID = touch.identifier
+      startX = touch.clientX
+      startY = touch.clientY
+      target = origin
+      timer = win.setTimeout(() => {
+        timer = undefined
+        const clickTarget = doc.elementFromPoint(startX, startY) ?? target
+        if (!clickTarget || touchID === null) return
+        fired = true
+
+        // Synthetic events must use the iframe realm's DOM constructor.
+        const eventWindow = win as Window & {
+          MouseEvent: typeof MouseEvent
+        }
+        const MouseEventCtor = eventWindow.MouseEvent
+        const dispatch = (
+          type: "mousedown" | "mouseup" | "contextmenu",
+          buttons: number
+        ) =>
+          clickTarget.dispatchEvent(
+            new MouseEventCtor(type, {
+              button: 2,
+              buttons,
+              bubbles: true,
+              cancelable: true,
+              clientX: startX,
+              clientY: startY,
+              detail: 1,
+              view: win,
+            })
+          )
+        dispatch("mousedown", 2)
+        dispatch("mouseup", 0)
+        dispatch("contextmenu", 0)
+      }, holdMs)
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchmove",
+    (event: TouchEvent) => {
+      if (touchID === null || fired) return
+      const touch = Array.from(event.touches).find(
+        (candidate) => candidate.identifier === touchID
+      )
+      if (
+        !touch ||
+        Math.hypot(touch.clientX - startX, touch.clientY - startY) >
+          moveTolerance
+      ) {
+        reset()
+      }
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchend",
+    (event: TouchEvent) => {
+      const endedTouch = Array.from(event.changedTouches).find(
+        (candidate) => candidate.identifier === touchID
+      )
+      if (touchID === null || !endedTouch) return
+      const handled = fired
+      reset()
+      if (!handled) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    },
+    { capture: true, passive: false }
+  )
+  doc.addEventListener("touchcancel", reset, {
+    capture: true,
+    passive: true,
+  })
+}
+
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -396,10 +512,14 @@ export function wireTerminalIframe(
   if (!doc || doc.__herdrWired) return
   doc.__herdrWired = true
 
-  if (win) wireTouchScroll(doc, win)
+  if (win) {
+    wireTouchScroll(doc, win)
+    if (suppressContext) wireLongPressRightClick(doc, win)
+  }
 
-  if (suppressContext)
+  if (suppressContext) {
     doc.addEventListener("contextmenu", (e) => e.preventDefault(), true)
+  }
 
   // Forward app-level shortcuts (Cmd/Ctrl+<key>) to the parent document so
   // global handlers fire even while the terminal holds keyboard focus — the
