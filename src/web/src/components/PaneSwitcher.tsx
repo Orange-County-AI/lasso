@@ -370,15 +370,10 @@ export function PaneSwitcher({
         )}
         onOpenAutoFocus={(e) => {
           e.preventDefault()
-          // On touch, do NOT autofocus the search field: the soft keyboard would
-          // zoom and shift the fixed terminal viewport behind the dialog. Focus
-          // the sheet instead; users can tap the field when they intend to type.
-          const content = e.currentTarget as HTMLElement | null
-          if (window.matchMedia("(pointer: coarse)").matches) {
-            content?.focus?.()
-            return
-          }
-          content?.querySelector("input")?.focus()
+          // Mobile uses a 16px search field to prevent iOS page zoom, and radial
+          // Search does not restore focus to xterm when this closes. Focusing here
+          // can therefore open the keyboard without shifting the terminal page.
+          inputRef.current?.focus({ preventScroll: true })
         }}
         onCloseAutoFocus={(e) => {
           // A chosen pane already had focus handed to its terminal by choose();
