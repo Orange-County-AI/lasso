@@ -109,8 +109,16 @@ function upgradable(h: HostInfo, localVersion: string | undefined): boolean {
 // Herdr tab, menu opening downward); "floating" keeps the old pinned-pill look.
 export function HostSwitcher({
   variant = "floating",
+  className,
+  open: controlledOpen,
+  onOpenChange,
+  anchorOnly = false,
 }: {
   variant?: "floating" | "nav"
+  className?: string
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  anchorOnly?: boolean
 }) {
   const isNav = variant === "nav"
   const { host: liveHost } = useApp()
@@ -132,7 +140,15 @@ export function HostSwitcher({
   const [actionErrors, setActionErrors] = React.useState<
     ReadonlyMap<string, string>
   >(() => new Map())
-  const [open, setOpen] = React.useState(false)
+  const [internalOpen, setInternalOpen] = React.useState(false)
+  const open = controlledOpen ?? internalOpen
+  const setOpen = React.useCallback(
+    (next: boolean) => {
+      if (controlledOpen === undefined) setInternalOpen(next)
+      onOpenChange?.(next)
+    },
+    [controlledOpen, onOpenChange]
+  )
   const [updatingLasso, setUpdatingLasso] = React.useState(false)
 
   // This lasso build's version + whether it can self-update (a systemd-
@@ -483,9 +499,11 @@ export function HostSwitcher({
 
   const iconClass = isNav ? "size-3.5" : "size-3"
   return (
-    <div className="relative">
+    <div className={cn("relative", className)}>
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger
+          tabIndex={anchorOnly ? -1 : undefined}
+          aria-hidden={anchorOnly || undefined}
           disabled={switching}
           title={`Host: ${activeLabel} (click to switch)`}
           className={cn(
@@ -495,7 +513,9 @@ export function HostSwitcher({
               : "flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
             // Tint when remote so it reads as an active "you are elsewhere" badge.
             isRemote &&
-              (isNav ? "text-foreground" : "border-primary/40 text-foreground")
+              (isNav ? "text-foreground" : "border-primary/40 text-foreground"),
+            anchorOnly &&
+              "pointer-events-none size-px overflow-hidden p-0 opacity-0"
           )}
         >
           {switching ? (
@@ -511,7 +531,7 @@ export function HostSwitcher({
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          align="start"
+          align={anchorOnly ? "end" : "start"}
           side={isNav ? "bottom" : "top"}
           className="min-w-56"
         >

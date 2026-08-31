@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { mountTerminalKeyBar } from "@/lib/mobile-keybar"
+import { mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
   applyTermFont,
   applyTermTheme,
@@ -472,7 +472,7 @@ export function bootTermFrame(
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
-    mountTerminalKeyBar(id)
+    mountTerminalInputDial(id)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -481,7 +481,7 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
-  mountTerminalKeyBar(id) // in case it already loaded
+  mountTerminalInputDial(id) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 
@@ -516,6 +516,27 @@ export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   if (tries < 20) setTimeout(() => pasteIntoTerminal(id, text, tries + 1), 150)
 }
 
+// Paste a reviewed buffer and submit it as one ready-terminal operation. Keeping
+// the retry around both actions prevents Enter from overtaking a paste while
+// xterm is reconnecting.
+export function pasteAndSubmitTerminal(id: string, text: string, tries = 0) {
+  try {
+    const w = frameWindow(id)
+    if (w?.term && typeof w.term.paste === "function") {
+      w.focus()
+      w.term.focus?.()
+      w.term.paste(text)
+      sendKeyToTerminal(id, "Enter")
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
+  if (tries < 20) {
+    setTimeout(() => pasteAndSubmitTerminal(id, text, tries + 1), 150)
+  }
+}
+
 // typeIntoShell pastes into the out-of-herdr shell (/shell/).
 export function typeIntoShell(text: string) {
   pasteIntoTerminal("shellframe", text)
@@ -526,25 +547,35 @@ export function typeIntoHerdr(text: string) {
   pasteIntoTerminal("term", text)
 }
 
-// Virtual on-screen keys for mobile, where the soft keyboard offers no Esc, Tab,
-// or arrows — keys agents (Claude Code) lean on constantly (Enter is omitted: the
-// iOS keyboard already has Return). We dispatch a real keydown at xterm's hidden
-// textarea and let XTERM encode it, exactly as it would a hardware keypress. This
-// is the only way to be correct across every keyboard mode the app may turn on —
-// application-cursor (ESCO vs ESC[ on the arrows), the kitty/extended protocol,
-// modifyOtherKeys — which a fixed byte sequence written via term.input() can't
-// track. xterm 5 keys its encoder off event.keyCode, which the KeyboardEvent ctor
-// ignores from the init dict, so we pin it (and legacy `which`). Verified
-// end-to-end: a dispatched ArrowUp drives shell/Claude Code history. Falls back to
-// a raw sequence only if the textarea isn't mounted yet.
-export type VirtualKey = "Escape" | "ArrowUp" | "ArrowDown" | "Tab"
+// Virtual terminal keys. Mobile controls expose Esc, Ctrl+C, Tab, Shift+Tab,
+// and arrows because the software keyboard omits them; buffered input also uses
+// Enter internally for its explicit insert-and-submit action. We dispatch a
+// real keydown at xterm's hidden textarea and let XTERM encode it, as it would a
+// hardware keypress. This is the only way to be correct across every keyboard
+// mode the app may turn on — application-cursor (ESCO vs ESC[ on the arrows),
+// the kitty/extended protocol, modifyOtherKeys — which a fixed byte sequence
+// written via term.input() cannot track. xterm 5 keys its encoder off
+// event.keyCode, which the KeyboardEvent constructor ignores from the init
+// dictionary, so we pin it (and legacy `which`). Falls back to a raw sequence
+// only if the textarea is not mounted yet.
+export type VirtualKey =
+  | "Escape"
+  | "Enter"
+  | "ArrowUp"
+  | "ArrowDown"
+  | "Tab"
+  | "ShiftTab"
+  | "CtrlC"
 
 const KEY_SPEC: Record<
   VirtualKey,
   { code: string; keyCode: number; seq: string }
 > = {
   Escape: { code: "Escape", keyCode: 27, seq: "\x1b" },
+  Enter: { code: "Enter", keyCode: 13, seq: "\r" },
   Tab: { code: "Tab", keyCode: 9, seq: "\t" },
+  ShiftTab: { code: "Tab", keyCode: 9, seq: "\x1b[Z" },
+  CtrlC: { code: "KeyC", keyCode: 67, seq: "\x03" },
   ArrowUp: { code: "ArrowUp", keyCode: 38, seq: "\x1b[A" },
   ArrowDown: { code: "ArrowDown", keyCode: 40, seq: "\x1b[B" },
 }
@@ -560,9 +591,13 @@ export function sendKeyToTerminal(id: string, key: VirtualKey) {
     if (ta) {
       const Ctor = (win as unknown as { KeyboardEvent: typeof KeyboardEvent })
         .KeyboardEvent
+      const shiftTab = key === "ShiftTab"
+      const ctrlC = key === "CtrlC"
       const ev = new Ctor("keydown", {
-        key,
+        key: shiftTab ? "Tab" : ctrlC ? "c" : key,
         code: spec.code,
+        shiftKey: shiftTab,
+        ctrlKey: ctrlC,
         bubbles: true,
         cancelable: true,
       })

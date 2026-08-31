@@ -32,6 +32,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
@@ -187,6 +188,7 @@ function Shell() {
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+  const [mobileHostOpen, setMobileHostOpen] = React.useState(false)
   // Whether the herdr terminal held focus when ⌘K opened the palette, captured
   // at keypress (before Radix moves focus into the dialog) so a cancel-close can
   // restore the keyboard to its xterm. activeElement is the iframe element when
@@ -284,6 +286,30 @@ function Shell() {
     if (rightPanel.current?.isCollapsed()) expandSidebar()
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
+
+  // The touch-only terminal dial lives inside the ttyd iframe. Its app branch
+  // crosses that same-origin boundary with one typed event; desktop keeps using
+  // the visible header and keyboard shortcuts.
+  React.useEffect(() => {
+    const onMobileCommand = (event: Event) => {
+      const command = (event as CustomEvent<MobileCommand>).detail
+      if (command === "new") {
+        setNewOpen(true)
+      } else if (command === "sidebar") {
+        toggleSidebar()
+      } else if (command === "host") {
+        setMobileHostOpen(true)
+      } else if (command === "search") {
+        // Mobile search owns the keyboard. Do not re-focus xterm on close:
+        // focusing its hidden textarea makes iOS auto-zoom the entire app.
+        setPaletteFromTerm(false)
+        setPaletteOpen(true)
+      }
+    }
+    window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
+    return () =>
+      window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
+  }, [toggleSidebar])
 
   // ⌘K → pane switcher, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
@@ -383,7 +409,7 @@ function Shell() {
             <div
               className={cn(
                 stripClass,
-                "@container/lnav flex items-center pr-2 text-muted-foreground"
+                "@container/lnav mobile-terminal-nav flex items-center pr-2 text-muted-foreground"
               )}
             >
               <HostSwitcher variant="nav" />
@@ -548,6 +574,12 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
+        <HostSwitcher
+          anchorOnly
+          className="mobile-host-anchor fixed right-6 bottom-24 z-40"
+          open={mobileHostOpen}
+          onOpenChange={setMobileHostOpen}
+        />
         {/* ⌘K pane switcher — searches the ACTIVE host's panes, which with
           herdr-mirror running covers the fleet (other machines' workspaces are
           mirrored in as local panes), and focuses the chosen one in the herdr
