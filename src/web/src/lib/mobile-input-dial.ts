@@ -39,13 +39,13 @@ type DialTarget = {
 const ROOT_TARGETS: readonly DialTarget[] = [
   {
     id: "app",
-    label: "App",
+    label: "Lasso",
     glyph: "◆",
     kind: "branch",
     branch: "app",
     x: -142,
     y: -115,
-    width: 80,
+    width: 96,
   },
   {
     id: "common-keys",
@@ -767,7 +767,7 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
       const glyph = doc.createElement("span")
       glyph.textContent = isKeys ? "⌘ ›" : "◆ ›"
       const label = doc.createElement("strong")
-      label.textContent = isKeys ? "Common keys" : "App"
+      label.textContent = isKeys ? "Common keys" : "Lasso"
       crumb.append(glyph, label)
       menu.appendChild(crumb)
     }
