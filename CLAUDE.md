@@ -125,6 +125,7 @@ It is **client-side only** — a URL bar and an iframe. A bare port (`5173`, `:5
 
 - **What the browser allows is the whole contract.** An HTTPS origin can't frame an `http://` dev server (mixed content) and a public origin can't frame a private/tailnet one (Private Network Access). Both cases are detected and reported in the tab, with open-in-new-tab as the out. Don't reintroduce a tunnel to dodge them.
 - `probeReachable` (a `no-cors` fetch), not the iframe's `onLoad`, is the failure signal: a PNA-blocked frame still fires `onLoad` while rendering blank.
+
 ## Notifications (`src/notify.go`, `src/webpush.go`, `src/notifywatch.go`, `src/notifycli.go`, `src/web/public/sw.js`, `src/web/src/lib/push.ts`)
 
 An agent that blocks — a tool approval, omp's plan gate, codex's "Action Required" — stops until a human answers, and nothing in lasso could tell that human unless they were already looking at a screen. `notice`/`notifyUI` is an SSE toast, so it reaches open tabs only. This reaches a locked phone.
