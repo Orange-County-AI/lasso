@@ -309,8 +309,8 @@ html.${TRACKING_CLASS} .xterm-screen {
   transform: scale(1.1);
 }
 #${DIAL_ID} .dial-branch {
-  justify-content: flex-start;
-  padding: 0 16px;
+  justify-content: center;
+  padding: 0 12px;
   font-size: 14px;
 }
 #${DIAL_ID} .dial-branch .dial-glyph {
