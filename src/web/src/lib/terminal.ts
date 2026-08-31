@@ -883,6 +883,34 @@ const KEY_SPEC: Record<
   ArrowDown: { code: "ArrowDown", keyCode: 40, seq: "\x1b[B" },
 }
 
+// One synthetic keydown at xterm's hidden textarea, pinned so xterm 5's
+// keyCode-based encoder sees it (see the note above).
+function dispatchTermKey(
+  win: TermWindow,
+  ta: HTMLElement,
+  init: {
+    key: string
+    code: string
+    keyCode: number
+    ctrlKey?: boolean
+    shiftKey?: boolean
+  }
+) {
+  const Ctor = (win as unknown as { KeyboardEvent: typeof KeyboardEvent })
+    .KeyboardEvent
+  const ev = new Ctor("keydown", {
+    key: init.key,
+    code: init.code,
+    ctrlKey: init.ctrlKey ?? false,
+    shiftKey: init.shiftKey ?? false,
+    bubbles: true,
+    cancelable: true,
+  })
+  Object.defineProperty(ev, "keyCode", { get: () => init.keyCode })
+  Object.defineProperty(ev, "which", { get: () => init.keyCode })
+  ta.dispatchEvent(ev)
+}
+
 export function sendKeyToTerminal(id: string, key: VirtualKey) {
   try {
     const win = frameWindow(id)
@@ -892,27 +920,65 @@ export function sendKeyToTerminal(id: string, key: VirtualKey) {
       ".xterm-helper-textarea"
     ) as HTMLElement | null
     if (ta) {
-      const Ctor = (win as unknown as { KeyboardEvent: typeof KeyboardEvent })
-        .KeyboardEvent
       const shiftTab = key === "ShiftTab"
       const ctrlC = key === "CtrlC"
-      const ev = new Ctor("keydown", {
+      dispatchTermKey(win, ta, {
         key: shiftTab ? "Tab" : ctrlC ? "c" : key,
         code: spec.code,
+        keyCode: spec.keyCode,
         shiftKey: shiftTab,
         ctrlKey: ctrlC,
-        bubbles: true,
-        cancelable: true,
       })
-      Object.defineProperty(ev, "keyCode", { get: () => spec.keyCode })
-      Object.defineProperty(ev, "which", { get: () => spec.keyCode })
-      ta.dispatchEvent(ev)
       return
     }
     win.term?.input?.(spec.seq)
   } catch {
     /* same-origin; ignore */
   }
+}
+
+// herdr already has a pane search of its own, behind its prefix chord
+// (Ctrl-B then g — `keys.goto`). ⌘K opens THAT rather than a lasso-side palette:
+// it searches the session the terminal is actually showing, it is the picker
+// herdr's own TUI users know, and there is no second list to keep in sync.
+//
+// The trailing `/` puts the overlay straight into its search mode (its own
+// footer offers "/ search"), so ⌘K lands on a cursor ready for a query rather
+// than on a list the user has to press one more key to filter. That is the whole
+// point of binding it to the key labelled Search.
+//
+// Sent as real keydowns rather than raw bytes, for the reason in
+// sendKeyToTerminal: xterm owns the encoding, and it varies with the keyboard
+// mode herdr has turned on. They go back-to-back in one tick — the pty sees
+// 0x02, 'g', '/' in order, which is all herdr's prefix state machine needs.
+//
+// The prefix here is herdr's default. A session that remapped `keys.prefix`
+// would need its own chord; lasso has no way to read that config.
+export function openHerdrGoto(tries = 0) {
+  try {
+    const win = frameWindow("term")
+    const ta = win?.document.querySelector(
+      ".xterm-helper-textarea"
+    ) as HTMLElement | null
+    if (win && ta) {
+      // Focus first: the overlay it opens takes keystrokes from xterm, so the
+      // keyboard has to be there before the user starts typing a query.
+      win.focus()
+      win.term?.focus?.()
+      dispatchTermKey(win, ta, {
+        key: "b",
+        code: "KeyB",
+        keyCode: 66,
+        ctrlKey: true,
+      })
+      dispatchTermKey(win, ta, { key: "g", code: "KeyG", keyCode: 71 })
+      dispatchTermKey(win, ta, { key: "/", code: "Slash", keyCode: 191 })
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
+  if (tries < 20) setTimeout(() => openHerdrGoto(tries + 1), 100)
 }
 
 // Hand keyboard focus to the herdr terminal (/terminal/) so the user can type

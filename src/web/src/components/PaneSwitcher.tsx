@@ -16,7 +16,6 @@ import { tilde } from "@/lib/format"
 import { aliasFamilies, familyOf, LOCAL_KEY } from "@/lib/hosts"
 import { focusPaneInHerdr } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
-import { focusHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 // cellKey uniquely identifies a row. Live panes are keyed by host+pane_id (pane
@@ -91,11 +90,16 @@ interface PaneSection {
   panes: HostPane[]
 }
 
-// PaneSwitcher: a ⌘K command-palette over the panes of the ACTIVE host — which,
-// with herdr-mirror running, is the whole fleet anyway: every other machine's
-// workspaces are mirrored into this herdr as real local panes. Type to filter;
-// ↑/↓ to move; Enter to open + focus the pane in the herdr terminal (handing
-// the keyboard straight to its xterm).
+// PaneSwitcher: the MOBILE command-palette over the panes of the ACTIVE host —
+// which, with herdr-mirror running, is the whole fleet anyway: every other
+// machine's workspaces are mirrored into this herdr as real local panes. Type to
+// filter; ↑/↓ to move; Enter to open + focus the pane in the herdr terminal
+// (handing the keyboard straight to its xterm).
+//
+// Desktop search (⌘K, the header bar) opens herdr's OWN pane search instead —
+// see openHerdrGoto. This one stays for the mobile dial, whose software keyboard
+// has no prefix key to chord with, and it is also the only picker that can show
+// CLOSED sessions (the Active filter off) and reopen their workspaces.
 //
 // It deliberately drops the other hosts' rows /api/all-panes also carries. A
 // mirrored pane would otherwise be listed twice — once as the local mirror,
@@ -106,14 +110,9 @@ interface PaneSection {
 export function PaneSwitcher({
   open,
   onOpenChange,
-  termWasFocused = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  // Whether the herdr terminal held keyboard focus when the palette opened. On a
-  // cancel-close we re-focus its xterm so Esc'ing out of ⌘K leaves the keyboard
-  // where it was, rather than stranding it on the (unfocusable-for-typing) iframe.
-  termWasFocused?: boolean
 }) {
   const { host: activeHost } = useApp()
   const [query, setQuery] = React.useState("")
@@ -375,21 +374,13 @@ export function PaneSwitcher({
           // can therefore open the keyboard without shifting the terminal page.
           inputRef.current?.focus({ preventScroll: true })
         }}
-        onCloseAutoFocus={(e) => {
-          // A chosen pane already had focus handed to its terminal by choose();
-          // leave it. On a cancel (Esc / click-away), Radix restores focus to
-          // whatever held it before the palette opened — but when that was the
-          // herdr terminal iframe, focusing the <iframe> element doesn't reach
-          // the xterm inside, so the user would have to click the pane to type
-          // again. Re-focus its xterm directly instead.
-          if (chosenRef.current) {
-            chosenRef.current = false
-            return
-          }
-          if (termWasFocused) {
-            e.preventDefault()
-            focusHerdrTerminal()
-          }
+        onCloseAutoFocus={() => {
+          // A chosen pane already had focus handed to its terminal by choose(),
+          // so let Radix's restore be the no-op it is and just clear the flag.
+          // On a cancel we deliberately do NOT reach into xterm: this palette is
+          // the mobile path, and focusing xterm's hidden textarea makes iOS
+          // auto-zoom the whole app.
+          chosenRef.current = false
         }}
       >
         <DialogHeader className="sr-only">

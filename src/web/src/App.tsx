@@ -37,6 +37,7 @@ import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
+import { openHerdrGoto } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -133,7 +134,7 @@ function FitTabs({
 }
 
 // A search affordance for the header: styled like an input but it's a button
-// that opens the ⌘K pane switcher (the actual search lives in that palette). It
+// that fires ⌘K, i.e. herdr's own pane search inside the terminal. It
 // fills its centre slot (flex-1, capped at max-w-xs) so it reads as a real
 // search bar at every width — the label just truncates when space runs out
 // rather than collapsing to a lone icon. The ⌘K hint shows once the strip has
@@ -189,11 +190,6 @@ function Shell() {
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const [mobileHostOpen, setMobileHostOpen] = React.useState(false)
-  // Whether the herdr terminal held focus when ⌘K opened the palette, captured
-  // at keypress (before Radix moves focus into the dialog) so a cancel-close can
-  // restore the keyboard to its xterm. activeElement is the iframe element when
-  // focus lives inside it.
-  const [paletteFromTerm, setPaletteFromTerm] = React.useState(false)
   // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
   // the collapsed-sidebar indicator stay live even when the Files panel is
   // hidden or the sidebar boots collapsed. `gitReady` gates the badge on the
@@ -300,10 +296,10 @@ function Shell() {
       } else if (command === "host") {
         setMobileHostOpen(true)
       } else if (command === "search") {
-        // Mobile search owns the keyboard. Do not re-focus xterm on close:
-        // focusing its hidden textarea makes iOS auto-zoom the entire app.
-        setPaletteFromTerm(false)
-        setPaletteOpen(true)
+        // Same destination as ⌘K: herdr's own search. The dial supplies the
+        // chord a software keyboard can't type, and openHerdrGoto hands the
+        // keyboard to xterm so the query can be typed straight into it.
+        openHerdrGoto()
       }
     }
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
@@ -311,7 +307,7 @@ function Shell() {
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
   }, [toggleSidebar])
 
-  // ⌘K → pane switcher, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
+  // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
   // never clobbers terminal control keys like Ctrl-H (backspace). The
   // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
@@ -326,8 +322,7 @@ function Shell() {
         toggleSidebar()
       } else if (k === "k") {
         e.preventDefault()
-        setPaletteFromTerm(document.activeElement?.id === "term")
-        setPaletteOpen(true)
+        openHerdrGoto()
       } else if (k === "o" || k === "i") {
         e.preventDefault()
         setNewTab(k === "o" ? "agent" : "terminal")
@@ -414,12 +409,9 @@ function Shell() {
             >
               <HostSwitcher variant="nav" />
               <div className="flex min-w-0 flex-1 justify-center px-2">
-                <HeaderSearch
-                  onOpen={() => {
-                    setPaletteFromTerm(false)
-                    setPaletteOpen(true)
-                  }}
-                />
+                {/* Arrow, not the bare function: onClick would otherwise hand
+                    the click event in as `tries` and kill the retry. */}
+                <HeaderSearch onOpen={() => openHerdrGoto()} />
               </div>
               {/* New sits at the far-right of the row; when the sidebar is
                   collapsed the git status + expand control follow it. The
@@ -580,17 +572,15 @@ function Shell() {
           open={mobileHostOpen}
           onOpenChange={setMobileHostOpen}
         />
-        {/* ⌘K pane switcher — searches the ACTIVE host's panes, which with
-          herdr-mirror running covers the fleet (other machines' workspaces are
-          mirrored in as local panes), and focuses the chosen one in the herdr
-          terminal. focusPaneInHerdr still pushes the landing host's history
-          entry; same-host now, so pushQueryParam collapses it into a replace
-          rather than a dead Back step. */}
-        <PaneSwitcher
-          open={paletteOpen}
-          onOpenChange={setPaletteOpen}
-          termWasFocused={paletteFromTerm}
-        />
+        {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
+          with herdr-mirror running covers the fleet (other machines' workspaces
+          are mirrored in as local panes), and focuses the chosen one in the
+          herdr terminal. Desktop ⌘K goes to herdr's own search instead; this is
+          what the dial's search command opens, since a prefix chord isn't
+          reachable from a software keyboard. focusPaneInHerdr still pushes the
+          landing host's history entry; same-host now, so pushQueryParam
+          collapses it into a replace rather than a dead Back step. */}
+        <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
