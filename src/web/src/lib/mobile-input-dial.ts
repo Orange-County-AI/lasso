@@ -999,12 +999,103 @@ export function mountTerminalInputDial(
     if (pointerID !== null) clearGesture()
   })
 
-  doc.addEventListener(
+  // A tap that dismisses the open dial is spent on the dismissal. Without this
+  // the same gesture also reaches the terminal underneath: xterm focuses its
+  // textarea, and an app with mouse reporting on (every agent harness) reads the
+  // tap as a click — so putting the menu away could ALSO pick something in the
+  // agent's own UI, which is the one thing a dismissal must never do. It is the
+  // whole gesture that has to go, not just the pointerdown: a touch is trailed
+  // by a synthetic mousedown/mouseup/click, and terminal.ts's long-press
+  // right-click and tap-to-reconnect watch touchstart/touchend. Window capture
+  // is the only place that reaches all of them — it runs before both of those
+  // document-capture listeners and before anything xterm binds to its own
+  // elements. The swallow is scoped to the dismissing POINTER (plus the short
+  // tail its compatibility events arrive in), not to a fixed slice of time, so
+  // the next gesture is the terminal's again and no half-seen touch sequence
+  // leaves the scroll handler holding a stale origin.
+  const SWALLOW_TAIL_MS = 500
+  const SWALLOW_MAX_MS = 3000
+  const SWALLOWED_EVENTS: readonly string[] = [
+    "pointerdown",
+    "pointerup",
+    "pointercancel",
+    "touchstart",
+    "touchmove",
+    "touchend",
+    "touchcancel",
+    "mousedown",
+    "mouseup",
+    "click",
+    "dblclick",
+    "contextmenu",
+  ]
+
+  let swallowing = false
+  let swallowPointer: number | null = null
+  let swallowTimer: number | undefined
+
+  const endSwallow = () => {
+    swallowing = false
+    swallowPointer = null
+    if (swallowTimer !== undefined) win.clearTimeout(swallowTimer)
+    swallowTimer = undefined
+  }
+
+  const armSwallowTimer = (ms: number) => {
+    if (swallowTimer !== undefined) win.clearTimeout(swallowTimer)
+    swallowTimer = win.setTimeout(endSwallow, ms)
+  }
+
+  for (const type of SWALLOWED_EVENTS) {
+    win.addEventListener(
+      type,
+      (event: Event) => {
+        if (!swallowing) return
+        // The dial's own events are never swallowed: a dismissing tap may be
+        // followed straight away by a deliberate press on the root.
+        if (dial.contains(event.target as Node)) {
+          endSwallow()
+          return
+        }
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        // `click` closes the compatibility sequence; anything after it belongs
+        // to a new gesture, which the terminal is entitled to.
+        if (event.type === "click") {
+          endSwallow()
+          return
+        }
+        // The finger is up, so only that trailing mouse pair is still owed —
+        // and preventDefault here usually means it never comes at all.
+        if (
+          (event.type === "pointerup" || event.type === "pointercancel") &&
+          (event as PointerEvent).pointerId === swallowPointer
+        ) {
+          swallowPointer = null
+          armSwallowTimer(SWALLOW_TAIL_MS)
+        }
+      },
+      { capture: true, passive: false }
+    )
+  }
+
+  // Registered after the swallow so it sees the dismissing pointerdown first
+  // (the loop above ignores that one, nothing being swallowed yet) and can arm
+  // on it. Any dial level counts, root included: whether an item happens to be
+  // armed changes nothing about where the tap would otherwise land.
+  win.addEventListener(
     "pointerdown",
     (event) => {
-      if (open && !dial.contains(event.target as Node)) close()
+      if (!open || dial.contains(event.target as Node)) return
+      close()
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      swallowing = true
+      swallowPointer = event.pointerId
+      // Backstop for a pointer whose up/cancel never arrives.
+      armSwallowTimer(SWALLOW_MAX_MS)
     },
-    true
+    { capture: true, passive: false }
   )
   doc.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return
