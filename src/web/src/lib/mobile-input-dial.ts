@@ -43,8 +43,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "◆",
     kind: "branch",
     branch: "app",
-    x: -40,
-    y: -190,
+    x: -142,
+    y: -115,
     width: 80,
   },
   {
@@ -53,8 +53,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "⌘",
     kind: "branch",
     branch: "keys",
-    x: -142,
-    y: -115,
+    x: -198,
+    y: -28,
     width: 116,
   },
   {
@@ -62,8 +62,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     label: "Input",
     glyph: "⌨︎",
     kind: "input",
-    x: -198,
-    y: -28,
+    x: -40,
+    y: -190,
   },
 ]
 
