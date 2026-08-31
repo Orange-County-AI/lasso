@@ -39,6 +39,74 @@ interface FontDoc extends Document {
   __herdrFontWired?: boolean
 }
 
+// ttyd's own stylesheet reserves a 5px frame around the terminal, and xterm's
+// FitAddon then subtracts a scrollbar gutter on top of it — 27px of dead
+// background between herdr's right edge and the splitter, which reads as a gap
+// in the chrome and costs three columns of terminal.
+//
+// The gutter is the odd half: xterm's Viewport computes
+// `viewportEl.offsetWidth - scrollArea.offsetWidth || 15`, so a scrollbar that
+// measures 0 (overlay scrollbars on macOS, or one we hide) falls through the
+// `||` to a *phantom* 15px it then reserves anyway. Hiding it in CSS is
+// therefore necessary but not sufficient — pinScrollBarWidth below zeroes the
+// measurement itself (see reconcileTermFit for why it needs re-pinning).
+const TERM_FIT_STYLE_ID = "herdr-term-fit"
+const TERM_FIT_CSS = [
+  ".terminal{padding:0!important;height:100%!important}",
+  ".xterm-viewport{scrollbar-width:none!important}",
+  ".xterm-viewport::-webkit-scrollbar{width:0!important;height:0!important}",
+].join("")
+
+interface XtermCore {
+  viewport?: { scrollBarWidth?: number }
+}
+
+// Zero xterm's reserved scrollbar width and refit. Returns true when it actually
+// changed something, so callers only pay the resize/reflow on a real drift.
+function pinScrollBarWidth(win: Window | null, term: unknown): boolean {
+  const vp = (term as { _core?: XtermCore } | undefined)?._core?.viewport
+  if (!vp || vp.scrollBarWidth === 0) return false
+  vp.scrollBarWidth = 0
+  try {
+    win?.dispatchEvent(new Event("resize"))
+  } catch {
+    /* ignore */
+  }
+  return true
+}
+
+// applyTermFit strips ttyd's padding and the scrollbar gutter from every
+// terminal iframe so xterm's grid runs edge to edge. Mirrors applyTermFont: the
+// <style> goes in as soon as the document exists, and we retry while an iframe
+// is still (re)connecting so a not-yet-built xterm still gets pinned.
+export function applyTermFit(tries = 0) {
+  let pending = false
+  for (const el of termFrames()) {
+    try {
+      const doc = el.contentDocument
+      if (!doc?.head) {
+        pending = true
+        continue
+      }
+      if (!doc.getElementById(TERM_FIT_STYLE_ID)) {
+        const style = doc.createElement("style")
+        style.id = TERM_FIT_STYLE_ID
+        style.textContent = TERM_FIT_CSS
+        doc.head.appendChild(style)
+      }
+      const w = el.contentWindow as unknown as { term?: unknown }
+      if (!w?.term) {
+        pending = true
+        continue
+      }
+      pinScrollBarWidth(el.contentWindow, w.term)
+    } catch {
+      /* same-origin: never let a fit tweak break the terminal */
+    }
+  }
+  if (pending && tries < 20) setTimeout(() => applyTermFit(tries + 1), 250)
+}
+
 // Once the webfont is actually loaded inside the iframe, set xterm's fontFamily.
 // We deliberately set it *after* the load resolves (not before): xterm only
 // rebuilds its glyph atlas when the option value changes, so assigning the final
@@ -192,6 +260,22 @@ function reconcileTermTheme() {
   }
 }
 
+// A reconnect rebuilds the Viewport too, and its constructor re-derives the
+// phantom 15px (see TERM_FIT_CSS) — the injected <style> survives, since the
+// document never reloads, but the measurement does not. Re-pin it on the same
+// tick as the theme, writing only on a real drift so the refit isn't paid every
+// 1.5s.
+function reconcileTermFit() {
+  for (const el of termFrames()) {
+    try {
+      const w = el.contentWindow as unknown as { term?: unknown }
+      if (w?.term) pinScrollBarWidth(el.contentWindow, w.term)
+    } catch {
+      /* same-origin: never let a reconcile break the terminal */
+    }
+  }
+}
+
 let termThemeReconciler: ReturnType<typeof setInterval> | null = null
 
 // startTermThemeReconciler arms a single shared interval that keeps every
@@ -201,7 +285,10 @@ let termThemeReconciler: ReturnType<typeof setInterval> | null = null
 // lifetime — a few DOM reads and a string compare every couple of seconds.
 export function startTermThemeReconciler() {
   if (termThemeReconciler) return
-  termThemeReconciler = setInterval(reconcileTermTheme, 1500)
+  termThemeReconciler = setInterval(() => {
+    reconcileTermTheme()
+    reconcileTermFit()
+  }, 1500)
 }
 
 // The <style> that overrides the chrome's --h-* vars with herdr's palette while
