@@ -34,6 +34,8 @@ import (
 //	oauth_*     MCP OAuth clients/codes/tokens, when MCP_OAUTH is set (oauth.go)
 //	mcp_group_* host groups + directed grants, the reach that sits between
 //	            "self" and "fleet" (groups.go)
+//	push_subscriptions
+//	            the devices registered for Web Push notifications (webpush.go)
 //
 // modernc.org/sqlite is pure Go, so the binary stays CGO-free and portable.
 
@@ -149,7 +151,7 @@ func openDB() error {
 			return fmt.Errorf("%s: %w", pragma, err)
 		}
 	}
-	if _, err := h.Exec(dbSchema + oauthSchema + groupsSchema); err != nil {
+	if _, err := h.Exec(dbSchema + oauthSchema + groupsSchema + pushSchema); err != nil {
 		h.Close()
 		return fmt.Errorf("create schema: %w", err)
 	}

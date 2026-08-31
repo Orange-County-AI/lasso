@@ -28,6 +28,7 @@ import (
 //	lasso update          update to the latest release (or git-pull a supervised checkout)
 //	lasso doctor          check the local install (herdr, socket, port, version)
 //	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
+//	lasso notify          push a notification to the human (the `notify` MCP tool)
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
 //	lasso version         print the version
@@ -70,6 +71,9 @@ func main() {
 		case "closeme":
 			cliCloseMe()
 			return
+		case "notify":
+			cliNotify(os.Args[2:])
+			return
 		case "mcp-client":
 			cliMCPClient(os.Args[2:])
 			return
@@ -108,6 +112,7 @@ usage:
   lasso update             update lasso to the latest release
   lasso doctor             check the local install
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
+  lasso notify <message>   push a notification to the human running lasso
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
   lasso version            print the version

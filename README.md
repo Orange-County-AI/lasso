@@ -19,7 +19,8 @@ Two resizable, collapsible columns:
   iframe that embeds a local dev-server port (`5173`) or any URL you type, a
   plain **Terminal** shell outside herdr, and **Settings** (the lasso version
   and whether an update is available, the herdr protocol/version with a
-  one-click `herdr update`, and the New-Agent defaults).
+  one-click `herdr update`, notifications for blocked agents, and the New-Agent
+  defaults).
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
@@ -54,6 +55,7 @@ The binary is both the server and its own control surface:
 | `lasso update` | update to the latest release (see [Updating](#updating)) |
 | `lasso doctor` | check herdr, the socket, the port, and the version |
 | `lasso version` | print the version |
+| `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
 `start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
@@ -191,6 +193,46 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 
 Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
 fine on a private tailnet or behind Access, but confine it before widening access.
+
+## Notifications (iOS home screen)
+
+lasso pushes a notification to your phone for two things: an agent that
+**blocks** — stops mid-task waiting on a tool approval, a plan gate, a "y/n" —
+which it watches every reachable host for in the background, and an agent that
+**asks for you deliberately**:
+
+```bash
+lasso notify "the migration drops 2 columns — safe to run on prod?"
+```
+
+That's the `notify` MCP tool behind a CLI, so an agent with only a terminal and
+one with lasso's MCP server configured both get the same behavior: titled with
+the calling agent's name (resolved from `$HERDR_PANE_ID`), opening on its host,
+and **non-zero exit / `sent:false` when no device is registered** — so an agent
+never reports pinging you when nothing was delivered. Both arrive with no tab
+open and the screen off.
+
+It rides [Web Push](https://datatracker.ietf.org/doc/html/rfc8291), which on iOS
+only works for a site added to the **Home Screen** (iOS 16.4+). Once:
+
+1. Reach lasso over **HTTPS** (the Cloudflare tunnel above — Web Push needs a
+   secure context, and Apple's push service needs a real https origin).
+2. Open it in Safari → Share sheet → **Add to Home Screen**.
+3. Launch it from the Home Screen icon, open **Settings**, and tick *"Push a
+   notification to this device when an agent is blocked"*. iOS asks for
+   permission; allow it.
+4. **Send a test notification** confirms the whole path end to end.
+
+Each device registers itself, and every registered device gets every
+notification; Settings lists them with the outcome of the last push, so a device
+that has quietly stopped working says so. Turning the tick off removes that
+device. Nothing is polled at all while no device is registered.
+
+The push payload is encrypted end to end — Apple relays a blob it cannot read —
+and the VAPID keypair identifying this server is generated once into
+`~/.lasso/lasso.db`. Set `LASSO_PUSH_CONTACT=mailto:you@example.com` if you'd
+rather your push provider saw an address than lasso's own hostname; by default
+the JWT names the origin you subscribed from.
 
 ## Releasing
 

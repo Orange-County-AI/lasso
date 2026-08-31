@@ -33,6 +33,17 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- Home Screen web app. iOS only delivers Web Push to a site the user has
+         added to their Home Screen, and only treats it as a standalone app —
+         rather than a Safari shortcut — when it declares itself one. The
+         manifest is the modern route; apple-mobile-web-app-capable is the
+         legacy one iOS still honors, kept because a shortcut added before this
+         shipped keeps whichever mode it was created with. See lib/push.ts. -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="lasso" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="theme-color" content="#000000" />
   </head>
   <body>
     <div id="root"></div>

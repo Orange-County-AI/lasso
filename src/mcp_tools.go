@@ -21,6 +21,8 @@ import (
 //                  agent-to-agent messages, delivered when the recipient idles)
 //   - introspection: whoami (an agent maps its own $HERDR_PANE_ID back to its
 //                  lasso record, typically to then close_agent itself)
+//   - notifying:   notify (an agent pushes a notification to its HUMAN — the
+//                  deliberate counterpart to the blocked watcher; see notify.go)
 
 // registerMCPTools wires every tool onto the server. The In/Out struct types
 // drive the JSON Schemas the SDK advertises (field docs come from `jsonschema`
@@ -85,6 +87,11 @@ func registerMCPTools(s *mcp.Server) {
 		Name:        "close_agent",
 		Description: "Stop an agent: first kill the agent process (claude/codex/opencode/omp/pi) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Target it by `agent_id`, or by `pane_id` — pass your own $HERDR_PANE_ID to close YOURSELF without resolving your id via whoami first. Pass the `host` whoami/list_agents returned alongside the id; with no host every host you may address is searched (the local box and hosts with an alias in lasso's ssh config, narrowed to your credential's scope — anywhere else is out of reach), and an id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
 	}, closeAgentTool)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "notify",
+		Description: "Push a notification to the HUMAN who runs this lasso — their phone, if they have lasso on its home screen. Use it when you genuinely need them: a decision only they can make, a question that blocks you, or a long job finishing while they are away. It reaches a locked device, so it is not free: an agent that pings on every step trains them to ignore it. Pass your own $HERDR_PANE_ID as pane_id and the notification is titled with your agent's name and opens on your host, so they know who is asking without reading the body; the server cannot read your environment, so you must supply it. Nothing is collapsed or rate-limited — you asked once and it is delivered once. Check `sent` in the reply: false means no device is registered (`detail` says so) and the human did NOT get it, so do not report that you notified them. `lasso notify \"<message>\"` in a shell is the same call.",
+	}, notifyTool)
 }
 
 // ---------------------------------------------------------------------------
@@ -832,33 +839,41 @@ type whoamiOut struct {
 }
 
 func whoamiTool(ctx context.Context, req *mcp.CallToolRequest, in whoamiIn) (*mcp.CallToolResult, whoamiOut, error) {
-	// No host given: do NOT assume "local". The caller only knows its
-	// $HERDR_PANE_ID, pane ids are only unique per host, and the box this MCP
-	// server runs on is not necessarily the box the caller's pane lives on — so
-	// defaulting to local can resolve the id to an unrelated agent on another
-	// host (which the caller would then close). Search everywhere instead and
-	// refuse to guess on a collision.
-	cs := callerFrom(req)
+	out, err := resolveCallerAgent(ctx, callerFrom(req), in.Host, in.PaneID)
+	return nil, out, err
+}
+
+// resolveCallerAgent maps a caller's own pane id to its agent record — what
+// whoami answers. Extracted so `notify` can name the sender with exactly the
+// answer whoami would give, rather than a second, subtly different resolution.
+//
+// No host given: do NOT assume "local". The caller only knows its
+// $HERDR_PANE_ID, pane ids are only unique per host, and the box this MCP server
+// runs on is not necessarily the box the caller's pane lives on — so defaulting
+// to local can resolve the id to an unrelated agent on another host (which the
+// caller would then close). Search everywhere instead and refuse to guess on a
+// collision.
+func resolveCallerAgent(ctx context.Context, cs mcpCaller, wantHost, paneID string) (whoamiOut, error) {
 	// An identified caller needs no cross-host search at all: its credential
 	// already names the host it runs on, which also retires the pane-id collision
 	// refusal — the reason no-host whoami has to give up when two hosts both have
 	// a pane with the caller's id.
-	host := cs.searchHost(in.Host)
+	host := cs.searchHost(wantHost)
 	if host == "" {
-		return nil, resolveWhoamiAcrossHosts(ctx, cs, in.PaneID), nil
+		return resolveWhoamiAcrossHosts(ctx, cs, paneID), nil
 	}
 	if err := cs.requireHost(host); err != nil {
-		return nil, whoamiOut{}, err
+		return whoamiOut{}, err
 	}
 	b, err := agentBackendResolver(host)
 	if err != nil {
-		return nil, whoamiOut{}, err
+		return whoamiOut{}, err
 	}
 	recs, err := listAgents(host)
 	if err != nil {
-		return nil, whoamiOut{}, err
+		return whoamiOut{}, err
 	}
-	return nil, resolveWhoami(b, host, recs, in.PaneID), nil
+	return resolveWhoami(b, host, recs, paneID), nil
 }
 
 // resolveWhoami maps a herdr pane id to the lasso agent that owns it. It asks
@@ -938,6 +953,79 @@ func resolveWhoamiAcrossHosts(ctx context.Context, cs mcpCaller, paneID string) 
 	default:
 		return whoamiOut{Detail: fmt.Sprintf("pane id %q matches agents on hosts %s — pane ids are only unique per host, so lasso won't guess which one is you. Call whoami again with `host` set to the host your pane runs on (compare your machine's hostname against the labels in list_hosts).", paneID, hostsOf(matches))}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// notify — an agent gets its human's attention
+// ---------------------------------------------------------------------------
+
+type notifyIn struct {
+	Message string `json:"message" jsonschema:"What to tell the human, in one or two sentences — it is read on a lock screen. Say what you need, not that you need something: \"the auth migration is green, ready to merge?\" rather than \"please look at lasso\"."`
+	Title   string `json:"title,omitempty" jsonschema:"Headline. Defaults to your own agent's name (resolved from pane_id), which is usually what the human wants to see — override it only when the subject matters more than the sender."`
+	PaneID  string `json:"pane_id,omitempty" jsonschema:"Your own herdr pane id — the value of the $HERDR_PANE_ID environment variable in your shell (e.g. \"p_82\"). Used to title the notification with your agent's name and to open it on your host. The server cannot read your environment, so you must pass it; without it the notification still goes out, unattributed."`
+	Host    string `json:"host,omitempty" jsonschema:"Host you are running on. Omit to resolve it from pane_id, as whoami does."`
+}
+
+type notifyOut struct {
+	// Sent is the only field worth branching on: false means the human did NOT
+	// receive anything.
+	Sent       bool     `json:"sent"`
+	Transports []string `json:"transports,omitempty"` // which channels took it
+	Title      string   `json:"title"`                // the headline they will see
+	Detail     string   `json:"detail,omitempty"`     // why it did not arrive, or what partially failed
+}
+
+// notifyTool is the deliberate counterpart to the blocked watcher: that one
+// infers that a human is needed, this one is told.
+//
+// It attributes the notification by resolving the caller's own pane through
+// resolveCallerAgent — the same answer whoami gives — because a lock-screen
+// notification is read title-first, and "Fix the push flow" identifies the
+// asker where "lasso" does not. An unresolvable pane is not an error: the
+// message still matters, so it goes out with a plain title and the resolution
+// detail rides back in the reply for the agent to fix next time.
+//
+// No tag, so nothing collapses: two messages from one agent are two things the
+// human said yes to hearing, unlike the repeated "still blocked" the watcher
+// deliberately folds into one.
+func notifyTool(ctx context.Context, req *mcp.CallToolRequest, in notifyIn) (*mcp.CallToolResult, notifyOut, error) {
+	msg := strings.TrimSpace(in.Message)
+	if msg == "" {
+		return nil, notifyOut{}, fmt.Errorf("message is required")
+	}
+	cs := callerFrom(req)
+	title, host, detail := strings.TrimSpace(in.Title), strings.TrimSpace(in.Host), ""
+	if strings.TrimSpace(in.PaneID) != "" {
+		who, err := resolveCallerAgent(ctx, cs, in.Host, in.PaneID)
+		switch {
+		case err != nil:
+			// A scope refusal or an unreachable host must not swallow the message.
+			detail = err.Error()
+		case who.Found:
+			host = who.Agent.Host
+			if title == "" {
+				title = firstNonEmpty(who.Agent.SidebarName, who.Agent.Title)
+			}
+		default:
+			detail = who.Detail
+		}
+	}
+	if title == "" {
+		title = "lasso"
+	}
+	res := notifyNow(ctx, notification{
+		Kind:  notifAgentMessage,
+		Title: clipNotifyText(title, 70),
+		Body:  clipNotifyText(msg, 400),
+		Host:  host,
+	})
+	out := notifyOut{Sent: res.Sent, Transports: res.Transports, Title: title, Detail: res.Detail}
+	// A delivery problem is what the caller must act on, so it wins the detail
+	// slot over an attribution note.
+	if out.Detail == "" {
+		out.Detail = detail
+	}
+	return nil, out, nil
 }
 
 // ---------------------------------------------------------------------------

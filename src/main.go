@@ -192,6 +192,13 @@ func runServer() {
 	// life of the server, delivering into recipient panes as they go idle.
 	go messageDispatchLoop(ctx)
 
+	// Notifications: register the transports, then watch the fleet for agents
+	// that block waiting on a human. Both are inert until a device subscribes —
+	// the watcher's first act each tick is to ask whether anything is listening,
+	// and with nothing registered it never polls a host (see notifywatch.go).
+	registerNotifTransport(webPushChannel{})
+	go startBlockedWatcher(ctx)
+
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
@@ -265,6 +272,13 @@ func runServer() {
 	mux.HandleFunc("/api/host-update", serveHostUpdate)
 	mux.HandleFunc("/api/host-provision", serveHostProvision)
 	mux.HandleFunc("/api/self-update", serveSelfUpdate)
+	// Notifications (notify.go): Web Push to a device that registered itself —
+	// on iOS, a lasso added to the home screen. /api/push is the Settings tab's
+	// view of it; the watcher (notifywatch.go) is what actually produces them.
+	mux.HandleFunc("/api/push", servePushConfig)
+	mux.HandleFunc("/api/push/subscribe", servePushSubscribe)
+	mux.HandleFunc("/api/push/unsubscribe", servePushUnsubscribe)
+	mux.HandleFunc("/api/push/test", servePushTest)
 	// MCP server: lets an agent session orchestrate other lasso agents over the
 	// Model Context Protocol. Mounted here (before the SPA catch-all) and exempt
 	// from UI_AUTH below — see withAuthExcept. The handler serves both /mcp and
@@ -299,6 +313,13 @@ func runServer() {
 	// frontend is the Vite dev server (HMR) proxied onto these API routes; this
 	// embedded copy is what the production binary serves.
 	mux.Handle("/assets/", cacheControl(http.FileServer(http.FS(dist))))
+	// The service worker is the one asset whose URL never changes, so it is the
+	// one that must never be served stale: a lasso behind Cloudflare would
+	// otherwise keep an edge copy of it (js is a cacheable extension and the
+	// origin sets no policy) for hours past a self-update. must-revalidate on a
+	// 3.7 kB file costs a conditional request; a stale worker costs
+	// notifications that quietly stop matching the payload the server sends.
+	mux.Handle("/sw.js", noStore(http.FileServer(http.FS(dist))))
 	mux.Handle("/", serveDist(dist))
 	if *devMode {
 		log.Printf("dev:      ON — backend only; run the Vite dev server in web/ for the frontend (mise run dev)")
@@ -2729,6 +2750,15 @@ func isPreviewMedia(path string) bool {
 func cacheControl(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		h.ServeHTTP(w, r)
+	})
+}
+
+// noStore marks a response uncacheable by any intermediary. Used for /sw.js —
+// see the route for why that one file needs it.
+func noStore(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		h.ServeHTTP(w, r)
 	})
 }
