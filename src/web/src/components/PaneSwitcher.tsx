@@ -407,6 +407,7 @@ export function PaneSwitcher({
         </button>
         <input
           ref={inputRef}
+          autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
