@@ -1,3 +1,4 @@
+import { api } from "@/lib/api"
 import { emitMobileCommand, type MobileCommand } from "@/lib/mobile-command"
 import {
   pasteAndSubmitTerminal,
@@ -11,7 +12,8 @@ import {
 // same-document pointer gesture preserves the iOS software keyboard, while a
 // control in the parent document would dismiss it and could not reopen it.
 
-const DIAL_ID = "__lasso_mobile_input_dial"
+// Exported so terminal.ts can tell a tap on the dial from a tap on the terminal.
+export const DIAL_ID = "__lasso_mobile_input_dial"
 const STYLE_ID = "__lasso_mobile_input_dial_style"
 const TRACKING_CLASS = "__lasso_mobile_input_dial_tracking"
 const HOLD_MS = 140
@@ -351,27 +353,8 @@ html.${TRACKING_CLASS} .xterm-screen {
 #${DIAL_ID} .dial-branch[data-active="true"] .dial-glyph {
   color: inherit;
 }
-#${DIAL_ID} .dial-crumb {
-  position: absolute;
-  left: -198px;
-  top: -210px;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 36px;
-  padding: 0 13px;
-  border: 1px solid var(--dial-edge);
-  border-radius: 999px;
-  background: var(--h-panel, #111);
-  color: var(--h-muted, #8a8a8a);
-  font-size: 12px;
-  white-space: nowrap;
-  pointer-events: none;
-}
-#${DIAL_ID} .dial-crumb strong {
-  color: var(--h-fg, #ededed);
-  font-weight: 600;
+#${DIAL_ID} .input-picker {
+  display: none;
 }
 #${DIAL_ID} .input-panel {
   position: fixed;
@@ -428,6 +411,11 @@ html.${TRACKING_CLASS} .xterm-screen {
 #${DIAL_ID} .input-actions {
   justify-content: flex-end;
 }
+/* The attach action belongs to the buffer, not to the commit trio, so it holds
+   the left edge while Cancel/Insert/Enter stay grouped at the right. */
+#${DIAL_ID} .input-action.attach {
+  margin-right: auto;
+}
 #${DIAL_ID} .input-action {
   min-height: 38px;
   padding: 0 13px;
@@ -461,8 +449,14 @@ function targetCenter(target: DialTarget): { x: number; y: number } {
 
 // mountTerminalInputDial is idempotent and touch-only. ttyd may not have built
 // #terminal-container yet when the iframe load event fires, so mounting retries
-// briefly just like the old key bar did.
-export function mountTerminalInputDial(id: string, tries = 0): void {
+// briefly just like the old key bar did. `pasteHost` names the host an attached
+// image must be written to — the focused pane's filesystem, resolved fresh on
+// every use because focus moves without remounting anything.
+export function mountTerminalInputDial(
+  id: string,
+  pasteHost: () => string | undefined,
+  tries = 0
+): void {
   const frame = document.getElementById(id) as HTMLIFrameElement | null
   const win = frame?.contentWindow as Window | null
   if (!win?.matchMedia?.("(pointer: coarse)").matches) return
@@ -471,7 +465,7 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
   if (doc.getElementById(DIAL_ID)) return
   if (!doc.getElementById("terminal-container")) {
     if (tries < 20) {
-      win.setTimeout(() => mountTerminalInputDial(id, tries + 1), 150)
+      win.setTimeout(() => mountTerminalInputDial(id, pasteHost, tries + 1), 150)
     }
     return
   }
@@ -647,20 +641,37 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     title.textContent = "Input buffer"
     const status = doc.createElement("span")
     status.className = "input-status"
-    status.textContent = "Type or use the keyboard microphone"
+    status.textContent = "Type, dictate, or add an image"
     header.append(title, status)
 
     const buffer = doc.createElement("textarea")
     buffer.className = "input-buffer"
-    buffer.placeholder = "Type or dictate, then insert or submit."
+    buffer.placeholder = "Type, dictate, or add an image, then insert or submit."
     buffer.spellcheck = true
     buffer.inputMode = "text"
     buffer.autocapitalize = "sentences"
     buffer.enterKeyHint = "done"
     buffer.setAttribute("aria-label", "Buffered terminal input")
 
+    // A phone has no drag-and-drop and no file manager worth the name, so the
+    // picker is the whole story: iOS offers Photo Library / Take Photo / Choose
+    // File from this one input. Pasting an image into the buffer lands in the
+    // same handler (terminal.ts leaves dial-targeted pastes alone for it).
+    const picker = doc.createElement("input")
+    picker.type = "file"
+    picker.accept = "image/*"
+    picker.multiple = true
+    picker.className = "input-picker"
+    picker.tabIndex = -1
+
     const actions = doc.createElement("div")
     actions.className = "input-actions"
+    const image = doc.createElement("button")
+    image.type = "button"
+    image.className = "input-action attach"
+    image.textContent = "Image"
+    image.title = "Add an image and insert its path"
+    image.setAttribute("aria-label", "Add an image")
     const cancel = doc.createElement("button")
     cancel.type = "button"
     cancel.className = "input-action"
@@ -677,8 +688,8 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     enter.title = "Insert and submit"
     enter.setAttribute("aria-label", "Insert and submit")
     enter.disabled = true
-    actions.append(cancel, insert, enter)
-    panel.append(header, buffer, actions)
+    actions.append(image, cancel, insert, enter)
+    panel.append(header, buffer, actions, picker)
     dial.appendChild(panel)
     inputPanel = panel
 
@@ -686,6 +697,52 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
       const disabled = !buffer.value.trim()
       insert.disabled = disabled
       enter.disabled = disabled
+    }
+
+    // Insert at the caret, space-separated, so a path can be dropped into the
+    // middle of a sentence the way it reads in the composer afterwards.
+    const insertAtCursor = (text: string) => {
+      const start = buffer.selectionStart ?? buffer.value.length
+      const end = buffer.selectionEnd ?? start
+      const before = buffer.value.slice(0, start)
+      const lead = before && !/\s$/.test(before) ? " " : ""
+      const chunk = `${lead}${text} `
+      buffer.value = before + chunk + buffer.value.slice(end)
+      const caret = start + chunk.length
+      buffer.setSelectionRange(caret, caret)
+      updateActions()
+    }
+
+    // The image goes to the host the FOCUSED PANE's filesystem lives on (the
+    // same target the terminal's own paste uses), because the path we insert is
+    // read by the agent in that pane, not by the browser.
+    let attaching = false
+    const addImages = async (files: ArrayLike<File> | null) => {
+      const images = Array.from(files ?? []).filter((file) =>
+        file.type.startsWith("image/")
+      )
+      if (!images.length || attaching) return
+      attaching = true
+      image.disabled = true
+      status.textContent =
+        images.length > 1 ? `Adding ${images.length} images…` : "Adding image…"
+      for (const file of images) {
+        try {
+          const { path } = await api.pasteImage(file, pasteHost())
+          // The panel can be cancelled mid-upload; the file is on the host
+          // either way, but there is no buffer left to insert it into.
+          if (!panel.isConnected) return
+          insertAtCursor(path)
+          status.textContent = path.split("/").pop() ?? "Image added"
+        } catch (err) {
+          if (!panel.isConnected) return
+          status.textContent = `Image failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        }
+      }
+      attaching = false
+      image.disabled = false
     }
     const commit = (submit: boolean) => {
       const text = buffer.value.trim()
@@ -700,6 +757,26 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     cancel.addEventListener("click", closeInputPanel)
     insert.addEventListener("click", () => commit(false))
     enter.addEventListener("click", () => commit(true))
+    image.addEventListener("click", () => picker.click())
+    picker.addEventListener("change", () => {
+      // The selection must be reset or picking the same photo twice fires no
+      // second change event — but only after the upload has read the File,
+      // which is backed by that selection.
+      void addImages(picker.files).finally(() => {
+        picker.value = ""
+      })
+    })
+    buffer.addEventListener("paste", (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items
+      if (!items) return
+      const files = Array.from(items)
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null)
+      if (!files.length) return // text paste: let the textarea have it
+      event.preventDefault()
+      void addImages(files)
+    })
 
     // Focusing synchronously from the dial gesture opens the software keyboard
     // with its microphone available, isolating buffered input from xterm.
@@ -802,6 +879,9 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     level = nextLevel
     activeID = null
     menu.replaceChildren()
+    // The root glyph flips to "‹" for a branch, which is the whole affordance:
+    // a crumb chip naming the branch sat where the ring's own items are and
+    // covered them, to say what the ring below it already says.
     const inBranch = level !== "root"
     root.textContent = inBranch ? "‹" : "⌘"
     root.title = inBranch ? "Back to input controls" : "Close input controls"
@@ -811,17 +891,6 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     )
     root.setAttribute("aria-expanded", "true")
 
-    if (inBranch) {
-      const isKeys = level === "keys"
-      const crumb = doc.createElement("div")
-      crumb.className = "dial-crumb"
-      const glyph = doc.createElement("span")
-      glyph.textContent = isKeys ? "⌘ ›" : "◆ ›"
-      const label = doc.createElement("strong")
-      label.textContent = isKeys ? "Common keys" : "Lasso"
-      crumb.append(glyph, label)
-      menu.appendChild(crumb)
-    }
     for (const target of targets()) makeItem(target)
   }
 

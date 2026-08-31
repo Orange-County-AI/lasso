@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { mountTerminalInputDial } from "@/lib/mobile-input-dial"
+import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
   applyTermFont,
   applyTermTheme,
@@ -69,6 +69,10 @@ interface WiredDoc extends Document {
   __herdrWired?: boolean
   __touchScrollWired?: boolean
   __longPressRightClickWired?: boolean
+  __tapReconnectWired?: boolean
+}
+interface OverlayNode extends HTMLElement {
+  __herdrReconnectWatched?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -521,6 +525,143 @@ function wireLongPressRightClick(doc: WiredDoc, win: TermWindow) {
   })
 }
 
+// ttyd's disconnect prompt is keyboard-only. On a NORMAL close (code 1000 — a
+// phone waking from sleep, a proxy idling the socket out) its client skips the
+// automatic retry, prints "Press ⏎ to Reconnect" and waits on a one-shot xterm
+// onKey listener. That key is out of reach on a phone: the software keyboard is
+// closed, and the only way to reopen it is to interact with a terminal that no
+// longer takes input. So relabel the prompt and let a tap press ⏎ for it — we
+// dispatch the same key event a hardware Enter would, so ttyd's own listener
+// does the reconnecting and none of its state is reached behind its back.
+const TTYD_RECONNECT_TEXT = "Press ⏎ to Reconnect"
+const TAP_RECONNECT_TEXT = "Tap to Reconnect"
+
+// ttyd's OverlayAddon node is the one class-less absolutely-positioned <div>
+// among the .xterm element's children — every layer xterm itself adds carries a
+// class. The node is created once and reused for every message.
+function ttydOverlay(doc: Document): OverlayNode | null {
+  const host = doc.querySelector(".xterm")
+  if (!host) return null
+  for (const child of Array.from(host.children)) {
+    if (child.tagName === "DIV" && !child.className) return child as OverlayNode
+  }
+  return null
+}
+
+// The overlay when it is actually offering a reconnect (either wording), null
+// for every other message it shows — "Reconnecting…", a resize readout, ✂.
+function reconnectPrompt(doc: Document): HTMLElement | null {
+  const overlay = ttydOverlay(doc)
+  if (!overlay?.isConnected) return null
+  const text = (overlay.textContent ?? "").trim()
+  const armed = text === TTYD_RECONNECT_TEXT || text === TAP_RECONNECT_TEXT
+  return armed ? overlay : null
+}
+
+// showOverlay centres the box by measuring it after filling it, so a relabel has
+// to redo that arithmetic or the prompt sits off-centre by the width it lost.
+function relabelReconnect(doc: Document, overlay: HTMLElement) {
+  if ((overlay.textContent ?? "").trim() !== TTYD_RECONNECT_TEXT) return
+  overlay.textContent = TAP_RECONNECT_TEXT
+  const host = doc.querySelector(".xterm")
+  if (!host) return
+  const box = host.getBoundingClientRect()
+  const node = overlay.getBoundingClientRect()
+  overlay.style.top = `${(box.height - node.height) / 2}px`
+  overlay.style.left = `${(box.width - node.width) / 2}px`
+}
+
+function wireTapToReconnect(id: string, tries: number) {
+  let win: TermWindow | null
+  let doc: WiredDoc | null
+  try {
+    win = frameWindow(id)
+    doc = (win?.document as WiredDoc) ?? null
+  } catch {
+    return
+  }
+  // ttyd builds .xterm after its own token fetch, so retry like the other
+  // xterm-dependent wirings rather than binding to a terminal that isn't there.
+  if (!win || !doc?.querySelector(".xterm")) {
+    if (tries < 20) setTimeout(() => wireTapToReconnect(id, tries + 1), 150)
+    return
+  }
+  if (doc.__tapReconnectWired) return
+  doc.__tapReconnectWired = true
+  const frameDoc = doc
+  const coarse = win.matchMedia?.("(pointer: coarse)").matches ?? false
+  // The iframe is same-origin, so its window IS a full DOM realm; only the
+  // `Window` type omits the globals. Observers must come from that realm to
+  // watch its nodes.
+  const frameGlobals = win as Window & typeof globalThis
+  const ObserverCtor = frameGlobals.MutationObserver
+
+  // Only a touch device gets the relabel: a mouse keeps ⏎, which is accurate
+  // there and is the affordance ttyd's own users know.
+  if (coarse) {
+    // The node is appended once and then only has its text rewritten, so watch
+    // the .xterm element for the append and the node itself for each message.
+    const watch = (overlay: OverlayNode) => {
+      relabelReconnect(frameDoc, overlay)
+      if (overlay.__herdrReconnectWatched) return
+      overlay.__herdrReconnectWatched = true
+      new ObserverCtor(() => relabelReconnect(frameDoc, overlay)).observe(
+        overlay,
+        { characterData: true, childList: true, subtree: true }
+      )
+    }
+    const existing = ttydOverlay(frameDoc)
+    if (existing) watch(existing)
+    const host = frameDoc.querySelector(".xterm")
+    if (host) {
+      new ObserverCtor(() => {
+        const overlay = ttydOverlay(frameDoc)
+        if (overlay) watch(overlay)
+      }).observe(host, { childList: true })
+    }
+  }
+
+  let lastTap = 0
+  const reconnect = (event: Event, x: number, y: number) => {
+    const overlay = reconnectPrompt(frameDoc)
+    if (!overlay) return
+    const target = event.target as Element | null
+    // The dial stays usable while disconnected (its ⏎ is the other way back),
+    // so a tap aimed at it is never swallowed here.
+    if (target?.closest?.(`#${DIAL_ID}`)) return
+    // A precise pointer reconnects only from a deliberate click on the prompt;
+    // a finger gets the whole terminal, since nothing else there responds.
+    // The prompt is hit-tested by geometry, not by event.target: xterm's
+    // z-indexed canvas layers paint over ttyd's overlay, so a click on the words
+    // is delivered to a canvas and the node is never anyone's target.
+    if (!coarse) {
+      const box = overlay.getBoundingClientRect()
+      const inside =
+        x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+      if (!inside) return
+    }
+    // iOS follows a tap with a synthetic click: one gesture, one reconnect.
+    const now = Date.now()
+    if (now - lastTap < 800) return
+    lastTap = now
+    event.preventDefault()
+    sendKeyToTerminal(id, "Enter")
+  }
+  frameDoc.addEventListener(
+    "touchend",
+    (event: TouchEvent) => {
+      const touch = event.changedTouches[0]
+      reconnect(event, touch?.clientX ?? 0, touch?.clientY ?? 0)
+    },
+    { capture: true, passive: false }
+  )
+  frameDoc.addEventListener(
+    "click",
+    (event: MouseEvent) => reconnect(event, event.clientX, event.clientY),
+    true
+  )
+}
+
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -543,6 +684,9 @@ export function wireTerminalIframe(
   doc.__herdrWired = true
 
   if (win) {
+    // Registered before the touch gestures so a tap that reconnects is never
+    // consumed by the long-press handler's touchend.
+    wireTapToReconnect(id, 0)
     wireTouchScroll(doc, win)
     if (suppressContext) wireLongPressRightClick(doc, win)
   }
@@ -582,6 +726,10 @@ export function wireTerminalIframe(
   doc.addEventListener(
     "paste",
     async (e: ClipboardEvent) => {
+      // The dial's input buffer takes its own images (it inserts the path into
+      // the buffer text, not into xterm), so a paste aimed at it is not ours.
+      const target = e.target as Element | null
+      if (target?.closest?.(`#${DIAL_ID}`)) return
       const items = e.clipboardData?.items
       if (!items) return
       const imgItem = Array.from(items).find(
@@ -622,7 +770,7 @@ export function bootTermFrame(
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
-    mountTerminalInputDial(id)
+    mountTerminalInputDial(id, pasteHost)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -631,7 +779,7 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
-  mountTerminalInputDial(id) // in case it already loaded
+  mountTerminalInputDial(id, pasteHost) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 
