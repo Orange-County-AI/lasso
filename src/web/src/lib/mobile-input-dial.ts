@@ -117,8 +117,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "esc",
     kind: "key",
     key: "Escape",
-    x: -220,
-    y: -18,
+    x: -216,
+    y: -42,
   },
   {
     id: "ctrl-c",
@@ -126,8 +126,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "^C",
     kind: "key",
     key: "CtrlC",
-    x: -160,
-    y: -18,
+    x: -156,
+    y: -42,
   },
   {
     id: "tab",
@@ -135,8 +135,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "tab",
     kind: "key",
     key: "Tab",
-    x: -174,
-    y: -127,
+    x: -194,
+    y: -103,
   },
   {
     id: "shift-tab",
@@ -144,8 +144,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "⇧⇥",
     kind: "key",
     key: "ShiftTab",
-    x: -127,
-    y: -166,
+    x: -156,
+    y: -156,
   },
   {
     id: "enter",
@@ -153,8 +153,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "↵",
     kind: "key",
     key: "Enter",
-    x: -205,
-    y: -75,
+    x: 20,
+    y: -219,
   },
   {
     id: "up",
@@ -162,8 +162,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "↑",
     kind: "key",
     key: "ArrowUp",
-    x: -70,
-    y: -190,
+    x: -103,
+    y: -194,
   },
   {
     id: "down",
@@ -171,8 +171,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "↓",
     kind: "key",
     key: "ArrowDown",
-    x: -10,
-    y: -198,
+    x: -42,
+    y: -216,
   },
 ]
 
