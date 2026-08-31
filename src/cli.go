@@ -67,9 +67,6 @@ func main() {
 		case "doctor":
 			cliDoctor()
 			return
-		case "devproxy":
-			runDevProxy(os.Args[2:])
-			return
 		case "closeme":
 			cliCloseMe()
 			return
@@ -110,7 +107,6 @@ usage:
   lasso status             show whether the background server is running
   lasso update             update lasso to the latest release
   lasso doctor             check the local install
-  lasso devproxy [flags]   Host-demux: serve *.<domain> -> 127.0.0.1:<port> (Cloudflare dev preview)
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)

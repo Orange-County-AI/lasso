@@ -16,10 +16,10 @@ Two resizable, collapsible columns:
 - **Right** — the git **Diff** of the focused pane's repo (working tree, or the
   branch vs. its base when clean), a **Files** browser that follows the active
   pane's directory and opens files in a markdown/code/image viewer, a **Browser**
-  web-preview iframe for a dev server, a plain **Terminal** shell outside herdr,
-  and **Settings** (the lasso version and whether an update is available, the
-  herdr protocol/version with a one-click `herdr update`, and the New-Agent
-  defaults).
+  iframe that embeds a local dev-server port (`5173`) or any URL you type, a
+  plain **Terminal** shell outside herdr, and **Settings** (the lasso version
+  and whether an update is available, the herdr protocol/version with a
+  one-click `herdr update`, and the New-Agent defaults).
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
@@ -182,6 +182,12 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 > Over plain-HTTP tailnet access (`http://citadel:8090`) a download silently
 > won't fire — use the Cloudflare tunnel (HTTPS) if you need to pull files off
 > the box. (Viewing files still works; only the download action is gated.)
+
+> **The Browser tab embeds only what your browser can embed.** A bare port
+> (`5173`) resolves to `http://<the hostname you're using>:5173`, so it frames
+> straight from your browser with nothing in between. Over an HTTPS origin
+> (behind a tunnel) that's mixed content and the tab says so — open it in a new
+> tab, or reach lasso over plain HTTP on the tailnet to frame a dev server.
 
 Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
 fine on a private tailnet or behind Access, but confine it before widening access.
