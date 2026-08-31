@@ -38,13 +38,31 @@ type DialTarget = {
 
 const ROOT_TARGETS: readonly DialTarget[] = [
   {
+    id: "input",
+    label: "Input",
+    glyph: "⌨︎",
+    kind: "input",
+    x: -23,
+    y: -219,
+  },
+  {
+    id: "new",
+    label: "New",
+    glyph: "+",
+    kind: "command",
+    command: "new",
+    x: -110,
+    y: -191,
+    width: 78,
+  },
+  {
     id: "app",
     label: "Lasso",
     glyph: "◆",
     kind: "branch",
     branch: "app",
-    x: -142,
-    y: -115,
+    x: -180,
+    y: -126,
     width: 96,
   },
   {
@@ -53,31 +71,13 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "⌘",
     kind: "branch",
     branch: "keys",
-    x: -198,
-    y: -28,
+    x: -219,
+    y: -23,
     width: 116,
-  },
-  {
-    id: "input",
-    label: "Input",
-    glyph: "⌨︎",
-    kind: "input",
-    x: -40,
-    y: -190,
   },
 ]
 
 const APP_TARGETS: readonly DialTarget[] = [
-  {
-    id: "new",
-    label: "New",
-    glyph: "+",
-    kind: "command",
-    command: "new",
-    x: -200,
-    y: -28,
-    width: 78,
-  },
   {
     id: "search",
     label: "Search",
@@ -307,6 +307,29 @@ html.${TRACKING_CLASS} .xterm-screen {
   background: var(--h-accent, #fff);
   color: var(--h-bg, #000);
   transform: scale(1.1);
+}
+#${DIAL_ID} .dial-item::after {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  z-index: 5;
+  padding: 6px 8px;
+  border: 1px solid var(--h-border, #262626);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--h-panel, #111) 98%, transparent);
+  color: var(--h-fg, #ededed);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .34);
+  content: attr(data-tooltip);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  visibility: hidden;
+  white-space: nowrap;
+}
+#${DIAL_ID} .dial-item[data-active="true"]::after {
+  opacity: 1;
+  visibility: visible;
 }
 #${DIAL_ID} .dial-branch {
   justify-content: center;
@@ -690,6 +713,7 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
     button.className = `dial-item${target.width ? " dial-branch" : ""}`
     button.dataset.target = target.id
     button.dataset.active = "false"
+    button.dataset.tooltip = target.label
     button.title = target.label
     button.setAttribute("aria-label", target.label)
     button.style.width = `${target.width ?? ITEM_SIZE}px`
