@@ -126,8 +126,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "^C",
     kind: "key",
     key: "CtrlC",
-    x: -205,
-    y: -75,
+    x: -160,
+    y: -18,
   },
   {
     id: "tab",
@@ -153,8 +153,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "↵",
     kind: "key",
     key: "Enter",
-    x: -10,
-    y: -258,
+    x: -205,
+    y: -75,
   },
   {
     id: "up",
