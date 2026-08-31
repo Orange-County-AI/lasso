@@ -726,6 +726,10 @@ export function wireTerminalIframe(
   doc.addEventListener(
     "paste",
     async (e: ClipboardEvent) => {
+      // The dial's input buffer takes its own images (it inserts the path into
+      // the buffer text, not into xterm), so a paste aimed at it is not ours.
+      const target = e.target as Element | null
+      if (target?.closest?.(`#${DIAL_ID}`)) return
       const items = e.clipboardData?.items
       if (!items) return
       const imgItem = Array.from(items).find(
@@ -766,7 +770,7 @@ export function bootTermFrame(
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
-    mountTerminalInputDial(id)
+    mountTerminalInputDial(id, pasteHost)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -775,7 +779,7 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
-  mountTerminalInputDial(id) // in case it already loaded
+  mountTerminalInputDial(id, pasteHost) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 
