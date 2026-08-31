@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -140,7 +141,22 @@ func deliverNotification(ctx context.Context, n notification) (sent []string, er
 		}
 		sent = append(sent, t.name())
 	}
-	return sent, errors.Join(errs...)
+	err = errors.Join(errs...)
+	// Log what went out, not just what failed. This interrupts a human on a
+	// locked phone, so "why did I get that?" has to be answerable from the log
+	// afterwards — otherwise the only way to explain a notification is to
+	// re-derive it from a live fleet query, which is exactly what happened the
+	// first time one looked surprising. The tag names the pane; the body is left
+	// out (it is the agent's text, and it already reached the device).
+	switch {
+	case len(sent) > 0 && err != nil:
+		log.Printf("notify: %s %q via %s [%s] (some failed: %v)", n.Kind, n.Title, strings.Join(sent, ", "), n.Tag, err)
+	case len(sent) > 0:
+		log.Printf("notify: %s %q via %s [%s]", n.Kind, n.Title, strings.Join(sent, ", "), n.Tag)
+	case err != nil:
+		log.Printf("notify: %s %q undelivered: %v", n.Kind, n.Title, err)
+	}
+	return sent, err
 }
 
 // notifyNoDestination is what a caller is told when the notification went
@@ -175,7 +191,8 @@ func notifyNow(ctx context.Context, n notification) notifyResult {
 
 // publishNotification fans n out to every active transport, off the caller's
 // goroutine. Its callers are poll loops; none may wait on a push service, and a
-// delivery failure is a log line, not their problem.
+// delivery failure is theirs to ignore — deliverNotification logs both the
+// outcome and any failure, so there is nothing left for this to report.
 func publishNotification(n notification) {
 	if !notifyEnabled() {
 		return
@@ -183,8 +200,6 @@ func publishNotification(n notification) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notifDeliverTimeout)
 		defer cancel()
-		if _, err := deliverNotification(ctx, n); err != nil {
-			log.Printf("notify: %s: %v", n.Kind, err)
-		}
+		_, _ = deliverNotification(ctx, n)
 	}()
 }

@@ -94,8 +94,21 @@ func (w *blockedWatcher) observe(panes []hostPane, now time.Time) []notification
 	if w.seen == nil {
 		w.seen = map[string]paneNotifyState{}
 	}
+	ids := notifyPaneIdentities(panes)
+	// Which names are shared. Two agents in one workspace inherit its label and
+	// would otherwise produce notifications identical down to the body — measured
+	// in the field: a workspace called "cheese" with two parked claudes sent two
+	// indistinguishable buzzes. Counted across every agent pane in the snapshot,
+	// not just the ones notifying now, so the sibling that blocks five minutes
+	// later is disambiguated the same way.
+	shared := map[string]int{}
+	for _, p := range ids {
+		if p.HasAgent {
+			shared[blockedTitle(p)]++
+		}
+	}
 	var out []notification
-	for key, p := range notifyPaneIdentities(panes) {
+	for key, p := range ids {
 		if !p.HasAgent {
 			// A pane that stopped being an agent (the CLI exited, leaving a bare
 			// shell) keeps its slot so the status it had is not read as a
@@ -112,7 +125,7 @@ func (w *blockedWatcher) observe(panes []hostPane, now time.Time) []notification
 		next := paneNotifyState{status: p.AgentStatus, notifiedAt: prev.notifiedAt, seenAt: now}
 		if fresh {
 			next.notifiedAt = now
-			out = append(out, blockedNotification(p, key))
+			out = append(out, blockedNotification(p, key, shared[blockedTitle(p)] > 1))
 		}
 		w.seen[key] = next
 	}
@@ -154,21 +167,51 @@ func notifyPaneIdentities(panes []hostPane) map[string]hostPane {
 	return out
 }
 
-// blockedNotification renders one blocked agent.
+// blockedTitle is the agent's NAME: the workspace label, which auto-titling
+// (autotitle.go) turns into a real description of the task. That is what a phone
+// shows on the lock screen and the only line guaranteed to be read, so it comes
+// before anything lasso could say itself.
 //
-// The title is the agent's NAME — the workspace label, which auto-titling
-// (autotitle.go) makes a real description of the task — because that is what a
-// phone shows on the lock screen and it is the only line guaranteed to be read.
+// Its own function because the watcher needs the answer twice: once to render,
+// once to find out whether two agents would render the same.
+func blockedTitle(p hostPane) string {
+	if t := firstNonEmpty(p.WorkspaceLabel, p.MirrorLabel, p.PaneLabel, p.TerminalTitle); t != "" {
+		return t
+	}
+	return "Agent"
+}
+
+// paneDiscriminator tells sibling agents apart when their shared name cannot.
+// herdr's tab label is what the human sees beside them in the sidebar; the pane
+// id is the fallback for a tab carrying no label at all.
+func paneDiscriminator(p hostPane) string {
+	if tab := strings.TrimSpace(p.TabLabel); tab != "" {
+		return "tab " + tab
+	}
+	if p.MirrorPane != "" {
+		return p.MirrorPane
+	}
+	return p.PaneID
+}
+
+// blockedNotification renders one blocked agent. ambiguous means another agent
+// in the same snapshot carries the same name, so the title must say which pane
+// this is — two agents in one workspace inherit its label, and without this the
+// pair is identical down to the body.
+//
 // The body says which harness, on which machine, and what it was last doing.
-func blockedNotification(p hostPane, key string) notification {
+func blockedNotification(p hostPane, key string, ambiguous bool) notification {
 	host := p.Host
 	hostLabel := p.HostLabel
 	if p.MirrorHost != "" {
 		host, hostLabel = p.MirrorHost, p.MirrorHost
 	}
-	title := firstNonEmpty(p.WorkspaceLabel, p.MirrorLabel, p.PaneLabel, p.TerminalTitle)
-	if title == "" {
-		title = "Agent"
+	title := blockedTitle(p)
+	if d := paneDiscriminator(p); ambiguous && d != "" {
+		// Clip the shared part, never the discriminator: it is the only thing
+		// telling this notification from its sibling, so a long workspace label
+		// must not push it off the end.
+		title = clipNotifyText(title, max(20, 70-len([]rune(d))-3)) + " · " + d
 	}
 	agent := p.Agent
 	if agent == "" {
@@ -179,7 +222,7 @@ func blockedNotification(p hostPane, key string) notification {
 	// most useful thing to add, unless it is already the headline, in which case
 	// saying what lasso wants from the reader is worth more.
 	tail := "needs your input"
-	if task := strings.TrimSpace(p.TerminalTitle); task != "" && task != title {
+	if task := strings.TrimSpace(p.TerminalTitle); task != "" && task != blockedTitle(p) {
 		tail = clipNotifyText(task, 90)
 	}
 	body := fmt.Sprintf("%s is blocked on %s — %s", agent, where, tail)
