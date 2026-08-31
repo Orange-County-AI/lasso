@@ -66,6 +66,57 @@ export interface HostsPayload {
   probing: boolean
 }
 
+// One usage quota window (5-hour block, weekly rolling, …). `percent` is 0–100.
+// `resetsAt` is RFC3339 (the frontend formats it relative to now so countdowns
+// stay live between polls). `countdown` marks short windows shown as "18m left"
+// vs a reset date. `elapsedPct` is 0–100 for how far through the window we are
+// (the pace notch on the usage bar), or -1 if the window length is unknown.
+export interface UsageLimit {
+  label: string
+  percent: number
+  resetsAt?: string
+  countdown?: boolean
+  elapsedPct: number
+}
+
+export interface UsageProvider {
+  name: string
+  plan?: string
+  limits: UsageLimit[]
+  err?: string
+}
+
+export interface UsagePayload {
+  providers: UsageProvider[]
+  updatedAt: string
+}
+
+// Providers the backend knows how to meter. Kept here so the footer and its
+// Settings controls share the persisted provider names exactly.
+export const USAGE_PROVIDER_NAMES = [
+  "Claude Code",
+  "Kimi Code",
+  "Codex",
+  "Z.ai",
+] as const
+
+// Normalize persisted order without hiding providers introduced by a newer
+// build. Unknown and duplicate names are dropped; known missing names append in
+// backend order.
+export function completeUsageProviderOrder(
+  saved: readonly string[] | undefined
+): string[] {
+  const known: readonly string[] = USAGE_PROVIDER_NAMES
+  const completed = (saved ?? []).filter(
+    (name, index, order) =>
+      known.includes(name) && order.indexOf(name) === index
+  )
+  for (const name of known) {
+    if (!completed.includes(name)) completed.push(name)
+  }
+  return completed
+}
+
 export interface Pane {
   pane_id: string
   workspace_id?: string
@@ -135,9 +186,10 @@ export interface PanesPayload {
   errors?: Record<string, string>
 }
 
-// Persisted, global browser UI preferences (SQLite-backed). The client reads
-// the whole object and writes patches, so navigating away and back — or opening
-// lasso elsewhere — restores the same view.
+// Persisted, global browser UI preferences (SQLite-backed): sidebar layout, the
+// Files tab's click behavior, and footer preferences. The client reads the whole
+// object and writes patches, so navigating away and back — or opening lasso
+// elsewhere — restores the same view.
 export interface UIState {
   sidebar_collapsed: boolean
   // The sidebar's open width (% of the panel group). Synced because the
@@ -146,6 +198,12 @@ export interface UIState {
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
   files_click_navigates: boolean
+  // Provider names omitted from the bottom usage footer. Empty = show all.
+  usage_hidden: string[]
+  // Preferred provider order; providers absent here append automatically.
+  usage_order: string[]
+  // Use abbreviated provider names and metrics without pace bars.
+  usage_compact: boolean
 }
 
 export interface FileEntry {
@@ -567,7 +625,7 @@ export const api = {
     body: { agent_id?: string; work_dir?: string; focus?: boolean }
   ) => postJSON<HostPane>("/api/agent/reopen", { host, ...body }),
 
-  // Persisted UI preferences (sidebar layout and Files-tab click behavior).
+  // Persisted UI preferences (sidebar layout, Files tab, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),
   // Patch semantics: send only the changed fields; the server merges into the
   // stored state (so stale tabs can't clobber fields they didn't touch) and
@@ -575,6 +633,9 @@ export const api = {
   saveUIState: (patch: Partial<UIState>) =>
     postJSON<UIState>("/api/ui-state", patch),
   version: () => getJSON<VersionInfo>("/api/version"),
+  // Subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai),
+  // rendered in the bottom UsageFooter.
+  usage: () => getJSON<UsagePayload>("/api/usage"),
 
   // List a directory. `host` (omitted = the active backend) is the host the
   // path lives on — the sidebar browses the focused pane's host, which can

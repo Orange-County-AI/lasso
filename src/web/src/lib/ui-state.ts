@@ -3,16 +3,20 @@ import { useQuery } from "@tanstack/react-query"
 import { api, type UIState } from "@/lib/api"
 import { qk, queryClient } from "@/lib/query"
 
-// Persisted, SQLite-backed UI preferences (sidebar layout and Files-tab click
-// behavior). One shared React Query cache is the source of truth in this tab;
-// the server merges partial patches so concurrent tabs cannot clobber fields
-// they did not touch, then bumps ui_state_rev over SSE so every open tab
-// converges on the same state (see syncUIState).
+// Persisted, SQLite-backed UI preferences (sidebar layout, the Files tab's
+// click behavior, and usage-footer settings). One shared React Query cache is
+// the source of truth in this tab; the server merges partial patches (so
+// concurrent tabs can't clobber fields they didn't touch) and bumps
+// ui_state_rev over SSE on every save, so every open tab converges on the same
+// state (see syncUIState).
 
 const DEFAULTS: UIState = {
   sidebar_collapsed: false,
   sidebar_pct: 0,
   files_click_navigates: true,
+  usage_hidden: [],
+  usage_order: [],
+  usage_compact: false,
 }
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).
