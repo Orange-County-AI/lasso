@@ -1,14 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  ChevronDown,
-  ChevronUp,
-  Keyboard,
-  Monitor,
-  Moon,
-  Palette,
-  RotateCw,
-  Sun,
-} from "lucide-react"
+import { Keyboard, Monitor, Moon, Palette, RotateCw, Sun } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { Pill } from "@/components/Pill"
@@ -20,13 +11,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { api, completeUsageProviderOrder } from "@/lib/api"
+import { api } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { getMode, type Mode, setMode } from "@/lib/mode"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
 import { refreshTheme } from "@/lib/theme"
-import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // Native textarea/select styled to match the shadcn <Input>.
@@ -238,7 +228,6 @@ export function SettingsTab({
         <AppearanceToggle />
         <HerdrThemeSelect active={active} />
         <AutoTitleToggle active={active} />
-        <UsageFooterSettings />
         <div className="mb-4 flex flex-col gap-1">
           <label className={labelClass} htmlFor="settings-host">
             Configuring host
@@ -533,121 +522,6 @@ function AutoTitleToggle({ active }: { active: boolean }) {
         a title instead of the prompt's clipped first line. Runs on this
         machine, whichever host the agent was created on, and only renames the
         workspace: the branch and working directory keep their original names.
-      </p>
-    </div>
-  )
-}
-
-const USAGE_LAYOUTS = [
-  { compact: false, label: "Standard" },
-  { compact: true, label: "Compact" },
-] as const
-
-// The footer is global app chrome, so layout, visibility, and left-to-right
-// order belong with the other server-level settings above the host picker.
-function UsageFooterSettings() {
-  const ui = useUIState()
-  const hidden = ui.usage_hidden ?? []
-  const order = completeUsageProviderOrder(ui.usage_order)
-  const compact = ui.usage_compact ?? false
-
-  const setShown = (provider: string, shown: boolean) => {
-    const next = new Set(hidden)
-    if (shown) next.delete(provider)
-    else next.add(provider)
-    patchUIState({ usage_hidden: Array.from(next) })
-  }
-  const moveProvider = (index: number, direction: -1 | 1) => {
-    const target = index + direction
-    if (target < 0 || target >= order.length) return
-    const next = order.slice()
-    ;[next[index], next[target]] = [next[target], next[index]]
-    patchUIState({ usage_order: next })
-  }
-
-  return (
-    <div className="mb-4 flex flex-col gap-1">
-      <span className={labelClass}>Usage footer</span>
-      <div className="mb-1 flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground">Layout</span>
-        <div className="inline-flex w-fit gap-0.5 rounded-lg border border-border p-0.5">
-          {USAGE_LAYOUTS.map((layout) => (
-            <button
-              key={layout.label}
-              type="button"
-              aria-pressed={compact === layout.compact}
-              onClick={() => patchUIState({ usage_compact: layout.compact })}
-              className={cn(
-                "rounded-md px-2 py-0.5 text-xs transition-colors",
-                compact === layout.compact
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {layout.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="flex max-w-xs flex-col gap-1">
-        {order.map((provider, index) => {
-          const id = `settings-usage-${provider
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")}`
-          return (
-            <div key={provider} className="flex items-center gap-2">
-              <span
-                aria-hidden
-                className="w-3 text-right font-label text-[11px] text-muted-foreground"
-              >
-                {index + 1}
-              </span>
-              <Checkbox
-                id={id}
-                checked={!hidden.includes(provider)}
-                onCheckedChange={(checked) =>
-                  setShown(provider, checked === true)
-                }
-              />
-              <label
-                className="min-w-0 flex-1 cursor-pointer select-none text-[13px] text-foreground"
-                htmlFor={id}
-              >
-                {provider}
-              </label>
-              <div className="flex items-center gap-0.5">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={index === 0}
-                  aria-label={`Move ${provider} up`}
-                  title={`Move ${provider} up`}
-                  onClick={() => moveProvider(index, -1)}
-                >
-                  <ChevronUp />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={index === order.length - 1}
-                  aria-label={`Move ${provider} down`}
-                  title={`Move ${provider} down`}
-                  onClick={() => moveProvider(index, 1)}
-                >
-                  <ChevronDown />
-                </Button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        Check providers to show them; arrows set their left-to-right order.
-        Compact shortens provider names and removes pace bars—hover a metric for
-        its full label, reset, and pace. Providers without credentials stay
-        hidden automatically.
       </p>
     </div>
   )

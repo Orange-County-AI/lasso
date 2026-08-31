@@ -190,6 +190,17 @@
     @apply bg-background text-foreground;
     font: 13px / 1.5 var(--font-sans);
   }
+  /* Installed iOS web apps draw into the full screen. Reserve the device safe
+   * area inside body's fixed height so the terminal and its input dial stay
+   * above the home indicator; top/side insets also keep landscape notches clear.
+   * A small bottom floor gives non-notched standalone devices breathing room. */
+  @media (display-mode: standalone) and (pointer: coarse) {
+    body {
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+        max(14px, env(safe-area-inset-bottom, 0px))
+        env(safe-area-inset-left, 0px);
+    }
+  }
   /* Nothing selection + focus: accent-tinted selection, a 1px accent focus ring
    * at 2px offset. Uses the --h-* vars so it adapts to light/dark. */
   ::selection {
@@ -199,6 +210,20 @@
   :focus-visible {
     outline: 1px solid var(--h-accent);
     outline-offset: 2px;
+  }
+}
+
+.mobile-host-anchor {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .mobile-terminal-nav {
+    display: none !important;
+  }
+
+  .mobile-host-anchor {
+    display: block;
   }
 }
 

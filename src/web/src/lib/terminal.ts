@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { mountTerminalKeyBar } from "@/lib/mobile-keybar"
+import { mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
   applyTermFont,
   applyTermTheme,
@@ -68,6 +68,7 @@ interface TermWindow extends Window {
 interface WiredDoc extends Document {
   __herdrWired?: boolean
   __touchScrollWired?: boolean
+  __longPressRightClickWired?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -405,6 +406,121 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
   )
 }
 
+// A stationary one-finger hold in the Herdr terminal emits the same mouse
+// sequence as a desktop right-click. Movement cancels before touch scrolling
+// starts, and a handled hold consumes touchend so iOS cannot follow it with a
+// synthetic left-click. The dial lives outside `.xterm`, so its holds never
+// enter this path.
+function wireLongPressRightClick(doc: WiredDoc, win: TermWindow) {
+  if (
+    doc.__longPressRightClickWired ||
+    !win.matchMedia?.("(pointer: coarse)").matches
+  )
+    return
+  doc.__longPressRightClickWired = true
+
+  const holdMs = 500
+  const moveTolerance = 10
+  let timer: number | undefined
+  let touchID: number | null = null
+  let startX = 0
+  let startY = 0
+  let target: Element | null = null
+  let fired = false
+
+  const reset = () => {
+    if (timer !== undefined) win.clearTimeout(timer)
+    timer = undefined
+    touchID = null
+    target = null
+    fired = false
+  }
+
+  doc.addEventListener(
+    "touchstart",
+    (event: TouchEvent) => {
+      reset()
+      if (event.touches.length !== 1) return
+      const origin = event.target as Element | null
+      if (!origin?.closest?.(".xterm")) return
+
+      const touch = event.touches[0]
+      touchID = touch.identifier
+      startX = touch.clientX
+      startY = touch.clientY
+      target = origin
+      timer = win.setTimeout(() => {
+        timer = undefined
+        const clickTarget = doc.elementFromPoint(startX, startY) ?? target
+        if (!clickTarget || touchID === null) return
+        fired = true
+
+        // Synthetic events must use the iframe realm's DOM constructor.
+        const eventWindow = win as Window & {
+          MouseEvent: typeof MouseEvent
+        }
+        const MouseEventCtor = eventWindow.MouseEvent
+        const dispatch = (
+          type: "mousedown" | "mouseup" | "contextmenu",
+          buttons: number
+        ) =>
+          clickTarget.dispatchEvent(
+            new MouseEventCtor(type, {
+              button: 2,
+              buttons,
+              bubbles: true,
+              cancelable: true,
+              clientX: startX,
+              clientY: startY,
+              detail: 1,
+              view: win,
+            })
+          )
+        dispatch("mousedown", 2)
+        dispatch("mouseup", 0)
+        dispatch("contextmenu", 0)
+      }, holdMs)
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchmove",
+    (event: TouchEvent) => {
+      if (touchID === null || fired) return
+      const touch = Array.from(event.touches).find(
+        (candidate) => candidate.identifier === touchID
+      )
+      if (
+        !touch ||
+        Math.hypot(touch.clientX - startX, touch.clientY - startY) >
+          moveTolerance
+      ) {
+        reset()
+      }
+    },
+    { capture: true, passive: true }
+  )
+  doc.addEventListener(
+    "touchend",
+    (event: TouchEvent) => {
+      const endedTouch = Array.from(event.changedTouches).find(
+        (candidate) => candidate.identifier === touchID
+      )
+      if (touchID === null || !endedTouch) return
+      const handled = fired
+      reset()
+      if (!handled) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    },
+    { capture: true, passive: false }
+  )
+  doc.addEventListener("touchcancel", reset, {
+    capture: true,
+    passive: true,
+  })
+}
+
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -426,10 +542,14 @@ export function wireTerminalIframe(
   if (!doc || doc.__herdrWired) return
   doc.__herdrWired = true
 
-  if (win) wireTouchScroll(doc, win)
+  if (win) {
+    wireTouchScroll(doc, win)
+    if (suppressContext) wireLongPressRightClick(doc, win)
+  }
 
-  if (suppressContext)
+  if (suppressContext) {
     doc.addEventListener("contextmenu", (e) => e.preventDefault(), true)
+  }
 
   // Forward app-level shortcuts (Cmd/Ctrl+<key>) to the parent document so
   // global handlers fire even while the terminal holds keyboard focus — the
@@ -502,7 +622,7 @@ export function bootTermFrame(
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
-    mountTerminalKeyBar(id)
+    mountTerminalInputDial(id)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -511,7 +631,7 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
-  mountTerminalKeyBar(id) // in case it already loaded
+  mountTerminalInputDial(id) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
 }
 
@@ -546,6 +666,27 @@ export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   if (tries < 20) setTimeout(() => pasteIntoTerminal(id, text, tries + 1), 150)
 }
 
+// Paste a reviewed buffer and submit it as one ready-terminal operation. Keeping
+// the retry around both actions prevents Enter from overtaking a paste while
+// xterm is reconnecting.
+export function pasteAndSubmitTerminal(id: string, text: string, tries = 0) {
+  try {
+    const w = frameWindow(id)
+    if (w?.term && typeof w.term.paste === "function") {
+      w.focus()
+      w.term.focus?.()
+      w.term.paste(text)
+      sendKeyToTerminal(id, "Enter")
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
+  if (tries < 20) {
+    setTimeout(() => pasteAndSubmitTerminal(id, text, tries + 1), 150)
+  }
+}
+
 // typeIntoShell pastes into the out-of-herdr shell (/shell/).
 export function typeIntoShell(text: string) {
   pasteIntoTerminal("shellframe", text)
@@ -556,25 +697,35 @@ export function typeIntoHerdr(text: string) {
   pasteIntoTerminal("term", text)
 }
 
-// Virtual on-screen keys for mobile, where the soft keyboard offers no Esc, Tab,
-// or arrows — keys agents (Claude Code) lean on constantly (Enter is omitted: the
-// iOS keyboard already has Return). We dispatch a real keydown at xterm's hidden
-// textarea and let XTERM encode it, exactly as it would a hardware keypress. This
-// is the only way to be correct across every keyboard mode the app may turn on —
-// application-cursor (ESCO vs ESC[ on the arrows), the kitty/extended protocol,
-// modifyOtherKeys — which a fixed byte sequence written via term.input() can't
-// track. xterm 5 keys its encoder off event.keyCode, which the KeyboardEvent ctor
-// ignores from the init dict, so we pin it (and legacy `which`). Verified
-// end-to-end: a dispatched ArrowUp drives shell/Claude Code history. Falls back to
-// a raw sequence only if the textarea isn't mounted yet.
-export type VirtualKey = "Escape" | "ArrowUp" | "ArrowDown" | "Tab"
+// Virtual terminal keys. Mobile controls expose Esc, Ctrl+C, Tab, Shift+Tab,
+// and arrows because the software keyboard omits them; buffered input also uses
+// Enter internally for its explicit insert-and-submit action. We dispatch a
+// real keydown at xterm's hidden textarea and let XTERM encode it, as it would a
+// hardware keypress. This is the only way to be correct across every keyboard
+// mode the app may turn on — application-cursor (ESCO vs ESC[ on the arrows),
+// the kitty/extended protocol, modifyOtherKeys — which a fixed byte sequence
+// written via term.input() cannot track. xterm 5 keys its encoder off
+// event.keyCode, which the KeyboardEvent constructor ignores from the init
+// dictionary, so we pin it (and legacy `which`). Falls back to a raw sequence
+// only if the textarea is not mounted yet.
+export type VirtualKey =
+  | "Escape"
+  | "Enter"
+  | "ArrowUp"
+  | "ArrowDown"
+  | "Tab"
+  | "ShiftTab"
+  | "CtrlC"
 
 const KEY_SPEC: Record<
   VirtualKey,
   { code: string; keyCode: number; seq: string }
 > = {
   Escape: { code: "Escape", keyCode: 27, seq: "\x1b" },
+  Enter: { code: "Enter", keyCode: 13, seq: "\r" },
   Tab: { code: "Tab", keyCode: 9, seq: "\t" },
+  ShiftTab: { code: "Tab", keyCode: 9, seq: "\x1b[Z" },
+  CtrlC: { code: "KeyC", keyCode: 67, seq: "\x03" },
   ArrowUp: { code: "ArrowUp", keyCode: 38, seq: "\x1b[A" },
   ArrowDown: { code: "ArrowDown", keyCode: 40, seq: "\x1b[B" },
 }
@@ -590,9 +741,13 @@ export function sendKeyToTerminal(id: string, key: VirtualKey) {
     if (ta) {
       const Ctor = (win as unknown as { KeyboardEvent: typeof KeyboardEvent })
         .KeyboardEvent
+      const shiftTab = key === "ShiftTab"
+      const ctrlC = key === "CtrlC"
       const ev = new Ctor("keydown", {
-        key,
+        key: shiftTab ? "Tab" : ctrlC ? "c" : key,
         code: spec.code,
+        shiftKey: shiftTab,
+        ctrlKey: ctrlC,
         bubbles: true,
         cancelable: true,
       })

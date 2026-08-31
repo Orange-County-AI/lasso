@@ -393,12 +393,6 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if us.UsageHidden == nil {
-			us.UsageHidden = []string{}
-		}
-		if us.UsageOrder == nil {
-			us.UsageOrder = []string{}
-		}
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

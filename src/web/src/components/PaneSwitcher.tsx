@@ -370,17 +370,10 @@ export function PaneSwitcher({
         )}
         onOpenAutoFocus={(e) => {
           e.preventDefault()
-          // On touch, do NOT autofocus the search field: the soft keyboard would
-          // push this fixed modal partly behind itself, and on iOS that lets the
-          // page scroll to reveal the hidden part instead of the list scrolling.
-          // Focus the content (so Esc/keys still work); users tap the field to
-          // filter. On desktop, focus the input so you can type immediately.
-          const content = e.currentTarget as HTMLElement | null
-          if (window.matchMedia("(pointer: coarse)").matches) {
-            content?.focus?.()
-            return
-          }
-          content?.querySelector("input")?.focus()
+          // Mobile uses a 16px search field to prevent iOS page zoom, and radial
+          // Search does not restore focus to xterm when this closes. Focusing here
+          // can therefore open the keyboard without shifting the terminal page.
+          inputRef.current?.focus({ preventScroll: true })
         }}
         onCloseAutoFocus={(e) => {
           // A chosen pane already had focus handed to its terminal by choose();
@@ -414,15 +407,16 @@ export function PaneSwitcher({
         </button>
         <input
           ref={inputRef}
+          autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Search panes by tab, workspace, host, agent, path, or prompt…"
-          className="w-full bg-transparent px-4 py-3 pr-14 text-sm outline-none placeholder:text-muted-foreground sm:pr-4"
+          className="w-full bg-transparent px-4 py-3 pr-14 text-base outline-none placeholder:text-muted-foreground sm:pr-4 sm:text-sm"
         />
         {/* Active filter: on shows only live panes (default); off folds in past
             agents whose pane was closed, so old sessions can be reopened. */}
-        <label className="flex cursor-pointer select-none items-center justify-end gap-2 border-border border-b px-4 pb-2 text-muted-foreground text-xs">
+        <div className="flex select-none items-center justify-end gap-2 border-border border-b px-4 pb-2 text-muted-foreground text-xs">
           <Checkbox
             // The shared checkbox's focus-visible ring doesn't render here, so give
             // it an explicit outline so keyboard users can see it's focused (it's
@@ -449,7 +443,7 @@ export function PaneSwitcher({
             }}
           />
           Active
-        </label>
+        </div>
         <div
           ref={listRef}
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 sm:max-h-80 sm:flex-none"
