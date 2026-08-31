@@ -810,87 +810,6 @@ export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   if (tries < 20) setTimeout(() => pasteIntoTerminal(id, text, tries + 1), 150)
 }
 
-// Submitting is a paste followed by Enter, and the two must not land in the
-// same PTY read: a raw-mode TUI treats a CR that arrives with bracketed-paste
-// bytes as part of the paste and puts a newline in its composer instead of
-// sending the turn — the "Enter only inserts" bug, and the same hazard
-// paneSubmit documents server-side (agents_create.go). Firing Enter straight
-// after term.paste() is exactly that race, won or lost on how the writes happen
-// to be scheduled.
-//
-// So wait for the pasted text to actually appear on the screen. That is proof
-// the TUI consumed the paste and repainted, which is stronger than any fixed
-// delay: whatever the app does with input batching, the CR now belongs to a
-// later read. If it never appears — an unreadable buffer, a composer that
-// echoes nothing — press Enter anyway rather than dropping the turn.
-const SUBMIT_POLL_MS = 60
-const SUBMIT_LAND_MS = 1500
-
-// The visible screen as text: the browser-side twin of the server's
-// `pane.read source=visible`.
-function visibleScreen(term: XTerm): string {
-  const buffer = term.buffer?.active
-  if (!buffer?.getLine) return ""
-  const base = buffer.baseY ?? 0
-  const rows = term.rows ?? 0
-  let text = ""
-  for (let row = 0; row < rows; row++) {
-    text += `${buffer.getLine(base + row)?.translateToString(true) ?? ""}\n`
-  }
-  return text
-}
-
-// A single word is the readiness needle: it survives the composer's line
-// wrapping, which the whole string does not. Longest wins (most distinctive),
-// capped so a long path can't span a wrapped row on its own.
-function pasteNeedle(text: string): string {
-  let needle = ""
-  for (const word of text.split(/\s+/)) {
-    if (word.length > needle.length) needle = word
-  }
-  return needle.slice(0, 16)
-}
-
-function occurrences(haystack: string, needle: string): number {
-  if (!needle) return 0
-  let count = 0
-  for (
-    let at = haystack.indexOf(needle);
-    at >= 0;
-    at = haystack.indexOf(needle, at + needle.length)
-  ) {
-    count++
-  }
-  return count
-}
-
-// Press Enter once the composer shows the paste — counted against a pre-paste
-// snapshot, since the same word is often already on screen (a transcript echo,
-// the word the user just dictated twice) and a bare "contains" would fire
-// instantly on it and lose the race all over again.
-function submitWhenPasteLands(
-  id: string,
-  needle: string,
-  before: number,
-  waited: number
-) {
-  let landed = true
-  try {
-    const term = frameWindow(id)?.term
-    if (term) landed = occurrences(visibleScreen(term), needle) > before
-  } catch {
-    /* same-origin; ignore */
-  }
-  if (!landed && waited < SUBMIT_LAND_MS) {
-    setTimeout(
-      () => submitWhenPasteLands(id, needle, before, waited + SUBMIT_POLL_MS),
-      SUBMIT_POLL_MS
-    )
-    return
-  }
-  sendKeyToTerminal(id, "Enter")
-}
-
 // Paste a reviewed buffer and submit it as one ready-terminal operation. Keeping
 // the retry around both actions prevents Enter from overtaking a paste while
 // xterm is reconnecting.
@@ -898,13 +817,10 @@ export function pasteAndSubmitTerminal(id: string, text: string, tries = 0) {
   try {
     const w = frameWindow(id)
     if (w?.term && typeof w.term.paste === "function") {
-      const term = w.term
       w.focus()
-      term.focus?.()
-      const needle = pasteNeedle(text)
-      const before = occurrences(visibleScreen(term), needle)
+      w.term.focus?.()
       w.term.paste(text)
-      submitWhenPasteLands(id, needle, before, 0)
+      sendKeyToTerminal(id, "Enter")
       return
     }
   } catch {
