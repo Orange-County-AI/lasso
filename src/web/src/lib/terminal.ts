@@ -1,6 +1,7 @@
 import { api } from "@/lib/api"
 import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
+  applyTermFit,
   applyTermFont,
   applyTermTheme,
   lastTerminalTheme,
@@ -774,6 +775,7 @@ export function bootTermFrame(
   const onLoad = () => {
     applyTermTheme(lastTerminalTheme(), 0)
     applyTermFont(0)
+    applyTermFit(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
     mountTerminalInputDial(id, pasteHost)
   }
@@ -783,6 +785,7 @@ export function bootTermFrame(
   // that re-pins the cached palette. Idempotent — safe to call per frame.
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
+  applyTermFit(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
   mountTerminalInputDial(id, pasteHost) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
