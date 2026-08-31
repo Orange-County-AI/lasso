@@ -21,7 +21,6 @@ import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
-import { UsageFooter } from "@/components/UsageFooter"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -595,7 +594,6 @@ function Shell() {
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
-      <UsageFooter />
     </div>
   )
 }
