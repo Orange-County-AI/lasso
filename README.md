@@ -186,6 +186,38 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
 fine on a private tailnet or behind Access, but confine it before widening access.
 
+## On a phone
+
+Lasso works as a phone app: open it in Safari and **Share → Add to Home Screen**.
+It launches from the icon lasso ships, full screen, at whatever URL you reach it
+on. Either route above works — the **Cloudflare tunnel** (an Access login, and
+HTTPS, so Files-tab downloads and clipboard copies work) or **your tailnet**
+(`http://titan:8090` over MagicDNS, nothing exposed, but plain HTTP: downloads
+won't fire and terminal copies fall back to a legacy clipboard write). Uploads
+and dictation are fine either way. It's a home-screen shortcut, not
+an offline PWA: the phone is a client for the box, so the box has to be up.
+
+A terminal on a touch screen is missing a keyboard, a mouse, and a right button,
+so those live in a **radial dial** — the ⌘ button in the terminal's bottom-right
+corner, which only mounts on a touch device. Hold it and slide to a target, or
+tap to open the ring and tap one:
+
+- **Common keys** — Esc, ^C, Tab, ⇧⇥, ↵ and the arrows, none of which the iOS
+  keyboard offers.
+- **Input** — a plain text field to compose in, so autocorrect and the keyboard's
+  dictation microphone work (neither does inside xterm). **Insert** types the
+  buffer into the pane, **Enter** types and submits it, and **Attach** takes a
+  photo or any file from Photo Library / Take Photo / Files, uploads it to the
+  host the focused pane runs on, and inserts its path — which is how you hand a
+  screenshot or a log to the agent in that pane.
+- **New** — the New Agent dialog. **Lasso** — pane search, host switcher, sidebar.
+
+In the terminal itself, **drag to scroll** (the drag becomes wheel events, so it
+works in tmux's alternate screen and in TUIs that grab the mouse) and
+**long-press for right-click** (herdr's own menu). When the socket drops while
+the phone sleeps, the overlay reads **Tap to Reconnect** — a tap anywhere in the
+terminal brings it back.
+
 ## Releasing
 
 Releases are cut by CI on a version tag:
