@@ -11,7 +11,8 @@ import {
 // same-document pointer gesture preserves the iOS software keyboard, while a
 // control in the parent document would dismiss it and could not reopen it.
 
-const DIAL_ID = "__lasso_mobile_input_dial"
+// Exported so terminal.ts can tell a tap on the dial from a tap on the terminal.
+export const DIAL_ID = "__lasso_mobile_input_dial"
 const STYLE_ID = "__lasso_mobile_input_dial_style"
 const TRACKING_CLASS = "__lasso_mobile_input_dial_tracking"
 const HOLD_MS = 140
