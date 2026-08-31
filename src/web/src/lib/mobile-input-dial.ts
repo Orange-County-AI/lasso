@@ -186,6 +186,15 @@ const THEME_VARS = [
   "--h-accent",
 ]
 
+// The dial is chrome, so it follows the same Nothing law as the rest of the app
+// (index.css): surfaces are OPAQUE and separate by border + a panel/hover
+// brightness step — never by drop shadow, translucency, or backdrop blur. It
+// used to float as a 30%-alpha blurred panel, which on the light palette mixed
+// the control into the terminal underneath and read washed out; the two states
+// that matter now carry real contrast instead. Brightness is the hierarchy:
+// --h-hover (surface-raised) for the root, --h-panel for the ring of items, and
+// the monochrome --h-accent fill (white on dark, black on light) for whatever is
+// armed. That inverts correctly in both modes, which a hand-mixed tint does not.
 function dialCSS(): string {
   return `
 #${DIAL_ID} {
@@ -195,6 +204,9 @@ function dialCSS(): string {
   width: ${ROOT_SIZE}px;
   height: ${ROOT_SIZE}px;
   z-index: 2147483000;
+  /* Same recipe index.css uses for --input: the bare seam is nearly invisible in
+     low-contrast palettes, so lift it toward the foreground. Works both ways. */
+  --dial-edge: color-mix(in oklch, var(--h-border, #262626), var(--h-fg, #ededed) 28%);
   color: var(--h-fg, #ededed);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   pointer-events: none;
@@ -230,29 +242,29 @@ html.${TRACKING_CLASS} .xterm-screen {
   width: ${ROOT_SIZE}px;
   height: ${ROOT_SIZE}px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--h-accent, #fff) 42%, transparent);
+  border: 1px solid var(--dial-edge);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--h-panel, #111) 30%, transparent);
-  color: color-mix(in srgb, var(--h-fg, #ededed) 82%, transparent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .2);
-  font: 600 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--h-hover, #1a1a1a);
+  color: var(--h-fg, #ededed);
+  font: 700 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
-  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
-  backdrop-filter: blur(9px);
-  -webkit-backdrop-filter: blur(9px);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-#${DIAL_ID} .dial-root[aria-expanded="true"],
-#${DIAL_ID} .dial-root:active {
+#${DIAL_ID} .dial-root[aria-expanded="true"] {
   border-color: var(--h-accent, #fff);
-  background: color-mix(in srgb, var(--h-panel, #111) 90%, transparent);
-  color: var(--h-fg, #ededed);
+  background: var(--h-accent, #fff);
+  color: var(--h-bg, #000);
 }
 #${DIAL_ID} .dial-root:active {
   cursor: grabbing;
   transform: scale(.94);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+}
+/* Pressing a CLOSED dial dips its surface; an open one must keep the accent fill
+   (equal specificity otherwise lets this rule win and drop the armed state). */
+#${DIAL_ID} .dial-root[aria-expanded="false"]:active {
+  background: var(--h-panel, #111);
 }
 #${DIAL_ID} .dial-root:focus-visible,
 #${DIAL_ID} .dial-item:focus-visible {
@@ -270,7 +282,7 @@ html.${TRACKING_CLASS} .xterm-screen {
   top: ${ROOT_SIZE / 2}px;
   z-index: 0;
   height: 0;
-  border-top: 1px dashed color-mix(in srgb, var(--h-muted, #8a8a8a) 72%, transparent);
+  border-top: 1px dashed var(--h-muted, #8a8a8a);
   transform-origin: 0 50%;
   pointer-events: none;
 }
@@ -284,19 +296,16 @@ html.${TRACKING_CLASS} .xterm-screen {
   width: ${ITEM_SIZE}px;
   height: ${ITEM_SIZE}px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--h-muted, #8a8a8a) 58%, transparent);
+  border: 1px solid var(--dial-edge);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--h-panel, #111) 94%, transparent);
+  background: var(--h-panel, #111);
   color: var(--h-fg, #ededed);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
-  font: 600 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 700 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   opacity: 0;
   transform: scale(.72);
   pointer-events: auto;
   touch-action: none;
   transition: opacity 130ms ease, transform 130ms ease, background 90ms ease, color 90ms ease;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 #${DIAL_ID} .dial-item.is-visible {
   opacity: 1;
@@ -314,11 +323,10 @@ html.${TRACKING_CLASS} .xterm-screen {
   left: 50%;
   z-index: 5;
   padding: 6px 8px;
-  border: 1px solid var(--h-border, #262626);
+  border: 1px solid var(--dial-edge);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--h-panel, #111) 98%, transparent);
+  background: var(--h-panel, #111);
   color: var(--h-fg, #ededed);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .34);
   content: attr(data-tooltip);
   font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   opacity: 0;
@@ -353,16 +361,13 @@ html.${TRACKING_CLASS} .xterm-screen {
   gap: 7px;
   min-height: 36px;
   padding: 0 13px;
-  border: 1px solid var(--h-border, #262626);
+  border: 1px solid var(--dial-edge);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--h-panel, #111) 92%, transparent);
+  background: var(--h-panel, #111);
   color: var(--h-muted, #8a8a8a);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .24);
   font-size: 12px;
   white-space: nowrap;
   pointer-events: none;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 #${DIAL_ID} .dial-crumb strong {
   color: var(--h-fg, #ededed);
@@ -380,14 +385,11 @@ html.${TRACKING_CLASS} .xterm-screen {
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--h-border, #262626);
+  border: 1px solid var(--dial-edge);
   border-radius: 18px;
-  background: color-mix(in srgb, var(--h-panel, #111) 97%, transparent);
-  box-shadow: 0 18px 54px rgba(0, 0, 0, .48);
+  background: var(--h-panel, #111);
   color: var(--h-fg, #ededed);
   pointer-events: auto;
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 #${DIAL_ID} .input-header,
 #${DIAL_ID} .input-actions {
@@ -429,7 +431,7 @@ html.${TRACKING_CLASS} .xterm-screen {
 #${DIAL_ID} .input-action {
   min-height: 38px;
   padding: 0 13px;
-  border: 1px solid var(--h-border, #262626);
+  border: 1px solid var(--dial-edge);
   border-radius: 999px;
   background: var(--h-hover, #1a1a1a);
   color: var(--h-fg, #ededed);
@@ -486,10 +488,35 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
   dial.setAttribute("role", "group")
   dial.setAttribute("aria-label", "Terminal input controls")
 
-  const parentTheme = getComputedStyle(document.documentElement)
-  for (const variable of THEME_VARS) {
-    dial.style.setProperty(variable, parentTheme.getPropertyValue(variable))
+  // The dial renders inside the ttyd iframe, so the parent's --h-* palette has to
+  // be copied across the document boundary. An appearance change (Settings →
+  // light/dark/herdr, or the OS flipping under "system") only rewrites the parent
+  // <html>, and nothing remounts the dial — so watch that element and re-copy,
+  // otherwise the control stays painted in whichever palette it mounted with.
+  const syncTheme = () => {
+    const parentTheme = getComputedStyle(document.documentElement)
+    for (const variable of THEME_VARS) {
+      dial.style.setProperty(variable, parentTheme.getPropertyValue(variable))
+    }
   }
+  syncTheme()
+  const themeObserver = new MutationObserver(() => {
+    // An iframe torn out of the DOM (host switch, closed tab) does not reliably
+    // fire pagehide, so drop the observer the first time we notice the dial went
+    // with it rather than writing to a detached element forever.
+    if (!dial.isConnected) {
+      themeObserver.disconnect()
+      return
+    }
+    syncTheme()
+  })
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class", "style"],
+  })
+  win.addEventListener("pagehide", () => themeObserver.disconnect(), {
+    once: true,
+  })
 
   const menu = doc.createElement("div")
   menu.className = "dial-menu"
