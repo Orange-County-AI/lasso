@@ -260,7 +260,37 @@ function wireResizeGate(id: string, tries: number) {
     const orig = term.resize.bind(term)
     let sized = false
     let deferred = false
+    let refits = 0
+    // A measurement taken before the iframe's layout settles comes back
+    // degenerate — cols=6 was observed at connect on 2026-08-20. herdr reflows
+    // every pane in the session on every resize, so that one number costs a
+    // rewrap of every pane's scrollback (10 MB each by default) and clamps the
+    // shared runtime to 6 columns until something resizes again. Treat it as
+    // "not measured yet": never forward it, never let it satisfy the
+    // first-resize rule, and ask for a refit until layout is ready. Bounded, so
+    // a legitimately tiny container cannot spin — and holding the pty default
+    // beats clamping every client to 6 columns.
+    const refitWhenLaidOut = () => {
+      if (refits >= 10) return
+      refits += 1
+      setTimeout(() => {
+        try {
+          w.dispatchEvent(new Event("resize"))
+        } catch {
+          /* ignore */
+        }
+      }, 100)
+    }
     term.resize = (cols: number, rows: number) => {
+      const laidOut =
+        Number.isFinite(cols) &&
+        Number.isFinite(rows) &&
+        cols >= 20 &&
+        rows >= 4
+      if (!laidOut) {
+        if (!sized) refitWhenLaidOut()
+        return
+      }
       if (!sized || sessionInForeground()) {
         sized = true
         orig(cols, rows)
