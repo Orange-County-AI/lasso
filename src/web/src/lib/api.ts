@@ -460,6 +460,23 @@ export interface CreateTerminalResult {
   tab_name_error?: string
 }
 
+// GET /api/push: the key a subscription must be minted with, and the devices
+// lasso currently pushes to. Endpoints are deliberately absent — an endpoint is
+// a bearer capability to push to that device — so a row is identified by a short
+// digest of it.
+export interface PushDevice {
+  id: string
+  label: string
+  created_at?: string
+  last_ok?: string
+  last_error?: string
+}
+
+export interface PushConfig {
+  public_key: string
+  devices: PushDevice[]
+}
+
 async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
   let r: Response
   try {
@@ -537,6 +554,29 @@ export const api = {
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>
     postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),
+
+  // Notifications (webpush.go). The config carries the VAPID public key a
+  // subscription must be minted with plus the devices already registered; the
+  // subscribe body is the browser's own PushSubscription JSON, passed through
+  // verbatim so nothing here has to understand its key encoding (lib/push.ts).
+  pushConfig: () => getJSON<PushConfig>("/api/push"),
+  pushSubscribe: (sub: PushSubscriptionJSON, origin: string) =>
+    postJSON<{ ok: boolean; devices: number }>("/api/push/subscribe", {
+      ...sub,
+      origin,
+    }),
+  pushUnsubscribe: (endpoint: string) =>
+    postJSON<{ ok: boolean; devices: number }>("/api/push/unsubscribe", {
+      endpoint,
+    }),
+  // Sends one notification down the real pipeline — same encryption, same
+  // service worker — and reports per-device failures instead of a bare 200, so
+  // "it says it's on but nothing arrives" has an answer.
+  pushTest: () =>
+    postJSON<{ ok: boolean; devices?: number; error?: string }>(
+      "/api/push/test",
+      {}
+    ),
 
   // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
   // the server-side cache (the footer's manual refresh).

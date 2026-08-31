@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Reach for the lasso MCP server first for ANYTHING about (a) lasso itself OR (b) inter-agent communication — messaging, coordinating, discovering, or managing other agents. Its tools (list_agents, get_agent, read_agent, send_agent, wait_agent, create_agent, close_agent, list_hosts, list_repos, list_branches, whoami) are the canonical way to discover, inspect, message, and manage agents — use them before the lasso.db sqlite file, the filesystem, or generic shell tooling. Also covers acting on your own identity when you are an agent running inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID).
+description: Reach for the lasso MCP server first for ANYTHING about (a) lasso itself OR (b) inter-agent communication — messaging, coordinating, discovering, or managing other agents. Its tools (list_agents, get_agent, read_agent, send_agent, wait_agent, create_agent, close_agent, list_hosts, list_repos, list_branches, whoami, notify) are the canonical way to discover, inspect, message, and manage agents — use them before the lasso.db sqlite file, the filesystem, or generic shell tooling. Also covers acting on your own identity when you are an agent running inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your HUMAN's attention with a push notification (notify / `lasso notify`).
 ---
 
 # lasso
@@ -30,6 +30,7 @@ description: Reach for the lasso MCP server first for ANYTHING about (a) lasso i
 > | `list_repos`    | List repos available to spawn agents into |
 > | `list_branches` | List branches for a repo |
 > | `whoami`        | Resolve your own agent record |
+> | `notify`        | Push a notification to the human running lasso |
 >
 > The rest of this skill covers the common self-identity case; everything above
 > applies to acting on **other** agents too.
@@ -105,6 +106,37 @@ Do **not** use `herdr pane report-agent` — that claims lifecycle authority
 over your pane, overriding herdr's own idle/working/blocked detection, and a
 stale claim sticks if you exit uncleanly. `report-metadata` is display-only
 and fails safe.
+
+## Getting your human's attention
+
+A status card only helps if someone is looking at a screen. When you actually
+need the human — a decision only they can make, a question that blocks you, a
+long job finishing while they're away — push them a notification:
+
+```bash
+lasso notify "vitest is green across all 3 packages — want me to open the PR?"
+```
+
+It reaches their phone with the screen off (lasso as an iOS home-screen app), so
+treat it as a real interruption:
+
+- **Only when you need them.** An agent that pings on every step trains its
+  human to ignore every ping. Blocking on an approval needs no notification at
+  all — lasso already watches for that and notifies on its own.
+- **Say what you need, not that you need something.** It's read on a lock
+  screen: *"the migration drops 2 columns — safe to run on prod?"*, not
+  *"please check lasso"*.
+- **Check the outcome.** The command exits **non-zero** and prints why when no
+  device is registered — nothing was delivered, so don't tell your human you
+  notified them. (Same signal in the MCP tool's `sent` field.)
+- The notification is titled with **your** agent name and opens on your host,
+  resolved from `$HERDR_PANE_ID` (the CLI reads it for you). `-title` overrides
+  it; a piped message works too: `make test 2>&1 | tail -3 | lasso notify`.
+
+The **`notify`** MCP tool is the same call — pass `message` and your
+`$HERDR_PANE_ID` as `pane_id`. Use the CLI unless you're already in an MCP
+round trip; use the tool when you want the structured `sent` / `transports`
+reply.
 
 ## Using the rest of the herdr CLI
 

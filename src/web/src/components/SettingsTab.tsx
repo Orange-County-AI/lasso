@@ -23,6 +23,12 @@ import {
 import { api, completeUsageProviderOrder } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { getMode, type Mode, setMode } from "@/lib/mode"
+import {
+  disablePush,
+  enablePush,
+  type PushState,
+  readPushState,
+} from "@/lib/push"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
 import { refreshTheme } from "@/lib/theme"
@@ -238,6 +244,7 @@ export function SettingsTab({
         <AppearanceToggle />
         <HerdrThemeSelect active={active} />
         <AutoTitleToggle active={active} />
+        <NotificationsSettings active={active} />
         <UsageFooterSettings />
         <div className="mb-4 flex flex-col gap-1">
           <label className={labelClass} htmlFor="settings-host">
@@ -534,6 +541,147 @@ function AutoTitleToggle({ active }: { active: boolean }) {
         machine, whichever host the agent was created on, and only renames the
         workspace: the branch and working directory keep their original names.
       </p>
+    </div>
+  )
+}
+
+// NotificationsSettings turns on Web Push for THIS device — the only way lasso
+// can reach you when no tab is open, and on iOS the only way at all (a Home
+// Screen web app, 16.4+). Server-level: the subscription lives in lasso's db
+// and every registered device gets every notification, so it sits above the
+// host picker with the other server-wide settings.
+//
+// Half the state is the browser's (permission, this device's subscription) and
+// half is the server's (which devices it pushes to), so the section reads both
+// and never infers one from the other — a device whose permission was revoked
+// in iOS Settings still has a server row, and saying "on" then would be a lie.
+function NotificationsSettings({ active }: { active: boolean }) {
+  const queryClient = useQueryClient()
+  const config = useQuery({
+    queryKey: qk.push,
+    queryFn: () => api.pushConfig(),
+    enabled: active,
+  })
+  const [state, setState] = React.useState<PushState | null>(null)
+  const [busy, setBusy] = React.useState(false)
+  const refreshState = React.useCallback(() => {
+    // readPushState re-announces this device to the server if it holds a
+    // subscription, so the device list is refetched after it lands — otherwise a
+    // row it just repaired would not show until something else invalidated.
+    readPushState().then((s) => {
+      setState(s)
+      queryClient.invalidateQueries({ queryKey: qk.push })
+    })
+  }, [queryClient])
+  React.useEffect(() => {
+    if (active) refreshState()
+  }, [active, refreshState])
+
+  const key = config.data?.public_key
+  const devices = config.data?.devices ?? []
+  const on = state?.subscribed === true && state?.permission === "granted"
+
+  async function toggle(next: boolean) {
+    if (!key) return
+    setBusy(true)
+    try {
+      // enablePush must run inside this click: Safari only honors
+      // requestPermission from a user gesture, and awaiting anything else first
+      // (a refetch, say) spends it.
+      setState(next ? await enablePush(key) : await disablePush())
+      queryClient.invalidateQueries({ queryKey: qk.push })
+      if (next) toast.success("Notifications on for this device")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+      refreshState()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const test = useMutation({
+    mutationFn: () => api.pushTest(),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(`Sent to ${r.devices} device(s)`)
+      else toast.error(`Couldn't send: ${r.error}`)
+      queryClient.invalidateQueries({ queryKey: qk.push })
+    },
+    onError: (e: Error) => toast.error(`Couldn't send: ${e.message}`),
+  })
+
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <span className={labelClass}>Notifications</span>
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+        htmlFor="settings-push"
+      >
+        <Checkbox
+          id="settings-push"
+          checked={on}
+          disabled={!key || busy || state?.support === "unsupported"}
+          onCheckedChange={(c) => toggle(c === true)}
+        />
+        Push notifications to this device
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        Two things reach you: an agent that <em>blocks</em> waiting on you — a
+        tool approval, a plan gate — which lasso watches every host for in the
+        background, and an agent that pings you deliberately (its{" "}
+        <code>lasso notify</code>). Every device registered here gets both, and
+        opening one lands you on that agent's host. Nothing is polled while no
+        device is registered.
+      </p>
+      {state?.support === "needs-home-screen" && (
+        <p className="text-[11px] text-warn">
+          On iOS, notifications only work from a Home Screen web app: open the
+          Share sheet, choose "Add to Home Screen", then turn this on from the
+          installed app.
+        </p>
+      )}
+      {state?.support === "unsupported" && (
+        <p className="text-[11px] text-warn">
+          This browser can't do Web Push (it needs a service worker and a secure
+          origin — https, or localhost).
+        </p>
+      )}
+      {state?.permission === "denied" && (
+        <p className="text-[11px] text-warn">
+          Notifications are blocked for this site — allow them in your browser's
+          site settings, then turn this back on.
+        </p>
+      )}
+      {devices.length > 0 && (
+        <div className="mt-1 flex flex-col gap-1">
+          {devices.map((d) => (
+            <div
+              key={d.id}
+              className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"
+            >
+              <span className="text-foreground">{d.label}</span>
+              <span className="font-mono opacity-60">{d.id}</span>
+              {d.last_error ? (
+                <span className="text-destructive">
+                  last push failed: {d.last_error}
+                </span>
+              ) : (
+                d.last_ok && <span>last push ok</span>
+              )}
+            </div>
+          ))}
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-1 h-7"
+              disabled={test.isPending}
+              onClick={() => test.mutate()}
+            >
+              Send a test notification
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
