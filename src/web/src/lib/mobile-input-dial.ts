@@ -148,6 +148,15 @@ const KEY_TARGETS: readonly DialTarget[] = [
     y: -166,
   },
   {
+    id: "enter",
+    label: "Enter",
+    glyph: "↵",
+    kind: "key",
+    key: "Enter",
+    x: -72,
+    y: -245,
+  },
+  {
     id: "up",
     label: "Up arrow",
     glyph: "↑",
