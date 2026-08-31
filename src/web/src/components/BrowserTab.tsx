@@ -15,10 +15,9 @@ function normalize(raw: string): string {
 // loopback-ish. Anything else (a real remote URL) returns null so it's left
 // alone.
 //
-// Note the trap: a bare "8445" (or ":8445") is always treated as a LOCAL port
-// and routed through /api/preview — it does NOT mean a remote host's :8445. To
-// open a remote page, type its full URL (https://host:8445/). The backend
-// rejects a bare port that's actually a tailscale HTTPS serve port with a hint.
+// Note the trap: a bare "8445" (or ":8445") means "port 8445 on whatever host
+// this page is served from" — not some other machine's :8445. To open a remote
+// page, type its full URL (https://host:8445/).
 function parseLocalPort(raw: string): number | null {
   const s = raw.trim()
   if (!s) return null
@@ -41,67 +40,13 @@ function clampPort(n: number): number | null {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null
 }
 
-// Resolved is an iframe-able src plus whether it's a cross-site public preview
-// hostname (a `<port>.<dev-domain>` behind Cloudflare Access) — those need the
-// Access cookie primed before the framed load, see primeAccessCookie.
-type Resolved = { url: string; publicPreview: boolean }
-
-// resolve maps user input to an iframe-able src. A local port is turned into a
-// trusted preview URL via /api/preview (a Cloudflare-fronted public hostname
-// when lasso is reached over a public origin, otherwise a tailscale-serve HTTPS
-// URL). Full URLs pass through.
-async function resolve(raw: string): Promise<Resolved> {
+// resolve maps user input to an iframe-able src. A bare local port becomes
+// http://<this page's hostname>:<port> — the dev server as reached from the
+// browser, with no tunnel or proxy in between. Full URLs pass through.
+function resolve(raw: string): string {
   const port = parseLocalPort(raw)
-  if (port != null) {
-    if (location.protocol === "https:") {
-      const res = await fetch("/api/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port }),
-      })
-      if (!res.ok) {
-        throw new Error(
-          (await res.text()).trim() || `preview failed (${res.status})`
-        )
-      }
-      const data = (await res.json()) as { url: string }
-      const host = hostOf(data.url)
-      // A cross-site, non-private HTTPS host is the Cloudflare-fronted public
-      // preview (`<port>.<dev-domain>`), which sits behind Access. A tailnet
-      // (`*.ts.net`) URL is same-trust / not Access-gated, so skip priming.
-      const publicPreview =
-        !!host && host !== location.host && !looksPrivateHost(host)
-      return { url: data.url, publicPreview }
-    }
-    return { url: `http://${location.hostname}:${port}`, publicPreview: false }
-  }
-  return { url: normalize(raw), publicPreview: false }
-}
-
-// primeAccessCookie runs the Cloudflare Access SSO redirect chain for a public
-// preview host OUTSIDE of an iframe, so the subsequent framed load is already
-// authenticated and renders immediately instead of going blank.
-//
-// Why it's needed: the first framed load of a `<port>.<dev-domain>` host bounces
-// to the Access login, which sets `frame-ancestors`/X-Frame-Options and so can't
-// render inside lasso's iframe — the frame goes blank even though that bounce is
-// what mints the `CF_Authorization` cookie. A credentialed no-cors fetch follows
-// the same redirect chain (fetch ignores framing restrictions), dropping the
-// cookie on the preview host; the iframe's first load then rides it. No-op when
-// already authenticated; harmless (still blank, as before) if the user has no
-// Access session at all.
-async function primeAccessCookie(url: string): Promise<void> {
-  try {
-    await fetch(url, {
-      mode: "no-cors",
-      credentials: "include",
-      cache: "no-store",
-      signal: AbortSignal.timeout(8000),
-    })
-  } catch {
-    // Best-effort: on failure we just fall back to the old behavior (the user
-    // can open-in-new-tab + reload), so swallow errors.
-  }
+  if (port != null) return `http://${location.hostname}:${port}`
+  return normalize(raw)
 }
 
 // hostOf returns the host portion of a URL, or "" if it can't be parsed.
@@ -145,12 +90,11 @@ async function probeReachable(url: string): Promise<boolean> {
   }
 }
 
-// The Browser tab: a URL bar + preview iframe. Entering a local dev-server port
-// (e.g. "5173") gets it a trusted origin via /api/preview when lasso is served
-// over HTTPS. We persist the RAW input so a stale preview self-heals
-// (re-resolves) on reload. When a target can't be embedded (unreachable, or a
-// private page blocked while lasso is on a public origin), we show a clear
-// error and a prominent open-in-new-tab.
+// The Browser tab: a URL bar + an iframe. A bare local dev-server port (e.g.
+// "5173") is embedded as http://<this page's hostname>:<port>. We persist the
+// RAW input so it re-resolves on reload. When a target can't be embedded
+// (unreachable, mixed content, or a private page blocked while lasso is on a
+// public origin), we show a clear error and a prominent open-in-new-tab.
 export function BrowserTab() {
   const [url, setUrl] = React.useState(() => lsGet("browserUrl") ?? "")
   const [src, setSrc] = React.useState("about:blank")
@@ -163,15 +107,8 @@ export function BrowserTab() {
   >("idle")
   const [err, setErr] = React.useState("")
   const seqRef = React.useRef(0)
-  // When set to the current nav's seq, the iframe's next onLoad triggers exactly
-  // one reload. Public-preview hosts sit behind Cloudflare Access: the first
-  // framed load runs the Access redirect chain (minting CF_Authorization) but
-  // can't render the login interstitial in a frame, so it lands blank. Reloading
-  // once — now that the cookie is set — renders the app, automating the manual
-  // reload users otherwise have to do. Cleared once consumed to avoid a loop.
-  const primeReloadSeqRef = React.useRef<number | null>(null)
 
-  const nav = React.useCallback(async (raw: string) => {
+  const nav = React.useCallback((raw: string) => {
     const input = raw.trim()
     if (!input) return
     const seq = ++seqRef.current
@@ -180,43 +117,19 @@ export function BrowserTab() {
     setStatus("loading")
     setErr("")
 
-    let resolved: Resolved
-    try {
-      resolved = await resolve(input)
-    } catch (e) {
-      if (seq !== seqRef.current) return
-      setSrc("about:blank")
-      setOpenTarget("")
-      setErr(e instanceof Error ? e.message : String(e))
-      setStatus("error")
-      return
-    }
-    if (seq !== seqRef.current) return
-
-    const target = resolved.url
+    const target = resolve(input)
     setOpenTarget(target)
 
-    // Mixed content: an https page can't embed an http:// page.
+    // Mixed content: an https page can't embed an http:// page. A bare port
+    // always resolves to http://, so an https lasso can only embed a full
+    // https:// URL.
     if (location.protocol === "https:" && /^http:\/\//i.test(target)) {
       setSrc("about:blank")
       setErr(
-        "This is an https app, so it can't embed an http:// page (mixed content). Open it in a new tab instead."
+        `lasso is served over https, so the browser won't embed the http:// page at ${hostOf(target) || target} (mixed content). Open it in a new tab, or reach lasso over http (loopback / tailnet) to embed a local dev server.`
       )
       setStatus("error")
       return
-    }
-
-    // Prime the Cloudflare Access cookie for a public preview host before the
-    // framed load, so the first load renders instead of bouncing (blank) through
-    // the un-frameable Access login page. See primeAccessCookie. Priming via a
-    // cross-site fetch can't always complete the SSO hop a real navigation does,
-    // so we also arm a one-shot post-load reload (below) as a reliable fallback.
-    if (resolved.publicPreview) {
-      await primeAccessCookie(target)
-      if (seq !== seqRef.current) return
-      primeReloadSeqRef.current = seq
-    } else {
-      primeReloadSeqRef.current = null
     }
 
     setSrc(target)
@@ -239,11 +152,10 @@ export function BrowserTab() {
     }
   }, [])
 
-  // Resolve any saved value on mount (e.g. a previously-previewed port whose
-  // forward may need re-creating).
+  // Re-resolve any saved value on mount, so a reload restores the last target.
   React.useEffect(() => {
     const saved = lsGet("browserUrl")
-    if (saved) void nav(saved)
+    if (saved) nav(saved)
   }, [nav])
 
   const openExternal = React.useCallback(() => {
@@ -267,7 +179,7 @@ export function BrowserTab() {
           value={url}
           spellCheck={false}
           autoComplete="off"
-          placeholder="5173 or http://host:port"
+          placeholder="port or URL"
           className="h-7 flex-1 text-[13px]"
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => {
@@ -322,19 +234,7 @@ export function BrowserTab() {
           title="browser preview"
           referrerPolicy="no-referrer"
           className="frame"
-          onLoad={() => {
-            const seq = seqRef.current
-            // One-shot reload for a public preview: the first framed load set
-            // the Access cookie but rendered blank; reload once to show the app.
-            // Keep status "loading" so the overlay hides the blank first frame
-            // until the reloaded frame's onLoad flips it to "loaded".
-            if (primeReloadSeqRef.current === seq) {
-              primeReloadSeqRef.current = null
-              setReloadKey((k) => k + 1)
-              return
-            }
-            setStatus((s) => (s === "loading" ? "loaded" : s))
-          }}
+          onLoad={() => setStatus((s) => (s === "loading" ? "loaded" : s))}
         />
         {status === "loading" && src !== "about:blank" && (
           <div className="absolute inset-0 flex items-center justify-center bg-background text-[13px] text-muted-foreground">
