@@ -153,8 +153,8 @@ const KEY_TARGETS: readonly DialTarget[] = [
     glyph: "↵",
     kind: "key",
     key: "Enter",
-    x: -72,
-    y: -245,
+    x: -10,
+    y: -258,
   },
   {
     id: "up",
@@ -714,17 +714,34 @@ export function mountTerminalInputDial(id: string, tries = 0): void {
       lockTerminalInput()
       setActive(target.id)
     })
+    button.addEventListener("pointermove", (event) => {
+      if (!button.hasPointerCapture?.(event.pointerId)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      const rect = button.getBoundingClientRect()
+      const isInside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      setActive(isInside ? target.id : null)
+    })
     button.addEventListener("pointerup", (event) => {
       event.preventDefault()
       event.stopImmediatePropagation()
+      const shouldActivate = activeID === target.id
       unlockTerminalInput()
-      activate(target)
+      if (shouldActivate) activate(target)
+      else setActive(null)
     })
     button.addEventListener("pointercancel", () => {
       setActive(null)
       unlockTerminalInput()
     })
-    button.addEventListener("lostpointercapture", unlockTerminalInput)
+    button.addEventListener("lostpointercapture", () => {
+      setActive(null)
+      unlockTerminalInput()
+    })
     menu.appendChild(button)
     win.requestAnimationFrame(() => button.classList.add("is-visible"))
   }
