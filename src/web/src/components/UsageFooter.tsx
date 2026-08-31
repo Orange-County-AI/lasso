@@ -1,0 +1,357 @@
+import { useQuery } from "@tanstack/react-query"
+import { Fragment } from "react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
+  api,
+  completeUsageProviderOrder,
+  type UsageLimit,
+  type UsageProvider,
+} from "@/lib/api"
+import { qk } from "@/lib/query"
+import { useUIState } from "@/lib/ui-state"
+import { cn } from "@/lib/utils"
+
+// UsageFooter — a slim status bar pinned to the bottom of the app that surfaces
+// subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai).
+// Deliberately text-only and one line tall: the goal is to keep the user aware
+// of their quotas without spending screen real estate.
+//
+// Standard mode renders `LABEL [pace-bar] nn%`: the fill shows usage, with a
+// time notch that exposes whether consumption is ahead of the clock. Compact
+// mode removes those bars, abbreviates provider names, and joins metrics with
+// slashes; each metric's tooltip still carries its full label, reset, and pace.
+
+// Poll on the same cadence clui uses (60s). The backend caches for ~25s so
+// multiple tabs don't multiply upstream calls.
+function useUsage() {
+  return useQuery({
+    queryKey: qk.usage,
+    queryFn: () => api.usage(),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+}
+
+// clui's thresholds for the % text: normal < 70%, amber 70–89%, red ≥ 90%.
+function pctClass(percent: number): string {
+  if (percent >= 90) return "text-bad"
+  if (percent >= 70) return "text-warn"
+  return "text-foreground"
+}
+
+// Compact all-caps tag for a limit: "5-Hour Block" → "5H", "Fable Weekly" →
+// "FABLE", "Weekly Limit" → "WK". Falls back to the raw label upper-cased.
+function shortLabel(label: string): string {
+  const l = label.toLowerCase()
+  if (l.includes("5-hour") || l === "session" || l.startsWith("5h")) return "5H"
+  if (l.includes("7-day")) return "7D"
+  if (l.startsWith("mcp")) return "MCP"
+  if (l === "monthly" || l === "month") return "MO"
+  if (l.endsWith(" limit")) {
+    // "5h Limit" / "45m Limit" / "Weekly Limit"
+    const base = label.slice(0, -" Limit".length)
+    return /weekly/i.test(base) ? "WK" : base.toUpperCase()
+  }
+  if (l.endsWith(" weekly")) {
+    const scope = label.slice(0, -" Weekly".length)
+    return scope.toLowerCase() === "scoped" ? "WK" : scope.toUpperCase()
+  }
+  if (l === "weekly" || l === "week") return "WK"
+  return label.toUpperCase()
+}
+
+const COMPACT_PROVIDER_NAMES: Record<string, string> = {
+  "Claude Code": "CLAUDE",
+  "Kimi Code": "KIMI",
+  Codex: "CODEX",
+  "Z.ai": "ZAI",
+}
+
+function compactProviderName(name: string): string {
+  const known = COMPACT_PROVIDER_NAMES[name]
+  if (known) return known
+  return (
+    name
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 4) || name
+  )
+}
+
+function pad(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`
+}
+
+// Reset time formatted client-side against the current time so it stays live
+// between polls. Mirrors clui's phrasing.
+function resetText(limit: UsageLimit): string {
+  if (!limit.resetsAt) return ""
+  const reset = new Date(limit.resetsAt)
+  if (Number.isNaN(reset.getTime())) return ""
+  const now = new Date()
+
+  if (limit.countdown) {
+    const mins = Math.max(
+      0,
+      Math.round((reset.getTime() - now.getTime()) / 60000)
+    )
+    return mins < 60
+      ? `Resets in ${mins}m`
+      : `Resets in ${Math.floor(mins / 60)}h ${mins % 60}m`
+  }
+  const t = `${pad(reset.getHours())}:${pad(reset.getMinutes())}`
+  const dayDiff = Math.floor(
+    (new Date(reset).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) /
+      86400000
+  )
+  if (dayDiff <= 0) return `Resets ${t}`
+  if (dayDiff === 1) return `Resets Tomorrow ${t}`
+  if (dayDiff < 7)
+    return `Resets ${reset.toLocaleDateString(undefined, { weekday: "short" })} ${t}`
+  return `Resets ${reset.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${t}`
+}
+
+// Human read-out of pace for the tooltip: compares usage against how far through
+// the period we are and, when over pace, projects where usage lands at reset.
+function paceText(limit: UsageLimit): string {
+  const e = limit.elapsedPct
+  if (e < 0) return ""
+  if (limit.percent > e + 1 && e > 0) {
+    const projected = Math.round((limit.percent / e) * 100)
+    return (
+      `Ahead of pace — ${limit.percent}% used at ${e}% through the period` +
+      (projected > 100 ? ` (on track for ~${projected}% by reset)` : "")
+    )
+  }
+  return `${e}% through the period — on pace`
+}
+
+// PaceBar — usage fill with a time notch; the stretch of fill past the notch is
+// drawn red (you're consuming faster than the period elapses). When the window
+// length is unknown (elapsed < 0) it degrades to a plain usage bar.
+function PaceBar({ percent, elapsed }: { percent: number; elapsed: number }) {
+  const p = Math.max(0, Math.min(100, percent))
+  const e = elapsed >= 0 ? Math.max(0, Math.min(100, elapsed)) : -1
+  const onPace = e >= 0 ? Math.min(p, e) : p
+  const over = e >= 0 ? Math.max(0, p - e) : 0
+  return (
+    <span className="relative inline-block h-[7px] w-9 shrink-0 overflow-hidden rounded-[2px] bg-border align-middle">
+      <span
+        className="absolute inset-y-0 left-0 bg-foreground/70"
+        style={{ width: `${onPace}%` }}
+      />
+      {over > 0 ? (
+        <span
+          className="absolute inset-y-0 bg-[var(--h-bad)]"
+          style={{ left: `${onPace}%`, width: `${over}%` }}
+        />
+      ) : null}
+      {e >= 0 ? (
+        <span
+          className="absolute inset-y-0 w-px bg-foreground"
+          style={{ left: `${e}%` }}
+          aria-hidden
+        />
+      ) : null}
+    </span>
+  )
+}
+
+function LimitChip({ limit }: { limit: UsageLimit }) {
+  const reset = resetText(limit)
+  const pace = paceText(limit)
+  const chip = (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span className="text-muted-foreground">{shortLabel(limit.label)}</span>
+      <PaceBar percent={limit.percent} elapsed={limit.elapsedPct} />
+      <span className={cn("tabular-nums", pctClass(limit.percent))}>
+        {limit.percent}%
+      </span>
+    </span>
+  )
+  if (!reset && !pace) return chip
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent
+        side="top"
+        className="max-w-64 flex-col items-start gap-0.5 font-sans text-xs normal-case leading-snug tracking-normal"
+      >
+        <div className="font-medium">{limit.label}</div>
+        {/* The tooltip surface is inverted (bg-foreground/text-background), so
+            secondary lines dim the *inverted* ink — text-muted-foreground is
+            mixed for the app background and washes out here. */}
+        {reset ? <div className="text-background/80">{reset}</div> : null}
+        {pace ? <div className="text-background/80">{pace}</div> : null}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function CompactLimitChip({ limit }: { limit: UsageLimit }) {
+  const reset = resetText(limit)
+  const pace = paceText(limit)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+          <span className="text-muted-foreground">
+            {shortLabel(limit.label)}
+          </span>
+          <span className={cn("tabular-nums", pctClass(limit.percent))}>
+            {limit.percent}%
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        className="max-w-64 flex-col items-start gap-0.5 font-sans text-xs normal-case leading-snug tracking-normal"
+      >
+        <div className="font-medium">{limit.label}</div>
+        {reset ? <div className="text-background/80">{reset}</div> : null}
+        {pace ? <div className="text-background/80">{pace}</div> : null}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function CompactProviderGroup({ provider }: { provider: UsageProvider }) {
+  const fullName = provider.plan
+    ? `${provider.name} · ${provider.plan}`
+    : provider.name
+  return (
+    <div className="inline-flex items-center whitespace-nowrap">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="font-medium text-foreground">
+            {compactProviderName(provider.name)}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className="font-sans text-xs normal-case tracking-normal"
+        >
+          {fullName}
+        </TooltipContent>
+      </Tooltip>
+      {provider.err ? (
+        <span className="ml-1.5 text-muted-foreground/40">—</span>
+      ) : (
+        <span className="ml-1.5 inline-flex items-center">
+          {provider.limits.map((limit, index) => (
+            <Fragment key={limit.label}>
+              {index > 0 ? (
+                <span className="mx-0.5 text-muted-foreground/60">/</span>
+              ) : null}
+              <CompactLimitChip limit={limit} />
+            </Fragment>
+          ))}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function ProviderGroup({ provider }: { provider: UsageProvider }) {
+  return (
+    <div className="inline-flex items-center gap-3.5 whitespace-nowrap">
+      {/* Provider name is the bright anchor of each block; the metric labels
+          inside stay muted so the eye can find where one provider ends and the
+          next begins. */}
+      <span className="font-medium text-foreground">{provider.name}</span>
+      {provider.err ? (
+        <span className="text-muted-foreground/40">—</span>
+      ) : (
+        provider.limits.map((limit) => (
+          <LimitChip key={limit.label} limit={limit} />
+        ))
+      )}
+    </div>
+  )
+}
+
+function ProviderGroups({
+  providers,
+  compact,
+}: {
+  providers: UsageProvider[]
+  compact: boolean
+}) {
+  return providers.map((provider, index) => (
+    <Fragment key={provider.name}>
+      {index > 0 ? (
+        compact ? (
+          <span
+            className="mx-2 flex-none text-muted-foreground/60"
+            aria-hidden
+          >
+            ·
+          </span>
+        ) : (
+          <span
+            className="mx-5 h-4 w-px flex-none bg-muted-foreground/50"
+            aria-hidden
+          />
+        )
+      ) : null}
+      {compact ? (
+        <CompactProviderGroup provider={provider} />
+      ) : (
+        <ProviderGroup provider={provider} />
+      )}
+    </Fragment>
+  ))
+}
+
+export function UsageFooter() {
+  const { data, isError } = useUsage()
+  const ui = useUIState()
+  const hidden = ui.usage_hidden ?? []
+  const order = completeUsageProviderOrder(ui.usage_order)
+  const compact = ui.usage_compact ?? false
+
+  // Nothing to show (no configured providers, every provider is hidden, or the
+  // whole fetch failed) — stay out of the way rather than render an empty bar.
+  // Filtering creates a copy before sorting so React Query's payload is never
+  // mutated in place.
+  const reported = data?.providers ?? []
+  const providers = reported
+    .filter((provider) => !hidden.includes(provider.name))
+    .sort((a, b) => {
+      const aIndex = order.indexOf(a.name)
+      const bIndex = order.indexOf(b.name)
+      if (aIndex < 0 && bIndex < 0) return 0
+      if (aIndex < 0) return 1
+      if (bIndex < 0) return -1
+      return aIndex - bIndex
+    })
+  if (isError || providers.length === 0) return null
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      {/* The footer is the scroll viewport; the inner row is `w-max` so it sizes
+          to its content — `mx-auto` then centers it when it fits and collapses
+          the margins (letting it scroll left/right) when it's wider than the
+          screen. `no-scrollbar` keeps the slim bar from growing a scrollbar.
+          The footer stays out of the mobile terminal viewport entirely; the
+          saved compact preference only changes its desktop presentation. */}
+      <footer className="no-scrollbar hidden flex-none overflow-x-auto border-border border-t bg-card md:block">
+        <div
+          className={cn(
+            "mx-auto flex w-max items-center py-1 font-label text-[11px] uppercase",
+            compact
+              ? "px-3 tracking-wide"
+              : "hidden px-4 tracking-wider md:flex"
+          )}
+        >
+          <ProviderGroups providers={providers} compact={compact} />
+        </div>
+      </footer>
+    </TooltipProvider>
+  )
+}

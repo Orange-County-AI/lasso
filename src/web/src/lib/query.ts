@@ -34,6 +34,7 @@ export const qk = {
   version: ["version"] as const,
   // Server-level (not host-scoped): whether new agents are auto-titled.
   autoTitle: ["auto-title"] as const,
+  usage: ["usage"] as const,
   // The herdr theme picker's payload — refetched keyed on the live theme_rev
   // so the dropdown follows external config.toml edits too.
   theme: (rev: number) => ["theme", rev] as const,

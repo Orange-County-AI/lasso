@@ -166,9 +166,10 @@ function promptTitle(text: string): string {
 // Native textarea/select styled to match the shadcn <Input> (same border,
 // radius, and background) so every field in the form reads as one set. Fields
 // use bg-background (not transparent) so they contrast against the dialog's
-// bg-popover surface.
+// bg-popover surface. Keep mobile controls at 16px: the radial New action
+// focuses the prompt immediately, and iOS zooms the page for smaller fields.
 const fieldClass =
-  "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+  "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-base shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm"
 const labelClass = "font-medium text-muted-foreground text-xs"
 
 function Field({
