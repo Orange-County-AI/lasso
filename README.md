@@ -279,6 +279,38 @@ and the VAPID keypair identifying this server is generated once into
 rather your push provider saw an address than lasso's own hostname; by default
 the JWT names the origin you subscribed from.
 
+## On a phone
+
+Added to the Home Screen as above, lasso is a usable phone app: it launches from
+the icon lasso ships, full screen, on whatever origin you installed. Everything
+works over plain HTTP on the tailnet too, except the same secure-context
+features push needs — Files-tab downloads won't fire and a terminal copy falls
+back to a legacy clipboard write — so the HTTPS origin is worth having for more
+than notifications. Uploads and dictation don't care either way. It's a
+home-screen shortcut, not an offline PWA: the phone is a client for the box, so
+the box has to be up.
+
+A terminal on a touch screen is missing a keyboard, a mouse, and a right button,
+so those live in a **radial dial** — the ⌘ button in the terminal's bottom-right
+corner, which only mounts on a touch device. Hold it and slide to a target, or
+tap to open the ring and tap one:
+
+- **Common keys** — Esc, ^C, Tab, ⇧⇥, ↵ and the arrows, none of which the iOS
+  keyboard offers.
+- **Input** — a plain text field to compose in, so autocorrect and the keyboard's
+  dictation microphone work (neither does inside xterm). **Insert** types the
+  buffer into the pane, **Enter** types and submits it, and **Attach** takes a
+  photo or any file from Photo Library / Take Photo / Files, uploads it to the
+  host the focused pane runs on, and inserts its path — which is how you hand a
+  screenshot or a log to the agent in that pane.
+- **New** — the New Agent dialog. **Lasso** — pane search, host switcher, sidebar.
+
+In the terminal itself, **drag to scroll** (the drag becomes wheel events, so it
+works in tmux's alternate screen and in TUIs that grab the mouse) and
+**long-press for right-click** (herdr's own menu). When the socket drops while
+the phone sleeps, the overlay reads **Tap to Reconnect** — a tap anywhere in the
+terminal brings it back.
+
 ## Releasing
 
 Releases are cut by CI on a version tag:
