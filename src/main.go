@@ -25,6 +25,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -253,7 +254,7 @@ func runServer() {
 	mux.HandleFunc("/api/agent/close", serveAgentClose)
 	mux.HandleFunc("/api/agent/reopen", serveAgentReopen)
 	mux.HandleFunc("/api/agent-history", serveAgentHistory)
-	mux.HandleFunc("/api/paste-image", servePasteImage)
+	mux.HandleFunc("/api/paste-file", servePasteFile)
 	mux.HandleFunc("/api/preview", servePreview)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
@@ -1540,17 +1541,17 @@ func serveVersion(w http.ResponseWriter, r *http.Request) {
 var herdrPinger = func() (string, int, error) { return herdrPing(*herdrSock) }
 
 // ---------------------------------------------------------------------------
-// image paste: save a clipboard image to disk so the agent in the focused
-// pane (e.g. Claude Code) can read it by path
+// file drop: save a file the browser hands over — a pasted screenshot, a photo
+// or a document picked on a phone — so the agent in the focused pane can read
+// it by path
 // ---------------------------------------------------------------------------
 
-// maxPasteImage caps the request body so a runaway/hostile paste can't fill
-// the disk. Screenshots are well under this.
-const maxPasteImage = 25 << 20 // 25 MiB
-
-// pasteImageExt maps an image content-type to a file extension. Anything not
-// listed is rejected — this endpoint only ever writes image files.
-var pasteImageExt = map[string]string{
+// clipboardExt names the extension for a body that arrived with no filename: a
+// clipboard paste is bytes and a MIME type, nothing more. The common image
+// types are pinned because mime.ExtensionsByType sorts its answers and would
+// name a screenshot ".jpe"; anything else falls back to that lookup, and a type
+// the stdlib doesn't know simply gets no extension.
+var clipboardExt = map[string]string{
 	"image/png":  ".png",
 	"image/jpeg": ".jpg",
 	"image/jpg":  ".jpg",
@@ -1558,54 +1559,84 @@ var pasteImageExt = map[string]string{
 	"image/webp": ".webp",
 }
 
-// pasteImageDir is the directory pasted clipboard images are written to. Kept
-// under lasso's own ~/.lasso/uploads (alongside staged attachment uploads)
-// rather than the OS cache dir, so the images live with the rest of lasso's
-// data and aren't swept by cache cleaners.
-func pasteImageDir() string {
-	return filepath.Join(lassoUploadsDir(), "pasted-images")
+// pasteFileDir is the directory dropped files are written to. Kept under
+// lasso's own ~/.lasso/uploads (alongside staged attachment uploads) rather
+// than the OS cache dir, so they live with the rest of lasso's data and aren't
+// swept by cache cleaners.
+func pasteFileDir() string {
+	return filepath.Join(lassoUploadsDir(), "dropped-files")
 }
 
-// servePasteImage accepts a raw image body (Content-Type set to the image MIME
-// type), writes it to pasteImageDir() with a timestamped name, and returns the
-// absolute path. The browser then inserts that path at the terminal cursor.
-func servePasteImage(w http.ResponseWriter, r *http.Request) {
+// pasteFileName is the basename to write. A file picked on a device carries its
+// own name, which is what makes the path readable in a prompt — but it is
+// client-supplied, so only its base survives (no directory may be steered from
+// the query string) and a timestamp prefix keeps two picks of the same photo
+// from overwriting each other.
+func pasteFileName(raw, contentType string) string {
+	stamp := time.Now().Format("2006-01-02-150405")
+	name := filepath.Base(filepath.FromSlash(strings.TrimSpace(raw)))
+	switch name {
+	case "", ".", "..", string(filepath.Separator):
+		ct := strings.ToLower(strings.TrimSpace(contentType))
+		ext, ok := clipboardExt[ct]
+		if !ok {
+			if exts, _ := mime.ExtensionsByType(ct); len(exts) > 0 {
+				ext = exts[0]
+			}
+		}
+		return "clipboard-" + stamp + ext
+	}
+	return stamp + "-" + name
+}
+
+// servePasteFile accepts one file as the raw request body (Content-Type is its
+// MIME type; ?name= its filename when the browser has one) and answers with the
+// absolute path it was written to. The browser inserts that path — at the
+// terminal's cursor, or into the mobile input buffer being composed — so the
+// agent reads the file from the host it runs on.
+func servePasteFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
-	ext, ok := pasteImageExt[strings.ToLower(strings.TrimSpace(ct))]
-	if !ok {
-		http.Error(w, "unsupported image content-type "+ct, http.StatusUnsupportedMediaType)
-		return
-	}
-	// Target the selected host (?host=, default active) so the pasted image lands
-	// where the agent will run and the path inserted into the description
-	// resolves on that host.
+	// Target the selected host (?host=, default active) so the file lands where
+	// the agent will run and the path we hand back resolves on that host.
 	be, err := reqHostBackend(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPasteImage))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if len(body) == 0 {
-		http.Error(w, "empty body", http.StatusBadRequest)
-		return
-	}
-	dir := be.PasteImageDir()
+	dir := be.PasteFileDir()
 	if err := be.MkdirAll(dir, 0o755); err != nil {
 		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	name := "clipboard-" + time.Now().Format("2006-01-02-150405") + ext
-	path := filepath.Join(dir, name)
-	if err := be.WriteFile(path, body, 0o644); err != nil {
-		http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	path := filepath.Join(dir, pasteFileName(r.URL.Query().Get("name"), ct))
+	// Streamed rather than read into memory: a picker on a phone will hand over
+	// a video as happily as a screenshot. Capped at the same maxUpload as the
+	// multipart file endpoint — one ceiling for "bytes the browser sent us".
+	out, err := be.Create(path)
+	if err != nil {
+		http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	written, copyErr := io.Copy(out, http.MaxBytesReader(w, r.Body, maxUpload))
+	closeErr := out.Close()
+	switch {
+	case copyErr != nil:
+		_ = be.RemoveAll(path)
+		http.Error(w, "write: "+copyErr.Error(), http.StatusBadRequest)
+		return
+	case closeErr != nil:
+		_ = be.RemoveAll(path)
+		http.Error(w, "write: "+closeErr.Error(), http.StatusInternalServerError)
+		return
+	case written == 0:
+		// An empty file is never what the user meant to attach, and leaving it
+		// would put a dead path in their prompt.
+		_ = be.RemoveAll(path)
+		http.Error(w, "empty body", http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, map[string]string{"path": path})

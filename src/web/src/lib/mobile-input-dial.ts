@@ -465,7 +465,10 @@ export function mountTerminalInputDial(
   if (doc.getElementById(DIAL_ID)) return
   if (!doc.getElementById("terminal-container")) {
     if (tries < 20) {
-      win.setTimeout(() => mountTerminalInputDial(id, pasteHost, tries + 1), 150)
+      win.setTimeout(
+        () => mountTerminalInputDial(id, pasteHost, tries + 1),
+        150
+      )
     }
     return
   }
@@ -641,12 +644,13 @@ export function mountTerminalInputDial(
     title.textContent = "Input buffer"
     const status = doc.createElement("span")
     status.className = "input-status"
-    status.textContent = "Type, dictate, or add an image"
+    status.textContent = "Type, dictate, or attach a file"
     header.append(title, status)
 
     const buffer = doc.createElement("textarea")
     buffer.className = "input-buffer"
-    buffer.placeholder = "Type, dictate, or add an image, then insert or submit."
+    buffer.placeholder =
+      "Type, dictate, or attach a file, then insert or submit."
     buffer.spellcheck = true
     buffer.inputMode = "text"
     buffer.autocapitalize = "sentences"
@@ -654,24 +658,25 @@ export function mountTerminalInputDial(
     buffer.setAttribute("aria-label", "Buffered terminal input")
 
     // A phone has no drag-and-drop and no file manager worth the name, so the
-    // picker is the whole story: iOS offers Photo Library / Take Photo / Choose
-    // File from this one input. Pasting an image into the buffer lands in the
-    // same handler (terminal.ts leaves dial-targeted pastes alone for it).
+    // picker is the whole story: with no `accept` filter iOS offers Photo
+    // Library / Take Photo / Choose File from this one input, which covers a
+    // screenshot, a camera shot, and anything in Files or iCloud Drive alike.
+    // Pasting into the buffer lands in the same handler (terminal.ts leaves
+    // dial-targeted pastes alone for it).
     const picker = doc.createElement("input")
     picker.type = "file"
-    picker.accept = "image/*"
     picker.multiple = true
     picker.className = "input-picker"
     picker.tabIndex = -1
 
     const actions = doc.createElement("div")
     actions.className = "input-actions"
-    const image = doc.createElement("button")
-    image.type = "button"
-    image.className = "input-action attach"
-    image.textContent = "Image"
-    image.title = "Add an image and insert its path"
-    image.setAttribute("aria-label", "Add an image")
+    const attach = doc.createElement("button")
+    attach.type = "button"
+    attach.className = "input-action attach"
+    attach.textContent = "Attach"
+    attach.title = "Attach a file and insert its path"
+    attach.setAttribute("aria-label", "Attach a file")
     const cancel = doc.createElement("button")
     cancel.type = "button"
     cancel.className = "input-action"
@@ -688,7 +693,7 @@ export function mountTerminalInputDial(
     enter.title = "Insert and submit"
     enter.setAttribute("aria-label", "Insert and submit")
     enter.disabled = true
-    actions.append(image, cancel, insert, enter)
+    actions.append(attach, cancel, insert, enter)
     panel.append(header, buffer, actions, picker)
     dial.appendChild(panel)
     inputPanel = panel
@@ -713,36 +718,34 @@ export function mountTerminalInputDial(
       updateActions()
     }
 
-    // The image goes to the host the FOCUSED PANE's filesystem lives on (the
+    // The file goes to the host the FOCUSED PANE's filesystem lives on (the
     // same target the terminal's own paste uses), because the path we insert is
     // read by the agent in that pane, not by the browser.
     let attaching = false
-    const addImages = async (files: ArrayLike<File> | null) => {
-      const images = Array.from(files ?? []).filter((file) =>
-        file.type.startsWith("image/")
-      )
-      if (!images.length || attaching) return
+    const attachFiles = async (picked: ArrayLike<File> | null) => {
+      const files = Array.from(picked ?? [])
+      if (!files.length || attaching) return
       attaching = true
-      image.disabled = true
+      attach.disabled = true
       status.textContent =
-        images.length > 1 ? `Adding ${images.length} images…` : "Adding image…"
-      for (const file of images) {
+        files.length > 1 ? `Attaching ${files.length} files…` : "Attaching…"
+      for (const file of files) {
         try {
-          const { path } = await api.pasteImage(file, pasteHost())
+          const { path } = await api.pasteFile(file, pasteHost(), file.name)
           // The panel can be cancelled mid-upload; the file is on the host
           // either way, but there is no buffer left to insert it into.
           if (!panel.isConnected) return
           insertAtCursor(path)
-          status.textContent = path.split("/").pop() ?? "Image added"
+          status.textContent = path.split("/").pop() ?? "Attached"
         } catch (err) {
           if (!panel.isConnected) return
-          status.textContent = `Image failed: ${
+          status.textContent = `Attach failed: ${
             err instanceof Error ? err.message : String(err)
           }`
         }
       }
       attaching = false
-      image.disabled = false
+      attach.disabled = false
     }
     const commit = (submit: boolean) => {
       const text = buffer.value.trim()
@@ -757,25 +760,27 @@ export function mountTerminalInputDial(
     cancel.addEventListener("click", closeInputPanel)
     insert.addEventListener("click", () => commit(false))
     enter.addEventListener("click", () => commit(true))
-    image.addEventListener("click", () => picker.click())
+    attach.addEventListener("click", () => picker.click())
     picker.addEventListener("change", () => {
-      // The selection must be reset or picking the same photo twice fires no
+      // The selection must be reset or picking the same file twice fires no
       // second change event — but only after the upload has read the File,
       // which is backed by that selection.
-      void addImages(picker.files).finally(() => {
+      void attachFiles(picker.files).finally(() => {
         picker.value = ""
       })
     })
     buffer.addEventListener("paste", (event: ClipboardEvent) => {
-      const items = event.clipboardData?.items
-      if (!items) return
-      const files = Array.from(items)
-        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      const clipboard = event.clipboardData
+      // Text wins whenever the clipboard carries any: a rich copy hands over
+      // both, and the buffer is a text field first.
+      if (!clipboard || clipboard.getData("text/plain")) return
+      const files = Array.from(clipboard.items)
+        .filter((item) => item.kind === "file")
         .map((item) => item.getAsFile())
         .filter((file): file is File => file !== null)
-      if (!files.length) return // text paste: let the textarea have it
+      if (!files.length) return
       event.preventDefault()
-      void addImages(files)
+      void attachFiles(files)
     })
 
     // Focusing synchronously from the dial gesture opens the software keyboard

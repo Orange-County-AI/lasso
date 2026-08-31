@@ -497,7 +497,7 @@ export function NewDialog({
     e.preventDefault()
     setPastingImage(true)
     try {
-      const { path } = await api.pasteImage(file, selectedHost)
+      const { path } = await api.pasteFile(file, selectedHost, file.name)
       // Remember the blob + where it landed so we can re-home it if the user
       // picks a different host before creating.
       setPastedImages((prev) => [
@@ -548,7 +548,7 @@ export function NewDialog({
       const moved: { path: string; blob: Blob; host: string }[] = []
       for (const im of stale) {
         try {
-          const { path: newPath } = await api.pasteImage(im.blob, host)
+          const { path: newPath } = await api.pasteFile(im.blob, host)
           next = next.split(im.path).join(newPath)
           moved.push({ path: newPath, blob: im.blob, host })
         } catch (err) {

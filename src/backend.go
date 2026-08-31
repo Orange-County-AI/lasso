@@ -54,9 +54,10 @@ type Backend interface {
 
 	// HomeDir is the host's home directory, for ~-expansion in path inputs.
 	HomeDir() (string, error)
-	// PasteImageDir is where a pasted clipboard image is written so the path
-	// typed into the (possibly remote) terminal resolves on the same host.
-	PasteImageDir() string
+	// PasteFileDir is where a file handed over by the browser — a pasted
+	// screenshot, a photo or document picked on a phone — is written, so the
+	// path typed into the (possibly remote) terminal resolves on the same host.
+	PasteFileDir() string
 
 	// Close releases any resources (SSH control master, sftp client, forwarded
 	// socket). A no-op for localBackend.
@@ -228,7 +229,7 @@ func (b *localBackend) GitOut(dir string, args ...string) (string, error) {
 }
 
 func (b *localBackend) HomeDir() (string, error) { return os.UserHomeDir() }
-func (b *localBackend) PasteImageDir() string    { return pasteImageDir() }
+func (b *localBackend) PasteFileDir() string     { return pasteFileDir() }
 
 // TermCmd/ShellCmd/TermEnv reproduce the historical local terminal wiring: the
 // left terminal runs *termCmd inheriting the viewer's env (so it joins the same

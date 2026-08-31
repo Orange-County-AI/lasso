@@ -766,12 +766,22 @@ export const api = {
       { pane_ids }
     ),
 
-  // Write a pasted image to the target host (defaults to active) and return the
-  // path on that host to insert into the description.
-  pasteImage: async (file: Blob, host?: string): Promise<{ path: string }> => {
-    const r = await hostFetch(withHost("/api/paste-image", host), {
+  // Write a file the browser is holding — a pasted screenshot, a picked photo
+  // or document — to the target host (defaults to active) and return the path
+  // on that host to insert into the prompt or the terminal. The name is sent so
+  // the path stays recognizable; a body with none is stamped by content type.
+  pasteFile: async (
+    file: Blob,
+    host?: string,
+    name?: string
+  ): Promise<{ path: string }> => {
+    // name first, so withHost's own separator logic stays correct either way.
+    const named = name
+      ? `/api/paste-file?name=${encodeURIComponent(name)}`
+      : "/api/paste-file"
+    const r = await hostFetch(withHost(named, host), {
       method: "POST",
-      headers: { "Content-Type": file.type || "image/png" },
+      headers: { "Content-Type": file.type || "application/octet-stream" },
       body: file,
     })
     if (!r.ok) throw await httpError(r)
