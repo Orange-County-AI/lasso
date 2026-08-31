@@ -726,22 +726,27 @@ export function wireTerminalIframe(
   doc.addEventListener(
     "paste",
     async (e: ClipboardEvent) => {
-      // The dial's input buffer takes its own images (it inserts the path into
+      // The dial's input buffer takes its own files (it inserts the path into
       // the buffer text, not into xterm), so a paste aimed at it is not ours.
       const target = e.target as Element | null
       if (target?.closest?.(`#${DIAL_ID}`)) return
-      const items = e.clipboardData?.items
-      if (!items) return
-      const imgItem = Array.from(items).find(
-        (it) => it.kind === "file" && it.type.startsWith("image/")
-      )
-      if (!imgItem) return // text paste: let xterm handle it
-      const file = imgItem.getAsFile()
+      const clipboard = e.clipboardData
+      if (!clipboard) return
+      // Text wins whenever there is any. Copying a spreadsheet range or a rich
+      // document puts BOTH text and a file (an image rendering, an RTF blob) on
+      // the clipboard, and pasting a screenshot of your own text into the
+      // terminal instead of the text is never what was meant.
+      if (clipboard.getData("text/plain")) return
+      const file = Array.from(clipboard.items)
+        .find((it) => it.kind === "file")
+        ?.getAsFile()
       if (!file) return
       e.preventDefault()
       e.stopPropagation()
       try {
-        const { path } = await api.pasteImage(file, pasteHost())
+        // xterm can only ever paste text, so the file goes to the pane's host
+        // and the terminal receives the path the agent there can open.
+        const { path } = await api.pasteFile(file, pasteHost(), file.name)
         const term = win?.term
         if (term && typeof term.paste === "function") term.paste(`${path} `)
       } catch {

@@ -21,7 +21,7 @@ describe("terminalPasteHost", () => {
   })
 })
 
-test("pasteImage sends the selected terminal host to the backend", async () => {
+test("pasteFile sends the selected terminal host and the file's name", async () => {
   const originalFetch = globalThis.fetch
   let requested = ""
   globalThis.fetch = (input) => {
@@ -29,7 +29,7 @@ test("pasteImage sends the selected terminal host to the backend", async () => {
     return Promise.resolve(
       new Response(
         JSON.stringify({
-          path: "/home/stephan/.lasso/uploads/pasted-images/clipboard.png",
+          path: "/home/stephan/.lasso/uploads/dropped-files/notes.pdf",
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
@@ -37,12 +37,34 @@ test("pasteImage sends the selected terminal host to the backend", async () => {
   }
 
   try {
-    const result = await api.pasteImage(
-      new Blob(["png bytes"], { type: "image/png" }),
-      "ticket500"
+    const result = await api.pasteFile(
+      new Blob(["pdf bytes"], { type: "application/pdf" }),
+      "ticket500",
+      "Q3 notes.pdf"
     )
-    expect(requested).toBe("/api/paste-image?host=ticket500")
+    expect(requested).toBe("/api/paste-file?name=Q3%20notes.pdf&host=ticket500")
     expect(result.path).toStartWith("/home/stephan/")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("pasteFile without a name leaves the server to stamp one", async () => {
+  const originalFetch = globalThis.fetch
+  let requested = ""
+  globalThis.fetch = (input) => {
+    requested = String(input)
+    return Promise.resolve(
+      new Response(JSON.stringify({ path: "/tmp/clipboard.png" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    )
+  }
+
+  try {
+    await api.pasteFile(new Blob(["png bytes"], { type: "image/png" }))
+    expect(requested).toBe("/api/paste-file")
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -400,14 +400,14 @@ func (b *remoteBackend) HomeDir() (string, error) {
 	return "", fmt.Errorf("remote home unknown")
 }
 
-// PasteImageDir mirrors the local scratch dir but on the remote host, so the
-// path typed into the remote terminal resolves there.
-func (b *remoteBackend) PasteImageDir() string {
+// PasteFileDir mirrors the local drop dir but on the remote host, so the path
+// typed into the remote terminal resolves there.
+func (b *remoteBackend) PasteFileDir() string {
 	home := b.home
 	if home == "" {
 		home = "/tmp"
 	}
-	return path.Join(home, ".lasso", "uploads", "pasted-images")
+	return path.Join(home, ".lasso", "uploads", "dropped-files")
 }
 
 // ---------------------------------------------------------------------------
