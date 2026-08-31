@@ -184,6 +184,11 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 > Over plain-HTTP tailnet access (`http://citadel:8090`) a download silently
 > won't fire — use the Cloudflare tunnel (HTTPS) if you need to pull files off
 > the box. (Viewing files still works; only the download action is gated.)
+>
+> **Push notifications need one too** — and they need it harder: the Push API
+> doesn't exist at all on a plain-HTTP origin. `tailscale serve` gives your node
+> a real HTTPS origin and makes both work without Cloudflare; see
+> [Notifications](#notifications-ios-home-screen).
 
 > **The Browser tab embeds only what your browser can embed.** A bare port
 > (`5173`) resolves to `http://<the hostname you're using>:5173`, so it frames
@@ -215,13 +220,53 @@ open and the screen off.
 It rides [Web Push](https://datatracker.ietf.org/doc/html/rfc8291), which on iOS
 only works for a site added to the **Home Screen** (iOS 16.4+). Once:
 
-1. Reach lasso over **HTTPS** (the Cloudflare tunnel above — Web Push needs a
-   secure context, and Apple's push service needs a real https origin).
+1. Reach lasso over **HTTPS** — either the Cloudflare tunnel above or a
+   `tailscale serve` origin (see below). **Plain HTTP will not work at all**,
+   including over your tailnet.
 2. Open it in Safari → Share sheet → **Add to Home Screen**.
-3. Launch it from the Home Screen icon, open **Settings**, and tick *"Push a
-   notification to this device when an agent is blocked"*. iOS asks for
-   permission; allow it.
+3. Launch it from the Home Screen icon, open **Settings**, and tick *"Push
+   notifications to this device"*. iOS asks for permission; allow it.
 4. **Send a test notification** confirms the whole path end to end.
+
+### HTTPS is not optional — and `http://<host>:8090` over the tailnet isn't it
+
+Service workers and the Push API are **secure-context only**: browsers expose
+them on `https://` and on loopback (`localhost` / `127.0.0.1`), and nowhere else.
+Reached at a plain-HTTP tailnet address, Safari doesn't merely refuse permission
+— `navigator.serviceWorker` and `PushManager` are simply absent, and lasso's
+Settings tab says *"This browser can't do Web Push"*. A tailnet is private, but
+privacy isn't what the rule tests.
+
+**Tailscale can give you real HTTPS**, so a tailnet-only lasso can do push
+without Cloudflare in front. Enable MagicDNS + HTTPS certificates in the
+tailnet admin panel, then let `tailscale serve` terminate TLS for lasso's
+loopback port:
+
+```bash
+lasso start -listen 127.0.0.1:8090                        # stays on loopback
+tailscale serve --bg --https=8090 http://127.0.0.1:8090    # -> https://<host>.<tailnet>.ts.net:8090
+```
+
+That origin is a genuine Let's Encrypt-backed `https://` (the cert is issued to
+your node's MagicDNS name), which is all the browser and Apple's push service
+need — the VAPID JWT lasso signs names the origin you subscribed from, and an
+`https://…ts.net` origin satisfies Apple where a bare hostname does not. Add
+*that* URL to your Home Screen and enable notifications from it.
+
+Three things to know about the tailnet route:
+
+- **A push subscription belongs to an ORIGIN.** The `ts.net` app and a
+  Cloudflare-hostname app are two different installs, so enabling notifications
+  in both registers the same phone twice and you get every notification twice.
+  Pick one origin per device.
+- **Notifications still arrive off the tailnet.** They come from Apple, not from
+  lasso, and the service worker renders them entirely from the payload — it
+  never calls back to the origin. Only *opening* one needs the tailnet up, since
+  that loads the app.
+- **`tailscale serve` exposes lasso to every device on your tailnet**, with no
+  Access gate in front of the writable terminal or `/mcp`. Set `UI_AUTH=user:pass`
+  if the tailnet isn't a trust boundary you're happy with. Turn it back off with
+  `tailscale serve --https=8090 off`.
 
 Each device registers itself, and every registered device gets every
 notification; Settings lists them with the outcome of the last push, so a device

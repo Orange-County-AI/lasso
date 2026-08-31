@@ -192,7 +192,7 @@ func TestBlockedNotificationFallsBackThroughTheAvailableNames(t *testing.T) {
 		AgentStatus:   "blocked",
 		HasAgent:      true,
 	}
-	n := blockedNotification(p, "titan\x00p1")
+	n := blockedNotification(p, "titan\x00p1", false)
 	if n.Title != "Reticulating splines" {
 		t.Errorf("title = %q, want the terminal title when there is no workspace label", n.Title)
 	}
@@ -208,14 +208,14 @@ func TestBlockedNotificationFallsBackThroughTheAvailableNames(t *testing.T) {
 	// A named workspace plus a distinct task line: both are useful, so the task
 	// rides in the body.
 	p.WorkspaceLabel = "Push notifications"
-	n = blockedNotification(p, "titan\x00p1")
+	n = blockedNotification(p, "titan\x00p1", false)
 	if n.Title != "Push notifications" || !strings.Contains(n.Body, "Reticulating splines") {
 		t.Errorf("notification = %+v", n)
 	}
 
 	// Nothing to name it by at all still produces a usable notification.
 	bare := hostPane{Host: "local", PaneID: "p2", HasAgent: true, AgentStatus: "blocked"}
-	n = blockedNotification(bare, "local\x00p2")
+	n = blockedNotification(bare, "local\x00p2", false)
 	if n.Title == "" || n.Body == "" {
 		t.Errorf("unnamed agent produced %+v", n)
 	}
@@ -318,4 +318,73 @@ func useNotifTransport(t *testing.T, ts ...notifTransport) {
 		notifTransports = saved
 		notifTransportsMu.Unlock()
 	})
+}
+
+// The field bug: a herdr workspace named "cheese" on blackbird held two claude
+// panes, both parked on approvals. Both inherited the workspace label, neither
+// had a terminal title of its own, so the phone showed two notifications
+// identical down to the last character — with nothing to say which agent either
+// one was about. Siblings must be distinguishable.
+func TestObserveDisambiguatesSiblingAgentsSharingAWorkspaceName(t *testing.T) {
+	one := blockedTestPane("blackbird", "w1:p2", "blocked")
+	two := blockedTestPane("blackbird", "w1:p3", "blocked")
+	one.WorkspaceLabel, two.WorkspaceLabel = "cheese", "cheese"
+	one.WorkspaceID, two.WorkspaceID = "w1", "w1"
+	one.TabLabel, two.TabLabel = "1", "2"
+
+	got := (&blockedWatcher{}).observe([]hostPane{one, two}, time.Now())
+	if len(got) != 2 {
+		t.Fatalf("want one notification per blocked agent, got %d", len(got))
+	}
+	if got[0].Title == got[1].Title {
+		t.Fatalf("both notifications are titled %q — indistinguishable on a lock screen", got[0].Title)
+	}
+	for _, n := range got {
+		if !strings.HasPrefix(n.Title, "cheese") {
+			t.Errorf("title %q dropped the workspace name", n.Title)
+		}
+		if !strings.Contains(n.Title, "tab ") {
+			t.Errorf("title %q carries no pane discriminator", n.Title)
+		}
+	}
+
+	// A name nothing else shares stays clean — the discriminator is for actual
+	// ambiguity, not decoration.
+	solo := blockedTestPane("titan", "w9:p1", "blocked")
+	solo.WorkspaceLabel, solo.TabLabel = "Port the auth tests", "1"
+	alone := (&blockedWatcher{}).observe([]hostPane{solo}, time.Now())
+	if len(alone) != 1 || alone[0].Title != "Port the auth tests" {
+		t.Fatalf("unique name was decorated: %+v", alone)
+	}
+}
+
+// A long shared name must not clip the one part that distinguishes it.
+func TestBlockedNotificationKeepsTheDiscriminatorWhenClipping(t *testing.T) {
+	p := blockedTestPane("titan", "w4:p7", "blocked")
+	p.WorkspaceLabel = strings.Repeat("very long workspace name ", 5)
+	p.TabLabel = "3"
+	n := blockedNotification(p, "titan\x00w4:p7", true)
+	if len([]rune(n.Title)) > 70 {
+		t.Errorf("title is %d runes: %q", len([]rune(n.Title)), n.Title)
+	}
+	if !strings.HasSuffix(n.Title, "· tab 3") {
+		t.Errorf("discriminator was clipped away: %q", n.Title)
+	}
+}
+
+// With no tab label at all, the pane id is the fallback discriminator.
+func TestPaneDiscriminatorFallsBackToThePaneID(t *testing.T) {
+	p := blockedTestPane("titan", "w4:p7", "blocked")
+	if got := paneDiscriminator(p); got != "w4:p7" {
+		t.Errorf("got %q, want the pane id", got)
+	}
+	p.TabLabel = "2"
+	if got := paneDiscriminator(p); got != "tab 2" {
+		t.Errorf("got %q, want the tab label", got)
+	}
+	mirror := blockedTestPane("titan", "local-7", "blocked")
+	mirror.MirrorHost, mirror.MirrorPane = "norm", "remote-2"
+	if got := paneDiscriminator(mirror); got != "remote-2" {
+		t.Errorf("mirror got %q, want the remote pane id", got)
+	}
 }
