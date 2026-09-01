@@ -59,6 +59,16 @@ straight into the agent's host, the New Agent dialog, and lasso's own panels.
 
 <img src="docs/screenshots/mobile-dial.png" alt="the radial key dial open over the terminal on a phone" width="290">
 
+### Notifications — it tells you when an agent is stuck
+
+An agent that blocks on a tool approval or a plan gate stops until a human
+answers, and nothing else will tell you. lasso watches every reachable host in
+the background and pushes to your phone — and an agent can also ping you
+deliberately with `lasso notify "safe to run this on prod?"`. Nothing is polled
+at all while no device is registered.
+
+<img src="docs/screenshots/notifications.png" alt="the notifications section of Settings, with a registered iPhone" width="620">
+
 ## Install
 
 ```bash
