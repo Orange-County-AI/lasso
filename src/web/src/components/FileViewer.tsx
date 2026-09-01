@@ -5,6 +5,8 @@ import { Eye, Pencil, Save, X } from "lucide-react"
 import * as React from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import rehypeHighlight from "rehype-highlight"
+import rehypeRaw from "rehype-raw"
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
@@ -262,6 +264,11 @@ export function FileViewer({
     return () => document.removeEventListener("keydown", onKey)
   }, [binary, save, requestClose])
 
+  // Rebuilt only when the file or its host moves: a new components object on
+  // every render would remount the entire preview tree (and every mermaid
+  // diagram in it) on each keystroke in the raw editor.
+  const mdComps = React.useMemo(() => mdComponents(path, host), [path, host])
+
   // The binary preview URL, with a cache-bust suffix once the file has changed
   // on disk so the browser refetches instead of reusing the cached bytes.
   const mediaURL = bust
@@ -354,8 +361,12 @@ export function FileViewer({
           <div className="md-body">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              components={MD_COMPONENTS}
+              rehypePlugins={[
+                rehypeRaw,
+                [rehypeSanitize, MD_SCHEMA],
+                rehypeHighlight,
+              ]}
+              components={mdComps}
             >
               {draft}
             </ReactMarkdown>
@@ -386,12 +397,67 @@ function hastText(nodes: ElementContent[] | undefined): string {
   return out
 }
 
+// A README is mostly HTML in practice -- <div align="center">, <img width=…>,
+// <picture> for theme-aware art -- and react-markdown drops raw HTML unless
+// rehype-raw puts it back. That means rendering markup out of whatever file the
+// user opened, so sanitizing is not optional: this origin holds /api/file (read
+// AND write, on any host lasso can drive) and an open /mcp, so one <script> in
+// someone's README would be running with all of it.
+//
+// Order matters. rehype-raw first (parse the HTML), sanitize second (drop
+// anything dangerous), rehype-highlight LAST -- highlighting after the
+// sanitizer means its <span class=hljs-*> survive instead of being stripped.
+const MD_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    // Sizing and alignment are the whole reason a README reaches for HTML.
+    img: [...(defaultSchema.attributes?.img ?? []), "width", "height", "loading"],
+    div: [...(defaultSchema.attributes?.div ?? []), "align"],
+    p: [...(defaultSchema.attributes?.p ?? []), "align"],
+    h1: [...(defaultSchema.attributes?.h1 ?? []), "align"],
+    h2: [...(defaultSchema.attributes?.h2 ?? []), "align"],
+    table: [...(defaultSchema.attributes?.table ?? []), "align"],
+  },
+  tagNames: [...(defaultSchema.tagNames ?? []), "picture", "source"],
+}
+
+// Resolve a markdown image against the FILE, not the browser.
+//
+// `docs/screenshots/diff.png` in a README is relative to that README's
+// directory on that README's machine. Left alone the browser resolves it
+// against lasso's own origin and asks the app for /docs/screenshots/diff.png,
+// which is a 404 and renders as a broken image -- so every relative image in
+// every repo silently failed to load. Route it through /api/file on the file's
+// own host instead, the same way the binary preview already does.
+function resolveMarkdownSrc(
+  src: string | undefined,
+  filePath: string,
+  host: string | null
+): string | undefined {
+  if (!src) return src
+  // Absolute URLs and inline data stay exactly as written.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//")) return src
+  const dir = filePath.slice(0, filePath.lastIndexOf("/")) || "/"
+  const joined = src.startsWith("/") ? src : `${dir}/${src}`
+  // Collapse . and .. so ../assets/x.png from a nested doc lands correctly;
+  // the backend takes an absolute path and does not resolve traversal for us.
+  const parts: string[] = []
+  for (const seg of joined.split("/")) {
+    if (!seg || seg === ".") continue
+    if (seg === "..") parts.pop()
+    else parts.push(seg)
+  }
+  return api.fileURL(`/${parts.join("/")}`, host ?? undefined)
+}
+
 // The only markdown component override: a ```mermaid fence renders as a diagram,
 // every other fence falls through to the untouched <pre> that rehype-highlight
 // produced. We hook <pre> rather than <code> so the diagram replaces the whole
 // block (a <div>/<svg> inside a <pre> is invalid nesting, and the code panel's
 // background would frame the diagram).
-const MD_COMPONENTS = {
+function mdComponents(path: string, host: string | null) {
+  return {
   pre({ node, children, ...rest }) {
     const code = node?.children?.[0]
     if (code?.type === "element" && code.tagName === "code") {
@@ -402,7 +468,25 @@ const MD_COMPONENTS = {
     }
     return <pre {...rest}>{children}</pre>
   },
-} satisfies Components
+  // Covers both ![](x) and a raw <img> from rehype-raw: react-markdown routes
+  // the reconstructed HTML through this same components map.
+  img({ node, src, alt, ...rest }) {
+    return (
+      <img
+        {...rest}
+        // An <img> in a README often carries no alt; empty marks it decorative
+        // rather than leaving assistive tech to read out the file name.
+        alt={alt ?? ""}
+        src={resolveMarkdownSrc(
+          typeof src === "string" ? src : undefined,
+          path,
+          host
+        )}
+      />
+    )
+  },
+  } satisfies Components
+}
 
 // The resolved light/dark chrome, read off the html class that lib/mode.ts owns
 // (the single chokepoint for the OS-, user- and herdr-driven answers alike) and
