@@ -5,24 +5,25 @@
 **herdr in a browser tab — your whole fleet of coding agents on one screen,
 from your desk or your phone.**
 
-[Install](#install) · [The tour](#the-tour) · [MCP](#mcp-agents-driving-agents) · [On your phone](#on-a-phone) · [Exposing it](#exposing-it)
+[Install](#install) · [The tour](#the-tour) · [MCP](#mcp-agents-driving-agents) · [Exposing it](#exposing-it)
 
 </div>
 
----
+<img src="docs/screenshots/hero.png" alt="lasso: the herdr terminal in the middle, herdr's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
 
 [herdr](https://herdr.dev) is where your coding agents actually live. lasso is a
 single Go binary that puts it in a browser: the terminal you already know, plus
 the things a terminal can't give you — a live git diff, a real file browser and
-editor, an MCP server so agents can drive other agents, and a phone app that
-buzzes you when one of them gets stuck.
+editor, an embedded browser for the dev server, a token-budget footer, an MCP
+server so agents can drive other agents, and a phone app that buzzes you when
+one of them gets stuck.
 
 It drives **every SSH-reachable host in your fleet**, not just the box it runs
 on. One lasso, every machine, one tab each.
 
 - **Nothing to deploy.** One binary, no database, no container, no sidecar. It
   spawns its own terminals and embeds its own frontend.
-- **Your terminal, unchanged.** The left column is a real `herdr` session over
+- **Your terminal, unchanged.** The middle column is a real `herdr` session over
   `ttyd` — same keys, same theme, same panes. lasso adds around it, never in
   front of it.
 - **The sidebar follows the focused pane** — its repo, its working directory,
@@ -33,13 +34,16 @@ on. One lasso, every machine, one tab each.
 
 ## The tour
 
+The right column is five panes over the same focused pane. Each one follows
+herdr's focus, so switching agent switches all of them at once.
+
 ### Diff — what the agent in the focused pane has actually changed
 
 Working tree while it's dirty, branch-vs-base once it's clean. It re-roots
 itself as focus moves between panes and machines, so the diff is always the one
 you're looking at. Here it is on lasso's own repo, mid-redesign of this logo:
 
-<img src="docs/screenshots/diff.png" alt="the Diff tab showing lasso's own working tree" width="620">
+<img src="docs/screenshots/diff.png" alt="the Diff pane showing lasso's own working tree" width="620">
 
 ### Files — browse and edit the box the pane is working on
 
@@ -48,9 +52,40 @@ It follows the focused pane's directory until you type a path, then it stays
 put. Reads and writes go to **that pane's host**, so editing a remote agent's
 file doesn't silently save to the wrong machine.
 
-<img src="docs/screenshots/files.png" alt="the Files tab browsing a repository" width="620">
+<img src="docs/screenshots/files.png" alt="the Files pane browsing a repository" width="620">
 
-### On a phone — a terminal you can actually use with your thumbs
+### Browser — the dev server, next to the agent editing it
+
+Type a bare port (`5173`) or any URL and it frames it beside the terminal, so
+you watch the page reload as the agent works. There's no proxy behind this —
+it frames straight from your browser, which also means the browser's own rules
+apply (an HTTPS page can't frame an HTTP dev server; a public origin can't
+frame a private one). lasso detects both cases and offers to open in a new tab.
+
+<img src="docs/screenshots/browser.png" alt="the Browser pane framing a running Vite dev server" width="440">
+
+### Every machine you can SSH to
+
+The host chip in the corner lists the fleet: every alias in your ssh config
+that answers, with the herdr version it's running, collapsed into groups where
+you have several. Picking one moves **this browser tab** to that machine —
+its terminal, its panes, its files. Another tab stays where it was, so two
+tabs sit on two machines at once.
+
+A host that isn't answering says so rather than hanging the list:
+
+<img src="docs/screenshots/hosts.png" alt="the host switcher listing the fleet, one host marked timed out" width="300">
+
+### What your agents are burning
+
+The footer tracks each provider's rate-limit window — 5-hour and weekly — so
+you can see a budget running out before an agent stops mid-task. Providers you
+have no credentials for stay hidden; the rest you can order and hide in
+Settings.
+
+<img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
+
+### Your thumbs, on a real terminal
 
 A touch screen has no Esc, no Ctrl, no arrows and no right-click. They live in
 a **radial dial** — hold the ⌘ button and slide, or tap to open the ring: common
