@@ -1,31 +1,63 @@
-# lasso
+<div align="center">
 
-A web viewer for [herdr](https://herdr.dev) workspaces — a single Go binary that
-serves a two-pane UI over your tailnet: herdr's terminal alongside a live git
-diff and a file browser. It also exposes an [MCP](https://modelcontextprotocol.io)
-server at `/mcp` so an agent can spawn and drive other agents through lasso.
+<img src="docs/brand/lasso-wordmark.png" alt="lasso" width="460">
 
-## What's in it
+**herdr in a browser tab — your whole fleet of coding agents on one screen,
+from your desk or your phone.**
 
-Two resizable, collapsible columns:
+[Install](#install) · [The tour](#the-tour) · [MCP](#mcp-agents-driving-agents) · [On your phone](#on-a-phone) · [Exposing it](#exposing-it)
 
-- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
-  header row with the host switcher, the ⌘K pane search (every pane on the
-  active host — including the ones herdr-mirror streams in from other machines —
-  plus past sessions to reopen) and **New Agent**.
-- **Right** — the git **Diff** of the focused pane's repo (working tree, or the
-  branch vs. its base when clean), a **Files** browser that follows the active
-  pane's directory and opens files in a markdown/code/image viewer, a **Browser**
-  iframe that embeds a local dev-server port (`5173`) or any URL you type, a
-  plain **Terminal** shell outside herdr, and **Settings** (the lasso version
-  and whether an update is available, the herdr protocol/version with a
-  one-click `herdr update`, notifications for blocked agents, and the New-Agent
-  defaults).
+</div>
 
-The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
-(its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
-**chrome** uses lasso's own design system and follows your system light/dark
-preference.
+---
+
+[herdr](https://herdr.dev) is where your coding agents actually live. lasso is a
+single Go binary that puts it in a browser: the terminal you already know, plus
+the things a terminal can't give you — a live git diff, a real file browser and
+editor, an MCP server so agents can drive other agents, and a phone app that
+buzzes you when one of them gets stuck.
+
+It drives **every SSH-reachable host in your fleet**, not just the box it runs
+on. One lasso, every machine, one tab each.
+
+- **Nothing to deploy.** One binary, no database, no container, no sidecar. It
+  spawns its own terminals and embeds its own frontend.
+- **Your terminal, unchanged.** The left column is a real `herdr` session over
+  `ttyd` — same keys, same theme, same panes. lasso adds around it, never in
+  front of it.
+- **The sidebar follows the focused pane** — its repo, its working directory,
+  and the machine that directory is actually on, even when the pane is an SSH
+  window onto another box.
+- **Built for a phone.** Home-screen app, radial key dial, file uploads,
+  dictation, and Web Push notifications when an agent blocks on a question.
+
+## The tour
+
+### Diff — what the agent in the focused pane has actually changed
+
+Working tree while it's dirty, branch-vs-base once it's clean. It re-roots
+itself as focus moves between panes and machines, so the diff is always the one
+you're looking at. Here it is on lasso's own repo, mid-redesign of this logo:
+
+<img src="docs/screenshots/diff.png" alt="the Diff tab showing lasso's own working tree" width="620">
+
+### Files — browse and edit the box the pane is working on
+
+A real tree with a markdown/code/image viewer and an editor that saves back.
+It follows the focused pane's directory until you type a path, then it stays
+put. Reads and writes go to **that pane's host**, so editing a remote agent's
+file doesn't silently save to the wrong machine.
+
+<img src="docs/screenshots/files.png" alt="the Files tab browsing a repository" width="620">
+
+### On a phone — a terminal you can actually use with your thumbs
+
+A touch screen has no Esc, no Ctrl, no arrows and no right-click. They live in
+a **radial dial** — hold the ⌘ button and slide, or tap to open the ring: common
+keys, a plain text field so autocorrect and dictation work, file/photo upload
+straight into the agent's host, the New Agent dialog, and lasso's own panels.
+
+<img src="docs/screenshots/mobile-dial.png" alt="the radial key dial open over the terminal on a phone" width="290">
 
 ## Install
 
@@ -60,6 +92,39 @@ The binary is both the server and its own control surface:
 
 `start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
 `-insecure-no-auth`, …); `lasso serve -h` lists them.
+
+## What's in it
+
+Two resizable, collapsible columns:
+
+- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
+  header row with the host switcher, the ⌘K pane search (every pane on the
+  active host — including the ones herdr-mirror streams in from other machines —
+  plus past sessions to reopen) and **New Agent**.
+- **Right** — the git **Diff** of the focused pane's repo, a **Files** browser
+  that follows the active pane's directory and opens files in a
+  markdown/code/image viewer, a **Browser** iframe that embeds a local
+  dev-server port (`5173`) or any URL you type, a plain **Terminal** shell
+  outside herdr, and **Settings** (the lasso version and whether an update is
+  available, the herdr protocol/version with a one-click `herdr update`,
+  notifications for blocked agents, and the New-Agent defaults).
+
+The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
+(its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
+**chrome** uses lasso's own design system and follows your system light/dark
+preference.
+
+## MCP: agents driving agents
+
+lasso exposes an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
+agent can list, read, message, spawn and close **other** agents — across every
+host lasso can reach. `list_agents`, `send_agent`, `wait_agent`, `create_agent`,
+`close_agent`, `list_hosts`, `whoami`.
+
+It is **unauthenticated by default** (same trust model as the file endpoints —
+fine on loopback or a private tailnet, behind Cloudflare Access, or gated by
+setting `MCP_OAUTH`). Which agents a caller may see and address is bounded by
+per-host OAuth credentials and groups; see [`docs/mcp-agent-scope.md`](docs/mcp-agent-scope.md).
 
 ## Run from source
 
@@ -325,6 +390,21 @@ git push origin main --tags
 binaries (linux/darwin × amd64/arm64) with the tag stamped in, and publishes a
 GitHub Release with the binaries, `checksums.txt`, and `install.sh`. The tag must
 match `lassoSemver` (the workflow enforces it).
+
+## The logo
+
+The mark is a lasso in perspective — a loop, the honda knot, and the rope
+trailing off — drawn as neon so it holds its own on a phone home screen.
+Everything ships from one vector source:
+
+```bash
+mise x ubi:linebender/resvg -- ./docs/icon/build.py
+```
+
+That renders `docs/icon/lasso.svg`, the favicon/app-icon PNG set in
+`src/web/public/`, and the wordmark in `docs/brand/`. Sizes are rendered
+individually with tiered stroke weights rather than downscaled — a neon mark
+resampled to 16px averages away to a smudge.
 
 ## Dogfooding
 
