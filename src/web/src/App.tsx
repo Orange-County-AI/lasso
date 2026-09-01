@@ -36,7 +36,13 @@ import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
-import { setSidebarPct, sidebarPctNow } from "@/lib/sidebar"
+import {
+  beginSidebarDrag,
+  markSidebarIntent,
+  setSidebarPct,
+  sidebarIntentFresh,
+  sidebarPctNow,
+} from "@/lib/sidebar"
 import { openHerdrGoto } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
@@ -278,7 +284,12 @@ function Shell() {
     if (s > 5) setSidebarPct(s) // capture the true open width before hiding
     p.collapse()
   }, [])
+  // The user-driven toggle. It stamps intent, which is what makes this tab the
+  // owner of the synced sidebar layout (lib/sidebar, uilock.go) — expand and
+  // collapse themselves don't, because the SSE apply effect below calls them
+  // too and an applied change must not claim ownership back.
   const toggleSidebar = React.useCallback(() => {
+    markSidebarIntent()
     if (rightPanel.current?.isCollapsed()) expandSidebar()
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
@@ -376,7 +387,11 @@ function Shell() {
           Math.abs((cur.sidebar_pct || 0) - pct) > 1
         )
           patch.sidebar_pct = pct
-        if (Object.keys(patch).length > 0) patchUIState(patch)
+        // Whether a human in THIS tab caused the size being written. onResize
+        // fires identically for a drag, a mount and the apply of a change that
+        // arrived over SSE; only the first should take the layout lock.
+        if (Object.keys(patch).length > 0)
+          patchUIState(patch, sidebarIntentFresh())
       }, 400)
     },
     []
@@ -438,7 +453,10 @@ function Shell() {
                       type="button"
                       className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
                       title="show file viewer"
-                      onClick={expandSidebar}
+                      onClick={() => {
+                        markSidebarIntent()
+                        expandSidebar()
+                      }}
                     >
                       <ChevronLeft className="size-4" />
                     </button>
@@ -458,8 +476,14 @@ function Shell() {
             </div>
           </ResizablePanel>
 
+          {/* Dragging the handle is a human changing the layout, so it claims
+              ownership of the synced width the same way ⌘\ does. Keyboard
+              resizing goes through the separator's own key handling, hence both
+              listeners. */}
           <ResizableHandle
             withHandle
+            onPointerDown={beginSidebarDrag}
+            onKeyDown={markSidebarIntent}
             className={cn(collapsed && "hidden", "max-md:hidden")}
           />
 
@@ -529,7 +553,10 @@ function Shell() {
                       "flex items-center hover:text-primary"
                     )}
                     title="collapse sidebar"
-                    onClick={collapseSidebar}
+                    onClick={() => {
+                      markSidebarIntent()
+                      collapseSidebar()
+                    }}
                   >
                     <ChevronRight className="size-4" />
                   </button>

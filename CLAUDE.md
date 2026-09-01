@@ -64,6 +64,23 @@ It used to be one global pointer (`active.b`) that `POST /api/host` swapped, so 
 - **The `pane.list` cache is keyed by host**, each entry with its own mutex — sharing one would serve titan's panes under norm's name, and one host's herdr event would drop another's snapshot.
 - **`term_rev` is gone.** It existed to make the browser remount its iframes on a switch; a tab changing host now changes its own iframe `src`, which remounts it.
 
+## Sidebar-layout ownership (`src/uilock.go`, `src/web/src/lib/sidebar.ts`, `src/web/src/lib/ui-state.ts`)
+
+`ui_state` is merged per field and broadcast to every tab, which is right for everything a human clicks — the usage footer, the Files tab's click behavior. The sidebar layout is not that: **every tab re-persists `sidebar_collapsed`/`sidebar_pct` from its own panel group without anyone asking it to** — on mount, on a window resize, and on the programmatic apply of a change that arrived over SSE. That makes the layout a shared variable that any number of clients write on their own initiative, and one stale client is enough to reopen a sidebar the human just collapsed, indefinitely:
+
+> tab A collapses → `ui_state_rev` → tab B applies → B's panel bounces back open (its own remembered layout, its own viewport) → B persists "open" → `ui_state_rev` → A reopens.
+
+So those two fields are arbitrated by an in-memory claim instead of merged. **The most recently active client owns them.**
+
+- **`user_intent` is the whole distinction, and only the client can report it.** A panel group reports a drag and a remount through the same `onResize` callback, so the server cannot tell a change someone MADE from one a tab merely arrived at. `lib/sidebar.ts` stamps intent at the user-driven entry points (⌘\, the collapse/expand chevrons, the mobile dial, and `beginSidebarDrag` on the handle) and the debounced persist asks whether a stamp landed recently enough to be the cause. A drag re-stamps on `pointerup` — bound on `window`, since a drag routinely ends elsewhere — because a slow drag would otherwise outlive the 2s window and settle unattributed.
+- **Only two writers may move the sidebar**: a client whose human just acted (it takes the lock from whoever held it), or the current owner within `layoutLease` (45s) settling the change it just made. Everything else is refused. **A free lock is deliberately NOT a third**: an expired lease must not promote an unattended echo into an authority, because "nobody has touched a tab in a while" is exactly the state the rogue client writes in. An unheld lock just means the next human to act gets it uncontested.
+- **Arbitrated on the difference, not on the field's presence.** A client restating the layout it already agrees with is asking for nothing; answering that with a refusal would snap its panel to a value it is already rendering, on every routine echo.
+- **A refusal drops only those two fields.** The rest of the patch is that client's own deliberate change and still lands, so collapsing the usage footer from a tab that lost the sidebar claim still works.
+- **A refused write neither saves nor bumps `ui_state_rev`** (the handler skips both when the merge changes nothing), so a client losing a fight cannot make every other tab refetch on each round of it. The loser also backs off `DENY_BACKOFF_MS` (30s) before offering the layout again — its panel group will keep producing the refused size, that being what makes it rogue — and a human acting in that tab lifts the backoff immediately.
+- **The claim is in memory, never in the db.** It is a property of the clients currently connected; a restart should leave nobody holding it rather than let a client that has since gone away keep writing through a resurrected claim.
+- **`client_id` identifies the TAB** (sessionStorage, like the tab's host), because two tabs on one machine are two clients that can disagree. It is generated without `crypto.randomUUID` when that is unavailable — lasso is routinely reached over plain http on a tailnet address, which is not a secure context. **A client sending no id can never move the sidebar for anyone**: that is a tab built before this handshake, whose writes are indistinguishable from the unattended ones this exists to stop. Its own view still works; it stops syncing until reloaded.
+- **No toast on refusal.** A human's change always wins the claim, so the only writes that can ever be refused are ones nobody asked for.
+
 ## Agent visibility scope (`src/hostscope.go`, `src/callerscope.go`, `src/groups.go`, `src/mcpgroup.go`)
 
 Two bounds decide which agents an MCP caller can see and message. Both apply. A third layer, groups, widens the second.

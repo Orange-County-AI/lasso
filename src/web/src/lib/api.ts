@@ -206,6 +206,21 @@ export interface UIState {
   usage_compact: boolean
 }
 
+// What a POST /api/ui-state write sends beyond the preferences themselves: who
+// is writing, and whether a human was behind it. Both feed the server's
+// sidebar-layout claim (see uilock.go / lib/ui-state's patchUIState).
+export interface UIStateWrite extends Partial<UIState> {
+  client_id: string
+  user_intent: boolean
+}
+
+// The save response: the stored preferences, plus whether this client's write
+// to the sidebar layout was REFUSED because another client owns it. When it
+// was, the preferences in this body are the owner's — adopt them.
+export interface UIStateResponse extends UIState {
+  layout_denied?: boolean
+}
+
 export interface FileEntry {
   name: string
   dir: boolean
@@ -670,8 +685,8 @@ export const api = {
   // Patch semantics: send only the changed fields; the server merges into the
   // stored state (so stale tabs can't clobber fields they didn't touch) and
   // returns the merged whole.
-  saveUIState: (patch: Partial<UIState>) =>
-    postJSON<UIState>("/api/ui-state", patch),
+  saveUIState: (write: UIStateWrite) =>
+    postJSON<UIStateResponse>("/api/ui-state", write),
   version: () => getJSON<VersionInfo>("/api/version"),
   // Subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai),
   // rendered in the bottom UsageFooter.
