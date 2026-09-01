@@ -17,6 +17,14 @@
 [tools]
 go = "1.25.3"
 bun = "1.3.14"
+# Renders the icon set from docs/icon/lasso.svg. It has to be resvg (or a
+# browser): the glow is an feGaussianBlur, and cairosvg drops SVG filters
+# silently, which yields a flat mark that looks merely wrong rather than broken.
+"ubi:linebender/resvg" = "0.48.1"
+
+[tasks.icons]
+description = "Re-render the icon set, favicons and wordmark from the vector mark"
+run = "./docs/icon/build.py"
 
 [tasks."build:web"]
 description = "Build the React/shadcn frontend into src/web/dist (embedded by Go)"

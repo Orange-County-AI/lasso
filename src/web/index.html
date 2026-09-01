@@ -28,6 +28,11 @@
         }
       })()
     </script>
+    <!-- The SVG is the master (docs/icon/build.py renders every PNG from it).
+         Browsers that support it take it and scale the glow cleanly at any
+         DPR; the .ico and PNGs below stay for the ones that don't, and for
+         iOS, which only ever reads apple-touch-icon. -->
+    <link rel="icon" type="image/svg+xml" href="/lasso.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
