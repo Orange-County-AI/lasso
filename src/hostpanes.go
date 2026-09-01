@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -365,8 +366,36 @@ func hostAllowed(host string) bool {
 // ---------------------------------------------------------------------------
 
 // uiStateMu serializes /api/ui-state read-modify-writes so two tabs patching
-// different fields at the same instant can't drop each other's write.
+// different fields at the same instant can't drop each other's write. It also
+// guards the sidebar-layout claim (uilock.go), which is read and written inside
+// the same critical section.
 var uiStateMu sync.Mutex
+
+// uiStateWriter is the half of a POST body that is about the CLIENT rather than
+// about the preferences. It rides along in the same JSON object (the fields are
+// ignored by the merge into uiState, which has no matching tags) so a patch is
+// still one round trip.
+type uiStateWriter struct {
+	// ClientID identifies the browser TAB, not the browser or the user — two
+	// tabs on one machine are two clients that can disagree about the sidebar.
+	// Empty for a client that predates this handshake; such a writer can still
+	// take a free lock, it just can't take one from anybody.
+	ClientID string `json:"client_id"`
+	// UserIntent says a human just acted on the sidebar in this client. It is
+	// the one thing the server cannot infer: a panel group reports a drag and a
+	// remount identically.
+	UserIntent bool `json:"user_intent"`
+}
+
+// uiStateResp is the saved state plus what the caller needs to know about its
+// own write. LayoutDenied tells a refused client to stop rendering the layout
+// it optimistically applied and adopt the state in this same body — without it
+// the loser of a claim would sit on a sidebar position the server never took,
+// until the next unrelated rev bump.
+type uiStateResp struct {
+	uiState
+	LayoutDenied bool `json:"layout_denied,omitempty"`
+}
 
 func serveUIState(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -378,18 +407,30 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, us)
 	case http.MethodPost:
+		// Read the body once and decode it twice: the preferences merge onto
+		// the stored state, while the writer's identity is a separate concern
+		// riding in the same object.
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var who uiStateWriter
+		_ = json.Unmarshal(body, &who)
+
 		uiStateMu.Lock()
 		defer uiStateMu.Unlock()
 		// Patch semantics: start from the stored state and decode the request
 		// over it — only fields present in the body change, so a tab holding a
 		// stale copy can't clobber fields it didn't touch (each client sends
 		// just its patch).
-		us, err := getUIState()
+		stored, err := getUIState()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&us); err != nil {
+		us := stored
+		if err := json.Unmarshal(body, &us); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -399,6 +440,29 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if us.UsageOrder == nil {
 			us.UsageOrder = []string{}
 		}
+
+		// The sidebar layout is the one field group several clients write
+		// unprompted, so it is arbitrated rather than merged (see uilock.go).
+		// Arbitrated on the DIFFERENCE, not on the field's presence: a client
+		// restating the layout it already agrees with is asking for nothing, and
+		// answering that with a refusal would send it snapping back to a value
+		// it already holds. A refusal drops only these two fields — the rest of
+		// the patch is this client's own deliberate change and still lands.
+		moves := us.SidebarCollapsed != stored.SidebarCollapsed || us.SidebarPct != stored.SidebarPct
+		denied := false
+		if moves && !claimLayout(who.ClientID, who.UserIntent, time.Now()) {
+			us.SidebarCollapsed = stored.SidebarCollapsed
+			us.SidebarPct = stored.SidebarPct
+			denied = true
+		}
+
+		// Nothing left to write: skip the db round trip AND the rev bump. A
+		// refused client would otherwise make every other tab refetch on every
+		// echo of a fight it just lost.
+		if uiStateEqual(stored, us) {
+			writeJSON(w, uiStateResp{uiState: us, LayoutDenied: denied})
+			return
+		}
 		if err := saveUIState(us); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -407,10 +471,19 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if srvHub != nil {
 			srvHub.bumpUIStateRev()
 		}
-		writeJSON(w, us)
+		writeJSON(w, uiStateResp{uiState: us, LayoutDenied: denied})
 	default:
 		http.Error(w, "GET or POST", http.StatusMethodNotAllowed)
 	}
+}
+
+// uiStateEqual compares two pref blobs through their stored form, which is the
+// representation that actually decides whether a save changes anything (uiState
+// holds slices, so it isn't comparable).
+func uiStateEqual(a, b uiState) bool {
+	x, err1 := json.Marshal(a)
+	y, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(x) == string(y)
 }
 
 // ---------------------------------------------------------------------------
