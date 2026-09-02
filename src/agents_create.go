@@ -1203,24 +1203,97 @@ func paneInputEmpty(b Backend, paneID, agentKind string) bool {
 
 // confirmAgentTrust watches a freshly-launched agent pane for its per-directory
 // trust dialog (claude's "trust this folder" / codex's "trust the contents of
-// this directory") and accepts it — both default to "Yes" and confirm on Enter.
-// Neither agent's --dangerously-* flag bypasses this gate, so without it the
-// agent sits blocked. Polls rather than sleeping a fixed time so it survives a
-// slow setup script running before the agent; if the dir is already trusted the
-// dialog never appears and this simply times out without sending anything.
+// this directory") and accepts it. Neither agent's --dangerously-* flag bypasses
+// this gate, so without it the agent sits blocked. Polls rather than sleeping a
+// fixed time so it survives a slow setup script running before the agent; if the
+// dir is already trusted the dialog never appears and this simply times out
+// without sending anything.
+//
+// Enter alone is not enough: claude highlights "No, exit" by default when the
+// folder pre-approves tool permissions (a .claude/settings.local.json), so a
+// blind Enter quits the agent instead of launching it. We read which option the
+// caret sits on and move it onto "Yes" first.
 func confirmAgentTrust(b Backend, paneID string) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		if paneShowsTrustPrompt(b, paneID) {
-			// Enter confirms the highlighted default ("Yes").
-			_, _ = b.HerdrCall("pane.send_text", map[string]any{
-				"pane_id": paneID,
-				"text":    "\r",
-			})
+			acceptTrustPrompt(b, paneID)
 			return
 		}
 	}
+}
+
+// trustPromptNudges caps how many times we press Down looking for the "Yes"
+// option. Both dialogs are two or three items, so a few presses cover a list
+// that grew or wrapped around without hammering an unfamiliar screen.
+const trustPromptNudges = 4
+
+// acceptTrustPrompt answers a visible trust dialog. It presses Down until the
+// caret sits on the "Yes" option, then Enter. A screen it cannot read, or one
+// with no caret at all (codex, older claude), falls back to a bare Enter — the
+// behavior that worked before the default flipped. A caret that stays on "No"
+// after every nudge is left alone: pressing Enter there would exit the agent,
+// so a human gets to answer instead.
+func acceptTrustPrompt(b Backend, paneID string) {
+	for i := 0; ; i++ {
+		text, ok := paneVisibleText(b, paneID)
+		if !ok {
+			break
+		}
+		yes, found := trustPromptYesHighlighted(text)
+		if !found || yes {
+			break
+		}
+		if i >= trustPromptNudges {
+			return
+		}
+		sendPaneKey(b, paneID, "\x1b[B") // Down
+		time.Sleep(300 * time.Millisecond)
+	}
+	sendPaneKey(b, paneID, "\r")
+}
+
+// sendPaneKey types raw bytes into a pane, ignoring transport errors the way
+// the rest of this dialog handling does — a missed keystroke shows up as a
+// dialog still on screen, which the caller is already polling for.
+func sendPaneKey(b Backend, paneID, text string) {
+	_, _ = b.HerdrCall("pane.send_text", map[string]any{
+		"pane_id": paneID,
+		"text":    text,
+	})
+}
+
+// trustPromptYesHighlighted reports whether the trust dialog's selection caret
+// sits on its "Yes" option. found is false when no caret line is on screen, so
+// callers can tell "the No option is selected" from "this screen doesn't parse".
+//
+// The caret is claude's and codex's "❯"; ">" is accepted too, for terminals
+// whose font substitutes it. Option lines can be wrapped in the dialog's box
+// border, so leading border glyphs are trimmed, and a caret line only counts
+// when it names a yes/no choice — that keeps a composer's "> " prompt from
+// reading as a selection.
+func trustPromptYesHighlighted(text string) (yes bool, found bool) {
+	for _, line := range strings.Split(text, "\n") {
+		s := strings.TrimSpace(strings.TrimLeft(line, " \t\r│┃|"))
+		var rest string
+		switch {
+		case strings.HasPrefix(s, "❯"):
+			rest = strings.TrimPrefix(s, "❯")
+		case strings.HasPrefix(s, ">"):
+			rest = strings.TrimPrefix(s, ">")
+		default:
+			continue
+		}
+		low := strings.ToLower(rest)
+		switch {
+		case strings.Contains(low, "yes"):
+			return true, true
+		case strings.Contains(low, "no"):
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // paneVisibleText returns the pane's current screen (not its scrollback) as

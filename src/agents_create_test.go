@@ -382,3 +382,85 @@ func TestWorktreeDirSlug(t *testing.T) {
 		}
 	}
 }
+
+// Claude's trust dialog defaults to "No, exit" whenever the folder pre-approves
+// tool permissions, so the caret's position — not a fixed default — decides
+// whether Enter trusts the folder or quits the agent.
+func TestTrustPromptYesHighlighted(t *testing.T) {
+	cases := []struct {
+		name  string
+		text  string
+		yes   bool
+		found bool
+	}{
+		{
+			name: "claude yes default",
+			text: `Do you trust the files in this folder?
+
+  /home/dev/projects/lasso
+
+❯ 1. Yes, proceed
+  2. No, exit`,
+			yes:   true,
+			found: true,
+		},
+		{
+			name: "claude no default with pre-approval warning",
+			text: `Do you trust the files in this folder?
+
+  /home/dev/projects/lasso
+
+  This folder pre-approves 12 tool permission(s) via
+  .claude/settings.local.json. Only trust it if you wrote them.
+
+❯ No, exit
+  Yes, I trust this folder`,
+			yes:   false,
+			found: true,
+		},
+		{
+			name: "boxed option lines",
+			text: "╭──────────────────────────────╮\n" +
+				"│  ❯ No, exit                  │\n" +
+				"│    Yes, I trust this folder  │\n" +
+				"╰──────────────────────────────╯",
+			yes:   false,
+			found: true,
+		},
+		{
+			name:  "ascii caret fallback",
+			text:  "  > Yes, I trust this folder\n    No, exit",
+			yes:   true,
+			found: true,
+		},
+		{
+			name:  "codex dialog",
+			text:  "Do you trust the contents of this directory?\n\n❯ Yes, allow Codex to work here\n  No, exit",
+			yes:   true,
+			found: true,
+		},
+		{
+			name:  "no caret at all",
+			text:  "Do you trust the files in this folder?\n\n  1. Yes, proceed\n  2. No, exit",
+			found: false,
+		},
+		{
+			name:  "composer prompt is not a selection",
+			text:  "trust this folder\n\n> ",
+			found: false,
+		},
+		{
+			name:  "empty screen",
+			text:  "",
+			found: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yes, found := trustPromptYesHighlighted(tc.text)
+			if found != tc.found || yes != tc.yes {
+				t.Fatalf("got yes=%v found=%v, want yes=%v found=%v", yes, found, tc.yes, tc.found)
+			}
+		})
+	}
+}
