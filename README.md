@@ -2,40 +2,103 @@
 
 <img src="docs/brand/lasso-wordmark.png" alt="lasso" width="460">
 
-**herdr in a browser tab — your whole fleet of coding agents on one screen,
-from your desk or your phone.**
+**Run coding agents on every machine you own. Watch them from a browser tab.
+Answer them from your phone.**
 
-[Install](#install) · [The tour](#the-tour) · [MCP](#mcp-agents-driving-agents) · [Exposing it](#exposing-it)
+[Install](#install) · [The tour](#the-tour) · [On a phone](#on-a-phone) · [MCP](#mcp-agents-driving-agents) · [Exposing it](#exposing-it)
 
 </div>
 
-<img src="docs/screenshots/hero.png" alt="lasso: the herdr terminal in the middle, herdr's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
+<table align="center">
+<tr>
+<td align="center" valign="top">
+<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the herdr terminal in the middle, herdr's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
+</td>
+<td align="center" valign="top">
+<img src="docs/screenshots/mobile-dial.png" width="170" alt="lasso on a phone: the same agent, with the radial key dial open over the terminal">
+</td>
+</tr>
+<tr>
+<td align="center"><sub>Your desk: the whole fleet, the diff, the files, the budget.</sub></td>
+<td align="center"><sub>Pocket: same agent, real keys.</sub></td>
+</tr>
+</table>
 
-[herdr](https://herdr.dev) is where your coding agents actually live. lasso is a
-single Go binary that puts it in a browser: the terminal you already know, plus
-the things a terminal can't give you — a live git diff, a real file browser and
-editor, an embedded browser for the dev server, a token-budget footer, an MCP
-server so agents can drive other agents, and a phone app that buzzes you when
-one of them gets stuck.
+An agent that has been waiting forty minutes on a `y/n` you never saw is an
+agent doing nothing. lasso is a single Go binary that puts your whole fleet of
+coding agents — every SSH-reachable machine, its [herdr](https://herdr.dev)
+session, every pane — in a browser tab, and in a phone app that **buzzes when
+one of them needs you**. Approve the tool call from the couch. Read the diff
+on the train. Hand the agent a photo of the whiteboard from your camera roll.
 
-It drives **every SSH-reachable host in your fleet**, not just the box it runs
-on. One lasso, every machine, one tab each.
-
+- **Your real terminal, anywhere.** The middle column is your actual herdr
+  session over `ttyd` — same keys, same theme, same panes. lasso adds around it,
+  never in front of it.
+- **The phone is a first-class client.** Home-screen app, a radial dial for the
+  keys a touch keyboard doesn't have (Esc, Ctrl, Tab, arrows), a text field so
+  dictation and autocorrect work, and file/photo upload straight into the
+  agent's host.
+- **It tells you when an agent is stuck.** Web Push to a locked phone when an
+  agent blocks on a tool approval, a plan gate or a question — on any host —
+  and when an agent pings you on purpose with `lasso notify "safe on prod?"`.
+- **The sidebar follows the focused pane.** A live git diff, a file browser and
+  editor, and an embedded browser for the dev server, all rooted on the machine
+  that pane is actually working on — even when the pane is an SSH window onto
+  another box.
+- **Agents driving agents.** An MCP server lets one agent list, read, message,
+  spawn and close the others, across the fleet.
 - **Nothing to deploy.** One binary, no database, no container, no sidecar. It
   spawns its own terminals and embeds its own frontend.
-- **Your terminal, unchanged.** The middle column is a real `herdr` session over
-  `ttyd` — same keys, same theme, same panes. lasso adds around it, never in
-  front of it.
-- **The sidebar follows the focused pane** — its repo, its working directory,
-  and the machine that directory is actually on, even when the pane is an SSH
-  window onto another box.
-- **Built for a phone.** Home-screen app, radial key dial, file uploads,
-  dictation, and Web Push notifications when an agent blocks on a question.
+
+## Install
+
+```bash
+curl -fsSL https://short.orangecountyai.com/install-lasso | sh
+```
+
+Then:
+
+```bash
+lasso start          # run it in the background
+open http://127.0.0.1:8090
+```
+
+Run `lasso doctor` if anything looks off. To reach it from a phone you want an
+HTTPS origin — see [Exposing it](#exposing-it) and [On a phone](#on-a-phone).
 
 ## The tour
 
-The right column is five panes over the same focused pane. Each one follows
-herdr's focus, so switching agent switches all of them at once.
+Everything here follows herdr's focused pane, so switching agent switches all
+of it at once.
+
+### Your thumbs, on a real terminal
+
+A touch screen has no Esc, no Ctrl, no arrows and no right-click. They live in
+a **radial dial** (the phone up top) — hold the ⌘ button and slide, or tap to
+open the ring: common keys, a plain text field so autocorrect and dictation
+work, file/photo upload straight into the agent's host, the New Agent dialog,
+and lasso's own panels. Drag to scroll, long-press for right-click.
+
+### It tells you when an agent is stuck
+
+An agent that blocks on a tool approval or a plan gate stops until a human
+answers, and nothing else will tell you. lasso watches every reachable host in
+the background and pushes to your phone — and an agent can also ping you
+deliberately with `lasso notify "the migration drops 2 columns — safe to run on
+prod?"`. Nothing is polled at all while no device is registered. Setup is in
+[Notifications](#notifications-ios-home-screen).
+
+### Every machine you can SSH to
+
+The host chip in the corner lists the fleet: every alias in your ssh config
+that answers, with the herdr version it's running, collapsed into groups where
+you have several. Picking one moves **this browser tab** to that machine —
+its terminal, its panes, its files. Another tab stays where it was, so two
+tabs sit on two machines at once.
+
+A host that isn't answering says so rather than hanging the list:
+
+<img src="docs/screenshots/hosts.png" alt="the host switcher listing the fleet, one host marked timed out" width="300">
 
 ### Diff — what the agent in the focused pane has actually changed
 
@@ -64,18 +127,6 @@ frame a private one). lasso detects both cases and offers to open in a new tab.
 
 <img src="docs/screenshots/browser.png" alt="the Browser pane framing a running Vite dev server" width="440">
 
-### Every machine you can SSH to
-
-The host chip in the corner lists the fleet: every alias in your ssh config
-that answers, with the herdr version it's running, collapsed into groups where
-you have several. Picking one moves **this browser tab** to that machine —
-its terminal, its panes, its files. Another tab stays where it was, so two
-tabs sit on two machines at once.
-
-A host that isn't answering says so rather than hanging the list:
-
-<img src="docs/screenshots/hosts.png" alt="the host switcher listing the fleet, one host marked timed out" width="300">
-
 ### What your agents are burning
 
 The footer tracks each provider's rate-limit window — 5-hour and weekly — so
@@ -84,40 +135,6 @@ have no credentials for stay hidden; the rest you can order and hide in
 Settings.
 
 <img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
-
-### Your thumbs, on a real terminal
-
-A touch screen has no Esc, no Ctrl, no arrows and no right-click. They live in
-a **radial dial** — hold the ⌘ button and slide, or tap to open the ring: common
-keys, a plain text field so autocorrect and dictation work, file/photo upload
-straight into the agent's host, the New Agent dialog, and lasso's own panels.
-
-<img src="docs/screenshots/mobile-dial.png" alt="the radial key dial open over the terminal on a phone" width="290">
-
-### Notifications — it tells you when an agent is stuck
-
-An agent that blocks on a tool approval or a plan gate stops until a human
-answers, and nothing else will tell you. lasso watches every reachable host in
-the background and pushes to your phone — and an agent can also ping you
-deliberately with `lasso notify "safe to run this on prod?"`. Nothing is polled
-at all while no device is registered.
-
-<img src="docs/screenshots/notifications.png" alt="the notifications section of Settings, with a registered iPhone" width="620">
-
-## Install
-
-```bash
-curl -fsSL https://short.orangecountyai.com/install-lasso | sh
-```
-
-Then:
-
-```bash
-lasso start          # run it in the background
-open http://127.0.0.1:8090
-```
-
-Run `lasso doctor` if anything looks off.
 
 ## Using the CLI
 
