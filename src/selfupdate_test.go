@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"testing"
 )
@@ -72,5 +74,24 @@ func TestUpdateStateFrom(t *testing.T) {
 	// A bad source path is a git error → unknown.
 	if st, _ := updateStateFrom(first, false, true, t.TempDir()); st != "unknown" {
 		t.Errorf("non-repo dir: state=%q, want unknown", st)
+	}
+}
+
+// -disable-self-update turns the whole path off: the endpoint refuses with 403
+// (never reaching systemd-run) and selfUpdateAvailable reports false so the UI
+// hides the action.
+func TestSelfUpdateDisabled(t *testing.T) {
+	prev := *disableSelfUpdate
+	*disableSelfUpdate = true
+	t.Cleanup(func() { *disableSelfUpdate = prev })
+
+	if selfUpdateAvailable() {
+		t.Errorf("selfUpdateAvailable() = true with -disable-self-update, want false")
+	}
+	r := httptest.NewRequest("POST", "https://lasso.example/api/self-update", nil)
+	w := httptest.NewRecorder()
+	serveSelfUpdate(w, r)
+	if got := w.Result().StatusCode; got != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", got)
 	}
 }

@@ -292,6 +292,36 @@ writable shell and the MCP endpoint. A loopback bind needs no `-insecure-no-auth
 Because the tunnel serves **HTTPS**, the browser runs in a secure context, so
 Files-tab downloads work (see the caveat below).
 
+### Behind Cloudflare Access (fleet boxes)
+
+On a box where Access already fronts the hostname, lasso can require the edge's
+identity itself — the same contract the workspace image's ttyd front door uses
+(`--auth-header Cf-Access-Authenticated-User-Email`):
+
+```bash
+lasso start -listen 0.0.0.0:8090 \
+  -require-access-header \
+  -access-allowed-emails you@example.com,ops@example.com \
+  -disable-self-update
+```
+
+| flag | env | effect |
+| --- | --- | --- |
+| `-require-access-header` | `LASSO_REQUIRE_ACCESS_HEADER=1` | Every request without a non-empty `Cf-Access-Authenticated-User-Email` header gets **403** — `/api/*`, `/mcp`, `/terminal/`, `/shell/`, their websocket upgrades, `/api/file*`, the OAuth endpoints and the SPA alike. Evaluated **before** UI_AUTH and the MCP OAuth check. |
+| `-access-allowed-emails` | `LASSO_ACCESS_ALLOWED_EMAILS` | Comma-separated allowlist. When set, only those identities pass (case-insensitive); when empty, any identity Access vouched for passes. |
+| `-disable-self-update` | `LASSO_DISABLE_SELF_UPDATE=1` | Turns off the in-app self-update (`git pull` + `systemctl --user restart` via `systemd-run --user`). On a fleet box an agent must not be able to move its own front door: `POST /api/self-update` returns 403 and the UI hides the action. |
+
+With `-require-access-header` set, a **non-loopback bind is allowed without
+`UI_AUTH`** — the edge identity *is* the auth — and startup logs an `access:`
+line naming which gates are live.
+
+> **Only safe behind an edge that strips client-supplied `Cf-Access-*`
+> headers.** Cloudflare does that for a hostname it protects (it drops the
+> client's copy and re-adds its own after verifying the JWT). Behind a bare port
+> or a proxy that forwards client headers verbatim, anyone can satisfy the gate
+> with `curl -H`. That's why the header is **never** trusted unless the flag is
+> set: with the flag off, nothing in lasso reads it.
+
 ### Over your tailnet
 
 Bind to your tailscale interface; only your tailnet can reach it, and WireGuard

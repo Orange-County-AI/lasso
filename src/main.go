@@ -64,8 +64,22 @@ var (
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
-	devMode     = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
-	themeName   = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	// Cloudflare Access gate (accessgate.go). Opt-in per deployment: when set,
+	// EVERY route requires a Cf-Access-Authenticated-User-Email header, and a
+	// non-loopback bind is permitted without UI_AUTH because the edge identity
+	// IS the auth. Only sound behind an edge that strips client-supplied
+	// Cf-Access-* headers.
+	requireAccessHdr = flag.Bool("require-access-header", envOn("LASSO_REQUIRE_ACCESS_HEADER"),
+		"require a Cf-Access-Authenticated-User-Email header on every request (Cloudflare Access in front); env LASSO_REQUIRE_ACCESS_HEADER=1")
+	accessEmails = flag.String("access-allowed-emails", os.Getenv("LASSO_ACCESS_ALLOWED_EMAILS"),
+		"comma-separated emails allowed through -require-access-header; empty = any Access-authenticated identity")
+	// Self-update shells `systemd-run --user` to pull+restart lasso. On a fleet
+	// box an agent must not be able to move its own front door — this turns the
+	// whole path off (endpoint refuses, UI hides the action).
+	disableSelfUpdate = flag.Bool("disable-self-update", envOn("LASSO_DISABLE_SELF_UPDATE"),
+		"disable the in-app self-update (git pull + systemctl --user restart); env LASSO_DISABLE_SELF_UPDATE=1")
+	devMode   = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
+	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the
@@ -141,8 +155,12 @@ func runServer() {
 	// before the route table is built — withMCPAuth is a no-op when it's unset.
 	oauthCfg = loadOAuthConfig()
 	logOAuthStatus()
-	if !isLoopback(*listenAddr) && !hasAuth && !*allowNoAuth {
+	// The Access header gate counts as auth for the non-loopback refusal below:
+	// a request without an edge-vouched identity never reaches a handler.
+	gate := newAccessGate(*requireAccessHdr, *accessEmails)
+	if !isLoopback(*listenAddr) && !hasAuth && !*allowNoAuth && !gate.require {
 		log.Fatalf("refusing to listen on non-loopback %q without auth — set UI_AUTH=user:pass, "+
+			"pass -require-access-header when Cloudflare Access fronts this hostname, "+
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
 	}
 
@@ -332,13 +350,13 @@ func runServer() {
 	// are meaningless behind a credential wall. Everything else — including
 	// /oauth/authorize, which is where consent is actually granted — stays
 	// behind UI_AUTH when set.
-	handler := withAuthExcept(mux, authUser, authPass, hasAuth,
+	handler := gate.wrap(withAuthExcept(mux, authUser, authPass, hasAuth,
 		"/mcp",
 		"/.well-known/oauth-protected-resource",
 		"/.well-known/oauth-authorization-server",
 		"/oauth/register",
 		"/oauth/token",
-	)
+	))
 
 	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
 	// port if the requested one is taken. Outside dev a busy port is fatal — we
@@ -409,9 +427,15 @@ func runServer() {
 		closeBackendsOnExit()
 	}()
 
+	gate.logStatus(*listenAddr, hasAuth)
+	if *disableSelfUpdate {
+		log.Printf("update:   self-update DISABLED (-disable-self-update)")
+	}
 	switch {
 	case hasAuth:
 		log.Printf("auth:     enabled (basic, user %q)", authUser)
+	case gate.require:
+		log.Printf("auth:     basic auth off — the %s gate is the only credential", accessEmailHeader)
 	case !isLoopback(*listenAddr):
 		log.Printf("auth:     DISABLED on non-loopback %s (-insecure-no-auth) — relies on the network being private", *listenAddr)
 	default:

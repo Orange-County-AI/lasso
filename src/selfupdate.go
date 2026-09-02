@@ -57,6 +57,11 @@ func selfUpdateAvailable() bool {
 	if *devMode {
 		return false
 	}
+	// Deliberately switched off for this deployment (fleet boxes: an agent must
+	// not be able to git-pull and restart its own front door).
+	if *disableSelfUpdate {
+		return false
+	}
 	src := lassoSrcDir()
 	if src == "" {
 		return false
@@ -132,6 +137,10 @@ func gitOutput(dir string, args ...string) (string, error) {
 func serveSelfUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if *disableSelfUpdate {
+		http.Error(w, "self-update is disabled on this instance (-disable-self-update)", http.StatusForbidden)
 		return
 	}
 	if !selfUpdateAvailable() {
