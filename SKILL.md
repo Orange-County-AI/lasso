@@ -1,28 +1,22 @@
 ---
 name: lasso
-description: Reach for the lasso MCP server first for ANYTHING about (a) lasso itself OR (b) inter-agent communication — messaging, coordinating, discovering, or managing other agents. Its tools (list_agents, get_agent, read_agent, send_agent, wait_agent, create_agent, close_agent, list_hosts, list_repos, list_branches, whoami, notify) are the canonical way to discover, inspect, message, and manage agents — use them before the lasso.db sqlite file, the filesystem, or generic shell tooling. Also covers acting on your own identity when you are an agent running inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your HUMAN's attention with a push notification (notify / `lasso notify`).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your human's attention with a push notification (notify / `lasso notify`).
 ---
 
 # lasso
 
-> **Start here — two separate triggers.** If a task is about **EITHER**
-> **(a) lasso itself**, **OR** **(b) inter-agent communication** — messaging,
-> coordinating, discovering, or managing other agents — the **lasso MCP server
-> is the first place to look.** These are two distinct triggers: match on
-> **"lasso"** *or* on **"inter-agent communication"** independently; you do not
-> need both.
+> **Start here for lasso itself.** Use the **lasso MCP server** to inspect
+> and manage lasso agents, hosts, repos, and branches.
 >
-> The lasso MCP tools are the canonical, purpose-built way to **discover,
-> inspect, message, and manage agents.** Reach for them **before** falling back
-> to the `lasso.db` sqlite file, the filesystem, or generic shell tooling — those
+> Reach for these purpose-built tools **before** falling back to the
+> `lasso.db` sqlite file, the filesystem, or generic shell tooling — those
 > are last resorts, not the front door.
 >
 > | Tool | What it does |
 > | ---- | ------------ |
-> | `list_agents`   | List agents (discover who else is running) |
+> | `list_agents`   | List lasso agents |
 > | `get_agent`     | Fetch one agent's record/metadata |
 > | `read_agent`    | Read an agent's terminal output / transcript |
-> | `send_agent`    | Send a message / prompt to another agent |
 > | `wait_agent`    | Block until an agent reaches a state (e.g. idle/done) |
 > | `create_agent`  | Spawn a new first-class lasso agent |
 > | `close_agent`   | Shut an agent down |
@@ -156,18 +150,15 @@ on top of it:
   `create_agent` MCP tool when the new agent should show up as a first-class
   lasso agent; use raw herdr panes only for short-lived helpers.
 
-## Discovering, messaging, and coordinating other agents
+## Inspecting and managing lasso agents
 
-Anything about **inter-agent communication** — finding other agents, reading
-what they're doing, sending them work, waiting on them, or tearing them down —
-goes through the lasso MCP tools **first**, not the `lasso.db` sqlite file, the
-filesystem, or ad-hoc shell commands:
+Use the lasso MCP tools to inspect agent state and manage agent lifecycles:
 
-- **Discover:** `list_agents` (who's running), `list_hosts` / `list_repos` /
+- **List:** `list_agents` (who's running), `list_hosts` / `list_repos` /
   `list_branches` (where they can run), `get_agent` (one agent's record).
 - **Inspect:** `read_agent` to read another agent's terminal output/transcript.
-- **Message / coordinate:** `send_agent` to hand another agent a message or
-  prompt, `wait_agent` to block until it reaches a state (e.g. idle/done).
+- **Wait for state:** `wait_agent` to block until an agent reaches a state
+  (e.g. idle/done).
 - **Manage:** `create_agent` to spawn a first-class lasso agent, `close_agent`
   to shut one down.
 
@@ -185,9 +176,9 @@ with** — not by what exists. What to expect:
   outage.
 - The `host` argument of every tool **defaults to your own host** — the one
   your credential was issued for — not to the machine lasso runs on.
-- **Direction matters.** Another agent may be able to see and message you
-  while you cannot see it (the lasso host typically sees everyone). Don't
-  infer "it can't reach me" from "I can't reach it".
+- **Direction matters.** Another caller may be able to inspect your host
+  while you cannot inspect theirs. Don't infer reciprocal access from your
+  own credential's reach.
 - A refusal like *"this credential may not address host …"* is a policy
   boundary, not a transient error. Do **not** retry, work around it via ssh,
   or read `lasso.db` to peek past it. If you genuinely need the reach, tell
