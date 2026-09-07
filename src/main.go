@@ -1434,77 +1434,16 @@ func outsideHerdrEnv() []string {
 	return out
 }
 
-// lassoHerdrProtocol is the herdr wire-protocol version this lasso build targets:
-// the protocol of the *released* herdr lasso is developed and tested against
-// (herdr 0.6.8 → protocol 12), NOT whatever the herdr source tree is mid-bumping
-// to. Bump it in lockstep when lasso adopts a newer herdr release. We target one
-// protocol exactly — no backwards compatibility — so a mismatch in either
-// direction reads as incompatible. The Settings tab compares it against the
-// protocol the installed herdr daemon actually speaks (from a socket ping) so a
-// drifted install — where terminals/RPC silently break — is visible.
+// lassoHerdrProtocol is the private client/server protocol of the released Herdr
+// this build is tested against (v0.9.0). Lasso's JSON socket calls retain their
+// shapes, but its embedded terminals launch Herdr clients, so fleet hosts must
+// still match the local release. Do not infer compatibility from the source
+// tree's protocol or from the endpoint generation alone.
 //
-// Bumped 11→12 for herdr 0.6.7. Protocol 12 first shipped in 0.6.6, which lasso
-// briefly targeted then reverted to 11 (0.6.5) over a 0.6.6 idle-CPU regression
-// (commit 29b1e2d). 0.6.7 kept protocol 12 and fixed that regression; 0.6.8 also
-// keeps protocol 12 (verified by pinging the 0.6.8 binary on an isolated socket —
-// it pongs protocol 12, capabilities.live_handoff), so adopting it is value-only:
-// the wire formats lasso uses are unchanged, no request/response handling differs.
-// Bumped 12→14 for herdr 0.7.0 (which pongs protocol 14): the wire shapes lasso
-// uses are unchanged across the bump, so adopting it is value-only (the 0.7.0
-// plugin surface), the same as the 0.6.x line.
-// Bumped 14→16 for herdr 0.7.3 (0.7.1 pongs protocol 15, 0.7.3 pongs 16 — both
-// verified by pinging the binaries on an isolated socket). The 0.7.1/0.7.2/0.7.3
-// releases only *add* to the socket API (layout.updated, session.snapshot,
-// pane.scroll_changed events, terminal-session bridge commands) and fix bugs — no
-// method lasso calls (ping, events.subscribe, foreground_cwd) changed shape, so
-// adopting 0.7.3 is value-only, the same as prior bumps.
-// Unchanged at 16 for herdr 0.7.4 (verified by pinging the 0.7.4 binary on an
-// isolated socket — it pongs protocol 16). 0.7.4 only adds sidebar row layouts,
-// popup panes, and copy-mode search, and its socket-API additions (pane/workspace
-// metadata reporting) don't touch the methods lasso calls, so adopting it needs
-// no constant change — only the pins below track the release.
-// Bumped 16→17 for herdr 0.7.5 (verified by pinging the 0.7.5 binary on an
-// isolated socket — it pongs protocol 17, session_snapshot works). 0.7.5 only
-// *adds* to the socket API (the live-agent CLI facade start/prompt/send-keys,
-// declarative agent.view.set/clear queries, plugin [[startup]] hooks) and its
-// breaking change is plugin-registry scoping, not the wire — no method lasso
-// calls (ping, events.subscribe, foreground_cwd, terminal input/resize/scroll/
-// release) changed shape, so adopting it is value-only, the same as prior bumps.
-// Bumped 17→19 for herdr 0.8.0 (verified by pinging the 0.8.0 binary on an
-// isolated socket — it pongs protocol 19, capabilities.live_handoff, and
-// session.snapshot / pane.list / workspace.list / agent.list / events.subscribe
-// all answer in their existing shapes). 18 was skipped because no herdr release
-// ever carried it: both 17→18 ("preserve kitty printable key releases",
-// e7fc85bf) and 18→19 ("preserve native key lifecycle across routing", #2142,
-// b76adc15) landed between the 0.7.5 and 0.8.0 tags, and both bump the *TUI
-// client↔server* bincode input envelope (ClientInputEvent gains repeat_count /
-// generated_text / source, plus a TextCommit variant) — a surface lasso does
-// not speak. On the JSON socket API lasso does speak, 0.8.0 is purely additive:
-// a new workspace.move_block method, a new workspace.reordered event, two new
-// integration targets, and pane.read's long-existing `truncated` field now
-// actually being set true when rows are dropped (it was hardcoded false before,
-// and lasso doesn't read it). No method lasso calls changed shape, so adopting
-// it is value-only, the same as prior bumps.
-// Bumped 19→20 for herdr 0.8.2 (protocol 20 first ships in the v0.8.2 tag; there
-// is no v0.8.1). Same shape of change as 17→18/18→19: the bump commit is
-// "fix: forward pane terminal bells" (#2498, 6f311498), which adds a
-// ServerMessage::TerminalBell{count} variant to the *TUI client↔server* bincode
-// envelope — a surface lasso does not speak — and herdr's own changelog names
-// exactly that reason ("Bumped the client/server protocol version to 20 for pane
-// terminal bell forwarding"). On the JSON socket API lasso does speak, v0.8.0 →
-// v0.8.2 is purely additive: 143 lines added and 3 changed in
-// docs/next/api/herdr-api.schema.json, and all three changed lines are additions
-// (the schema's own `protocol` number, `bgra` joining the image-format enum, and
-// `pane_visible` joining pane_graphics_info's required set — a kitty-graphics
-// event lasso doesn't consume).
-//
-// Verified against a RELEASE-provisioned 0.8.2 (a workspace box, not this
-// machine's locally patched build): ping pongs protocol 20 with
-// capabilities.live_handoff + detached_server_daemon, and every method lasso
-// calls answers in its existing shape — pane.list, pane.get, pane.read
-// {pane_id,source}, workspace.list, tab.list, agent.list, and events.subscribe
-// with lasso's own 13-subscription payload (-> subscription_started).
-const lassoHerdrProtocol = 20
+// Verified on an isolated v0.9.0 release server: ping reports protocol 22;
+// workspace.create/list, tab.list, pane.list/get/read/process_info, agent.list,
+// and Lasso's lifecycle subscription payload retain their response shapes.
+const lassoHerdrProtocol = 22
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso
 // build targets, the protocol the installed herdr daemon reports over its socket,
