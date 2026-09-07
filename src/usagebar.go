@@ -9,10 +9,15 @@ import (
 	"time"
 )
 
-// Luvus Bar limits: 16 segments and 256 display columns per widget; a bottom
-// widget realistically gets far less. Both layouts fit one provider per pair of
-// segments and rely on Luvus's own compaction for narrow clients.
+// Luvus Bar limits: 16 segments and 256 display columns per widget. Every
+// provider costs one name segment plus one per limit (and a separator), so the
+// four providers with two limits each fit exactly; a fifth would overflow and is
+// dropped rather than rendered half-way.
 const usageBarMaxSegments = 16
+
+// usageBarWidth is the glyph count of the drawn bar. Six cells at the bottom of
+// the screen read at a glance; the percentage beside it carries the precision.
+const usageBarWidth = 6
 
 type barSegment struct {
 	Type string `json:"type"`
@@ -20,34 +25,71 @@ type barSegment struct {
 	Tone string `json:"tone,omitempty"`
 }
 
+// usageBarOptions is what the module's settings control: which providers are
+// shown, in what order, and how compactly.
+type usageBarOptions struct {
+	Compact bool
+	// Order lists provider names to show, in display order. Nil means every
+	// provider in the payload's order.
+	Order []string
+}
+
 // usageBarSegments renders the aggregated usage payload as Luvus Bar segments.
-// Full: "Claude 42% · 5h 18m"; compact: "Cl 42%". The worst limit per provider
-// is what is shown: the quota you hit first is the one worth reading.
-func usageBarSegments(p usagePayload, compact bool, now time.Time) []barSegment {
+//
+// Full: `Claude 5h ▰▰▱▱▱▱ 23%  7d ▰▰▱▱▱▱ 22%▲ ↻3h`. Compact: `Cl 23% 22%▲`.
+// Every limit is shown, not just the worst, because the two windows fail
+// differently: the 5-hour block is what stops an agent mid-task, the weekly one
+// is what stops tomorrow. ▲ marks a limit whose usage is ahead of the elapsed
+// share of its window — the pace notch of the old footer, in one glyph — and
+// carries the warning tone; an exhausted limit is an error.
+//
+// Luvus 0.13.4 rejects its documented `progress` segment (its `value` field is
+// deserialized as the click payload string), so the bar is drawn with block
+// glyphs in a text segment. Revisit when a release accepts the typed shape.
+func usageBarSegments(p usagePayload, opts usageBarOptions, now time.Time) []barSegment {
 	var out []barSegment
-	for _, prov := range p.Providers {
-		limit, ok := worstLimit(prov)
-		if !ok {
+	for _, prov := range orderedProviders(p.Providers, opts.Order) {
+		if len(prov.Limits) == 0 {
 			continue
+		}
+		need := 1 + len(prov.Limits)
+		if len(out) > 0 {
+			need++
+		}
+		if len(out)+need > usageBarMaxSegments {
+			break
 		}
 		if len(out) > 0 {
 			out = append(out, barSegment{Type: "separator"})
 		}
 		name := prov.Name
-		if compact {
+		if opts.Compact {
 			name = compactProviderName(name)
 		}
 		out = append(out, barSegment{Type: "text", Text: name + " ", Tone: "muted"})
-		value := fmt.Sprintf("%d%%", limit.Percent)
-		if !compact {
-			value += " " + shortLimitLabel(limit.Label)
-			if reset := resetHint(limit, now); reset != "" {
-				value += " " + reset
+		for i, l := range prov.Limits {
+			var b strings.Builder
+			if !opts.Compact {
+				if i > 0 {
+					b.WriteString(" ")
+				}
+				b.WriteString(shortLimitLabel(l.Label))
+				b.WriteString(" ")
+				b.WriteString(drawBar(l.Percent))
+				b.WriteString(" ")
+			} else if i > 0 {
+				b.WriteString(" ")
 			}
-		}
-		out = append(out, barSegment{Type: "text", Text: value, Tone: usageTone(limit)})
-		if len(out) >= usageBarMaxSegments-2 {
-			break
+			fmt.Fprintf(&b, "%d%%", l.Percent)
+			if aheadOfPace(l) {
+				b.WriteString("▲")
+			}
+			if !opts.Compact {
+				if reset := resetHint(l, now); reset != "" {
+					b.WriteString(" " + reset)
+				}
+			}
+			out = append(out, barSegment{Type: "text", Text: b.String(), Tone: usageTone(l)})
 		}
 	}
 	if len(out) == 0 {
@@ -56,24 +98,48 @@ func usageBarSegments(p usagePayload, compact bool, now time.Time) []barSegment 
 	return out
 }
 
-func worstLimit(p usageProvider) (usageLimit, bool) {
-	var best usageLimit
-	found := false
-	for _, l := range p.Limits {
-		if !found || l.Percent > best.Percent {
-			best, found = l, true
+// orderedProviders applies the module's provider allow-list and order. A nil
+// order shows everything; providers named but absent from the payload (no
+// credentials) are simply skipped.
+func orderedProviders(all []usageProvider, order []string) []usageProvider {
+	if order == nil {
+		return all
+	}
+	byName := make(map[string]usageProvider, len(all))
+	for _, p := range all {
+		byName[p.Name] = p
+	}
+	out := make([]usageProvider, 0, len(order))
+	for _, name := range order {
+		if p, ok := byName[name]; ok {
+			out = append(out, p)
 		}
 	}
-	return best, found
+	return out
 }
 
-// usageTone compares usage against the elapsed share of the window: ahead of
-// the clock is a warning, exhausted is an error.
+func drawBar(percent int) string {
+	filled := (percent*usageBarWidth + 50) / 100
+	if filled > usageBarWidth {
+		filled = usageBarWidth
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", usageBarWidth-filled)
+}
+
+// aheadOfPace reports whether usage has outrun the clock: past the share of the
+// window that has elapsed, so the quota will be hit before it resets.
+func aheadOfPace(l usageLimit) bool {
+	return l.ElapsedPct >= 0 && l.Percent > l.ElapsedPct
+}
+
 func usageTone(l usageLimit) string {
 	switch {
 	case l.Percent >= 100:
 		return "error"
-	case l.Percent >= 90 || (l.ElapsedPct >= 0 && l.Percent > l.ElapsedPct+15):
+	case l.Percent >= 90 || aheadOfPace(l):
 		return "warning"
 	default:
 		return "success"
@@ -97,24 +163,32 @@ func compactProviderName(name string) string {
 	return name
 }
 
-// shortLimitLabel keeps provider labels to the window ("5h", "week") since the
-// provider name already occupies its own segment.
+// shortLimitLabel reduces a provider's window label to the window itself.
 func shortLimitLabel(label string) string {
-	label = strings.ToLower(strings.TrimSpace(label))
+	lower := strings.ToLower(strings.TrimSpace(label))
+	// "5h Limit" / "30m Limit" (Kimi, Z.ai): the duration is the whole label.
+	if i := strings.IndexAny(lower, "hm"); i > 0 && i+1 < len(lower) && lower[i+1] == ' ' {
+		if _, err := fmt.Sscanf(lower[:i], "%d", new(int)); err == nil {
+			return lower[:i+1]
+		}
+	}
 	switch {
-	case strings.Contains(label, "week"), strings.Contains(label, "7-day"):
-		return "wk"
-	case strings.Contains(label, "month"):
+	case strings.HasSuffix(lower, " weekly") && !strings.HasPrefix(lower, "weekly"):
+		// A model-scoped weekly window ("Fable Weekly"): the model is the label.
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(label), " Weekly"))
+	case strings.Contains(lower, "week"), strings.Contains(lower, "7-day"):
+		return "7d"
+	case strings.Contains(lower, "month"):
 		return "mo"
-	case strings.Contains(label, "hour"):
+	case strings.Contains(lower, "hour"):
 		return "5h"
-	case strings.Contains(label, "day"):
+	case strings.Contains(lower, "day"):
 		return "day"
 	}
-	if len(label) > 6 {
-		return label[:6]
+	if len(lower) > 6 {
+		return lower[:6]
 	}
-	return label
+	return lower
 }
 
 func resetHint(l usageLimit, now time.Time) string {
@@ -139,23 +213,48 @@ func resetHint(l usageLimit, now time.Time) string {
 	}
 }
 
-// cliUsageBar prints Luvus Bar content JSON for the usage-bar module. It runs
-// the same provider fetchers as the server did, sharing the on-disk last-good
-// cache, so the module works whether or not a lasso server is up.
+// cliUsageBar prints `{"content":[…],"compact_content":[…]}` for the usage-bar
+// module: the full form and the form Luvus falls back to when the row is too
+// narrow — without a compact form Luvus hides the whole widget behind "… +N".
+// It runs the same provider fetchers the footer did, sharing the on-disk
+// last-good cache, so the widget works whether or not a lasso server is up.
+//
+//	lasso usage-bar [-compact] [-providers "Claude Code,Codex"]
+//
+// -compact makes the full form compact too (the module's setting). -providers
+// is the visible-provider list in display order, assembled by the module script
+// from its per-provider settings.
 func cliUsageBar(args []string) {
-	compact := false
-	for _, a := range args {
-		switch a {
+	opts := usageBarOptions{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "-compact", "--compact":
-			compact = true
+			opts.Compact = true
+		case "-providers", "--providers":
+			i++
+			if i >= len(args) {
+				fatal("usage-bar: -providers needs a comma-separated list")
+			}
+			opts.Order = []string{}
+			for _, n := range strings.Split(args[i], ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					opts.Order = append(opts.Order, n)
+				}
+			}
 		default:
-			fatal("usage-bar: unknown argument " + a)
+			fatal("usage-bar: unknown argument " + args[i])
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	payload := collectUsage(ctx)
-	out, err := json.Marshal(usageBarSegments(payload, compact, time.Now()))
+	now := time.Now()
+	compact := opts
+	compact.Compact = true
+	out, err := json.Marshal(struct {
+		Content        []barSegment `json:"content"`
+		CompactContent []barSegment `json:"compact_content"`
+	}{usageBarSegments(payload, opts, now), usageBarSegments(payload, compact, now)})
 	if err != nil {
 		fatal("usage-bar: " + err.Error())
 	}

@@ -30,6 +30,37 @@ type = "bool"
 default = false
 
 [[settings]]
+key = "order"
+title = "Provider order"
+type = "enum"
+options = ["claude,kimi,codex,zai", "codex,claude,kimi,zai", "kimi,claude,codex,zai", "zai,claude,kimi,codex"]
+default = "claude,kimi,codex,zai"
+
+[[settings]]
+key = "show-claude"
+title = "Show Claude Code"
+type = "bool"
+default = true
+
+[[settings]]
+key = "show-kimi"
+title = "Show Kimi Code"
+type = "bool"
+default = true
+
+[[settings]]
+key = "show-codex"
+title = "Show Codex"
+type = "bool"
+default = true
+
+[[settings]]
+key = "show-zai"
+title = "Show Z.ai"
+type = "bool"
+default = true
+
+[[settings]]
 key = "lasso-bin"
 title = "lasso binary (blank = PATH)"
 type = "string"

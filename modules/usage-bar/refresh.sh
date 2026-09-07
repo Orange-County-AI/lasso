@@ -13,14 +13,30 @@ if [ -z "$lasso" ]; then
   exit 1
 fi
 
-compact_flag=""
-if [ "${LUVUS_SETTING_COMPACT:-false}" = "true" ]; then
-  compact_flag="-compact"
-fi
+# Settings → CLI flags. The order enum uses short keys; the visible-provider
+# list hands lasso the provider names it reports, in that order.
+providers=""
+for key in $(printf '%s' "${LUVUS_SETTING_ORDER:-claude,kimi,codex,zai}" | tr ',' ' '); do
+  case "$key" in
+    claude) shown="${LUVUS_SETTING_SHOW_CLAUDE:-true}"; name="Claude Code" ;;
+    kimi)   shown="${LUVUS_SETTING_SHOW_KIMI:-true}";   name="Kimi Code" ;;
+    codex)  shown="${LUVUS_SETTING_SHOW_CODEX:-true}";  name="Codex" ;;
+    zai)    shown="${LUVUS_SETTING_SHOW_ZAI:-true}";    name="Z.ai" ;;
+    *) continue ;;
+  esac
+  if [ "$shown" = "true" ]; then providers="${providers:+$providers,}$name"; fi
+done
 
-if ! content="$("$lasso" usage-bar $compact_flag)"; then
+set -- -providers "$providers"
+if [ "${LUVUS_SETTING_COMPACT:-false}" = "true" ]; then set -- "$@" -compact; fi
+
+if ! out="$("$lasso" usage-bar "$@")"; then
   "$luvus" bar push --id usage --content \
     '[{"type":"text","text":"usage: lasso 3.0+ required","tone":"warning"}]'
   exit 1
 fi
-"$luvus" bar push --id usage --content "$content"
+# Split the two arrays without jq: lasso emits exactly
+# {"content":[…],"compact_content":[…]}.
+content="${out#*\"content\":}"; content="${content%%,\"compact_content\":*}"
+compact="${out#*\"compact_content\":}"; compact="${compact%\}}"
+"$luvus" bar push --id usage --content "$content" --compact-content "$compact"
