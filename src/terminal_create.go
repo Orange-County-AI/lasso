@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -47,6 +48,29 @@ type terminalWorkspace struct {
 	Number      int    `json:"number"`
 	TabCount    int    `json:"tab_count"`
 	Focused     bool   `json:"focused"`
+	// NextTabName is the default name for a tab created here: the smallest
+	// positive integer no existing tab in this workspace is already named.
+	// Luvus leaves new tabs unnamed, so the monotonic "1, 2, 3" a user expects
+	// has to be produced by lasso from the names that are actually in use.
+	NextTabName string `json:"next_tab_name"`
+}
+
+// nextTabName picks the smallest positive integer not among names. Only names
+// that are exactly a positive integer count; a tab someone renamed to "logs" or
+// "3b" neither reserves nor unlocks a number.
+func nextTabName(names []string) string {
+	used := make(map[int]bool, len(names))
+	for _, name := range names {
+		n, err := strconv.Atoi(strings.TrimSpace(name))
+		if err == nil && n > 0 {
+			used[n] = true
+		}
+	}
+	next := 1
+	for used[next] {
+		next++
+	}
+	return strconv.Itoa(next)
 }
 
 // GET /api/workspaces lists the live workspaces on one host for the new
@@ -80,15 +104,31 @@ func serveWorkspaces(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("workspace.list response: %v", err), http.StatusBadGateway)
 		return
 	}
+	// One snapshot answers the tab names of every workspace; tab.list only
+	// covers the focused one.
+	tabNames := map[string]map[string]string{} // workspace id -> tab id -> name
+	if panes, err := runtimePanes(b); err == nil {
+		for _, p := range panes {
+			if tabNames[p.WorkspaceID] == nil {
+				tabNames[p.WorkspaceID] = map[string]string{}
+			}
+			tabNames[p.WorkspaceID][p.TabID] = p.TabLabel
+		}
+	}
 	out := make([]terminalWorkspace, 0, len(payload.Workspaces))
 	for _, ws := range payload.Workspaces {
 		n, _ := ws.Workspace.Int64()
+		names := make([]string, 0, len(tabNames[ws.WorkspaceID]))
+		for _, name := range tabNames[ws.WorkspaceID] {
+			names = append(names, name)
+		}
 		out = append(out, terminalWorkspace{
 			WorkspaceID: ws.WorkspaceID,
 			Label:       ws.Name,
 			Number:      int(n),
 			TabCount:    ws.Tabs,
 			Focused:     ws.Active,
+			NextTabName: nextTabName(names),
 		})
 	}
 	writeJSON(w, map[string]any{"workspaces": out})

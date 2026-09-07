@@ -122,6 +122,9 @@ export interface Workspace {
   number: number
   tab_count: number
   focused: boolean
+  // Default name for a new tab here: the smallest positive integer not
+  // already used as a tab name in this workspace (server-computed).
+  next_tab_name: string
 }
 
 // One Luvus pane on a specific host, enriched with workspace/tab labels and

@@ -107,7 +107,7 @@ export function NewTerminalForm({
     if (!open || !workspace || tabNameTouchedRef.current) return
     const selected = workspaces.find((item) => item.workspace_id === workspace)
     setTabName(
-      workspace === NEW_WORKSPACE ? "1" : String((selected?.tab_count ?? 0) + 1)
+      workspace === NEW_WORKSPACE ? "1" : selected?.next_tab_name || "1"
     )
   }, [open, workspace, workspaces])
 
