@@ -1,21 +1,13 @@
 package main
 
-// Usage limits footer — surfaces subscription usage limits for Claude Code,
-// Kimi Code, Codex, and the Z.ai GLM Coding Plan, so a lasso user can see how
-// much of their short / weekly quotas they've burned without leaving the app.
+// Usage limits — subscription quotas for Claude Code, Kimi Code, Codex and the
+// Z.ai GLM Coding Plan, rendered in the Luvus Bar by the lasso.usage-bar module
+// (modules/usage-bar), which calls `lasso usage-bar` for its segments.
 //
-// This reads credentials from provider CLI files or environment variables and
-// calls the upstream usage endpoints those providers' own tools use. Tokens
-// that expire (Codex, Kimi) are refreshed proactively and written back, matching
-// clui's behaviour — a Kimi access token lives only ~15 minutes, so a polling
-// footer would break within one refresh window otherwise. Claude's token comes
-// straight from ~/.claude/.credentials.json and is used as-is; Z.ai accepts its
-// explicit API-key variables/files or a Z.ai-backed Claude Code settings.json.
-//
-// Everything is best-effort per provider: a provider that has no credentials,
-// times out, or errors simply contributes an `err` (or is omitted) rather than
-// failing the whole endpoint. Results are cached briefly so multiple browser
-// tabs polling don't multiply upstream requests.
+// Credentials come from the provider CLIs' own files or environment variables;
+// expiring tokens (Codex, Kimi) are refreshed and written back. Everything is
+// best-effort per provider, and the last good reading is persisted on disk so a
+// rate-limited provider keeps showing numbers instead of blanking.
 
 import (
 	"bytes"
@@ -68,16 +60,6 @@ type usagePayload struct {
 }
 
 var usageHTTP = &http.Client{Timeout: 12 * time.Second}
-
-// usageCache memoizes the assembled payload for a short TTL. clui polls upstream
-// every 60s; here several tabs may poll independently, so we collapse them.
-var usageCache struct {
-	mu      sync.Mutex
-	at      time.Time
-	payload usagePayload
-}
-
-const usageCacheTTL = 25 * time.Second
 
 // usageLastGood remembers the last successful reading per provider so an upstream
 // failure (a 429 rate-limit, a timeout) keeps showing the last known numbers
@@ -164,19 +146,9 @@ func saveUsageStoreLocked() {
 	_ = os.WriteFile(path, data, 0o644)
 }
 
-func serveUsage(w http.ResponseWriter, r *http.Request) {
-	usageCache.mu.Lock()
-	defer usageCache.mu.Unlock()
-	if time.Since(usageCache.at) < usageCacheTTL && usageCache.payload.UpdatedAt != "" {
-		writeJSON(w, usageCache.payload)
-		return
-	}
-
-	// Fetch every provider concurrently — one slow endpoint shouldn't serialize
-	// behind the others.
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
+// collectUsage fetches every provider concurrently and folds in the last-good
+// cache. Shared by the removed-footer's successor, the usage-bar CLI.
+func collectUsage(ctx context.Context) usagePayload {
 	fetchers := []func(context.Context) usageProvider{
 		fetchClaudeUsage,
 		fetchKimiUsage,
@@ -196,10 +168,10 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 
 	payload := usagePayload{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	usageLastGood.mu.Lock()
+	defer usageLastGood.mu.Unlock()
 	loadUsageStoreLocked()
 	changed := false
 	for _, p := range results {
-		// Drop providers with no credentials and nothing to say (empty name).
 		if p.Name == "" {
 			continue
 		}
@@ -207,8 +179,6 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 			usageLastGood.m[p.Name] = p
 			changed = true
 		} else if prev, ok := usageLastGood.m[p.Name]; ok {
-			// Live fetch failed (rate-limited, cooling down, timed out) — fall
-			// back to the last successful reading rather than an error dash.
 			p = prev
 		}
 		payload.Providers = append(payload.Providers, p)
@@ -216,11 +186,7 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		saveUsageStoreLocked()
 	}
-	usageLastGood.mu.Unlock()
-
-	usageCache.at = time.Now()
-	usageCache.payload = payload
-	writeJSON(w, payload)
+	return payload
 }
 
 // ---- small JSON helpers ------------------------------------------------------

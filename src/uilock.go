@@ -7,7 +7,7 @@ import "time"
 // several clients write UNPROMPTED.
 // ---------------------------------------------------------------------------
 //
-// The rest of ui_state (usage footer, Files click behavior) only ever changes
+// The rest of ui_state (Files click behavior) only ever changes
 // because a human clicked something, so patch-merge is enough. The sidebar
 // layout is different: every tab re-persists it from its own panel group, which
 // fires on mount, on a window resize, and on the programmatic apply of a change

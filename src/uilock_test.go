@@ -93,20 +93,20 @@ func TestRefusalDropsOnlyTheLayout(t *testing.T) {
 	t.Cleanup(releaseLayoutOwner)
 
 	postUIState(t, `{"sidebar_collapsed":true,"client_id":"A","user_intent":true}`)
-	got := postUIState(t, `{"sidebar_collapsed":false,"usage_compact":true,"client_id":"B","user_intent":false}`)
+	got := postUIState(t, `{"sidebar_collapsed":false,"files_click_navigates":false,"client_id":"B","user_intent":false}`)
 	if !got.LayoutDenied {
 		t.Fatal("B's layout write was not refused")
 	}
 	if !got.SidebarCollapsed {
 		t.Fatal("refused write moved the sidebar")
 	}
-	if !got.UsageCompact {
+	if got.FilesClickNavigates {
 		t.Fatal("refusal swallowed an unrelated preference")
 	}
 }
 
 // A patch that never mentions the sidebar is not arbitrated at all — otherwise
-// toggling the usage footer from a second tab would depend on who holds a lock
+// toggling a Files preference from a second tab would depend on who holds a lock
 // that has nothing to do with it.
 func TestNonLayoutPatchIsNotArbitrated(t *testing.T) {
 	openTestDB(t)

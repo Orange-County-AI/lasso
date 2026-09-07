@@ -416,12 +416,6 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if us.UsageHidden == nil {
-			us.UsageHidden = []string{}
-		}
-		if us.UsageOrder == nil {
-			us.UsageOrder = []string{}
-		}
 
 		// The sidebar layout is the one field group several clients write
 		// unprompted, so it is arbitrated rather than merged (see uilock.go).

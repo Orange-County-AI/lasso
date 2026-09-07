@@ -1,0 +1,35 @@
+id = "lasso.usage-bar"
+name = "Lasso usage"
+version = "3.0.0"
+min_luvus_version = "0.13.4"
+description = "Subscription usage limits for Claude Code, Kimi Code, Codex and Z.ai in the Luvus Bar."
+platforms = ["macos", "linux"]
+
+[[bars]]
+id = "usage"
+title = "Usage limits"
+region = "bottom-right"
+priority = 50
+
+[[startup]]
+command = ["sh", "refresh.sh"]
+
+[[actions]]
+id = "refresh"
+title = "Refresh usage limits"
+command = ["sh", "refresh.sh"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "refresh.sh"]
+
+[[settings]]
+key = "compact"
+title = "Compact layout"
+type = "bool"
+default = false
+
+[[settings]]
+key = "lasso-bin"
+title = "lasso binary (blank = PATH)"
+type = "string"

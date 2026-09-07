@@ -12,7 +12,7 @@ Answer them from your phone.**
 <table align="center">
 <tr>
 <td align="center" valign="top">
-<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the Luvus terminal in the middle, Luvus's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
+<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the Luvus terminal in the middle, Luvus's agent list on the left, and the Files browser on the right">
 </td>
 <td align="center" valign="top">
 <img src="docs/screenshots/mobile-dial.png" width="170" alt="lasso on a phone: the same agent, with the radial key dial open over the terminal">
@@ -128,12 +128,22 @@ frame a private one). lasso detects both cases and offers to open in a new tab.
 
 ### What your agents are burning
 
-The footer tracks each provider's rate-limit window — 5-hour and weekly — so
-you can see a budget running out before an agent stops mid-task. Providers you
-have no credentials for stay hidden; the rest you can order and hide in
-Settings.
+Usage limits live in the **Luvus Bar**, published by the `lasso.usage-bar`
+module (`modules/usage-bar`). Each provider shows its tightest window — 5-hour
+or weekly — with the reset countdown, toned green/amber/red against the clock,
+so you see a budget running out before an agent stops mid-task. Providers you
+have no credentials for are omitted.
 
-<img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
+```sh
+luvus module link ./modules/usage-bar          # once, per machine running lasso 3.x
+luvus module settings lasso.usage-bar lasso-bin "$(command -v lasso)"   # if lasso isn't on Luvus's PATH
+luvus module settings lasso.usage-bar compact true                       # short names, percentages only
+```
+
+The module refreshes on startup and whenever an agent's status changes, and
+`luvus module run lasso.usage-bar refresh` forces one. Move or hide it from
+Settings → Layout → Luvus Bar. The segments come from `lasso usage-bar`, which
+reuses the same provider credentials, token refresh, and rate-limit backoff.
 
 ## Using the CLI
 

@@ -74,6 +74,9 @@ func main() {
 		case "notify":
 			cliNotify(os.Args[2:])
 			return
+		case "usage-bar":
+			cliUsageBar(os.Args[2:])
+			return
 		case "mcp-client":
 			cliMCPClient(os.Args[2:])
 			return
@@ -113,6 +116,7 @@ usage:
   lasso doctor             check the local install
   lasso closeme            close the calling agent itself (uses $LUVUS_PANE_ID)
   lasso notify <message>   push a notification to the human running lasso
+  lasso usage-bar [-compact]  print Luvus Bar segments for the lasso.usage-bar module
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
   lasso version            print the version
