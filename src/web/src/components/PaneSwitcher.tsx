@@ -60,8 +60,8 @@ const haystack = (p: HostPane) =>
     .toLowerCase()
 
 // PaneSwitcher: lasso's command-palette over the panes of the ACTIVE host, plus
-// the sessions it has records for. ⌘K, the header's search bar and the mobile
-// dial's Search all open it; type to filter, ↑/↓ to move, Enter to open + focus
+// the sessions it has records for. ⇧⌘K and the mobile dial's Search open it;
+// type to filter, ↑/↓ to move, Enter to open + focus
 // the pane in the Luvus terminal (handing the keyboard straight to its xterm).
 //
 // It is lasso's own list rather than a route into Luvus's global fuzzy finder

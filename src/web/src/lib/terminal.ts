@@ -853,6 +853,38 @@ export function typeIntoLuvus(text: string) {
   pasteIntoTerminal("term", text)
 }
 
+// prefixBytes encodes a Luvus prefix chord ("ctrl+space", "ctrl+b", …) as the
+// bytes a real terminal would send for it, so the chord arrives on the PTY
+// exactly as a keypress does. Only ctrl+<key> forms are encodable this way;
+// anything else returns null and the caller falls back to Luvus's default.
+function prefixBytes(prefix: string): string | null {
+  const m = /^ctrl\+(space|[a-z[\\\]^_])$/i.exec(prefix.trim())
+  if (!m) return null
+  const k = m[1].toLowerCase()
+  if (k === "space") return "\x00"
+  return String.fromCharCode(k.charCodeAt(0) - 96) // ctrl+a → \x01 …
+}
+
+// openLuvusFinder opens Luvus's own search palette (prefix, then `/`) in the
+// Luvus terminal. Sent as raw input rather than synthesized keydowns, since
+// Ctrl+Space has no printable form and xterm's keydown encoder is what we'd
+// otherwise be guessing at. Focus goes to the frame first so the palette's own
+// query field receives what the user types next. Retries while xterm loads.
+export function openLuvusFinder(prefix: string, tries = 0) {
+  try {
+    const w = frameWindow("term")
+    if (w?.term && typeof w.term.input === "function") {
+      w.focus()
+      w.term.focus?.()
+      w.term.input((prefixBytes(prefix) ?? "\x00") + "/")
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
+  if (tries < 20) setTimeout(() => openLuvusFinder(prefix, tries + 1), 150)
+}
+
 // Virtual terminal keys. Mobile controls expose Esc, Ctrl+C, Tab, Shift+Tab,
 // and arrows because the software keyboard omits them; buffered input also uses
 // Enter internally for its explicit insert-and-submit action. We dispatch a

@@ -169,8 +169,9 @@ The binary is both the server and its own control surface:
 Two resizable, collapsible columns:
 
 - **Left** — the **Luvus** terminal (a `ttyd` session in an iframe), under a
-  header row with the host switcher, the ⌘K pane search (every pane on the
-  active host, plus past sessions to reopen) and **New Agent**.
+  header row with the host switcher, the ⌘K search (Luvus's own "Find
+  anything" palette; ⇧⌘K is lasso's pane palette, which also reopens past
+  sessions) and **New Agent**.
 - **Right** — the git **Diff** of the focused pane's repo, a **Files** browser
   that follows the active pane's directory and opens files in a
   markdown/code/image viewer, a **Browser** iframe that embeds a local
@@ -289,7 +290,7 @@ clean break, and it is deliberately non-destructive in both directions:
 - On the first start of this version, every agent record that still read as live
   is marked closed, because the panes it named belonged to a session lasso no
   longer speaks to. Nothing is deleted: the prompt, title and work directory stay
-  in lasso's agent history, so ⌘K with the **Active** filter off finds an old
+  in lasso's agent history, so ⇧⌘K with the **Active** filter off finds an old
   session and reopens its directory as a **new Luvus pane** (the agent itself is
   not relaunched — start it in the pane you land in).
 

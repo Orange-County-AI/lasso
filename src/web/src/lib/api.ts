@@ -656,6 +656,9 @@ export const api = {
   saveUIState: (write: UIStateWrite) =>
     postJSON<UIStateResponse>("/api/ui-state", write),
   version: () => getJSON<VersionInfo>("/api/version"),
+  // The prefix chord of the Luvus on this tab's host (e.g. "ctrl+space"), so
+  // ⌘K can open Luvus's own search palette.
+  luvusKeys: () => getJSON<{ prefix: string }>("/api/luvus-keys"),
   // Subscription usage limits, rendered in the Usage tab (the Luvus Bar widget
   // reads the same data through `lasso usage-bar`).
   usage: () => getJSON<UsagePayload>("/api/usage"),

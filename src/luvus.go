@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"sync"
 )
@@ -172,4 +173,26 @@ func runtimePanes(be Backend) ([]pane, error) {
 		}
 	}
 	return out, nil
+}
+
+// serveLuvusKeys reports the prefix chord of the Luvus the calling tab is on,
+// so the browser can open Luvus's own palette (prefix, `/`) with the same bytes
+// a keyboard would send. Falls back to Luvus's default when config.get is
+// unavailable (a files-only host, an older admin scope) rather than failing:
+// the worst case is a remapped prefix on a host we could not ask.
+func serveLuvusKeys(w http.ResponseWriter, r *http.Request) {
+	prefix := "ctrl+space"
+	if be, err := reqBackend(r, ""); err == nil {
+		if res, err := be.LuvusCall("config.get", map[string]any{}); err == nil {
+			var cfg struct {
+				Config struct {
+					Prefix string `json:"prefix"`
+				} `json:"config"`
+			}
+			if json.Unmarshal(res, &cfg) == nil && cfg.Config.Prefix != "" {
+				prefix = cfg.Config.Prefix
+			}
+		}
+	}
+	writeJSON(w, map[string]string{"prefix": prefix})
 }

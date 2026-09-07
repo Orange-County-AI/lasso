@@ -9,7 +9,8 @@ export interface Shortcut {
 }
 
 export const SHORTCUTS: Shortcut[] = [
-  { keys: "⌘K", label: "Find a pane, or reopen a closed session…" },
+  { keys: "⌘K", label: "Search Luvus (its own palette: panes, files, output)" },
+  { keys: "⇧⌘K", label: "Find a pane, or reopen a closed session…" },
   { keys: "⌘O", label: "New agent…" },
   { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘\\", label: "Toggle the sidebar" },

@@ -290,6 +290,7 @@ func runServer() {
 	mux.HandleFunc("/api/version", serveVersion)
 	mux.HandleFunc("/api/usage", serveUsage)
 	mux.HandleFunc("/api/usage-bar", serveUsageBar)
+	mux.HandleFunc("/api/luvus-keys", serveLuvusKeys)
 	mux.HandleFunc("/api/hosts", serveHosts)
 	mux.HandleFunc("/api/host", serveHostAttach)
 	mux.HandleFunc("/api/agent-config", serveAgentConfig)

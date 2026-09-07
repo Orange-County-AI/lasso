@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query"
 import {
   ChevronLeft,
   ChevronRight,
@@ -44,6 +45,7 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
+import { openLuvusFinder } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -146,17 +148,17 @@ function FitTabs({
 }
 
 // A search affordance for the header: styled like an input but it's a button
-// that fires ⌘K, i.e. lasso's own pane palette. It fills its centre slot
-// (flex-1, capped at max-w-xs) so it reads as a real search bar at every width —
-// the label just truncates when space runs out rather than collapsing to a lone
-// icon. The ⌘K hint shows once the strip has room for it (container query,
-// `/lnav`).
+// that does what ⌘K does — opens Luvus's own palette in the terminal. It fills
+// its centre slot (flex-1, capped at max-w-xs) so it reads as a real search bar
+// at every width — the label just truncates when space runs out rather than
+// collapsing to a lone icon. The ⌘K hint shows once the strip has room for it
+// (container query, `/lnav`).
 function HeaderSearch({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      title="Search panes (⌘K)"
+      title="Search Luvus (⌘K) · lasso's pane palette: ⇧⌘K"
       className="flex h-7 w-full max-w-xs items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground"
     >
       <Search className="size-3.5 shrink-0" />
@@ -220,6 +222,16 @@ function Shell() {
   const { host } = useApp()
   const hostRef = React.useRef(host)
   hostRef.current = host
+  // The Luvus prefix chord on this tab's host, for opening its native palette
+  // with the bytes a keyboard would send. Cached per host; Luvus's default
+  // until the fetch lands (a remapped prefix on a slow host opens nothing for
+  // one keypress rather than something wrong).
+  const luvusPrefix =
+    useQuery({
+      queryKey: qk.luvusKeys(host ?? ""),
+      queryFn: () => api.luvusKeys(),
+      staleTime: 5 * 60_000,
+    }).data?.prefix ?? "ctrl+space"
 
   const savedLayout = React.useMemo<Layout | undefined>(() => {
     try {
@@ -230,7 +242,7 @@ function Shell() {
     }
   }, [])
 
-  // Warm the pane list in the background on load so the first ⌘K pane-switcher
+  // Warm the pane list in the background on load so the first ⇧⌘K pane-switcher
   // search is instant instead of waiting on a fresh fetch. Shares qk.panes with
   // the switcher, so both reuse one cache — the fetch spans every host (that
   // aggregation is also what reconciles agent records server-side); the switcher
@@ -313,8 +325,8 @@ function Shell() {
       } else if (command === "host") {
         setMobileHostOpen(true)
       } else if (command === "search") {
-        // Same destination as ⌘K: lasso's own pane palette. The dial is the
-        // only way to reach it on a phone, where there is no ⌘ to press.
+        // lasso's own pane palette (⇧⌘K on desktop). The dial is the only way
+        // to reach it on a phone, where there is no ⌘ to press.
         setPaletteOpen(true)
       }
     }
@@ -323,22 +335,30 @@ function Shell() {
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
   }, [toggleSidebar])
 
-  // ⌘K → lasso's pane palette, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
-  // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
-  // never clobbers terminal control keys like Ctrl-H (backspace). The
-  // Luvus/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
-  // these work even while a terminal holds focus. (See SHORTCUTS, the reference
-  // list shown in Settings.)
+  // ⌘K → Luvus's own search palette (prefix, `/`) in the Luvus terminal; ⇧⌘K →
+  // lasso's pane palette, which also reopens closed sessions; ⌘O/⌘I → the
+  // agent/terminal tabs in the New dialog; ⌘/ → the shortcuts reference. Bound
+  // to the Cmd key only (not Ctrl) so it never clobbers terminal control keys
+  // like Ctrl-H (backspace). The Luvus/shell terminal iframes re-dispatch
+  // Cmd-shortcuts to this document, so these work even while a terminal holds
+  // focus. (See SHORTCUTS, the reference list shown in Settings.)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      if (!e.metaKey || e.ctrlKey || e.altKey) return
       const k = e.key.toLowerCase()
+      if (e.shiftKey) {
+        if (k === "k") {
+          e.preventDefault()
+          setPaletteOpen(true)
+        }
+        return
+      }
       if (k === "\\") {
         e.preventDefault()
         toggleSidebar()
       } else if (k === "k") {
         e.preventDefault()
-        setPaletteOpen(true)
+        openLuvusFinder(luvusPrefix)
       } else if (k === "o" || k === "i") {
         e.preventDefault()
         setNewTab(k === "o" ? "agent" : "terminal")
@@ -348,9 +368,9 @@ function Shell() {
         setShortcutsOpen(true)
       }
     }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
-  }, [toggleSidebar])
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [toggleSidebar, luvusPrefix])
 
   // Apply the synced sidebar layout continuously — including changes arriving
   // from other tabs over SSE — not just once at load. The sidebar's footprint
@@ -429,7 +449,7 @@ function Shell() {
             >
               <HostSwitcher variant="nav" />
               <div className="flex min-w-0 flex-1 justify-center px-2">
-                <HeaderSearch onOpen={() => setPaletteOpen(true)} />
+                <HeaderSearch onOpen={() => openLuvusFinder(luvusPrefix)} />
               </div>
               {/* New sits at the far-right of the row; when the sidebar is
                   collapsed the git status + expand control follow it. The
@@ -608,8 +628,8 @@ function Shell() {
         />
         {/* The pane palette — searches the ACTIVE host's panes (and, with its
           Active filter off, the closed sessions lasso has records for) and
-          focuses the chosen one in the Luvus terminal. Opened by ⌘K, the header
-          search bar and the mobile dial's Search. focusPaneInLuvus still pushes
+          focuses the chosen one in the Luvus terminal. Opened by ⇧⌘K and the
+          mobile dial's Search. focusPaneInLuvus still pushes
           the landing host's history entry; same-host now, so pushQueryParam
           collapses it into a replace rather than a dead Back step. */}
         <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
