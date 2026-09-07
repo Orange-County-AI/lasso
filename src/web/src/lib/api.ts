@@ -72,6 +72,39 @@ export interface HostsPayload {
   probing: boolean
 }
 
+// One usage quota window (5-hour block, weekly rolling, …). `percent` is 0–100.
+// `resetsAt` is RFC3339. `countdown` marks short windows shown as "in 18m" vs
+// a reset date. `elapsedPct` is how far through the window we are (the pace
+// notch), or -1 if the window length is unknown.
+export interface UsageLimit {
+  label: string
+  percent: number
+  resetsAt?: string
+  countdown?: boolean
+  elapsedPct: number
+}
+
+export interface UsageProvider {
+  name: string
+  plan?: string
+  limits: UsageLimit[]
+  err?: string
+}
+
+export interface UsagePayload {
+  providers: UsageProvider[]
+  updatedAt: string
+}
+
+// The lasso.usage-bar Luvus module's state on the default host: whether it is
+// linked, and its settings (compact, order, show-<provider>, lasso-bin). The
+// Usage tab edits these — the module is the one source of truth for the bar.
+export interface UsageBarModule {
+  linked: boolean
+  enabled: boolean
+  settings?: Record<string, unknown>
+}
+
 export interface Pane {
   pane_id: string
   workspace_id?: string
@@ -623,6 +656,12 @@ export const api = {
   saveUIState: (write: UIStateWrite) =>
     postJSON<UIStateResponse>("/api/ui-state", write),
   version: () => getJSON<VersionInfo>("/api/version"),
+  // Subscription usage limits, rendered in the Usage tab (the Luvus Bar widget
+  // reads the same data through `lasso usage-bar`).
+  usage: () => getJSON<UsagePayload>("/api/usage"),
+  usageBar: () => getJSON<UsageBarModule>("/api/usage-bar"),
+  setUsageBarSetting: (key: string, value: unknown) =>
+    postJSON<UsageBarModule>("/api/usage-bar", { key, value }),
 
   // List a directory. `host` (omitted = the active backend) is the host the
   // path lives on — the sidebar browses the focused pane's host, which the

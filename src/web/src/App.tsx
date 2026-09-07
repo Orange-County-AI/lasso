@@ -2,6 +2,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Files,
+  Gauge,
   Globe,
   type LucideIcon,
   NotebookPen,
@@ -21,6 +22,7 @@ import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
+import { UsageTab } from "@/components/UsageTab"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -46,7 +48,13 @@ import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type RightView = "files" | "scratch" | "browser" | "terminal" | "settings"
+type RightView =
+  | "files"
+  | "scratch"
+  | "browser"
+  | "terminal"
+  | "usage"
+  | "settings"
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -536,6 +544,7 @@ function Shell() {
                     label: "Terminal",
                     icon: SquareTerminal,
                   },
+                  { value: "usage", label: "Usage", icon: Gauge },
                   { value: "settings", label: "Settings", icon: Settings },
                 ]}
                 trailing={
@@ -577,6 +586,9 @@ function Shell() {
                     inputMode="shell"
                     hidden={rightView !== "terminal"}
                   />
+                </Pane>
+                <Pane show={rightView === "usage"}>
+                  <UsageTab active={rightView === "usage"} />
                 </Pane>
                 <Pane show={rightView === "settings"}>
                   <SettingsTab

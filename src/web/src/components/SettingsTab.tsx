@@ -1,12 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  Keyboard,
-  Monitor,
-  Moon,
-  Palette,
-  RotateCw,
-  Sun,
-} from "lucide-react"
+import { Keyboard, Monitor, Moon, Palette, RotateCw, Sun } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { Pill } from "@/components/Pill"
@@ -319,9 +312,10 @@ function AppearanceToggle() {
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Sets the UI theme. Luvus matches the active Luvus palette (light or dark,
-        whichever Luvus reports for it); System follows your OS; Light/Dark pin
-        the Nothing palette. The terminal always keeps Luvus's theme.
+        Sets the UI theme. Luvus matches the active Luvus palette (light or
+        dark, whichever Luvus reports for it); System follows your OS;
+        Light/Dark pin the Nothing palette. The terminal always keeps Luvus's
+        theme.
       </p>
     </div>
   )
@@ -663,7 +657,6 @@ function NotificationsSettings({ active }: { active: boolean }) {
     </div>
   )
 }
-
 
 // ShortcutsDialog shows the app's keyboard shortcuts (the SHORTCUTS the App key
 // handler implements) in a modal. Reference only — nothing to configure.
