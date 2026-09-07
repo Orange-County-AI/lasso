@@ -129,10 +129,13 @@ frame a private one). lasso detects both cases and offers to open in a new tab.
 ### What your agents are burning
 
 Usage limits live in the **Luvus Bar**, published by the `lasso.usage-bar`
-module (`modules/usage-bar`). Each provider shows its tightest window — 5-hour
-or weekly — with the reset countdown, toned green/amber/red against the clock,
-so you see a budget running out before an agent stops mid-task. Providers you
-have no credentials for are omitted.
+module (`modules/usage-bar`). Each provider shows a bar for its tightest window
+— 5-hour or weekly — toned green/amber/red against the clock (▲ = ahead of
+pace), so you see a budget running out before an agent stops mid-task. Reset
+countdowns and every window's figure are in the sidebar's **Usage** tab.
+Providers you have no credentials for are omitted. Luvus gives the bottom-right
+bar region about 66 columns, so on a narrow terminal the widget compacts to
+percentages only.
 
 ```sh
 luvus module link ./modules/usage-bar          # once, per machine running lasso 3.x

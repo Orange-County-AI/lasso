@@ -35,8 +35,13 @@ if ! out="$("$lasso" usage-bar "$@")"; then
     '[{"type":"text","text":"usage: lasso 3.0+ required","tone":"warning"}]'
   exit 1
 fi
-# Split the two arrays without jq: lasso emits exactly
-# {"content":[…],"compact_content":[…]}.
+# Split the three arrays without jq: lasso emits exactly
+# {"content":[…],"compact_content":[…],"glyph_content":[…]}.
 content="${out#*\"content\":}"; content="${content%%,\"compact_content\":*}"
-compact="${out#*\"compact_content\":}"; compact="${compact%\}}"
-"$luvus" bar push --id usage --content "$content" --compact-content "$compact"
+compact="${out#*\"compact_content\":}"; compact="${compact%%,\"glyph_content\":*}"
+glyph="${out#*\"glyph_content\":}"; glyph="${glyph%\}}"
+# Native `progress` bars first; a Luvus that refuses that segment (0.13.4
+# release) gets the same row drawn with block glyphs in text.
+if ! "$luvus" bar push --id usage --content "$content" --compact-content "$compact" >/dev/null 2>&1; then
+  "$luvus" bar push --id usage --content "$glyph" --compact-content "$compact"
+fi

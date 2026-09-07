@@ -9,50 +9,71 @@ import (
 	"time"
 )
 
-// Luvus Bar limits: 16 segments and 256 display columns per widget. Every
-// provider costs one name segment plus one per limit (and a separator), so the
-// four providers with two limits each fit exactly; a fifth would overflow and is
-// dropped rather than rendered half-way.
+// Luvus Bar limits: 16 segments and 256 display columns per widget (16 accepted,
+// 17 refused — probed), and the tighter region budget described on
+// usageBarSegments. Per provider the compact form costs one name segment plus
+// one per limit, the glyph form two, the native form three (name, progress,
+// figure), plus a separator between providers: four providers fit every form.
+// A fifth overflows and is dropped rather than rendered half-way.
 const usageBarMaxSegments = 16
 
-// usageBarWidth is the glyph count of the drawn bar. Six cells at the bottom of
-// the screen read at a glance; the percentage beside it carries the precision.
-const usageBarWidth = 6
+// usageBarWidth is the cell count of the drawn bar. Five cells keep four
+// providers inside the region budget; the percentage beside it carries the
+// precision.
+const usageBarWidth = 5
 
 type barSegment struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 	Tone string `json:"tone,omitempty"`
+	// progress fields. Value is numeric: Luvus 0.13.4 release deserializes it as
+	// the click-payload string and refuses the segment; the fix
+	// (luvus fix/bar-progress-segment) takes the number.
+	Value *int `json:"value,omitempty"`
+	Total int  `json:"total,omitempty"`
+	Width int  `json:"width,omitempty"`
 }
 
 // usageBarOptions is what the module's settings control: which providers are
-// shown, in what order, and how compactly.
+// shown, in what order, and how compactly — plus which bar shape to draw.
 type usageBarOptions struct {
 	Compact bool
 	// Order lists provider names to show, in display order. Nil means every
 	// provider in the payload's order.
 	Order []string
+	// Native draws Luvus `progress` segments instead of block glyphs in a text
+	// segment. Only a patched Luvus accepts them; the module script pushes
+	// this form first and falls back to the glyph form when it is refused.
+	Native bool
 }
 
 // usageBarSegments renders the aggregated usage payload as Luvus Bar segments.
 //
-// Full: `Claude 5h ▰▰▱▱▱▱ 23%  7d ▰▰▱▱▱▱ 22%▲ ↻3h`. Compact: `Cl 23% 22%▲`.
-// Every limit is shown, not just the worst, because the two windows fail
-// differently: the 5-hour block is what stops an agent mid-task, the weekly one
-// is what stops tomorrow. ▲ marks a limit whose usage is ahead of the elapsed
-// share of its window — the pace notch of the old footer, in one glyph — and
-// carries the warning tone; an exhausted limit is an error.
+// Full: `Cl ▰▰▱▱▱ 47% · Ki ▰▰▰▱▱ 51% · Cx ▱▱▱▱▱ 6%▲ · Z ▱▱▱▱▱ 1%` — each
+// provider's bar is its worst limit (the one nearer its cap is what stops
+// tomorrow); Native draws the bar as a `progress` segment instead of glyphs.
+// Compact: `Cl 47% 28% 16%▲ · Ki 0% 51%`, every limit's figure and no bar.
+// ▲ marks a limit whose usage is ahead of the elapsed share of its window and
+// carries the warning tone; an exhausted limit is an error. Reset times and
+// limit labels are the Usage tab's; there is no room for them here.
 //
-// Luvus 0.13.4 rejects its documented `progress` segment (its `value` field is
-// deserialized as the click payload string), so the bar is drawn with block
-// glyphs in a text segment. Revisit when a release accepts the typed shape.
+// Width is the constraint, not the segment count: Luvus caps the bottom-right
+// region at 100 columns (MAX_BAR_REGION_WIDTH) shared with its own runtime
+// status widget, so a widget wider than ~66 columns is shown compact on any
+// terminal. Four providers at ~14 columns each fit; the compact form is what
+// Luvus falls back to when they do not.
 func usageBarSegments(p usagePayload, opts usageBarOptions, now time.Time) []barSegment {
 	var out []barSegment
 	for _, prov := range orderedProviders(p.Providers, opts.Order) {
 		if len(prov.Limits) == 0 {
 			continue
 		}
-		need := 1 + len(prov.Limits)
+		need := 2
+		if opts.Compact {
+			need = 1 + len(prov.Limits)
+		} else if opts.Native {
+			need = 3
+		}
 		if len(out) > 0 {
 			need++
 		}
@@ -62,40 +83,50 @@ func usageBarSegments(p usagePayload, opts usageBarOptions, now time.Time) []bar
 		if len(out) > 0 {
 			out = append(out, barSegment{Type: "separator"})
 		}
-		name := prov.Name
+		out = append(out, barSegment{Type: "text", Text: compactProviderName(prov.Name) + " ", Tone: "muted"})
 		if opts.Compact {
-			name = compactProviderName(name)
-		}
-		out = append(out, barSegment{Type: "text", Text: name + " ", Tone: "muted"})
-		for i, l := range prov.Limits {
-			var b strings.Builder
-			if !opts.Compact {
+			for i, l := range prov.Limits {
+				figure := limitFigure(l)
 				if i > 0 {
-					b.WriteString(" ")
+					figure = " " + figure
 				}
-				b.WriteString(shortLimitLabel(l.Label))
-				b.WriteString(" ")
-				b.WriteString(drawBar(l.Percent))
-				b.WriteString(" ")
-			} else if i > 0 {
-				b.WriteString(" ")
+				out = append(out, barSegment{Type: "text", Text: figure, Tone: usageTone(l)})
 			}
-			fmt.Fprintf(&b, "%d%%", l.Percent)
-			if aheadOfPace(l) {
-				b.WriteString("▲")
-			}
-			if !opts.Compact {
-				if reset := resetHint(l, now); reset != "" {
-					b.WriteString(" " + reset)
-				}
-			}
-			out = append(out, barSegment{Type: "text", Text: b.String(), Tone: usageTone(l)})
+			continue
+		}
+		w := prov.Limits[worstLimit(prov.Limits)]
+		if opts.Native {
+			value := min(max(w.Percent, 0), 100)
+			out = append(out,
+				barSegment{Type: "progress", Value: &value, Total: 100, Width: usageBarWidth, Tone: usageTone(w)},
+				barSegment{Type: "text", Text: " " + limitFigure(w), Tone: usageTone(w)})
+		} else {
+			out = append(out, barSegment{Type: "text", Text: drawBar(w.Percent) + " " + limitFigure(w), Tone: usageTone(w)})
 		}
 	}
 	if len(out) == 0 {
 		return []barSegment{{Type: "text", Text: "usage: no providers", Tone: "muted"}}
 	}
 	return out
+}
+
+// worstLimit is the index of the limit nearest its cap.
+func worstLimit(limits []usageLimit) int {
+	worst := 0
+	for i, l := range limits {
+		if l.Percent > limits[worst].Percent {
+			worst = i
+		}
+	}
+	return worst
+}
+
+// limitFigure is a limit's percentage with its pace marker.
+func limitFigure(l usageLimit) string {
+	if aheadOfPace(l) {
+		return fmt.Sprintf("%d%%▲", l.Percent)
+	}
+	return fmt.Sprintf("%d%%", l.Percent)
 }
 
 // orderedProviders applies the module's provider allow-list and order. A nil
@@ -163,61 +194,14 @@ func compactProviderName(name string) string {
 	return name
 }
 
-// shortLimitLabel reduces a provider's window label to the window itself.
-func shortLimitLabel(label string) string {
-	lower := strings.ToLower(strings.TrimSpace(label))
-	// "5h Limit" / "30m Limit" (Kimi, Z.ai): the duration is the whole label.
-	if i := strings.IndexAny(lower, "hm"); i > 0 && i+1 < len(lower) && lower[i+1] == ' ' {
-		if _, err := fmt.Sscanf(lower[:i], "%d", new(int)); err == nil {
-			return lower[:i+1]
-		}
-	}
-	switch {
-	case strings.HasSuffix(lower, " weekly") && !strings.HasPrefix(lower, "weekly"):
-		// A model-scoped weekly window ("Fable Weekly"): the model is the label.
-		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(label), " Weekly"))
-	case strings.Contains(lower, "week"), strings.Contains(lower, "7-day"):
-		return "7d"
-	case strings.Contains(lower, "month"):
-		return "mo"
-	case strings.Contains(lower, "hour"):
-		return "5h"
-	case strings.Contains(lower, "day"):
-		return "day"
-	}
-	if len(lower) > 6 {
-		return lower[:6]
-	}
-	return lower
-}
-
-func resetHint(l usageLimit, now time.Time) string {
-	if l.ResetsAt == "" {
-		return ""
-	}
-	at, err := time.Parse(time.RFC3339, l.ResetsAt)
-	if err != nil {
-		return ""
-	}
-	d := at.Sub(now)
-	if d <= 0 {
-		return ""
-	}
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("↻%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("↻%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("↻%dd", int(d.Hours()/24))
-	}
-}
-
-// cliUsageBar prints `{"content":[…],"compact_content":[…]}` for the usage-bar
-// module: the full form and the form Luvus falls back to when the row is too
-// narrow — without a compact form Luvus hides the whole widget behind "… +N".
-// It runs the same provider fetchers the footer did, sharing the on-disk
-// last-good cache, so the widget works whether or not a lasso server is up.
+// cliUsageBar prints `{"content":[…],"compact_content":[…],"glyph_content":[…]}`
+// for the usage-bar module: the full form with native `progress` bars, the form
+// Luvus falls back to when the row is too narrow — without a compact form Luvus
+// hides the whole widget behind "… +N" — and the full form with block-glyph
+// bars, which the script pushes instead when the server refuses `progress`
+// (Luvus 0.13.4 release does). It runs the same provider fetchers the footer
+// did, sharing the on-disk last-good cache, so the widget works whether or not
+// a lasso server is up.
 //
 //	lasso usage-bar [-compact] [-providers "Claude Code,Codex"]
 //
@@ -251,10 +235,13 @@ func cliUsageBar(args []string) {
 	now := time.Now()
 	compact := opts
 	compact.Compact = true
+	native := opts
+	native.Native = true
 	out, err := json.Marshal(struct {
 		Content        []barSegment `json:"content"`
 		CompactContent []barSegment `json:"compact_content"`
-	}{usageBarSegments(payload, opts, now), usageBarSegments(payload, compact, now)})
+		GlyphContent   []barSegment `json:"glyph_content"`
+	}{usageBarSegments(payload, native, now), usageBarSegments(payload, compact, now), usageBarSegments(payload, opts, now)})
 	if err != nil {
 		fatal("usage-bar: " + err.Error())
 	}

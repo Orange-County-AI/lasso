@@ -117,7 +117,7 @@ cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip
 '''
 
 [tasks.dev-luvus]
-description = "Like `dev`, but the backend talks to an ISOLATED luvus release (smoke-test a Luvus version before adopting it — the prod server is never touched)"
+description = "Like `dev`, but the backend talks to an ISOLATED luvus release (smoke-test a Luvus version before adopting it — the prod server is never touched). LUVUS_BIN=/path/to/luvus runs a local build instead of a release."
 depends = ["build"]
 shell = "bash -c"
 usage = '''
@@ -151,8 +151,18 @@ unset LUVUS_ENV LUVUS_PANE_ID LUVUS_SOCKET_PATH LUVUS_API_ADDRESS LUVUS_BIN_PATH
 export LUVUS_HOME="$home/luvus-home"
 mkdir -p "$home" "$LUVUS_HOME"
 
-# Cache the binary across runs; download + verify on first use.
-if [ ! -x "$bin" ]; then
+# Cache the binary across runs; download + verify on first use. LUVUS_BIN points
+# at a local build (a fix branch's target/release/luvus) instead: it is copied
+# into its own home, keyed by the binary's hash so two builds never share state.
+if [ -n "${LUVUS_BIN:-}" ]; then
+  [ -x "$LUVUS_BIN" ] || { echo "dev-luvus: LUVUS_BIN=$LUVUS_BIN is not executable" >&2; exit 1; }
+  ver="local-$( { sha256sum "$LUVUS_BIN" 2>/dev/null || shasum -a 256 "$LUVUS_BIN"; } | cut -c1-12)"
+  home="${TMPDIR:-/tmp}/lasso-luvus-smoke/$ver"
+  bin="$home/luvus"
+  export LUVUS_HOME="$home/luvus-home"
+  mkdir -p "$home" "$LUVUS_HOME"
+  cp -f "$LUVUS_BIN" "$bin"
+elif [ ! -x "$bin" ]; then
   echo "dev-luvus: downloading luvus $ver ($asset) …"
   base="https://github.com/RizRiyz/luvus/releases/download/v$ver"
   curl -fsSL -o "$home/$asset" "$base/$asset"
