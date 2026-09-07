@@ -89,11 +89,11 @@ var agentInfoParams = map[string]agentInfoParam{
 }
 
 // agentInfoComputed are the agentInfo fields that come from somewhere other than
-// the persisted record — live herdr state or the shape's dual use for foreign
+// the persisted record — live luvus state or the shape's dual use for foreign
 // sessions. They have no AgentRecord source to be checked against, so each one
 // records where it does come from.
 var agentInfoComputed = map[string]string{
-	"SidebarName":  "herdr's workspace label, read live from the pane (and the only name a foreign session has)",
-	"Status":       "live herdr pane status, reconciled with the boot outcome by surfacedStatus",
-	"LassoCreated": "false for foreign herdr sessions lasso never created, which agentInfoFromPane builds without a record",
+	"SidebarName":  "luvus's workspace label, read live from the pane (and the only name a foreign session has)",
+	"Status":       "live luvus pane status, reconciled with the boot outcome by surfacedStatus",
+	"LassoCreated": "false for foreign luvus sessions lasso never created, which agentInfoFromPane builds without a record",
 }

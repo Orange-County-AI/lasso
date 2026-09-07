@@ -18,8 +18,8 @@ export function DiffTab({
   error,
 }: {
   repoPath: string | null
-  // The host the repo lives on — the cwd the diff describes can sit on another
-  // host than the active one (an ssh-attached pane), and the lazy per-file
+  // The host the repo lives on — the cwd the diff describes can sit on a
+  // different host than the one this tab is attached to, and the lazy per-file
   // fetches must land on the same machine as the metadata.
   host: string | null
   data: DiffPayload | null

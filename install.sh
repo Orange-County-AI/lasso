@@ -78,28 +78,28 @@ case ":${PATH}:" in
     ;;
 esac
 
-# --- herdr prerequisite ----------------------------------------------------
-# lasso is a UI over herdr, so install it automatically when missing — the whole
-# point is a frictionless one-command setup. Honors LASSO_SKIP_HERDR=1 to opt out.
-if ! command -v herdr >/dev/null 2>&1; then
-  if [ "${LASSO_SKIP_HERDR:-}" = "1" ]; then
+# --- luvus prerequisite ----------------------------------------------------
+# lasso is a UI over luvus, so install it automatically when missing — the whole
+# point is a frictionless one-command setup. Honors LASSO_SKIP_LUVUS=1 to opt out.
+if ! command -v luvus >/dev/null 2>&1; then
+  if [ "${LASSO_SKIP_LUVUS:-}" = "1" ]; then
     echo
-    echo "lasso drives herdr, which isn't installed yet. Install it with:"
-    echo "  curl -fsSL https://herdr.dev/install.sh | sh"
+    echo "lasso drives luvus, which isn't installed yet. Install it with:"
+    echo "  curl -fsSL https://luvus.dev/install.sh | sh"
   else
     echo
-    echo "lasso: herdr not found — installing it (set LASSO_SKIP_HERDR=1 to skip) …"
-    # Non-fatal: a herdr install hiccup shouldn't abort a successful lasso setup.
+    echo "lasso: luvus not found — installing it (set LASSO_SKIP_LUVUS=1 to skip) …"
+    # Non-fatal: a luvus install hiccup shouldn't abort a successful lasso setup.
     if command -v curl >/dev/null 2>&1; then
-      curl -fsSL https://herdr.dev/install.sh | sh || herdr_ok=0
+      curl -fsSL https://luvus.dev/install.sh | sh || luvus_ok=0
     elif command -v wget >/dev/null 2>&1; then
-      wget -qO- https://herdr.dev/install.sh | sh || herdr_ok=0
+      wget -qO- https://luvus.dev/install.sh | sh || luvus_ok=0
     else
-      herdr_ok=0
+      luvus_ok=0
     fi
-    if [ "${herdr_ok:-1}" = "0" ]; then
-      echo "lasso: couldn't install herdr automatically — install it with:" >&2
-      echo "  curl -fsSL https://herdr.dev/install.sh | sh" >&2
+    if [ "${luvus_ok:-1}" = "0" ]; then
+      echo "lasso: couldn't install luvus automatically — install it with:" >&2
+      echo "  curl -fsSL https://luvus.dev/install.sh | sh" >&2
     fi
   fi
 fi

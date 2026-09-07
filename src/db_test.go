@@ -35,6 +35,40 @@ func closeTestDB() {
 	}
 }
 
+func TestRuntimeCutoverRetiresOldIdentitiesOnlyOnce(t *testing.T) {
+	openTestDB(t)
+	rec := AgentRecord{ID: "history", Type: "scratch", Agent: "claude", Title: "Keep my work", WorkDir: "/work/keep", RootPane: "1", WorkspaceID: "old", CreatedAt: time.Now()}
+	if err := appendAgent("local", rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM settings WHERE key='terminal_runtime'`); err != nil {
+		t.Fatal(err)
+	}
+	closeTestDB()
+	if err := openDB(); err != nil {
+		t.Fatal(err)
+	}
+	live, err := listAllAgents()
+	if err != nil || len(live) != 0 {
+		t.Fatalf("old runtime identities remain live: %+v, %v", live, err)
+	}
+	history, err := listAllAgentsIncludingClosed()
+	if err != nil || len(history) != 1 || history[0].Agent.WorkDir != rec.WorkDir {
+		t.Fatalf("cutover discarded work history: %+v, %v", history, err)
+	}
+	if err := updateAgentPane(rec.ID, "local", "workspace_new", "2"); err != nil {
+		t.Fatal(err)
+	}
+	closeTestDB()
+	if err := openDB(); err != nil {
+		t.Fatal(err)
+	}
+	live, err = listAllAgents()
+	if err != nil || len(live) != 1 || live[0].Agent.RootPane != "2" {
+		t.Fatalf("restarting retired the reopened Luvus agent: %+v, %v", live, err)
+	}
+}
+
 func TestFreshDefaults(t *testing.T) {
 	openTestDB(t)
 	s, err := getSettings()
@@ -256,9 +290,9 @@ agents:
 	if rc.LastBaseBranch != "dev" || rc.CopyFiles != ".env" || rc.Setup != "bun install" {
 		t.Errorf("repo state not migrated: %+v", rc)
 	}
-	agents, _ := listAgents("local")
-	if len(agents) != 1 || agents[0].Title != "First" {
-		t.Errorf("agents not migrated: %+v", agents)
+	agents, err := listAllAgentsIncludingClosed()
+	if err != nil || len(agents) != 1 || agents[0].Agent.Title != "First" || agents[0].Agent.ClosedAt == "" {
+		t.Errorf("legacy agent history not migrated as closed: %+v, %v", agents, err)
 	}
 	// config.yaml is renamed to .imported so it isn't re-imported.
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(err) {

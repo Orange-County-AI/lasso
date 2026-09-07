@@ -63,7 +63,7 @@ type notification struct {
 	Tag string
 	// Host is the host the event happened on ("local" or an ssh alias), so
 	// opening the notification can land the tab on the right machine. It names
-	// no pane on purpose: herdr's focus is one global per session, shared with
+	// no pane on purpose: luvus's focus is one global per session, shared with
 	// the TUI and every other lasso client, so a link that focused a pane would
 	// move it for everyone (the same reason lib/url.ts keeps focus out of the
 	// URL).

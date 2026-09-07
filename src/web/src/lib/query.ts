@@ -37,8 +37,8 @@ export const qk = {
   // Server-level: the VAPID key + registered notification devices.
   push: ["push"] as const,
   usage: ["usage"] as const,
-  // The herdr theme picker's payload — refetched keyed on the live theme_rev
-  // so the dropdown follows external config.toml edits too.
+  // The active Luvus theme — refetched keyed on the live theme_rev so the
+  // Settings section follows a `luvus theme use` from anywhere.
   theme: (rev: number) => ["theme", rev] as const,
 }
 

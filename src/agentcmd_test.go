@@ -254,7 +254,7 @@ func TestCreateAgentDropsPlanModeForHarnessWithoutOne(t *testing.T) {
 		t.Fatalf("openDB: %v", err)
 	}
 	t.Cleanup(closeTestDB)
-	b := &createAgentBackend{memBackend: newMemBackend()}
+	b := newCreateAgentBackend()
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -401,7 +401,7 @@ func TestAgentCommandPi(t *testing.T) {
 }
 
 // Every harness id must be distinct: harnessByID resolves first-match and the
-// provisioning script installs one herdr integration per id, so a duplicate
+// provisioning script installs one luvus integration per id, so a duplicate
 // would silently shadow a harness.
 func TestHarnessIDsUnique(t *testing.T) {
 	seen := map[string]bool{}
@@ -434,7 +434,7 @@ func TestOmpModelSuggestions(t *testing.T) {
 	}
 }
 
-// The remote provisioning script installs herdr's agent-state integration for
+// The remote provisioning script installs luvus's agent-state integration for
 // every harness lasso can spawn. The list is substituted from the registry, so
 // a newly added harness can't be left screen-scraped on remote hosts.
 func TestProvisionScriptCoversEveryHarness(t *testing.T) {

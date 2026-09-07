@@ -4,14 +4,19 @@ import "runtime/debug"
 
 // lassoSemver is lasso's own version — the single source of truth, bumped by
 // hand in a commit (the `mise run bump` task edits this line). It's independent
-// of lassoHerdrProtocol (which tracks the herdr socket wire format, not lasso's
-// release). Bump it when shipping a notable change; the build commit is appended
-// automatically (see lassoVersion).
+// of the UHP protocol major lasso speaks (which tracks Luvus's harness
+// protocol, not lasso's release). Bump it when shipping a notable change; the
+// build commit is appended automatically (see lassoVersion).
+//
+// 3.0.0 is the Luvus cutover: lasso drives Luvus over the Universal Harness
+// Protocol, and the terminal-server integration that preceded it is gone
+// outright — no legacy socket, config file or env-marker fallbacks — so a lasso
+// and the machines it drives have to move together.
 //
 // A var (not const) so release builds can stamp the exact tag via
 // `-ldflags "-X main.lassoSemver=<version>"` (see .github/workflows/release.yml);
 // the committed value is the source/dev default.
-var lassoSemver = "2.12.1"
+var lassoSemver = "3.0.0"
 
 // lassoVersion is the human-facing build identity: the hand-set semver plus the
 // exact commit it was built from, e.g. "0.1.0 (dc1e696)". The semver says

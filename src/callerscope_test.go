@@ -307,17 +307,17 @@ func containedFleet(t *testing.T) *mcp.CallToolRequest {
 	t.Helper()
 	openTestDB(t)
 	if err := appendAgent("local", AgentRecord{ID: "loc1", Title: "titan agent", Type: "git",
-		RootPane: "wR:p1", WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
+		RootPane: "9", WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := appendAgent("gigachad", AgentRecord{ID: "gig1", Title: "pod agent", Type: "git",
-		RootPane: "wR:p1", WorkDir: "/w/gig1", CreatedAt: time.Now()}); err != nil {
+		RootPane: "9", WorkDir: "/w/gig1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
+	local := newCloseBackend("local", map[string]string{"9": "9"})
 	stubCloseBackends(t, map[string]Backend{
 		"local":    local,
-		"gigachad": newCloseBackend("gigachad", map[string]string{"wR:p1": "wR:p1"}),
+		"gigachad": newCloseBackend("gigachad", map[string]string{"9": "9"}),
 	})
 	stubPeers(t, nil, nil)
 	// list_hosts reports the active host, which only a running server sets.
@@ -409,10 +409,10 @@ func TestCloseAgentCannotCrossOutOfScope(t *testing.T) {
 
 // A contained caller's pane id resolves without any cross-host search, so the
 // collision that forces no-host whoami to give up cannot arise: both hosts here
-// have an agent in a pane called "wR:p1", and it still resolves.
+// have an agent in a pane called "9", and it still resolves.
 func TestWhoamiUsesTheCredentialsHost(t *testing.T) {
 	req := containedFleet(t)
-	_, out, err := whoamiTool(context.Background(), req, whoamiIn{PaneID: "wR:p1"})
+	_, out, err := whoamiTool(context.Background(), req, whoamiIn{PaneID: "9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,20 +487,20 @@ func TestCloseAgentReachesGroupMates(t *testing.T) {
 // close_agent's search would have handed it every local pane by pane id.
 func TestCloseAgentGroupCallerCannotAdoptALocalPane(t *testing.T) {
 	openTestDB(t) // no records of our own — adoption is the only way to resolve
-	local := newCloseBackend("local", map[string]string{"p_82": "w55-1"})
+	local := newCloseBackend("local", map[string]string{"55": "55"})
 	_ = local.MkdirAll("/w/peer-agent", 0o755)
 	stubCloseBackends(t, map[string]Backend{"local": local, "norm": newCloseBackend("norm", nil),
 		"norm-darren": newCloseBackend("norm-darren", nil)})
 	stubPeers(t, []string{"citadel"}, func(_, rootPane string) ([]AgentRecord, error) {
-		if rootPane != "w55-1" {
+		if rootPane != "55" {
 			return nil, nil
 		}
-		return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "w55-1",
+		return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "55",
 			WorkspaceID: "w55", WorkDir: "/w/peer-agent"}}, nil
 	})
 
 	req := callerReqReach("c-norm", "norm", scopeSelf, "norm-darren")
-	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "p_82"}); err == nil {
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "55"}); err == nil {
 		t.Fatal("a group caller adopted and closed a pane on the lasso host")
 	}
 	if len(local.closed) != 0 {
@@ -508,11 +508,11 @@ func TestCloseAgentGroupCallerCannotAdoptALocalPane(t *testing.T) {
 	}
 	// The same request from an unidentified caller still adopts — proving the
 	// setup was adoptable and the refusal above came from the scope gate.
-	if _, _, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "p_82"}); err != nil {
+	if _, _, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "55"}); err != nil {
 		t.Fatalf("unidentified adoption broke: %v", err)
 	}
-	if len(local.closed) != 1 || local.closed[0] != "w55-1" {
-		t.Errorf("local closed = %v, want [w55-1] for the unidentified caller", local.closed)
+	if len(local.closed) != 1 || local.closed[0] != "55" {
+		t.Errorf("local closed = %v, want [55] for the unidentified caller", local.closed)
 	}
 }
 
@@ -522,7 +522,7 @@ func TestCloseAgentGroupCallerCannotAdoptALocalPane(t *testing.T) {
 func TestCloseAgentWithoutGroupsIsUnchanged(t *testing.T) {
 	req := containedFleet(t)
 	gigachad := agentBackendResolverMust(t, "gigachad").(*closeBackend)
-	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "wR:p1"}); err != nil {
+	if _, _, err := closeAgentTool(context.Background(), req, closeAgentIn{PaneID: "9"}); err != nil {
 		t.Fatalf("closing its own pane failed: %v", err)
 	}
 	if len(gigachad.closed) != 1 {

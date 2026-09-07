@@ -43,7 +43,7 @@ export function FileViewer({
   host: string | null
   onClose: () => void
   // An unsaved buffer carried over from an earlier mount of this same file. The
-  // sidebar keeps its state per herdr pane, so selecting another agent unmounts
+  // sidebar keeps its state per Luvus pane, so selecting another agent unmounts
   // this editor; without the hand-off, in-flight edits would vanish silently on
   // a pane switch — the close path at least confirms first.
   initialDraft?: string | null
@@ -489,7 +489,7 @@ function mdComponents(path: string, host: string | null) {
 }
 
 // The resolved light/dark chrome, read off the html class that lib/mode.ts owns
-// (the single chokepoint for the OS-, user- and herdr-driven answers alike) and
+// (the single chokepoint for the OS-, user- and Luvus-driven answers alike) and
 // kept live with an observer, since nothing publishes it to React.
 function useDarkChrome(): boolean {
   const [dark, setDark] = React.useState(() =>
@@ -565,7 +565,7 @@ function MermaidDiagram({ chart }: { chart: string }) {
   )
 }
 
-// A CodeMirror 6 editor themed to the live herdr palette (see lib/codemirror).
+// A CodeMirror 6 editor themed to the live Luvus palette (see lib/codemirror).
 // basicSetup gives line numbers, the fold gutter, bracket matching and in-editor
 // search (⌘/Ctrl+F). For very large files we drop the language extension to skip
 // the parsing cost — editing still works, just without highlighting.

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// hostPoolEntry is a cached remote backend for herdr RPC and file operations
+// hostPoolEntry is a cached remote backend for luvus RPC and file operations
 // against a selected non-active host. Its last-used timestamp drives idle
 // reaping; lastOK throttles the per-access liveness check (see hostBackend).
 type hostPoolEntry struct {
@@ -64,7 +64,7 @@ const hostHealthEvery = 10 * time.Second
 // place rather than making all operations for that host wait for idle reaping.
 func hostBackend(host string) (Backend, error) {
 	if host == "local" {
-		return &localBackend{sock: *herdrSock}, nil
+		return &localBackend{sock: *luvusSock}, nil
 	}
 	hostPool.mu.Lock()
 	if hostPool.entries == nil {
@@ -78,7 +78,7 @@ func hostBackend(host string) (Backend, error) {
 		if fresh {
 			return b, nil
 		}
-		if _, _, err := herdrPing(b.HerdrSock()); err == nil {
+		if _, _, err := luvusPing(b.LuvusSock()); err == nil {
 			hostPool.mu.Lock()
 			if e := hostPool.entries[host]; e != nil && e.backend == b {
 				e.lastOK = time.Now()
@@ -113,8 +113,7 @@ func hostBackend(host string) (Backend, error) {
 	if !ok || !hi.Reachable || !hi.Running || !hi.Compatible {
 		return nil, fmt.Errorf("host %s not available", host)
 	}
-	_, wantProto := localProtocol()
-	rb, err := newRemoteBackend(srvCtx, host, hi.Socket, wantProto)
+	rb, err := newRemoteBackend(srvCtx, host, hi.Socket)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +122,7 @@ func hostBackend(host string) (Backend, error) {
 	hostPool.mu.Unlock()
 	// A redial replaces the connection anything already on this host is riding.
 	// Re-point the default backend if this IS the default host, and re-point the
-	// host's feed (its poll and its herdr event subscription) if a tab is
+	// host's feed (its poll and its luvus event subscription) if a tab is
 	// watching it. Without this, a master that died under a watched host —
 	// laptop sleep, network drop, sshd restart — left those tabs polling a
 	// socket that no longer exists until the user navigated away and back.
@@ -256,8 +255,7 @@ func reapHostBackends() {
 // ---------------------------------------------------------------------------
 
 // hostPane is one pane on one host, enriched with workspace/tab labels and
-// whether herdr has detected an agent in it (HasAgent / Agent come from
-// agent.list, since pane.list reports only agent_status, not the agent kind).
+// whether the runtime has detected an agent in it.
 type hostPane struct {
 	Host           string `json:"host"`       // "local" or ssh-config alias (focus/attach key)
 	HostLabel      string `json:"host_label"` // display name (hostname for local)
@@ -266,39 +264,23 @@ type hostPane struct {
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
 	TabLabel       string `json:"tab_label"`
-	PaneLabel      string `json:"pane_label,omitempty"` // herdr's per-pane title; disambiguates sibling panes in one workspace
-	// TerminalTitle is the pane's OSC title with the agent's state glyphs
-	// stripped — for an agent pane, what it is currently working on ("Check Norm
-	// outline wiki connection"). It names a session whose workspace was never
-	// labelled, and is the only name a foreign session has in that case.
-	TerminalTitle string `json:"terminal_title,omitempty"`
-	Cwd           string `json:"cwd"`
-	Agent         string `json:"agent"`
-	AgentStatus   string `json:"agent_status"`
-	HasAgent      bool   `json:"has_agent"`
-	Focused       bool   `json:"focused"`
+	PaneLabel      string `json:"pane_label,omitempty"` // the runtime's per-pane name; disambiguates sibling panes in one workspace
+	Cwd            string `json:"cwd"`
+	Agent          string `json:"agent"`
+	AgentStatus    string `json:"agent_status"`
+	HasAgent       bool   `json:"has_agent"`
+	Focused        bool   `json:"focused"`
 	// Prompt is the initial prompt the user gave the agent when creating it
-	// (lasso's AgentRecord.Description, not anything herdr knows). It's shipped so
-	// the pane switcher can search the full prompt text; the UI need not display it.
+	// (lasso's AgentRecord.Description, not anything the runtime knows). It's
+	// shipped so the pane switcher can search the full prompt text; the UI need
+	// not display it.
 	Prompt string `json:"prompt,omitempty"`
 	// AgentID + Closed are set only on the rows /api/agent-history adds for past
-	// agents (lasso AgentRecords) whose herdr pane is gone. AgentID is the record's
-	// id, passed back to /api/agent/reopen to re-create a workspace at its work dir.
+	// agents (lasso AgentRecords) whose pane is gone. AgentID is the record's id,
+	// passed back to /api/agent/reopen to re-open a workspace at its work dir.
 	// Live panes leave both empty/false.
 	AgentID string `json:"agent_id,omitempty"`
 	Closed  bool   `json:"closed,omitempty"`
-	// The Mirror* fields are set when this pane is a herdr-mirror stream of
-	// another machine's pane rather than a pane on Host (see mirror.go). Such a
-	// row IS a real local pane — it focuses and renders like any other — but
-	// everything it shows lives on MirrorHost, so the UI must attribute it
-	// there and must not offer it affordances that only mean something locally.
-	// MirrorHost is herdr-mirror's host key, MirrorLabel the workspace's label as
-	// it reads on the remote (no "<host>: " prefix), and MirrorWorkspace /
-	// MirrorPane the remote herdr's own ids.
-	MirrorHost      string `json:"mirror_host,omitempty"`
-	MirrorLabel     string `json:"mirror_label,omitempty"`
-	MirrorWorkspace string `json:"mirror_workspace,omitempty"`
-	MirrorPane      string `json:"mirror_pane,omitempty"`
 }
 
 type panesPayload struct {
@@ -307,7 +289,7 @@ type panesPayload struct {
 }
 
 // panesCache coalesces the potentially multi-second, multi-host aggregation so
-// overlapping polls and concurrent viewers share one fetch. Herdr state moves,
+// overlapping polls and concurrent viewers share one fetch. Luvus state moves,
 // so the frontend refreshes it every few seconds.
 //
 // inflight is non-nil while a refresh is running and closes when it lands. The
@@ -540,7 +522,7 @@ func serveAgentHistory(w http.ResponseWriter, r *http.Request) {
 	// switcher; with it they're findable by directory name and reopenable by path.
 	// Remote-host agents still surface via their DB records above; only local orphan
 	// dirs are scanned (the common case, and it avoids per-toggle SFTP round-trips).
-	lb := &localBackend{sock: *herdrSock}
+	lb := &localBackend{sock: *luvusSock}
 	out = append(out, scanOrphanWorkDirs(lb, "local", local, known["local"])...)
 	writeJSON(w, map[string]any{"agents": out})
 }
@@ -613,16 +595,20 @@ func withinLassoWorkTrees(b Backend, dir string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/agent/reopen — re-create a workspace at a past agent's work dir
+// POST /api/agent/reopen — re-open a workspace at a past agent's work dir
 // ---------------------------------------------------------------------------
 
 // serveAgentReopen re-opens the workspace for a previously-spawned agent whose
-// herdr pane was closed: it creates a fresh herdr workspace rooted at the stored
-// work dir (the worktree/scratch dir still on disk) and focuses it. It does NOT
-// relaunch the agent — per the design, reopening just lands you back in the
-// directory; the user starts claude (e.g. `claude --continue`) themselves. The
-// record is re-pointed at the new workspace/pane so it shows as live again, and
-// the new pane is returned (as a hostPane) so the client can focus it.
+// pane was closed: it opens the stored work dir (the worktree/scratch dir still
+// on disk) as a workspace and focuses it. It does NOT relaunch the agent — per
+// the design, reopening just lands you back in the directory; the user starts
+// claude (e.g. `claude --continue`) themselves. The record is re-pointed at the
+// workspace/pane so it shows as live again, and the pane is returned (as a
+// hostPane) so the client can focus it.
+//
+// workspace.open is also the adopt path, so a work dir the runtime still has a
+// workspace for is focused rather than opened twice — which is the right answer
+// for a record whose pane lasso merely lost track of.
 func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -635,7 +621,7 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 		// Focus lands the user on the reopened workspace (default true — the
 		// ⌘K switcher reopens to jump there). An API caller reopening in the
 		// background passes false so it doesn't move every client's shared
-		// herdr focus.
+		// focus.
 		Focus *bool `json:"focus"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -663,7 +649,7 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 	// requested path (constrained to the lasso worktrees/scratch trees).
 	var workDir, label, recID string
 	if req.AgentID != "" {
-		// Tombstones included: reopening an agent whose pane herdr no longer has is
+		// Tombstones included: reopening an agent whose pane is gone is
 		// precisely what this endpoint is for, and it revives the record (see
 		// updateAgentPane below).
 		rec, err := findAgentRecordAny(req.Host, req.AgentID)
@@ -688,16 +674,11 @@ func serveAgentReopen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("work dir %s is gone: %v", workDir, statErr), http.StatusGone)
 		return
 	}
-	res, err := b.HerdrCall("workspace.create", map[string]any{
-		"cwd":   workDir,
-		"label": label,
-		"focus": req.Focus == nil || *req.Focus,
-	})
+	ws, pane, err := openWorkspaceAt(b, workDir, label, req.Focus == nil || *req.Focus)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("workspace.create: %v", err), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("workspace.open: %v", err), http.StatusBadGateway)
 		return
 	}
-	ws, pane := parseCreateResult(res)
 	// Re-point the record at the new workspace/pane so it reads as live again.
 	// Orphan dirs have no record to update.
 	if recID != "" {
@@ -864,7 +845,7 @@ func paneErrClear(host string) {
 
 // paneErrText condenses a host-poll error for /api/all-panes. Transport-level
 // failures all mean the host cannot be reached now, so they render as a short
-// "unreachable" note instead of a raw dial/read chain. Protocol drift and herdr
+// "unreachable" note instead of a raw dial/read chain. Protocol drift and luvus
 // refusals retain their messages.
 func paneErrText(err error) string {
 	s := firstLine(err.Error())
@@ -981,8 +962,8 @@ func fetchAllPanes(ctx context.Context) panesPayload {
 		lastGoodPanesSet(r.host, r.panes)
 		// This branch is the only place lasso holds a fresh, complete, per-host
 		// pane enumeration on a schedule, which is exactly what reconciling agent
-		// records against herdr needs — and the r.err split above is already the
-		// "did herdr actually answer" distinction reconciliation must not get
+		// records against luvus needs — and the r.err split above is already the
+		// "did luvus actually answer" distinction reconciliation must not get
 		// wrong. Deliberately not in the failure branch: last-good panes are a
 		// display fallback, not evidence about what is running now.
 		reconcileHostAgents(r.host, r.panes)
@@ -991,84 +972,41 @@ func fetchAllPanes(ctx context.Context) panesPayload {
 	return out
 }
 
-// enumerateHostPanes lists one host's panes and joins workspace/tab labels +
-// agent detection. Mirrors fetchPanes' join, over an arbitrary backend.
+// enumerateHostPanes lists one host's panes as switcher rows, joining in the
+// labels and the prompts lasso itself holds. Mirrors fetchPanes' join, over an
+// arbitrary backend.
+//
+// The workspace/tab labels and positions come from runtimePanes rather than
+// from separate listing calls: UHP's pane.list and tab.list answer only for the
+// ACTIVE workspace's ACTIVE tab (a workspace_id in their params is ignored), so
+// there is no per-host listing to join against — the whole-session snapshot
+// runtimePanes is built on is the only enumeration that sees every pane, and it
+// already carries each pane's workspace and tab name and position.
+//
+// There is no agent.list join either. It answered the agent KIND for panes
+// luvus's own detection had identified; UHP reports the kind on the pane itself
+// (and runtimePanes drops the shell-command fallback, which is not an agent
+// identity), so a second listing would restate what the snapshot already said —
+// and it could not be joined on anything but the pane id anyway, since
+// agent.list rows carry no stable workspace id on this server.
 func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
-	res, err := b.HerdrCall("pane.list", map[string]any{})
+	panes, err := runtimePanes(b)
 	if err != nil {
 		return nil, err
 	}
-	var pl struct {
-		Panes []pane `json:"panes"`
-	}
-	if err := json.Unmarshal(res, &pl); err != nil {
-		return nil, err
-	}
-
-	type meta struct {
-		label  string
-		number int
-	}
-	tabs := map[string]meta{}
-	if r, err := b.HerdrCall("tab.list", map[string]any{}); err == nil {
-		var tl struct {
-			Tabs []struct {
-				TabID  string `json:"tab_id"`
-				Label  string `json:"label"`
-				Number int    `json:"number"`
-			} `json:"tabs"`
-		}
-		if json.Unmarshal(r, &tl) == nil {
-			for _, t := range tl.Tabs {
-				tabs[t.TabID] = meta{t.Label, t.Number}
-			}
-		}
-	}
-	wss := map[string]meta{}
-	if r, err := b.HerdrCall("workspace.list", map[string]any{}); err == nil {
-		var wl struct {
-			Workspaces []struct {
-				WorkspaceID string `json:"workspace_id"`
-				Label       string `json:"label"`
-				Number      int    `json:"number"`
-			} `json:"workspaces"`
-		}
-		if json.Unmarshal(r, &wl) == nil {
-			for _, w := range wl.Workspaces {
-				wss[w.WorkspaceID] = meta{w.Label, w.Number}
-			}
-		}
-	}
-	// agent.list enumerates the panes herdr has identified an agent in, with the
-	// agent *kind* (claude/codex/…). It is not the only source — pane.list has
-	// carried the kind since herdr 0.7, and paneAgentPresence recovers panes
-	// whose agent herdr never identified at all — but where it does answer it is
-	// the most direct one, so it is folded in first.
-	agentKind := map[string]string{}
-	if r, err := b.HerdrCall("agent.list", map[string]any{}); err == nil {
-		var al struct {
-			Agents []struct {
-				PaneID string `json:"pane_id"`
-				Agent  string `json:"agent"`
-			} `json:"agents"`
-		}
-		if json.Unmarshal(r, &al) == nil {
-			for _, a := range al.Agents {
-				agentKind[a.PaneID] = a.Agent
-			}
-		}
-	}
 
 	// Agent initial prompts live in lasso's own records (AgentRecord.Description),
-	// not in herdr — join them in by root pane (and by workspace as a fallback for
-	// the agent's pane) so the pane switcher can search the full prompt text.
+	// not in the runtime — join them in by root pane (and by workspace as a
+	// fallback for the agent's pane) so the pane switcher can search the full
+	// prompt text.
 	//
 	// The same pass collects the panes whose agent lasso launched in omp's plan
-	// mode. herdr cannot see omp's plan gate (ompplan.go), so those panes — and
-	// ONLY those — get a screen read below to find out whether they are parked on
-	// it. Narrowed to the records rather than to every omp pane on the host
-	// because this runs on the aggregation's poll: a plan-mode omp agent is the
-	// only pane that can be at the gate lasso promised, and there are usually none.
+	// mode. The runtime cannot see omp's plan gate (ompplan.go), so those panes —
+	// and ONLY those — get a screen read below to find out whether they are
+	// parked on it. Narrowed to the records rather than to every omp pane on the
+	// host because this runs on the aggregation's poll: a plan-mode omp agent is
+	// the only pane that can be at the gate lasso promised, and there are usually
+	// none.
 	promptByPane := map[string]string{}
 	promptByWS := map[string]string{}
 	planGate := map[string]bool{}
@@ -1088,27 +1026,16 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			}
 		}
 	}
-	// Which of these panes are herdr-mirror streams of another machine's panes,
-	// and whose. Free for a host running no mirrors (see hostMirrors).
-	mirrors := hostMirrors(b, pl.Panes)
 
-	out := make([]hostPane, 0, len(pl.Panes))
-	for _, p := range pl.Panes {
-		kind, isAgent := agentKind[p.PaneID]
-		status := p.AgentStatus
-		if !isAgent {
-			// herdr's agent.list left this pane out. That is authoritative for a
-			// bare shell — and wrong for a pane whose agent it failed to identify,
-			// which paneAgentPresence recovers from the pane's own session and
-			// title (see panestatus.go).
-			kind, status = paneAgentPresence(p)
-			isAgent = kind != ""
-		} else if status == "" || status == "unknown" {
-			// Identified, but herdr has no state for it — read the title itself.
-			if s, _ := titleAgentStatus(kind, p.TerminalTitle); s != "" {
-				status = s
-			}
-		}
+	// Positions are keyed by pane id rather than read back off the row, because
+	// the sort below reorders `out` while `panes` keeps snapshot order — indexing
+	// the two in step would compare one row's workspace against another's.
+	type pos struct{ workspace, tab int }
+	at := make(map[string]pos, len(panes))
+	out := make([]hostPane, 0, len(panes))
+	for _, p := range panes {
+		kind, status := paneAgentPresence(p)
+		isAgent := kind != ""
 		if planGate[p.PaneID] {
 			status = ompGateStatus(b, p.PaneID, kind, status)
 		}
@@ -1116,41 +1043,36 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 		if prompt == "" && isAgent {
 			prompt = promptByWS[p.WorkspaceID]
 		}
-		mr, _ := mirrors.lookup(p.WorkspaceID, p.PaneID)
+		at[p.PaneID] = pos{p.WorkspaceNumber, p.TabNumber}
 		out = append(out, hostPane{
 			Host:           host,
 			HostLabel:      hostLabel,
 			PaneID:         p.PaneID,
 			WorkspaceID:    p.WorkspaceID,
-			WorkspaceLabel: wss[p.WorkspaceID].label,
+			WorkspaceLabel: p.WorkspaceLabel,
 			TabID:          p.TabID,
-			TabLabel:       tabs[p.TabID].label,
+			TabLabel:       p.TabLabel,
 			PaneLabel:      p.Label,
-			TerminalTitle:  p.TerminalTitleStripped,
 			Cwd:            paneCwd(p),
 			Agent:          kind,
 			AgentStatus:    status,
 			HasAgent:       isAgent,
 			Focused:        p.Focused,
 			Prompt:         prompt,
-
-			MirrorHost:      mr.Host,
-			MirrorLabel:     mr.Label,
-			MirrorWorkspace: mr.Workspace,
-			MirrorPane:      mr.Pane,
 		})
 	}
-	// Newest first: herdr assigns workspaces/tabs monotonically increasing numbers
-	// as they're created (and exposes no timestamps), so a descending sort puts the
+	// Newest first: workspaces and tabs are positioned in creation order and the
+	// runtime exposes no timestamps, so a descending sort by position puts the
 	// most-recently-created workspaces — and within them the newest tabs — at the
 	// top of the listing. Panes are still grouped by host (callers concatenate per
 	// host); this orders within a host.
 	sort.SliceStable(out, func(i, j int) bool {
-		if wi, wj := wss[out[i].WorkspaceID].number, wss[out[j].WorkspaceID].number; wi != wj {
-			return wi > wj
+		pi, pj := at[out[i].PaneID], at[out[j].PaneID]
+		if pi.workspace != pj.workspace {
+			return pi.workspace > pj.workspace
 		}
-		if ti, tj := tabs[out[i].TabID].number, tabs[out[j].TabID].number; ti != tj {
-			return ti > tj
+		if pi.tab != pj.tab {
+			return pi.tab > pj.tab
 		}
 		return out[i].PaneID > out[j].PaneID
 	})

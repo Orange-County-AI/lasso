@@ -33,7 +33,7 @@ func TestTtydRoleReusesResidentInstance(t *testing.T) {
 	r.inst["local"] = &ttydInstance{sock: "/tmp/lasso-ttyd-test-local.sock", cancel: func() {}, lastActive: time.Now()}
 	r.bySlug["local"] = "local"
 
-	if err := r.ensure("ticket500", "herdr --remote ticket500", nil); err != nil {
+	if err := r.ensure("ticket500", "luvus --remote ticket500", nil); err != nil {
 		t.Fatalf("ensure a resident host: %v", err)
 	}
 	if stopped {

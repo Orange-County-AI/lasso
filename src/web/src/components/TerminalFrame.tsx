@@ -8,8 +8,8 @@ import {
   terminalPasteHost,
 } from "@/lib/terminal"
 
-// A ttyd terminal iframe (the herdr terminal under /terminal/ or the
-// out-of-herdr shell under /shell/). It stays mounted across tab switches — only
+// A ttyd terminal iframe (the Luvus terminal under /terminal/ or the
+// out-of-Luvus shell under /shell/). It stays mounted across tab switches — only
 // hidden via CSS — so the WebSocket never reconnects. When shown again, nudge
 // xterm to refit.
 //
@@ -32,7 +32,7 @@ export function TerminalFrame({
   hidden: boolean
 }) {
   const { host, cwdHost, hostSlug } = useApp()
-  // Focus can move between an ordinary local pane and a nested remote attach
+  // Focus can move between panes whose filesystems live on different hosts
   // without remounting ttyd. Keep the upload target live behind the one paste
   // listener installed in the iframe document.
   const pasteHostRef = React.useRef<string | undefined>(undefined)

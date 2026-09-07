@@ -28,9 +28,9 @@ func TestPaneErrSurfaced(t *testing.T) {
 
 func TestPaneErrText(t *testing.T) {
 	cases := map[string]string{
-		"read unix @->/tmp/lasso-herdr-1-blackbird-hostpool.sock: i/o timeout": "unreachable (i/o timeout)",
+		"read unix @->/tmp/lasso-luvus-1-blackbird-hostpool.sock: i/o timeout": "unreachable (i/o timeout)",
 		"dial unix /tmp/x.sock: connect: connection refused":                   "unreachable (connection refused)",
-		"herdr speaks protocol 17, lasso targets 16":                           "herdr speaks protocol 17, lasso targets 16",
+		"luvus speaks protocol 17, lasso targets 16":                           "luvus speaks protocol 17, lasso targets 16",
 	}
 	for in, want := range cases {
 		if got := paneErrText(errors.New(in)); got != want {

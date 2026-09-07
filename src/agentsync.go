@@ -1,29 +1,35 @@
-// Agent theme sync: when lasso's theme changes (via /api/theme-set, a host
-// switch, or an out-of-band edit to herdr's config.toml picked up by the hub
-// poll), mirror it into the agent CLIs' own theme files — a generated
-// opencode theme (themes/herdr.json, pinned via tui.json), Claude Code's
-// ~/.claude/themes/herdr.json, ghostty's themes/herdr, omp's
-// ~/.omp/agent/themes/herdr.json (pinned in both of its mode slots, and the one
+// Agent theme sync: when the theme lasso is painting changes — the user ran
+// `luvus theme use <id>`, or edited and reinstalled a community theme, and the
+// hub poll picked the new palette up — mirror it into the agent CLIs' own theme
+// files: a generated opencode theme (themes/luvus.json, pinned via tui.json),
+// Claude Code's ~/.claude/themes/luvus.json, ghostty's themes/luvus, omp's
+// ~/.omp/agent/themes/luvus.json (pinned in both of its mode slots, and the one
 // mirror a running agent picks up live), and lasso's settings.json
 // (.theme.resolved, read by claude-contextline) — so agents render in step with
-// herdr. Writes go through the Backend interface, so every reachable host gets
-// the same treatment over SFTP (see syncRemoteTheme).
+// Luvus. Writes go through the Backend interface, so every reachable host gets
+// the same treatment over SFTP.
+//
+// What lasso writes and what it does NOT is the line that matters here. These
+// are files lasso generates and owns. Luvus's own selection is never written:
+// there is no config write and no `theme.use` call anywhere in lasso, so a
+// palette lasso happens to be holding — from a boot before the user switched
+// themes, or from a host that answered first — can never override the choice a
+// human made in Luvus. The traffic is one-way, out of Luvus.
 //
 // Reach and convergence are the two things this file gets right on purpose:
 //
-//   - Reach: a theme write needs ssh, not a herdr this lasso can drive. A host
-//     running a mismatched protocol (or no herdr at all) is written over a
-//     files-only connection (newRemoteFileBackend); only the reload nudge is
-//     skipped. Gating file writes on protocol compatibility is what left two
-//     Macs a month behind the fleet's palette.
+//   - Reach: a theme write needs ssh, not a Luvus this lasso can drive. A host
+//     running a mismatched protocol (or no Luvus at all) is written over a
+//     files-only connection (newRemoteFileBackend). Gating file writes on
+//     protocol compatibility is what left two Macs a month behind the fleet's
+//     palette.
 //   - Convergence: every completed host probe (convergeThemeOnProbe, called from
-//     putHost) compares the theme lasso last wrote to a host against the live
+//     putHost) compares the palette lasso last wrote to a host against the live
 //     one, so a machine asleep or unreachable during a theme change catches up
-//     on its next probe instead of waiting for the next change.
-//
-// This subsumes the old per-machine herdr-theme-sync watcher daemons: lasso is
-// the single writer of herdr's [theme].name in practice, and its hub poll
-// catches edits it didn't make, so no file-watching service is needed.
+//     on its next probe instead of waiting for the next change. The comparison
+//     is on the palette's FINGERPRINT, not its name: an installed theme can be
+//     edited under the same id, and a name-keyed check would call the fleet up
+//     to date while every host renders the old colors.
 //
 // Gated by the sync_agent_themes setting (default on), which the Settings tab
 // exposes as "Sync agent themes", and by the per-host theme_sync_off deny-list
@@ -60,8 +66,7 @@ func syncAgentThemesEnabled() bool {
 }
 
 // themeSyncOffKey holds the per-host opt-out: a JSON array of host names
-// ("local" or ssh aliases) lasso must write NO theme to at all — neither
-// herdr's [theme].name (syncRemoteTheme) nor any agent theme file
+// ("local" or ssh aliases) whose agent theme files lasso must not write at all
 // (syncAgentThemesVia). A deny-list, like uiState.UsageHidden, so a host added
 // to the ssh config later syncs by default rather than silently staying behind.
 //
@@ -145,15 +150,15 @@ var themeSem = make(chan struct{}, themeFanoutConcurrency)
 
 // themeFanoutHosts returns the settled, reachable remote hosts lasso may write a
 // theme to. Reachable is the whole bar on purpose: every theme write is file I/O
-// over SFTP (ghostty's theme, Claude's, opencode's, omp's, herdr's config.toml),
-// which needs ssh and nothing else.
+// over SFTP (ghostty's theme, Claude's, opencode's, omp's), which needs ssh and
+// nothing else.
 //
-// It used to also demand a RUNNING, PROTOCOL-COMPATIBLE herdr, and that is how a
-// fleet silently drifted apart: a box one herdr release behind (protocol 19 vs
-// 20) was dropped from every fan-out and kept whatever palette it had when it
-// last matched — observed on a Mac stuck three weeks and a theme behind, its
-// ghostty still dark against a light herdr. Compatibility decides whether lasso
-// can DRIVE a host, not whether it may write a file on one.
+// It used to also demand a RUNNING, PROTOCOL-COMPATIBLE harness, and that is how
+// a fleet silently drifted apart: a box one release behind was dropped from every
+// fan-out and kept whatever palette it had when it last matched — observed on a
+// Mac stuck three weeks and a theme behind, its ghostty still dark against a
+// light UI. Compatibility decides whether lasso can DRIVE a host, not whether it
+// may write a file on one.
 //
 // Checking the deny-list here, before themeBackend dials, preserves an opt-out
 // even when a host has no existing pooled connection.
@@ -169,30 +174,23 @@ func themeFanoutHosts(rows []HostInfo) []string {
 	return hosts
 }
 
-// themeTarget is what writing a theme to a host needs: file I/O, the path herdr
-// on that host reads its config from, and — when HerdrSock is non-empty — a live
-// herdr to ask for a reload.
-type themeTarget interface {
-	Backend
-	herdrConfigPath() string
-}
-
 // themeBackend returns a connection to host for theme writes plus the release to
 // call when they're done. A host lasso can drive answers from the pool: its
-// master is already up, stays up, and carries a herdr that can be asked to
-// reload. A host lasso cannot drive — herdr stopped, or speaking a protocol this
-// build refuses — gets a throwaway files-only connection instead of being
-// skipped, and the caller closes it.
-func themeBackend(host string) (themeTarget, func(), error) {
+// master is already up and stays up. A host lasso cannot drive — Luvus stopped,
+// or speaking a protocol this build refuses — gets a throwaway files-only
+// connection instead of being skipped, and the caller closes it.
+//
+// Theme writes need file I/O and nothing else. They deliberately do not touch
+// the host's Luvus: its selection is that machine's, and lasso reaching in to
+// restate a palette it read somewhere else is exactly the fleet-wide override
+// this migration removed.
+func themeBackend(host string) (Backend, func(), error) {
 	if hi, ok := findHost(host); ok && hi.Reachable && hi.Running && hi.Compatible {
 		b, err := namedHostBackend(host)
 		if err == nil {
-			if t, ok := b.(themeTarget); ok {
-				return t, func() {}, nil
-			}
-		} else {
-			log.Printf("theme:    %s: no pooled connection (%v) — writing theme files over a fresh ssh connection", host, err)
+			return b, func() {}, nil
 		}
+		log.Printf("theme:    %s: no pooled connection (%v) — writing theme files over a fresh ssh connection", host, err)
 	}
 	rb, err := newRemoteFileBackend(srvCtx, host)
 	if err != nil {
@@ -204,30 +202,31 @@ func themeBackend(host string) (themeTarget, func(), error) {
 // syncThemeToHost pushes rt to one host and records the result (themeSynced), so
 // a host that failed or was skipped is retried by the next convergence pass. It
 // is best-effort: a host lasso cannot reach logs and is left for that retry.
+//
+// An unavailable theme is refused outright. lasso can start before ttyd
+// autostarts Luvus, so "no palette yet" is a normal boot state — and writing the
+// stand-in palette into every host's agent config would leave the fleet painted
+// in a theme nobody chose, which no later pass would know to correct.
 func syncThemeToHost(host string, rt resolvedTheme) {
-	if !themeSyncEnabledFor(host) {
+	if !rt.Available || !themeSyncEnabledFor(host) {
 		return
 	}
-	if isLocalHost(host) {
-		if err := syncAgentThemesVia(localFsBackend(), rt); err != nil {
+	b, release := Backend(localFsBackend()), func() {}
+	if !isLocalHost(host) {
+		var err error
+		if b, release, err = themeBackend(host); err != nil {
 			forgetThemeSynced(host)
+			log.Printf("theme:    %s not reachable to sync theme: %v", host, err)
 			return
 		}
-		markThemeSynced(host, rt.Resolved)
-		return
-	}
-	t, release, err := themeBackend(host)
-	if err != nil {
-		forgetThemeSynced(host)
-		log.Printf("theme:    %s not reachable to sync theme: %v", host, err)
-		return
 	}
 	defer release()
-	if err := syncRemoteTheme(t, rt.Resolved); err != nil {
+	if err := syncAgentThemesVia(b, rt); err != nil {
 		forgetThemeSynced(host)
 		return
 	}
-	markThemeSynced(host, rt.Resolved)
+	markThemeSynced(host, rt.fingerprint())
+	log.Printf("theme:    synced %s (%s) -> %s", rt.Name, rt.Resolved, host)
 }
 
 // syncThemeEverywhere mirrors rt locally and across each settled reachable host.
@@ -262,16 +261,21 @@ func convergeThemeSyncFor(host string) {
 }
 
 // liveTheme is the theme lasso is painting right now: the hub's, which follows
-// herdr's config.toml live (or the one -theme pinned), and a fresh read of that
-// config before the hub exists.
+// the local Luvus's selection live. Before the hub exists it reads it once, and
+// a read that fails yields the unavailable stand-in — whose Available=false is
+// what stops every writer here from painting a theme nobody chose.
 func liveTheme() resolvedTheme {
 	if srvHub != nil {
 		return srvHub.themeSnapshot()
 	}
-	return loadHerdrTheme(*themeName)
+	rt, err := loadLuvusTheme()
+	if err != nil {
+		return unavailableTheme()
+	}
+	return rt
 }
 
-// themeSynced records the theme name lasso last WROTE to each host, plus which
+// themeSynced records the palette FINGERPRINT lasso last WROTE to each host,
 // hosts have a convergence push in flight. It is the whole mechanism behind
 // catching a host up: a machine asleep when the user picked a palette used to
 // keep the old one until the next theme change or host switch, because nothing
@@ -285,17 +289,17 @@ func liveTheme() resolvedTheme {
 // rather than trusting a note on disk about files it never saw.
 var themeSynced struct {
 	mu       sync.Mutex
-	by       map[string]string // host -> theme name last written successfully
+	by       map[string]string // host -> palette fingerprint last written successfully
 	inFlight map[string]bool   // hosts with a convergence push running
 }
 
-func markThemeSynced(host, name string) {
+func markThemeSynced(host, fingerprint string) {
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
 	if themeSynced.by == nil {
 		themeSynced.by = map[string]string{}
 	}
-	themeSynced.by[host] = name
+	themeSynced.by[host] = fingerprint
 }
 
 // forgetThemeSynced drops a host's record so the next probe retries it.
@@ -305,15 +309,15 @@ func forgetThemeSynced(host string) {
 	delete(themeSynced.by, host)
 }
 
-// claimThemeConverge reports whether this caller should push name to host: true
-// only when the last write there wasn't already name and no push is in flight.
-// The in-flight half matters because probes arrive in bursts (a sweep, then the
-// footer's refresh) and a push takes seconds — without it one stale host would
-// be written by several goroutines at once.
-func claimThemeConverge(host, name string) bool {
+// claimThemeConverge reports whether this caller should push fingerprint to
+// host: true only when the last write there wasn't already that palette and no
+// push is in flight. The in-flight half matters because probes arrive in bursts
+// (a sweep, then the footer's refresh) and a push takes seconds — without it one
+// stale host would be written by several goroutines at once.
+func claimThemeConverge(host, fingerprint string) bool {
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
-	if themeSynced.inFlight[host] || themeSynced.by[host] == name {
+	if themeSynced.inFlight[host] || themeSynced.by[host] == fingerprint {
 		return false
 	}
 	if themeSynced.inFlight == nil {
@@ -353,7 +357,7 @@ func convergeThemeOnProbe(hi HostInfo) {
 		return
 	}
 	rt := liveTheme()
-	if rt.Resolved == "" || !claimThemeConverge(hi.Alias, rt.Resolved) {
+	if !rt.Available || !claimThemeConverge(hi.Alias, rt.fingerprint()) {
 		return
 	}
 	go func() {
@@ -371,7 +375,7 @@ func convergeThemeOnProbe(hi HostInfo) {
 // host that isn't is retried on its next probe). Callers that only want the
 // side effect can ignore it; nothing here is fatal to a theme switch.
 func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
-	if b == nil || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
+	if b == nil || !rt.Available || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
 		return nil
 	}
 	home, err := b.HomeDir()
@@ -382,7 +386,7 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 		}
 		return err
 	}
-	light := luminance(rt.ui.PanelBg) > 0.5
+	light := rt.light()
 	var errs []error
 	step := func(cli string, err error) {
 		if err != nil {
@@ -398,20 +402,8 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 	return errors.Join(errs...)
 }
 
-// resolveThemeByName resolves a canonical theme key (no custom overrides — used
-// for the remote mirror, where lasso only writes [theme].name and the remote
-// herdr owns any [theme.custom]).
-func resolveThemeByName(name string) resolvedTheme {
-	key := normalizeThemeName(name)
-	def, ok := themes[key]
-	if !ok {
-		key, def = "catppuccin", themes["catppuccin"]
-	}
-	return resolvedTheme{Name: name, Resolved: key, ui: def.ui, ansi: def.ansi}
-}
-
 // ---------------------------------------------------------------------------
-// opencode — generated themes/herdr.json + tui.json "theme" pin + kv mode hint
+// opencode — generated themes/luvus.json + tui.json "theme" pin + kv mode hint
 // ---------------------------------------------------------------------------
 //
 // opencode 1.x resolves its light/dark mode as: kv "theme_mode_lock" ??
@@ -423,25 +415,25 @@ func resolveThemeByName(name string) resolvedTheme {
 // seconds later, and every fresh launch then came up light).
 //
 // So the mode lock can't be load-bearing. Instead lasso generates a theme from
-// herdr's resolved palette and pins it by name — both in files opencode reads
-// but never writes: ~/.config/opencode/themes/herdr.json (custom themes are
+// Luvus's resolved palette and pins it by name — both in files opencode reads
+// but never writes: ~/.config/opencode/themes/luvus.json (custom themes are
 // discovered from <config>/themes/*.json) and the "theme" key in tui.json.
 // It also writes legacy Catppuccin aliases: custom themes override built-ins,
-// so an older lasso or dev build that later rewrites tui.json to "catppuccin"
-// still resolves the generated, mode-invariant Herdr palette.
+// so a dev build that later rewrites tui.json to "catppuccin" still resolves
+// the generated, mode-invariant palette.
 // Every token is emitted as a bare hex, which opencode's resolver treats as
 // mode-invariant (only {dark,light} pair objects consult the mode), so the
 // rendered colors are correct no matter what mode the lock/detection lands on.
-// A theme flip rewrites herdr.json with the new palette; fresh launches pick
+// A theme flip rewrites luvus.json with the new palette; fresh launches pick
 // it up. The kv mode lock is still written as a fallback hint (it keeps
 // opencode's built-in adaptive themes in step if the pin is ever removed
 // manually), but nothing correct depends on it anymore.
 
 // opencodeThemeName is the generated theme lasso pins for opencode.
-const opencodeThemeName = "herdr"
+const opencodeThemeName = "luvus"
 
-// opencodeThemeNames includes the generated theme and legacy names older lasso
-// builds can write to tui.json or opencode's state. The custom files shadow
+// opencodeThemeNames includes the generated theme and legacy names another
+// build can write to tui.json or opencode's state. The custom files shadow
 // opencode's built-ins, making those stale writers harmless.
 var opencodeThemeNames = []string{
 	opencodeThemeName,
@@ -457,66 +449,67 @@ func syncOpencodeTheme(b Backend, home string, rt resolvedTheme) error {
 	if err := syncOpencodeTui(b, home); err != nil {
 		return err
 	}
-	return syncOpencodeMode(b, home, luminance(rt.ui.PanelBg) > 0.5)
+	return syncOpencodeMode(b, home, rt.light())
 }
 
-// opencodeThemeBody renders rt as an opencode custom theme: herdr's UI tokens
-// mapped onto the same semantic roles lasso uses for its own chrome, all as
-// bare hex strings so the mode can't change the result.
+// opencodeThemeBody renders rt as an opencode custom theme: Luvus's semantic
+// roles mapped onto the same roles lasso uses for its own chrome, all as bare
+// hex strings so the mode can't change the result.
 func opencodeThemeBody(rt resolvedTheme) []byte {
-	u, a := rt.ui, rt.ansi
+	p, a := rt.p, rt.ansi
+	mauve, peach := rt.mauve(), rt.peach()
 	m := map[string]string{
-		"primary":               u.Accent,
-		"secondary":             u.Mauve,
-		"accent":                a.Magenta, // the palette's pink slot (mocha pink, dracula pink, etc.)
-		"error":                 u.Red,
-		"warning":               u.Yellow,
-		"success":               u.Green,
-		"info":                  u.Teal,
-		"text":                  u.Text,
-		"textMuted":             u.Subtext0,
-		"background":            u.PanelBg,
-		"backgroundPanel":       u.Surface0,
-		"backgroundElement":     u.Surface1,
-		"border":                u.Surface1,
-		"borderActive":          u.Accent,
-		"borderSubtle":          u.SurfaceDim,
-		"diffAdded":             u.Green,
-		"diffRemoved":           u.Red,
-		"diffContext":           u.Subtext0,
-		"diffHunkHeader":        u.Peach,
-		"diffHighlightAdded":    u.Green,
-		"diffHighlightRemoved":  u.Red,
-		"diffAddedBg":           blendHex(u.Green, u.PanelBg, 0.9),
-		"diffRemovedBg":         blendHex(u.Red, u.PanelBg, 0.9),
-		"diffContextBg":         u.Surface0,
-		"diffLineNumber":        u.Subtext0,
-		"diffAddedLineNumberBg": blendHex(u.Green, u.PanelBg, 0.95),
+		"primary":               p.Accent,
+		"secondary":             mauve,
+		"accent":                a.BrightMagenta, // the palette's pink slot
+		"error":                 p.Coral,
+		"warning":               p.Amber,
+		"success":               p.Green,
+		"info":                  p.Mint,
+		"text":                  p.Text,
+		"textMuted":             p.Subtext0,
+		"background":            p.Mantle,
+		"backgroundPanel":       p.Surface0,
+		"backgroundElement":     p.Surface1,
+		"border":                p.Border,
+		"borderActive":          p.BorderFocus,
+		"borderSubtle":          p.Crust,
+		"diffAdded":             p.Green,
+		"diffRemoved":           p.Coral,
+		"diffContext":           p.Subtext0,
+		"diffHunkHeader":        peach,
+		"diffHighlightAdded":    p.Green,
+		"diffHighlightRemoved":  p.Coral,
+		"diffAddedBg":           blendHex(p.Green, p.Mantle, 0.9),
+		"diffRemovedBg":         blendHex(p.Coral, p.Mantle, 0.9),
+		"diffContextBg":         p.Surface0,
+		"diffLineNumber":        p.Subtext0,
+		"diffAddedLineNumberBg": blendHex(p.Green, p.Mantle, 0.95),
 		// Removed line numbers sit on the same tinted rows.
-		"diffRemovedLineNumberBg": blendHex(u.Red, u.PanelBg, 0.95),
-		"markdownText":            u.Text,
-		"markdownHeading":         u.Mauve,
-		"markdownLink":            u.Blue,
-		"markdownLinkText":        u.Teal,
-		"markdownCode":            u.Green,
-		"markdownBlockQuote":      u.Yellow,
-		"markdownEmph":            u.Yellow,
-		"markdownStrong":          u.Peach,
-		"markdownHorizontalRule":  u.Subtext0,
-		"markdownListItem":        u.Blue,
-		"markdownListEnumeration": u.Teal,
-		"markdownImage":           u.Blue,
-		"markdownImageText":       u.Teal,
-		"markdownCodeBlock":       u.Text,
-		"syntaxComment":           u.Subtext0,
-		"syntaxKeyword":           u.Mauve,
-		"syntaxFunction":          u.Blue,
-		"syntaxVariable":          u.Red,
-		"syntaxString":            u.Green,
-		"syntaxNumber":            u.Peach,
-		"syntaxType":              u.Yellow,
-		"syntaxOperator":          u.Teal,
-		"syntaxPunctuation":       u.Text,
+		"diffRemovedLineNumberBg": blendHex(p.Coral, p.Mantle, 0.95),
+		"markdownText":            p.Text,
+		"markdownHeading":         mauve,
+		"markdownLink":            a.Blue,
+		"markdownLinkText":        p.Mint,
+		"markdownCode":            p.Green,
+		"markdownBlockQuote":      p.Amber,
+		"markdownEmph":            p.Amber,
+		"markdownStrong":          peach,
+		"markdownHorizontalRule":  p.Subtext0,
+		"markdownListItem":        a.Blue,
+		"markdownListEnumeration": p.Mint,
+		"markdownImage":           a.Blue,
+		"markdownImageText":       p.Mint,
+		"markdownCodeBlock":       p.Text,
+		"syntaxComment":           p.Subtext0,
+		"syntaxKeyword":           mauve,
+		"syntaxFunction":          a.Blue,
+		"syntaxVariable":          p.Coral,
+		"syntaxString":            p.Green,
+		"syntaxNumber":            peach,
+		"syntaxType":              p.Amber,
+		"syntaxOperator":          p.Mint,
+		"syntaxPunctuation":       p.Text,
 	}
 	// Defensive: drop anything that isn't "#rrggbb" — a bare non-hex string
 	// would be resolved as a color *reference* and throw at render time.
@@ -594,7 +587,7 @@ func syncOpencodeTui(b Backend, home string) error {
 }
 
 // syncOpencodeMode pins opencode's light/dark mode as a fallback hint. With
-// the generated herdr theme pinned (see above), every rendered token is
+// the generated luvus theme pinned (see above), every rendered token is
 // mode-invariant, so the lock only matters if the tui.json pin is removed
 // manually and opencode falls back to one of its built-in adaptive themes.
 // Note the lock is best-effort by nature: a running opencode keeps its
@@ -644,7 +637,7 @@ func syncOpencodeMode(b Backend, home string, light bool) error {
 }
 
 // ---------------------------------------------------------------------------
-// omp (Oh My Pi) — generated themes/herdr.json + both config.yml theme slots
+// omp (Oh My Pi) — generated themes/luvus.json + both config.yml theme slots
 // ---------------------------------------------------------------------------
 //
 // omp holds two named themes — settings theme.dark and theme.light — and picks
@@ -655,24 +648,24 @@ func syncOpencodeMode(b Backend, home string, light bool) error {
 //
 // Pinning both slots at omp's own built-in "dark"/"light" (what lasso did
 // before) only half-worked. It did make the SLOT choice irrelevant, but the pin
-// lives in config.yml, which omp reads once at startup — so a herdr theme flip
+// lives in config.yml, which omp reads once at startup — so a theme flip
 // never reached a RUNNING omp, and an agent launched before the flip kept the
 // mode its terminal happened to look like until someone restarted it.
 //
-// So omp gets opencode's treatment instead: a generated theme carrying herdr's
-// palette at ~/.omp/agent/themes/herdr.json, pinned in BOTH slots. Two things
+// So omp gets opencode's treatment instead: a generated theme carrying Luvus's
+// palette at ~/.omp/agent/themes/luvus.json, pinned in BOTH slots. Two things
 // follow:
 //
 //   - the light/dark branch cannot matter — both slots name one theme, and its
-//     colors are herdr's rather than a mode's;
+//     colors are Luvus's rather than a mode's;
 //   - it repaints LIVE. omp watches <themes dir>/<current theme>.json and
-//     debounce-reloads it on change, so rewriting herdr.json restyles every
+//     debounce-reloads it on change, so rewriting luvus.json restyles every
 //     running omp launched with the pin in place. That watcher is deliberately
 //     skipped when the current theme is named "dark" or "light" — one more
 //     reason the old pin could never repaint anything.
 //
 // omp's lookup resolves built-ins BEFORE custom files, so the generated file
-// must not be called dark.json/light.json (it would be shadowed); "herdr" is
+// must not be called dark.json/light.json (it would be shadowed); "luvus" is
 // both unshadowed and watched. Every token is a literal hex: a token that is
 // neither a hex nor a declared var throws during resolution, and omp answers a
 // failed theme load by falling back to its built-in "dark" — i.e. one bad token
@@ -685,7 +678,7 @@ func syncOpencodeMode(b Backend, home string, light bool) error {
 
 // ompThemeName is the generated theme lasso writes and pins in both of omp's
 // mode slots. Must not collide with an omp built-in — see above.
-const ompThemeName = "herdr"
+const ompThemeName = "luvus"
 
 // ompThemeSchema is the $schema omp's own built-in themes carry. Informational
 // only (omp validates with an in-code ArkType schema), but it makes the
@@ -706,106 +699,108 @@ func syncOmpTheme(b Backend, home string, rt resolvedTheme) error {
 	return syncOmpThemePin(b, dir)
 }
 
-// ompColors maps herdr's UI tokens onto omp's color tokens — the same semantic
-// roles lasso uses for its own chrome and for opencode's generated theme. Every
-// token omp requires is present; thinkingMax is the one optional token and is
-// emitted too (omp falls back to thinkingXhigh without it).
-func ompColors(u uiPalette) map[string]string {
+// ompColors maps Luvus's semantic roles onto omp's color tokens — the same roles
+// lasso uses for its own chrome and for opencode's generated theme. Every token
+// omp requires is present; thinkingMax is the one optional token and is emitted
+// too (omp falls back to thinkingXhigh without it).
+func ompColors(rt resolvedTheme) map[string]string {
+	p, a := rt.p, rt.ansi
+	mauve, peach := rt.mauve(), rt.peach()
 	return map[string]string{
-		"accent":       u.Accent,
-		"border":       u.Surface1,
-		"borderAccent": u.Accent,
-		"borderMuted":  u.Surface0,
-		"success":      u.Green,
-		"error":        u.Red,
-		"warning":      u.Yellow,
-		"muted":        u.Subtext0,
-		"dim":          u.Overlay0,
-		"text":         u.Text,
-		"thinkingText": u.Subtext0,
+		"accent":       p.Accent,
+		"border":       p.Border,
+		"borderAccent": p.BorderFocus,
+		"borderMuted":  p.Surface0,
+		"success":      p.Green,
+		"error":        p.Coral,
+		"warning":      p.Amber,
+		"muted":        p.Subtext0,
+		"dim":          p.Overlay0,
+		"text":         p.Text,
+		"thinkingText": p.Subtext0,
 
-		"selectedBg":         u.Surface0,
-		"userMessageBg":      u.SurfaceDim,
-		"userMessageText":    u.Text,
-		"customMessageBg":    u.Surface0,
-		"customMessageText":  u.Text,
-		"customMessageLabel": u.Mauve,
+		"selectedBg":         p.SelBg,
+		"userMessageBg":      p.Crust,
+		"userMessageText":    p.Text,
+		"customMessageBg":    p.Surface0,
+		"customMessageText":  p.Text,
+		"customMessageLabel": mauve,
 		// Tool result frames tint their background toward the outcome, the way
 		// the opencode theme tints diff rows: a 10% wash over the panel bg, so
 		// success/error read at a glance without fighting the text.
-		"toolPendingBg": u.SurfaceDim,
-		"toolSuccessBg": blendHex(u.Green, u.PanelBg, 0.9),
-		"toolErrorBg":   blendHex(u.Red, u.PanelBg, 0.9),
-		"toolTitle":     u.Text,
-		"toolOutput":    u.Subtext0,
+		"toolPendingBg": p.Crust,
+		"toolSuccessBg": blendHex(p.Green, p.Mantle, 0.9),
+		"toolErrorBg":   blendHex(p.Coral, p.Mantle, 0.9),
+		"toolTitle":     p.Text,
+		"toolOutput":    p.Subtext0,
 
-		"mdHeading":         u.Mauve,
-		"mdLink":            u.Blue,
-		"mdLinkUrl":         u.Subtext0,
-		"mdCode":            u.Green,
-		"mdCodeBlock":       u.Text,
-		"mdCodeBlockBorder": u.Surface1,
-		"mdQuote":           u.Yellow,
-		"mdQuoteBorder":     u.Surface1,
-		"mdHr":              u.Overlay0,
-		"mdListBullet":      u.Blue,
+		"mdHeading":         mauve,
+		"mdLink":            a.Blue,
+		"mdLinkUrl":         p.Subtext0,
+		"mdCode":            p.Green,
+		"mdCodeBlock":       p.Text,
+		"mdCodeBlockBorder": p.Border,
+		"mdQuote":           p.Amber,
+		"mdQuoteBorder":     p.Border,
+		"mdHr":              p.Overlay0,
+		"mdListBullet":      a.Blue,
 
-		"toolDiffAdded":     u.Green,
-		"toolDiffRemoved":   u.Red,
-		"toolDiffContext":   u.Subtext0,
-		"syntaxComment":     u.Subtext0,
-		"syntaxKeyword":     u.Mauve,
-		"syntaxFunction":    u.Blue,
-		"syntaxVariable":    u.Red,
-		"syntaxString":      u.Green,
-		"syntaxNumber":      u.Peach,
-		"syntaxType":        u.Yellow,
-		"syntaxOperator":    u.Teal,
-		"syntaxPunctuation": u.Text,
+		"toolDiffAdded":     p.Green,
+		"toolDiffRemoved":   p.Coral,
+		"toolDiffContext":   p.Subtext0,
+		"syntaxComment":     p.Subtext0,
+		"syntaxKeyword":     mauve,
+		"syntaxFunction":    a.Blue,
+		"syntaxVariable":    p.Coral,
+		"syntaxString":      p.Green,
+		"syntaxNumber":      peach,
+		"syntaxType":        p.Amber,
+		"syntaxOperator":    p.Mint,
+		"syntaxPunctuation": p.Text,
 
 		// The thinking ladder colors the editor border by reasoning level, so it
 		// climbs the palette rather than repeating one hue.
-		"thinkingOff":     u.Overlay0,
-		"thinkingMinimal": u.Overlay1,
-		"thinkingLow":     u.Blue,
-		"thinkingMedium":  u.Teal,
-		"thinkingHigh":    u.Mauve,
-		"thinkingXhigh":   u.Peach,
-		"thinkingMax":     u.Red,
-		"bashMode":        u.Teal,
-		"pythonMode":      u.Yellow,
+		"thinkingOff":     p.Overlay0,
+		"thinkingMinimal": p.Overlay1,
+		"thinkingLow":     a.Blue,
+		"thinkingMedium":  p.Mint,
+		"thinkingHigh":    mauve,
+		"thinkingXhigh":   peach,
+		"thinkingMax":     p.Coral,
+		"bashMode":        p.Mint,
+		"pythonMode":      p.Amber,
 
-		"statusLineBg":        u.Surface0,
-		"statusLineSep":       u.Overlay0,
-		"statusLineModel":     u.Mauve,
-		"statusLinePath":      u.Blue,
-		"statusLineGitClean":  u.Green,
-		"statusLineGitDirty":  u.Yellow,
-		"statusLineContext":   u.Teal,
-		"statusLineSpend":     u.Peach,
-		"statusLineStaged":    u.Green,
-		"statusLineDirty":     u.Yellow,
-		"statusLineUntracked": u.Red,
-		"statusLineOutput":    u.Text,
-		"statusLineCost":      u.Peach,
-		"statusLineSubagents": u.Accent,
+		"statusLineBg":        p.Surface0,
+		"statusLineSep":       p.Overlay0,
+		"statusLineModel":     mauve,
+		"statusLinePath":      a.Blue,
+		"statusLineGitClean":  p.Green,
+		"statusLineGitDirty":  p.Amber,
+		"statusLineContext":   p.Mint,
+		"statusLineSpend":     peach,
+		"statusLineStaged":    p.Green,
+		"statusLineDirty":     p.Amber,
+		"statusLineUntracked": p.Coral,
+		"statusLineOutput":    p.Text,
+		"statusLineCost":      peach,
+		"statusLineSubagents": p.Accent,
 	}
 }
 
 // ompThemeBody renders rt as an omp custom theme.
 func ompThemeBody(rt resolvedTheme) []byte {
-	colors := ompColors(rt.ui)
-	// A [theme.custom] override reaches us already parsed to a hex, so this is
-	// belt and braces — but omp treats a non-hex token as a var reference and
-	// throws when it resolves nothing, and a theme that fails to load costs the
-	// whole palette (omp falls back to built-in "dark"). So a malformed token
-	// takes the same token off the unmodified built-in palette instead of being
-	// emitted or, as in opencode's body, dropped: omp requires all of them.
+	colors := ompColors(rt)
+	// Every role reaches us already parsed to a hex, so this is belt and braces
+	// — but omp treats a non-hex token as a var reference and throws when it
+	// resolves nothing, and a theme that fails to load costs the whole palette
+	// (omp falls back to built-in "dark"). So a malformed token takes the same
+	// token off Luvus's bundled palette instead of being emitted or, as in
+	// opencode's body, dropped: omp requires all of them.
 	var base map[string]string
 	for tok, v := range colors {
 		if _, _, _, ok := hexRGB(v); !ok {
 			if base == nil {
-				base = ompColors(resolveThemeByName(rt.Resolved).ui)
+				base = ompColors(bundledTheme(rt.Resolved))
 			}
 			colors[tok] = base[tok]
 		}
@@ -815,9 +810,9 @@ func ompThemeBody(rt resolvedTheme) []byte {
 		"name":    ompThemeName,
 		"colors":  colors,
 		"export": map[string]string{
-			"pageBg": rt.ui.PanelBg,
-			"cardBg": rt.ui.SurfaceDim,
-			"infoBg": rt.ui.Surface0,
+			"pageBg": rt.p.Mantle,
+			"cardBg": rt.p.Crust,
+			"infoBg": rt.p.Surface0,
 		},
 	}
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -894,8 +889,11 @@ func syncOmpThemePin(b Backend, agentDir string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code — ~/.claude/themes/herdr.json (mapped palette, as herdr-theme-sync wrote)
+// Claude Code — ~/.claude/themes/luvus.json (mapped palette)
 // ---------------------------------------------------------------------------
+
+// claudeThemeName is the generated theme file lasso writes for Claude Code.
+const claudeThemeName = "luvus"
 
 // claudeThemeFile is the on-disk shape Claude Code expects for a custom theme:
 // a base (its own dark/light palette) plus per-token hex overrides. Only tokens
@@ -906,9 +904,9 @@ type claudeThemeFile struct {
 	Overrides map[string]string `json:"overrides"`
 }
 
-// claudeOverrides maps herdr's UI tokens onto Claude Code's theme tokens
-// (ported from herdr-theme-sync's mapping).
-func claudeOverrides(p uiPalette) map[string]string {
+// claudeOverrides maps Luvus's semantic roles onto Claude Code's theme tokens.
+func claudeOverrides(rt resolvedTheme) map[string]string {
+	p := rt.p
 	m := map[string]string{}
 	put := func(hex string, toks ...string) {
 		if hex == "" {
@@ -919,21 +917,22 @@ func claudeOverrides(p uiPalette) map[string]string {
 		}
 	}
 	put(p.Text, "text")
-	put(p.PanelBg, "background", "inverseText")
+	put(p.Mantle, "background", "inverseText")
 	put(p.Surface0, "userMessageBackground", "bashMessageBackgroundColor")
-	put(p.Surface1, "userMessageBackgroundHover", "selectionBg")
-	put(p.SurfaceDim, "composerSidebarBackground", "memoryBackgroundColor")
+	put(p.Surface1, "userMessageBackgroundHover")
+	put(p.SelBg, "selectionBg")
+	put(p.Crust, "composerSidebarBackground", "memoryBackgroundColor")
 	put(p.Overlay0, "subtle", "inactive")
 	put(p.Overlay1, "secondaryBorder", "suggestion")
 	put(p.Accent, "permission", "ide", "promptBorder", "bashBorder")
-	put(p.Mauve, "planMode", "thinking", "merged")
-	put(p.Teal, "remember")
+	put(rt.mauve(), "planMode", "thinking", "merged")
+	put(p.Mint, "remember")
 	put(p.Green, "success", "autoAccept", "diffAdded")
-	put(p.Red, "error", "diffRemoved")
-	put(p.Yellow, "warning")
+	put(p.Coral, "error", "diffRemoved")
+	put(p.Amber, "warning")
 
 	// Dimmed diff variants: blend the accent toward the background.
-	bg := p.PanelBg
+	bg := p.Mantle
 	if bg == "" {
 		if luminance(p.Text) > 0.5 {
 			bg = "#000000"
@@ -944,22 +943,22 @@ func claudeOverrides(p uiPalette) map[string]string {
 	if p.Green != "" {
 		m["diffAddedDimmed"] = blendHex(p.Green, bg, 0.6)
 	}
-	if p.Red != "" {
-		m["diffRemovedDimmed"] = blendHex(p.Red, bg, 0.6)
+	if p.Coral != "" {
+		m["diffRemovedDimmed"] = blendHex(p.Coral, bg, 0.6)
 	}
 	return m
 }
 
 func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error {
-	path := filepath.Join(home, ".claude", "themes", "herdr.json")
+	path := filepath.Join(home, ".claude", "themes", claudeThemeName+".json")
 	base := "dark"
 	if light {
 		base = "light"
 	}
 	theme := claudeThemeFile{
-		Name:      "herdr (" + rt.Resolved + ")",
+		Name:      claudeThemeName + " (" + rt.Resolved + ")",
 		Base:      base,
-		Overrides: claudeOverrides(rt.ui),
+		Overrides: claudeOverrides(rt),
 	}
 	out, err := json.MarshalIndent(theme, "", "  ")
 	if err != nil {
@@ -977,7 +976,7 @@ func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error
 }
 
 // ---------------------------------------------------------------------------
-// Ghostty — ~/.config/ghostty/themes/herdr + `theme = herdr` in the config
+// Ghostty — ~/.config/ghostty/themes/luvus + `theme = luvus` in the config
 // ---------------------------------------------------------------------------
 
 // ghosttyConfigPaths are the config files ghostty may read, relative to home.
@@ -996,20 +995,20 @@ var ghosttyConfigPaths = [][]string{
 // Ghostty has no alpha on selection-background, so the translucent accent wash
 // (see termSelectionAlpha) is pre-composited over the panel background instead.
 func ghosttyThemeBody(rt resolvedTheme) []byte {
-	u, a := rt.ui, rt.ansi
+	p, a := rt.p, rt.ansi
 	var b []byte
 	put := func(k, v string) {
 		if v != "" {
 			b = append(b, (k + " = " + v + "\n")...)
 		}
 	}
-	b = append(b, ("# Generated by lasso — herdr theme " + rt.Resolved + ". Edits are overwritten.\n")...)
-	put("background", u.PanelBg)
-	put("foreground", u.Text)
-	put("cursor-color", u.Text)
-	put("cursor-text", u.PanelBg)
-	put("selection-background", blendHex(u.Accent, u.PanelBg, 1-float64(termSelectionAlpha)/255))
-	put("selection-foreground", u.Text)
+	b = append(b, ("# Generated by lasso — Luvus theme " + rt.Resolved + ". Edits are overwritten.\n")...)
+	put("background", p.Mantle)
+	put("foreground", p.Text)
+	put("cursor-color", p.Text)
+	put("cursor-text", p.Mantle)
+	put("selection-background", blendHex(p.Accent, p.Mantle, 1-float64(termSelectionAlpha)/255))
+	put("selection-foreground", p.Text)
 	for i, hex := range []string{
 		a.Black, a.Red, a.Green, a.Yellow, a.Blue, a.Magenta, a.Cyan, a.White,
 		a.BrightBlack, a.BrightRed, a.BrightGreen, a.BrightYellow,
@@ -1054,7 +1053,7 @@ func ghosttySetTheme(body []byte, name string) ([]byte, bool) {
 }
 
 // ghosttyThemeName is the theme file lasso writes and points ghostty's config at.
-const ghosttyThemeName = "herdr"
+const ghosttyThemeName = "luvus"
 
 func syncGhosttyTheme(b Backend, home string, rt resolvedTheme) error {
 	// Ghostty resolves bare theme names against ~/.config/ghostty/themes on
@@ -1126,7 +1125,7 @@ func syncLassoResolved(b Backend, home string, light bool) error {
 		b, _ := json.Marshal(v)
 		m[k] = b
 	}
-	set(theme, "mode", "herdr")
+	set(theme, "mode", "luvus")
 	set(theme, "resolved", resolved)
 	set(theme, "updatedAt", time.Now().UTC().Format(time.RFC3339))
 	set(root, "theme", theme)
@@ -1143,7 +1142,7 @@ func syncLassoResolved(b Backend, home string, light bool) error {
 }
 
 // ---------------------------------------------------------------------------
-// color math (ported from herdr-theme-sync)
+// color math
 // ---------------------------------------------------------------------------
 
 func hexRGB(hex string) (r, g, b int, ok bool) {

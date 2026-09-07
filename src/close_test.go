@@ -34,7 +34,7 @@ func TestClosePaneRetriesTransient(t *testing.T) {
 	stubCloser(t, func(string) error {
 		calls++
 		if calls < 3 {
-			return &herdrError{Code: "internal", Message: "busy"} // transient
+			return &luvusError{Code: "internal", Message: "busy"} // transient
 		}
 		return nil
 	})
@@ -51,13 +51,13 @@ func TestClosePaneNotFoundIsSuccess(t *testing.T) {
 	calls := 0
 	stubCloser(t, func(string) error {
 		calls++
-		return &herdrError{Code: "pane_not_found", Message: "pane p1 not found"}
+		return &luvusError{Code: "not_found", Message: "pane p1 not found"}
 	})
 	if err := closePane(context.Background(), &localBackend{}, "p1"); err != nil {
-		t.Fatalf("pane_not_found should be treated as closed, got %v", err)
+		t.Fatalf("not_found should be treated as closed, got %v", err)
 	}
 	if calls != 1 {
-		t.Errorf("pane_not_found must not retry; got %d calls", calls)
+		t.Errorf("not_found must not retry; got %d calls", calls)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestClosePaneInvalidRequestFailsFast(t *testing.T) {
 	calls := 0
 	stubCloser(t, func(string) error {
 		calls++
-		return &herdrError{Code: "invalid_request", Message: "missing field"}
+		return &luvusError{Code: "invalid_request", Message: "missing field"}
 	})
 	if err := closePane(context.Background(), &localBackend{}, ""); err == nil {
 		t.Fatal("invalid_request should fail, not be swallowed")
@@ -81,7 +81,7 @@ func TestClosePaneGivesUpAfterAttempts(t *testing.T) {
 	calls := 0
 	stubCloser(t, func(string) error {
 		calls++
-		return &herdrError{Code: "internal", Message: "still busy"}
+		return &luvusError{Code: "internal", Message: "still busy"}
 	})
 	if err := closePane(context.Background(), &localBackend{}, "p1"); err == nil {
 		t.Fatal("expected failure after exhausting retries")
@@ -96,7 +96,7 @@ func TestClosePaneHonorsContextCancel(t *testing.T) {
 	calls := 0
 	stubCloser(t, func(string) error {
 		calls++
-		return &herdrError{Code: "internal", Message: "busy"}
+		return &luvusError{Code: "internal", Message: "busy"}
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -109,7 +109,7 @@ func TestClosePaneHonorsContextCancel(t *testing.T) {
 }
 
 // TestServeCloseBulkPartial: a bulk close where one pane was already
-// cascade-closed (pane_not_found) and one is genuinely broken — the gone pane
+// cascade-closed (not_found) and one is genuinely broken — the gone pane
 // counts as closed, the broken one is reported.
 func TestServeCloseBulkPartial(t *testing.T) {
 	fastBackoff(t)
@@ -120,9 +120,9 @@ func TestServeCloseBulkPartial(t *testing.T) {
 	stubCloser(t, func(id string) error {
 		switch id {
 		case "gone":
-			return &herdrError{Code: "pane_not_found", Message: "pane gone not found"}
+			return &luvusError{Code: "not_found", Message: "pane gone not found"}
 		case "broken":
-			return &herdrError{Code: "internal", Message: "nope"}
+			return &luvusError{Code: "internal", Message: "nope"}
 		default:
 			return nil
 		}
@@ -154,19 +154,5 @@ func TestServeCloseBulkPartial(t *testing.T) {
 	}
 	if closedSet["broken"] {
 		t.Error("broken should not be reported as closed")
-	}
-}
-
-func TestHerdrErrorParsing(t *testing.T) {
-	// herdrError must round-trip from herdr's wire shape.
-	var he herdrError
-	if err := json.Unmarshal([]byte(`{"code":"pane_not_found","message":"pane x not found"}`), &he); err != nil {
-		t.Fatal(err)
-	}
-	if he.Code != "pane_not_found" {
-		t.Errorf("code = %q", he.Code)
-	}
-	if !strings.Contains(he.Error(), "pane_not_found") {
-		t.Errorf("Error() = %q", he.Error())
 	}
 }

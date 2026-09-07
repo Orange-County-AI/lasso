@@ -116,81 +116,100 @@ echo "edit anything under src/web/src and the browser hot-reloads; restart this 
 cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
 '''
 
-[tasks.dev-herdr]
-description = "Like `dev`, but the backend talks to an ISOLATED herdr release (smoke-test a herdr version before adopting it — the prod daemon is never touched)"
+[tasks.dev-luvus]
+description = "Like `dev`, but the backend talks to an ISOLATED luvus release (smoke-test a Luvus version before adopting it — the prod server is never touched)"
 depends = ["build"]
 shell = "bash -c"
 usage = '''
-arg "[version]" help="herdr release to smoke-test (e.g. 0.8.0); downloaded + cached on first use" default="0.8.0"
+arg "[version]" help="luvus release to smoke-test (e.g. 0.13.4); downloaded + cached on first use" default="0.13.4"
 '''
 run = '''
 set -euo pipefail
-ver="${usage_version:-0.8.0}"; ver="${ver#v}"   # accept 0.8.0 or v0.8.0
+ver="${usage_version:-0.13.4}"; ver="${ver#v}"   # accept 0.13.4 or v0.13.4
 
-# Map this machine to a herdr release asset.
+# Map this machine to a luvus release asset (Rust target triples, tar.gz each
+# holding a bare `luvus` binary, with a sibling .sha256).
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64)              asset=herdr-linux-x86_64 ;;
-  Linux-aarch64|Linux-arm64) asset=herdr-linux-aarch64 ;;
-  Darwin-arm64)              asset=herdr-macos-aarch64 ;;
-  Darwin-x86_64)             asset=herdr-macos-x86_64 ;;
-  *) echo "dev-herdr: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  Linux-x86_64)              target=x86_64-unknown-linux-musl ;;
+  Linux-aarch64|Linux-arm64) target=aarch64-unknown-linux-musl ;;
+  Darwin-arm64)              target=aarch64-apple-darwin ;;
+  Darwin-x86_64)             target=x86_64-apple-darwin ;;
+  *) echo "dev-luvus: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
+asset="luvus-v$ver-$target.tar.gz"
 
-# Isolated home: a private socket + XDG config/data/state so this daemon shares
-# NOTHING with the production herdr — its socket, sqlite state, panes, and logs
-# all live here. The prod daemon (~/.config/herdr/herdr.sock) is never read or
-# written, so a regression in the version under test can't corrupt real sessions.
-home="${TMPDIR:-/tmp}/lasso-herdr-smoke/$ver"
-bin="$home/herdr"
-sock="$home/herdr.sock"
-mkdir -p "$home/xdg-config/herdr" "$home/xdg-data" "$home/xdg-state" "$home/run"
+# Isolated home: LUVUS_HOME is the ONE switch that moves a Luvus server's whole
+# world — its socket, session state, themes, manifests and logs all live under
+# it — so this daemon shares nothing with the production one (~/.luvus). The
+# prod server is never read or written, so a regression in the version under
+# test can't corrupt real sessions.
+home="${TMPDIR:-/tmp}/lasso-luvus-smoke/$ver"
+bin="$home/luvus"
+# Inherited pane endpoints outrank LUVUS_HOME. Clear them BEFORE any server
+# command, including the exit trap, or a smoke run could stop production.
+unset LUVUS_ENV LUVUS_PANE_ID LUVUS_SOCKET_PATH LUVUS_API_ADDRESS LUVUS_BIN_PATH LUVUS_SESSION LUVUS_WORKSPACE_ID LUVUS_TAB_ID
+export LUVUS_HOME="$home/luvus-home"
+mkdir -p "$home" "$LUVUS_HOME"
 
-# Cache the binary across runs; download on first use.
+# Cache the binary across runs; download + verify on first use.
 if [ ! -x "$bin" ]; then
-  echo "dev-herdr: downloading herdr $ver ($asset) …"
-  curl -fsSL -o "$bin" "https://github.com/herdrdev/herdr/releases/download/v$ver/$asset"
+  echo "dev-luvus: downloading luvus $ver ($asset) …"
+  base="https://github.com/RizRiyz/luvus/releases/download/v$ver"
+  curl -fsSL -o "$home/$asset" "$base/$asset"
+  curl -fsSL -o "$home/$asset.sha256" "$base/luvus-v$ver-$target.sha256"
+  want="$(awk '{print $1; exit}' "$home/$asset.sha256")"
+  got="$( { sha256sum "$home/$asset" 2>/dev/null || shasum -a 256 "$home/$asset"; } | awk '{print $1}')"
+  [ "$want" = "$got" ] || { echo "dev-luvus: checksum mismatch for $asset (want $want, got $got)" >&2; exit 1; }
+  tar xzf "$home/$asset" -C "$home" luvus
   chmod +x "$bin"
 fi
-echo "dev-herdr: $("$bin" --version | head -n1) at $bin"
+echo "dev-luvus: $("$bin" --version | head -n1) at $bin"
 
-export XDG_CONFIG_HOME="$home/xdg-config" XDG_DATA_HOME="$home/xdg-data" \
-       XDG_STATE_HOME="$home/xdg-state" XDG_RUNTIME_DIR="$home/run"
-export HERDR_SOCKET_PATH="$sock" HERDR_CONFIG_PATH="$home/xdg-config/herdr/config.toml"
-# Minimal isolated config: ignore the prod config.toml, but DO permit nesting —
-# lasso's embedded "Herdr" terminal launches the herdr TUI inside the prod pane
-# (HERDR_ENV=1), so without allow_nested it errors "nested herdr is disabled".
-# Mirrors the prod config's [experimental] allow_nested = true.
-cat > "$HERDR_CONFIG_PATH" <<'EOF'
-[experimental]
-allow_nested = true
-EOF
-
-# Start the isolated daemon (headless) and tear it down on exit. `herdr server`
-# is headless, on its own socket, so starting it from inside a prod herdr pane
-# does not disturb prod panes.
+# Start the isolated server and tear it down on exit. The bare `luvus server` is
+# the FOREGROUND server (`server start` daemonizes and reparents itself, which a
+# trap can't reliably reclaim), and it binds inside LUVUS_HOME, so starting it
+# from inside a prod pane does not disturb prod panes.
 "$bin" server >"$home/server.log" 2>&1 &
-hpid=$!
-stop_herdr() { "$bin" server stop >/dev/null 2>&1 || true; kill "$hpid" 2>/dev/null || true; }
-trap stop_herdr EXIT INT TERM
-for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
-[ -S "$sock" ] || { echo "dev-herdr: isolated herdr never bound $sock:" >&2; cat "$home/server.log" >&2; exit 1; }
-echo "dev-herdr: isolated herdr $ver daemon on $sock (log: $home/server.log)"
+lpid=$!
+stop_luvus() { "$bin" server stop >/dev/null 2>&1 || true; kill "$lpid" 2>/dev/null || true; }
+trap stop_luvus EXIT INT TERM
 
-# Put the isolated binary first on PATH so lasso's terminal tab (-term-cmd herdr,
-# default) opens THIS version's TUI attached to the isolated daemon. lasso scrubs
-# HERDR_ENV from the terminal child (outsideHerdrEnv), so there is no nested-session
-# conflict and the TUI follows HERDR_SOCKET_PATH to the isolated daemon.
+# Ask Luvus where it bound rather than assuming $LUVUS_HOME/luvus.sock: an
+# over-long home makes it bind a short alias in the temp root instead, and
+# session.list is the only thing that knows. It is a host-profile method, so it
+# answers before the server is up (running:false) — poll until it says running.
+# An isolated home holds exactly one session, so reading the single address out
+# of the reply needs nothing but sed.
+sock=""
+for _ in $(seq 1 100); do
+  reply="$(printf '{"id":"1","method":"session.list","params":{}}\n' | "$bin" uhp proxy 2>/dev/null || true)"
+  case "$reply" in
+    *'"running":true'*) sock="$(printf '%s' "$reply" | sed -n 's/.*"address":"\([^"]*\)".*/\1/p')" ;;
+  esac
+  [ -n "$sock" ] && break
+  kill -0 "$lpid" 2>/dev/null || { echo "dev-luvus: isolated luvus exited:" >&2; cat "$home/server.log" >&2; exit 1; }
+  sleep 0.1
+done
+[ -n "$sock" ] || { echo "dev-luvus: isolated luvus never came up:" >&2; cat "$home/server.log" >&2; exit 1; }
+export LUVUS_SOCKET_PATH="$sock"
+export LUVUS_API_ADDRESS="$sock"
+export LUVUS_BIN_PATH="$bin"
+echo "dev-luvus: isolated luvus $ver on $sock (log: $home/server.log)"
+
+# Put the isolated binary first on PATH so lasso's terminal tab (-term-cmd luvus,
+# default) opens THIS version's TUI. It inherits LUVUS_HOME, so the TUI attaches
+# to the isolated server rather than prod.
 export PATH="$home:$PATH"
 
 # ---- below mirrors `dev`, except defaultSock() now resolves to the isolated
-# ---- HERDR_SOCKET_PATH, so the backend drives herdr $ver instead of prod. ----
+# ---- LUVUS_SOCKET_PATH, so the backend drives luvus $ver instead of prod. ----
 ip="$(tailscale ip -4 | head -n1)"
 [ -n "$ip" ] || { echo "no tailscale IPv4 found — is tailscale up? (tailscale status)" >&2; exit 1; }
 
 logf="$(mktemp)"
 ./lasso -listen 127.0.0.1:8190 -insecure-no-auth -dev >"$logf" 2>&1 &
 backend=$!
-trap 'stop_herdr; kill "$backend" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
+trap 'stop_luvus; kill "$backend" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
 
 port=""
 for _ in $(seq 1 100); do
@@ -202,9 +221,9 @@ done
 [ -n "$port" ] || { echo "backend never reported its port; log:" >&2; cat "$logf" >&2; exit 1; }
 
 tail -n +1 -f "$logf" & tailpid=$!
-trap 'stop_herdr; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
+trap 'stop_luvus; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
 
-echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI http://$ip"
-echo "Settings tab should read herdr $ver / the protocol that daemon pongs / compatible. Ctrl-C stops lasso AND the isolated daemon."
+echo "lasso (dev-luvus $ver): backend 127.0.0.1:$port → luvus $ver ($sock) · Vite UI http://$ip"
+echo "Settings tab should read luvus $ver / the UHP protocol that server reports / compatible. Ctrl-C stops lasso AND the isolated server."
 cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
 '''

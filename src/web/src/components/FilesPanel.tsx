@@ -61,13 +61,13 @@ export function FilesPanel() {
   const { activeCwd, cwdHost, activePaneID, host } = useApp()
   const [sub, setSub] = React.useState<SubView>("files")
   // The sidebar's file state belongs to the pane it was browsed in. Selecting
-  // another agent (or workspace) in herdr swaps in THAT pane's open file, tree
+  // another agent (or workspace) in Luvus swaps in THAT pane's open file, tree
   // root, browsed host and expansion, and switching back brings this one's
   // straight back. It used to be global: a newly selected agent's terminal sat
   // beside the previous agent's open file, and the tree only caught up at all
   // because "follow" happened to be on. Kept in memory, not persisted — it is
-  // where you were this session, and pane ids don't outlive herdr anyway.
-  // Keyed by host as well as pane id: ids are unique only within one herdr
+  // where you were this session, and pane ids don't outlive Luvus anyway.
+  // Keyed by host as well as pane id: ids are unique only within one Luvus
   // session, so two hosts' panes would otherwise share a slot and hand each
   // other's file (on the wrong machine) to the viewer.
   const pane = `${host ?? ""}\u0000${activePaneID ?? ""}`

@@ -62,7 +62,7 @@ self.addEventListener("push", (event) => {
 })
 
 // Opening the notification lands you in lasso, on the host the event happened
-// on. It deliberately does NOT focus the agent's pane: herdr's focus is one
+// on. It deliberately does NOT focus the agent's pane: Luvus's focus is one
 // global per session, shared with the TUI and every other lasso client, so a
 // link that moved it would move it for everyone (see lib/url.ts).
 self.addEventListener("notificationclick", (event) => {

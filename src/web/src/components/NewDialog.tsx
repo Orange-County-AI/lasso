@@ -28,7 +28,7 @@ import {
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
-import { focusHerdrTerminal } from "@/lib/terminal"
+import { focusLuvusTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
@@ -195,9 +195,9 @@ function extractImagePaths(text: string): string[] {
   return [...new Set(text.match(imagePathRE) || [])]
 }
 
-// A host is selectable when it's reachable, running herdr, and protocol-
-// compatible (mirror of HostSwitcher's helper). Unusable hosts are listed
-// disabled — the footer switcher stays the place to provision/update them.
+// A host is selectable when it's reachable, running a luvus server, and
+// drivable by this lasso (mirror of HostSwitcher's helper). Unusable hosts are
+// listed disabled — the footer switcher stays the place to provision/update them.
 function hostUsable(h: HostInfo): boolean {
   return h.reachable && h.running && h.compatible
 }
@@ -224,11 +224,11 @@ export function NewDialog({
   const [placeholderIdx, setPlaceholderIdx] = React.useState(0)
   const queryClient = useQueryClient()
   // Set when the dialog closes because a pane was just created, so the close
-  // handler hands keyboard focus to Herdr instead of restoring the trigger.
+  // handler hands keyboard focus to Luvus instead of restoring the trigger.
   const createdRef = React.useRef(false)
   const modeTabsRef = React.useRef<HTMLDivElement>(null)
   const agentTypeTabsRef = React.useRef<HTMLDivElement>(null)
-  const focusHerdrOnEscapeRef = React.useRef(false)
+  const focusLuvusOnEscapeRef = React.useRef(false)
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
   const gitTypeTabRef = React.useRef<HTMLButtonElement>(null)
   const scratchTypeTabRef = React.useRef<HTMLButtonElement>(null)
@@ -260,7 +260,7 @@ export function NewDialog({
   // host's config/repos live in its own lasso.db, so the queries are keyed and
   // fetched by selectedHost — picking another host previews that host's repos
   // (read from its db over SSH) WITHOUT switching the active backend. The switch
-  // is deferred to create time so the Herdr tab isn't yanked while still editing.
+  // is deferred to create time so the Luvus tab isn't yanked while still editing.
   const { host: activeHost } = useApp()
   const [selectedHost, setSelectedHost] = React.useState("local")
 
@@ -590,7 +590,7 @@ export function NewDialog({
       // host can actually read them. No-op when they're already there.
       const finalPrompt = await rehomePastedImages(prompt, selectedHost)
       // Land the user on the new agent by moving THIS TAB to the picked host —
-      // its herdr terminal then points at it, and other tabs are untouched.
+      // its Luvus terminal then points at it, and other tabs are untouched.
       // Deferred to here (not on dropdown change) so previewing another host's
       // repos while editing doesn't yank the terminal onto it.
       if (selectedHost !== (activeHost ?? "local")) {
@@ -633,10 +633,8 @@ export function NewDialog({
     },
     onSuccess: (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      // No api.focus here: the creation RPC itself already asked herdr to
-      // focus the new workspace (web creates default no_focus:false), and a
-      // bare workspace_id has no tab to focus anyway — /api/focus requires both
-      // ids, so this call always 400'd and was swallowed.
+      // No api.focus here: creating the agent already asked Luvus to focus the
+      // new workspace, so a second focus call would only race it.
       createdRef.current = true
       onOpenChange(false)
       reset()
@@ -733,17 +731,17 @@ export function NewDialog({
           }
         }}
         onEscapeKeyDown={() => {
-          focusHerdrOnEscapeRef.current = true
+          focusLuvusOnEscapeRef.current = true
         }}
         onCloseAutoFocus={(e) => {
-          // A successful creation or Esc should return the keyboard to Herdr;
+          // A successful creation or Esc should return the keyboard to Luvus;
           // other dismissals retain Radix's normal focus restoration.
-          const focusHerdr = createdRef.current || focusHerdrOnEscapeRef.current
+          const focusLuvus = createdRef.current || focusLuvusOnEscapeRef.current
           createdRef.current = false
-          focusHerdrOnEscapeRef.current = false
-          if (focusHerdr) {
+          focusLuvusOnEscapeRef.current = false
+          if (focusLuvus) {
             e.preventDefault()
-            focusHerdrTerminal()
+            focusLuvusTerminal()
           }
         }}
       >

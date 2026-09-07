@@ -22,7 +22,7 @@ import (
 //
 // The database is host-LOCAL: it belongs to the machine lasso runs on, the same
 // way the old config.yaml did. But creation routes through defaultBackend() to the
-// active herdr host, so anything that names a repo/branch/path on that host is
+// active luvus host, so anything that names a repo/branch/path on that host is
 // keyed by the active host name (defaultBackend().Name(): "local" or an ssh alias).
 // That keeps a local repo path from being suggested while a remote host is
 // selected. Pure user settings (branch prefix, default agent, …) stay global.
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS agents (
   boot_status  TEXT NOT NULL DEFAULT '',
   boot_error   TEXT NOT NULL DEFAULT '',
   -- closed_at stamps the moment reconciliation (agentreap.go) confirmed the
-  -- agent's herdr pane was gone. Non-empty = tombstone: the row stays for the
+  -- agent's luvus pane was gone. Non-empty = tombstone: the row stays for the
   -- history/reopen views, but every "which agents are there" query filters it
   -- out, since nothing can be sent to, read from, or closed on it.
   closed_at    TEXT NOT NULL DEFAULT ''
@@ -179,6 +179,31 @@ func openDB() error {
 	if err := migrateFromYAML(); err != nil {
 		return fmt.Errorf("migrate config.yaml: %w", err)
 	}
+	// Runtime identifiers cannot cross the major-version boundary: an old pane
+	// ID must never resolve to an unrelated terminal in the replacement runtime.
+	// Keep history and worktrees for explicit reopen, but retire live records
+	// once, atomically with the runtime marker.
+	tx, err := h.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var runtime string
+	err = tx.QueryRow(`SELECT value FROM settings WHERE key='terminal_runtime'`).Scan(&runtime)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if runtime != "luvus" {
+		if _, err := tx.Exec(`UPDATE agents SET closed_at=? WHERE closed_at=''`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES('terminal_runtime','luvus') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -256,7 +281,7 @@ type uiState struct {
 	SidebarCollapsed bool `json:"sidebar_collapsed"`
 	// SidebarPct is the right sidebar's open width as a percentage of the panel
 	// group. Synced (rather than device-local) because the sidebar's footprint
-	// sets the shared herdr pty's width — tabs disagreeing about layout render
+	// sets the shared luvus pty's width — tabs disagreeing about layout render
 	// blank gutters. 0 = never set; the frontend falls back to its default.
 	SidebarPct float64 `json:"sidebar_pct"`
 	// FilesClickNavigates controls the Files tab's folder-click behavior: when
@@ -421,7 +446,7 @@ func appendAgent(host string, rec AgentRecord) error {
 }
 
 // updateAgentCreated flips a write-ahead record (BootCreating) to its created
-// state in one statement: the workspace/pane herdr returned plus the next boot
+// state in one statement: the workspace/pane luvus returned plus the next boot
 // status. Scoped by id+host since ids are only unique within a host.
 func updateAgentCreated(id, host, workspaceID, rootPane, status string) error {
 	_, err := db.Exec(
@@ -515,9 +540,9 @@ func scanAgentRow(rows *sql.Rows) (AgentRecord, error) {
 }
 
 // listAgents returns the LIVE agents recorded on a host, oldest first (append
-// order) — records reconciliation has tombstoned (closed_at set: their herdr
+// order) — records reconciliation has tombstoned (closed_at set: their luvus
 // pane is gone) are excluded, because every caller of this is asking "which
-// agents are there", and an agent whose pane herdr no longer has can be neither
+// agents are there", and an agent whose pane luvus no longer has can be neither
 // messaged, read, nor closed. The history/reopen views take
 // listAllAgentsIncludingClosed / findAgentRecordAny instead.
 func listAgents(host string) ([]AgentRecord, error) {
@@ -558,9 +583,9 @@ func findAgentRecordAny(host, id string) (AgentRecord, error) {
 	return scanAgentRow(rows)
 }
 
-// markAgentClosed tombstones one record: reconciliation confirmed herdr no
+// markAgentClosed tombstones one record: reconciliation confirmed luvus no
 // longer has its pane. Scoped by id+host — ids are only unique within a host, so
-// an unscoped update would let one host's herdr state condemn another's records.
+// an unscoped update would let one host's luvus state condemn another's records.
 // The row itself is kept: it is the agent's history, and reopening it from the
 // switcher clears the stamp again (updateAgentPane).
 func markAgentClosed(id, host string) error {
@@ -617,7 +642,7 @@ func queryHostAgents(q string) ([]hostAgent, error) {
 // updateAgentPane re-points a recorded agent at a freshly created workspace/pane,
 // so a reopened agent shows as live again (the switcher matches records to panes
 // by host+root_pane). Scoped by id+host since ids are only unique within a host.
-// It also clears any closed_at stamp: the record now names a pane herdr has, so
+// It also clears any closed_at stamp: the record now names a pane luvus has, so
 // the tombstone reconciliation set is no longer true and the agent belongs back
 // in list_agents.
 func updateAgentPane(id, host, workspaceID, rootPane string) error {
@@ -659,7 +684,7 @@ func updateAgentTitleByWorkspace(host, workspaceID, title string) error {
 // agent_messages — the store-and-forward queue behind the message_agent MCP
 // tool. Rows are appended by message_agent and drained by the message
 // dispatcher (messages.go), which submits into the recipient's pane only when
-// herdr reports its agent idle.
+// luvus reports its agent idle.
 // ---------------------------------------------------------------------------
 
 // enqueueAgentMessage appends one pending message to the queue.

@@ -1,11 +1,11 @@
 // Command lasso serves a two-column web UI:
 //
-//	left  = herdr running inside a ttyd terminal (embedded in an iframe)
+//	left  = luvus running inside a ttyd terminal (embedded in an iframe)
 //	right = a file viewer that follows the *focused pane's* working directory,
 //	        live — the harness's own cwd when an agent owns the pane (see
 //	        agentcwd.go), the pane's otherwise
 //
-// It talks to the herdr server over its newline-delimited JSON unix socket
+// It talks to the luvus server over its newline-delimited JSON unix socket
 // (subscribe to focus events + poll pane.list for cwd changes) and pushes
 // active-pane updates to the browser over SSE.
 //
@@ -56,11 +56,11 @@ var distFS embed.FS
 var (
 	listenAddr  = flag.String("listen", defaultListenAddr, "address for the web server (loopback by default — the terminal is a writable shell)")
 	ttydPort    = flag.Int("ttyd-port", 7682, "loopback port ttyd listens on")
-	herdrSock   = flag.String("herdr-sock", defaultSock(), "path to the herdr unix socket")
-	termCmd     = flag.String("term-cmd", "herdr", "command ttyd runs in the terminal")
-	termNice    = flag.Int("term-nice", 0, "if non-zero, launch the herdr terminal at this nice level (reset-on-fork + nice, needs RLIMIT_NICE); 0 disables")
-	termNoSwap  = flag.Bool("term-no-swap", false, "launch the herdr terminal in a transient systemd scope with MemorySwapMax=0 so its pages are never swapped out (mirrors the ccp alias)")
-	shellCmd    = flag.String("shell-cmd", "", "command for the out-of-herdr Terminal tab (right column); empty = $SHELL, then bash, then sh")
+	luvusSock   = flag.String("luvus-sock", defaultSock(), "path to the Luvus UHP unix socket")
+	termCmd     = flag.String("term-cmd", luvusCLI(), "command ttyd runs in the terminal")
+	termNice    = flag.Int("term-nice", 0, "if non-zero, launch the luvus terminal at this nice level (reset-on-fork + nice, needs RLIMIT_NICE); 0 disables")
+	termNoSwap  = flag.Bool("term-no-swap", false, "launch the luvus terminal in a transient systemd scope with MemorySwapMax=0 so its pages are never swapped out (mirrors the ccp alias)")
+	shellCmd    = flag.String("shell-cmd", "", "command for the out-of-luvus Terminal tab (right column); empty = $SHELL, then bash, then sh")
 	spawnTtyd   = flag.Bool("spawn-ttyd", true, "spawn and supervise ttyd as a child process")
 	pollEvery   = flag.Duration("poll", 2*time.Second, "fallback poll interval for cwd changes")
 	allowNoAuth = flag.Bool("insecure-no-auth", false, "permit a non-loopback bind without auth (tailnet-only use; never on a public interface)")
@@ -78,29 +78,25 @@ var (
 	// whole path off (endpoint refuses, UI hides the action).
 	disableSelfUpdate = flag.Bool("disable-self-update", envOn("LASSO_DISABLE_SELF_UPDATE"),
 		"disable the in-app self-update (git pull + systemctl --user restart); env LASSO_DISABLE_SELF_UPDATE=1")
-	devMode   = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
-	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	devMode = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
 )
 
-// theme is resolved at startup (mirroring herdr's config) and drives both the
+// theme is resolved at startup (mirroring luvus's config) and drives both the
 // embedded terminal's palette and the sidebar CSS. The hub re-resolves it live
 // (see hub.curTheme); this global only seeds the initial page + ttyd spawn.
 var theme resolvedTheme
 
 // themePayload is the JSON served at /api/theme: the resolved theme's CSS
 // variables (for the sidebar) and xterm.js ITheme (for the live terminal), so
-// the browser can repaint both when herdr's theme changes without a reload.
+// the browser can repaint both when luvus's theme changes without a reload.
 type themePayload struct {
 	Name       string          `json:"name"`
 	Resolved   string          `json:"resolved"`
+	Label      string          `json:"label"`
+	Appearance string          `json:"appearance"`
 	Customized bool            `json:"customized"`
 	CSS        string          `json:"css"`   // :root declaration lines
 	Xterm      json.RawMessage `json:"xterm"` // xterm.js ITheme object
-	// Themes are the selectable built-ins (for the Settings dropdown); Forced
-	// means this instance was launched with -theme=<name>, so editing herdr's
-	// config.toml restyles herdr but this lasso won't follow.
-	Themes []themeOption `json:"themes"`
-	Forced bool          `json:"forced"`
 	// SyncAgentThemes is the server-level toggle for mirroring the theme into
 	// agent CLIs' theme files (agentsync.go); flipped via POST /api/theme-set.
 	SyncAgentThemes bool `json:"sync_agent_themes"`
@@ -110,11 +106,21 @@ type themePayload struct {
 }
 
 func defaultSock() string {
-	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
+	if p := os.Getenv("LUVUS_API_ADDRESS"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "herdr", "herdr.sock")
+	if p := os.Getenv("LUVUS_SOCKET_PATH"); p != "" {
+		return p
+	}
+	if p := discoverLocalLuvusSocket(); p != "" {
+		return p
+	}
+	root := os.Getenv("LUVUS_HOME")
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, ".luvus")
+	}
+	return filepath.Join(root, "luvus.sock")
 }
 
 // runServer is the foreground HTTP server — the historical `./lasso` behavior.
@@ -131,9 +137,9 @@ func runServer() {
 		setupDevLog()
 	}
 
-	// Start out driving the local herdr daemon. The footer's host switcher swaps
+	// Start out driving the local luvus daemon. The footer's host switcher swaps
 	// this for a remoteBackend (and back) at runtime via /api/host.
-	setDefaultBackend(&localBackend{sock: *herdrSock})
+	setDefaultBackend(&localBackend{sock: *luvusSock})
 
 	// Open the host-local state DB (~/.lasso/lasso.db), migrating a legacy
 	// config.yaml on first run. Fatal if it can't open — the creator depends on it.
@@ -164,7 +170,12 @@ func runServer() {
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
 	}
 
-	theme = loadHerdrTheme(*themeName)
+	var themeErr error
+	theme, themeErr = loadLuvusTheme()
+	if themeErr != nil {
+		log.Printf("theme:    Luvus unavailable: %v", themeErr)
+		theme = unavailableTheme()
+	}
 	if theme.Customized {
 		log.Printf("theme:    %q -> %s (+custom overrides)", theme.Name, theme.Resolved)
 	} else {
@@ -173,7 +184,9 @@ func runServer() {
 	// Mirror into local agents' theme files at boot too (the poll only syncs on
 	// a theme CHANGE, so without this a sync-logic upgrade — or files drifted
 	// while lasso was down — would wait for the next theme switch to converge).
-	go syncAgentThemesVia(localFsBackend(), theme)
+	if themeErr == nil {
+		go syncAgentThemesVia(localFsBackend(), theme)
+	}
 
 	// Shutdown is sequenced in two stages: the signal context only *starts* a
 	// shutdown, while everything long-lived (remote backends, ttyds, reapers,
@@ -194,11 +207,11 @@ func runServer() {
 	// without ever colliding on a port or, worse, silently proxying onto each
 	// other's terminal. Only the external-ttyd path (-spawn-ttyd=false) still
 	// uses *ttydPort. The paths belong to the ttydRoles (switch.go), which own
-	// one ttyd per host for each of the two roles: the herdr terminal
-	// (/terminal/) and a plain out-of-herdr shell (/shell/, the right-column
+	// one ttyd per host for each of the two roles: the luvus terminal
+	// (/terminal/) and a plain out-of-luvus shell (/shell/, the right-column
 	// Terminal tab). The spawn is deferred until after the web port binds, so a
 	// startup failure doesn't leak an orphaned ttyd. The external-ttyd path only
-	// wires the herdr terminal to *ttydPort; the shell terminal is
+	// wires the luvus terminal to *ttydPort; the shell terminal is
 	// viewer-spawned only, so it's absent in that mode.
 
 	hub := newHub()
@@ -220,7 +233,7 @@ func runServer() {
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
-		proxy = ttydProxy(func() *ttydRole { return terminals.herdr })
+		proxy = ttydProxy(func() *ttydRole { return terminals.luvus })
 	} else {
 		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", *ttydPort))
 		proxy = httputil.NewSingleHostReverseProxy(target)
@@ -247,8 +260,8 @@ func runServer() {
 			Customized:      rt.Customized,
 			CSS:             rt.cssVars(),
 			Xterm:           json.RawMessage(rt.xtermJSON()),
-			Themes:          themeOptions,
-			Forced:          *themeName != "" && *themeName != "auto",
+			Label:           rt.Label,
+			Appearance:      rt.Appearance,
 			SyncAgentThemes: syncAgentThemesEnabled(),
 			ThemeSyncOff:    themeSyncOffHosts(),
 		})
@@ -374,23 +387,23 @@ func runServer() {
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
 	// log.Fatalf bypasses).
 	if *spawnTtyd {
-		// Each role owns one ttyd PER HOST (left: herdr / `herdr --remote`,
+		// Each role owns one ttyd PER HOST (left: luvus / `luvus --remote`,
 		// right: local shell / `ssh <host>`), so a host switch points the role at
 		// another instance instead of respawning one in place. The first spawn
 		// here is the local host's pair; a switch spawns the target's on its
 		// first visit and reuses it forever after (see switch.go's ttydRole).
-		terminals.herdr = newTtydRole(ctx, "ttyd", "/terminal")
+		terminals.luvus = newTtydRole(ctx, "ttyd", "/terminal")
 		terminals.shell = newTtydRole(ctx, "shell", "/shell")
 		// The default host's pair, spawned eagerly so the first tab's iframes
 		// find a bound socket. A tab moving to another host spawns that host's
 		// pair through POST /api/host (serveHostAttach), and both stay resident.
-		// The shell's env is stripped of the HERDR_* session markers so commands
-		// like `herdr update` (which refuse to run inside a session) work.
+		// The shell's env is stripped of the LUVUS_* session markers so commands
+		// like `luvus update` (which refuse to run inside a session) work.
 		if err := ensureTerminals(defaultBackend()); err != nil {
 			log.Fatalf("ttyd: %v", err)
 		}
 		// Retire terminals for hosts that drop out of rotation (see ttydIdle).
-		go terminals.herdr.sweepIdle()
+		go terminals.luvus.sweepIdle()
 		go terminals.shell.sweepIdle()
 	}
 
@@ -404,10 +417,8 @@ func runServer() {
 	// here — after the active backend is up — and refreshed on its own interval.
 	startCacheWarmer()
 
-	// Clean up SSH control masters orphaned by killed `herdr --remote` clients
-	// (see sshreap.go) — left unreaped they pile up until the remote sshd
-	// starts resetting new connections.
-	startHerdrSSHReaper(ctx)
+	// Reap only Lasso's own orphaned SSH transports.
+	startSSHReaper(ctx)
 
 	srv := &http.Server{Handler: handler}
 	shutdownDone := make(chan struct{})
@@ -449,7 +460,7 @@ func runServer() {
 	} else {
 		log.Printf("terminal: ttyd@127.0.0.1:%d (external) running %q (proxied at /terminal/)", *ttydPort, *termCmd)
 	}
-	log.Printf("herdr:    %s", *herdrSock)
+	log.Printf("luvus:    %s", *luvusSock)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
@@ -580,7 +591,7 @@ func ttydProxy(role func() *ttydRole) *httputil.ReverseProxy {
 // request that beat the first spawn.
 var errNoTtyd = errors.New("no ttyd for that host")
 
-// shellCommand resolves the command for the out-of-herdr Terminal tab:
+// shellCommand resolves the command for the out-of-luvus Terminal tab:
 // -shell-cmd if set, else $SHELL, else bash, else sh.
 func shellCommand() string {
 	if c := strings.TrimSpace(*shellCmd); c != "" {
@@ -598,7 +609,7 @@ func shellCommand() string {
 // startTtyd spawns one ttyd serving command under basePath on its own private
 // unix socket. command is split on whitespace into the child argv. env, if
 // non-nil, overrides the child environment (the shell terminal passes
-// outsideHerdrEnv); nil inherits the viewer's env.
+// outsideLuvusEnv); nil inherits the viewer's env.
 func startTtyd(ctx context.Context, sock, basePath, command string, env []string) error {
 	// Bind a private unix socket (one per instance) rather than a shared TCP
 	// port, so concurrent prod/dev instances can't collide or cross-connect.
@@ -607,8 +618,8 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 	_ = os.Remove(sock)
 
 	// The xterm.js ITheme (background/foreground/cursor + 16 ANSI colors) is
-	// derived from herdr's selected theme, so the terminal palette lines up
-	// with herdr's chrome and the sidebar. Passed to ttyd via `-t theme=<json>`,
+	// derived from luvus's selected theme, so the terminal palette lines up
+	// with luvus's chrome and the sidebar. Passed to ttyd via `-t theme=<json>`,
 	// which forwards it to xterm.js in the browser. Seed from the hub's *live*
 	// theme (the global `theme` is only the startup snapshot) so a terminal
 	// spawned after a theme change or host-switch respawn starts on the current
@@ -653,110 +664,59 @@ func startTtyd(ctx context.Context, sock, basePath, command string, env []string
 }
 
 // ---------------------------------------------------------------------------
-// herdr socket client
+// luvus socket client
 // ---------------------------------------------------------------------------
 
-// herdrError is a structured error returned by herdr's socket API
-// (e.g. {"code":"pane_not_found","message":"pane X not found"}). Callers can
+// luvusError is a structured error returned by luvus's socket API
+// (e.g. {"code":"not_found","message":"no such pane: 42"}). Callers can
 // inspect Code (via errors.As) to react to specific conditions — notably to
 // treat an already-gone pane as a no-op rather than a hard failure.
-type herdrError struct {
+type luvusError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-func (e *herdrError) Error() string {
+func (e *luvusError) Error() string {
 	if e.Message != "" {
-		return fmt.Sprintf("herdr error %s: %s", e.Code, e.Message)
+		return fmt.Sprintf("luvus error %s: %s", e.Code, e.Message)
 	}
-	return "herdr error: " + e.Code
+	return "luvus error: " + e.Code
 }
 
-// herdrCall does one request/response round-trip against the DEFAULT host's
-// herdr socket. The dial/encode/decode logic lives in herdrCallSock (backend.go),
+// luvusCall does one request/response round-trip against the DEFAULT host's
+// luvus socket. The dial/encode/decode logic lives in luvusCallSock (backend.go),
 // which both backends share.
 //
 // Request-path code must not use this: a handler runs against the host its
 // caller named (reqBackend), and this one answers for the boot host whoever is
 // asking. It survives for background work that legitimately has no caller.
-func herdrCall(method string, params any) (json.RawMessage, error) {
-	return defaultBackend().HerdrCall(method, params)
+func luvusCall(method string, params any) (json.RawMessage, error) {
+	return defaultBackend().LuvusCall(method, params)
 }
 
+// pane is Lasso's host-local projection of UHP topology and agent state.
 type pane struct {
-	PaneID        string `json:"pane_id"`
-	TerminalID    string `json:"terminal_id"` // herdr terminal handle, for direct `terminal attach`
-	WorkspaceID   string `json:"workspace_id"`
-	TabID         string `json:"tab_id"`
-	Label         string `json:"label"`          // herdr's per-pane title; "" when the pane is unnamed
-	Cwd           string `json:"cwd"`            // the shell's cwd as it last reported it (OSC 7), so stale mid-command
-	ForegroundCwd string `json:"foreground_cwd"` // herdr-resolved cwd of the pane's foreground process; "" when unresolvable
-	Focused       bool   `json:"focused"`
-	Agent         string `json:"agent"`
-	AgentStatus   string `json:"agent_status"`
-	// TerminalTitle is the pane's raw OSC title, glyphs and all. Agent CLIs put
-	// their live state in it (claude prefixes "✳ " when idle and a braille
-	// spinner while working), which is what lets paneAgentPresence recover an
-	// agent herdr's own detection missed — see panestatus.go.
-	TerminalTitle string `json:"terminal_title"`
-	// TerminalTitleStripped is the same title with those state glyphs removed —
-	// the human-readable half ("Check Norm outline wiki connection"), used as a
-	// display name for a session that has no workspace label.
-	TerminalTitleStripped string `json:"terminal_title_stripped"`
-	// AgentSession is the harness session herdr would resume this pane with —
-	// the handle on the agent's *own* working directory (see agentcwd.go).
-	AgentSession *agentSession `json:"agent_session"`
+	PaneID          string `json:"pane_id"`
+	TerminalID      string `json:"terminal_id"`
+	WorkspaceID     string `json:"workspace_id"`
+	TabID           string `json:"tab_id"`
+	WorkspaceLabel  string `json:"workspace_label"`
+	TabLabel        string `json:"tab_label"`
+	WorkspaceNumber int    `json:"workspace_number"`
+	TabNumber       int    `json:"tab_number"`
+	Label           string `json:"label"`
+	Cwd             string `json:"cwd"`
+	Focused         bool   `json:"focused"`
+	Agent           string `json:"agent"`
+	AgentStatus     string `json:"agent_status"`
+	AgentSession    string `json:"agent_session"`
 }
 
-// paneCwd is the best cwd herdr's pane.list alone can give for a pane. For a
-// plain shell, foreground_cwd (the live cwd of whatever process owns the
-// terminal) tracks the user's cd's and wins. For an AGENT pane, the shell's
-// reported cwd is the agent's project root and is the safer of the two: the
-// agent's foreground process is often a transient subprocess (e.g. a plugin
-// under ~/.claude/plugins/cache) whose cwd would otherwise drag the viewer away
-// from the worktree. So agents prefer the shell cwd, using foreground_cwd only
-// when herdr reports none. (herdr added foreground_cwd in 0.6.5, superseding the
-// viewer's old /proc-scraping workaround.)
-//
-// The focused pane — the one the file viewer follows — gets a better answer
-// from activeCwd, which asks the harness and foreground process-group leader
-// before falling back here. This stays the cheap per-pane answer for cross-host
-// aggregation, where a per-pane RPC and transcript read would be paid N times.
-func paneCwd(p pane) string {
-	if paneHasLiveAgent(p) {
-		if p.Cwd != "" {
-			return p.Cwd
-		}
-		return p.ForegroundCwd
-	}
-	if p.ForegroundCwd != "" {
-		return p.ForegroundCwd
-	}
-	return p.Cwd
-}
+func paneCwd(p pane) string { return p.Cwd }
 
-// paneCwdUsesForeground reports whether paneCwd returned the foreground cwd
-// rather than the shell launch cwd (drives Active.CwdSource).
-func paneCwdUsesForeground(p pane) bool {
-	if paneHasLiveAgent(p) {
-		return p.Cwd == "" && p.ForegroundCwd != ""
-	}
-	return p.ForegroundCwd != ""
-}
-
-// pane.list is by far herdr's most expensive method: as of 0.6.5 it resolves
-// every pane's foreground_cwd via the TTY + /proc on each call (~0.5–1.5s for a
-// busy session), versus <10ms for workspace.list/tab.list. The viewer hits it
-// from both the active-pane refresh loop and the pane endpoint, so a short
-// single-flight cache keeps a focus event, the periodic poll, and a pane fetch
-// that land close together from each paying the full cost. Event-driven
-// refreshes invalidate the cache first (see invalidatePaneList) so focus
-// changes never serve a stale snapshot.
-// The cache is keyed BY HOST, and the per-host entry carries its own mutex. Two
-// tabs on two machines poll concurrently and must not serve each other titan's
-// panes under norm's name, nor queue behind each other on a lock: the coalescing
-// that makes this cache worth having is per host, since the slow call it
-// coalesces is one host's pane.list.
+// Coalesce full-session projections per host. Each host has its own lock:
+// independent tabs must neither exchange panes nor queue behind another host.
+// UHP lifecycle events invalidate the entry before the next refresh.
 type paneListCacheEntry struct {
 	mu   sync.Mutex
 	at   time.Time
@@ -786,7 +746,7 @@ func paneCacheFor(host string) *paneListCacheEntry {
 	return e
 }
 
-func herdrPaneList(be Backend) (json.RawMessage, error) {
+func luvusPaneList(be Backend) (json.RawMessage, error) {
 	e := paneCacheFor(be.Name())
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -795,14 +755,20 @@ func herdrPaneList(be Backend) (json.RawMessage, error) {
 	}
 	// The call is made under the lock on purpose: concurrent callers coalesce
 	// onto this one in-flight request rather than firing parallel slow calls.
-	data, err := be.HerdrCall("pane.list", map[string]any{})
+	panes, err := runtimePanes(be)
+	var data json.RawMessage
+	if err == nil {
+		data, err = json.Marshal(struct {
+			Panes []pane `json:"panes"`
+		}{panes})
+	}
 	e.at = time.Now()
 	e.data, e.err = data, err
 	return data, err
 }
 
 // invalidatePaneList drops host's cached pane.list so the next call refetches.
-// Each host's feed calls it on every herdr event from THAT host: an event means
+// Each host's feed calls it on every luvus event from THAT host: an event means
 // that host's pane state changed, so its cached snapshot would be stale — and no
 // other host's is affected.
 func invalidatePaneList(host string) {
@@ -818,17 +784,19 @@ func invalidatePaneList(host string) {
 }
 
 type workspace struct {
-	WorkspaceID string `json:"workspace_id"`
-	Label       string `json:"label"`
-	Number      int    `json:"number"` // display order; changes when workspaces are reordered
-	Focused     bool   `json:"focused"`
+	WorkspaceID     string `json:"workspace_id"`
+	Label           string `json:"label"`
+	Number          int    `json:"number"`           // UHP's zero-based API index
+	DisplayPosition int    `json:"display_position"` // sidebar order (pinning can differ)
+	Focused         bool   `json:"focused"`
+	Cwd             string `json:"cwd"`
 }
 
 // Active is the state pushed to the browser.
 type Active struct {
 	PaneID         string `json:"pane_id"`
 	Cwd            string `json:"cwd"`
-	CwdSource      string `json:"cwd_source"` // which resolver answered: "harness" (the agent's own cwd, from its session transcript) | "leader" (the foreground process-group leader's cwd) | "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell-reported cwd)
+	CwdSource      string `json:"cwd_source"` // "harness" or Luvus's reported "shell" cwd
 	WorkspaceID    string `json:"workspace_id"`
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`
@@ -836,20 +804,20 @@ type Active struct {
 	Agent          string `json:"agent"`
 	AgentStatus    string `json:"agent_status"`
 	PanesRev       int    `json:"panes_rev"`    // bumps when workspace order or pane membership changes
-	ThemeRev       int    `json:"theme_rev"`    // bumps when herdr's resolved theme changes (config.toml edited)
-	HerdrUp        bool   `json:"herdr_up"`     // false when herdr's socket is unreachable; the rest of the struct is then last-known (stale)
+	ThemeRev       int    `json:"theme_rev"`    // bumps when Luvus's actual palette changes
+	LuvusUp        bool   `json:"luvus_up"`     // false when luvus's socket is unreachable; the rest of the struct is then last-known (stale)
 	Host           string `json:"host"`         // the host THIS stream is for: "local" or an ssh-config alias
 	HostSlug       string `json:"host_slug"`    // Host's URL path segment, so the browser can address /terminal/<slug>/ without re-deriving it
-	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's herdr; the sidebar browses Cwd on this host
+	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's luvus; the sidebar browses Cwd on this host
 	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
 // signature captures workspace order + pane membership (see layoutSignature), so
 // the caller can detect when the pane list needs to re-render — e.g. after a
-// workspace is reordered in herdr — independently of focus changes.
+// workspace is reordered in luvus — independently of focus changes.
 func fetchActive(be Backend) (Active, string, error) {
-	res, err := herdrPaneList(be)
+	res, err := luvusPaneList(be)
 	if err != nil {
 		return Active{}, "", err
 	}
@@ -860,14 +828,11 @@ func fetchActive(be Backend) (Active, string, error) {
 		return Active{}, "", err
 	}
 
-	// workspace.list does double duty: label the focused workspace and feed the
-	// layout signature (so a reorder/rename of a workspace is detected).
-	var wl struct {
-		Workspaces []workspace `json:"workspaces"`
+	wss, err := runtimeWorkspaces(be)
+	if err != nil {
+		return Active{}, "", err
 	}
-	if res, err := be.HerdrCall("workspace.list", map[string]any{}); err == nil {
-		_ = json.Unmarshal(res, &wl)
-	}
+	wl := struct{ Workspaces []workspace }{wss}
 	sig := layoutSignature(pl.Panes, wl.Workspaces)
 
 	var fp *pane
@@ -878,13 +843,13 @@ func fetchActive(be Backend) (Active, string, error) {
 		}
 	}
 	if fp == nil {
-		// herdr is reachable but has no focused pane — e.g. a freshly started
+		// luvus is reachable but has no focused pane — e.g. a freshly started
 		// server with no session/workspaces yet (common right after a host
-		// switch to a host whose herdr was just (re)started). That's "up but
+		// switch to a host whose luvus was just (re)started). That's "up but
 		// empty", NOT down: returning an error here would make the hub mark
-		// HerdrUp=false and never flip the active-host display. Return a valid
+		// LuvusUp=false and never flip the active-host display. Return a valid
 		// empty Active (with the layout signature) so the success path runs,
-		// marks herdr up, and reflects the active host with an empty pane/cwd.
+		// marks luvus up, and reflects the active host with an empty pane/cwd.
 		return Active{}, sig, nil
 	}
 	agent, status := paneAgentPresence(*fp)
@@ -893,7 +858,7 @@ func fetchActive(be Backend) (Active, string, error) {
 		TabID: fp.TabID, Agent: agent, AgentStatus: status,
 	}
 	a.Cwd, a.CwdSource, a.CwdHost = activeCwd(be, *fp)
-	a.TabLabel = tabLabel(be, fp.TabID)
+	a.TabLabel = fp.TabLabel
 	for _, w := range wl.Workspaces {
 		if w.WorkspaceID == a.WorkspaceID {
 			a.WorkspaceLabel = w.Label
@@ -911,7 +876,7 @@ func layoutSignature(panes []pane, wss []workspace) string {
 	sort.Slice(ws, func(i, j int) bool { return ws[i].Number < ws[j].Number })
 	var sb strings.Builder
 	for _, w := range ws {
-		fmt.Fprintf(&sb, "%d:%s:%s;", w.Number, w.WorkspaceID, w.Label)
+		fmt.Fprintf(&sb, "%d:%d:%s:%s;", w.DisplayPosition, w.Number, w.WorkspaceID, w.Label)
 	}
 	sb.WriteByte('|')
 	keys := make([]string, 0, len(panes))
@@ -923,28 +888,11 @@ func layoutSignature(panes []pane, wss []workspace) string {
 	return sb.String()
 }
 
-// tabLabel fetches a tab's display label (best effort, "" on failure).
-func tabLabel(be Backend, tabID string) string {
-	res, err := be.HerdrCall("tab.get", map[string]any{"tab_id": tabID})
-	if err != nil {
-		return ""
-	}
-	var r struct {
-		Tab struct {
-			Label string `json:"label"`
-		} `json:"tab"`
-	}
-	if json.Unmarshal(res, &r) != nil {
-		return ""
-	}
-	return r.Tab.Label
-}
-
 // ---------------------------------------------------------------------------
 // pane list: list every pane + focus one
 // ---------------------------------------------------------------------------
 
-// paneView is a herdr pane enriched with workspace/tab labels and ordering
+// paneView is a luvus pane enriched with workspace/tab labels and ordering
 // numbers for API consumers that need a labeled, sorted active-host pane list.
 type paneView struct {
 	PaneID         string `json:"pane_id"`
@@ -959,9 +907,9 @@ type paneView struct {
 }
 
 // fetchPanes lists every pane and joins in workspace/tab labels, returning them
-// grouped by workspace (then tab) order — the order herdr itself shows.
+// grouped by workspace (then tab) order — the order luvus itself shows.
 func fetchPanes(be Backend) ([]paneView, error) {
-	res, err := herdrPaneList(be)
+	res, err := luvusPaneList(be)
 	if err != nil {
 		return nil, err
 	}
@@ -972,39 +920,12 @@ func fetchPanes(be Backend) ([]paneView, error) {
 		return nil, err
 	}
 
-	type meta struct {
-		label  string
-		number int
-	}
+	type meta struct{ number int }
 	tabs := map[string]meta{}
-	if r, err := be.HerdrCall("tab.list", map[string]any{}); err == nil {
-		var tl struct {
-			Tabs []struct {
-				TabID  string `json:"tab_id"`
-				Label  string `json:"label"`
-				Number int    `json:"number"`
-			} `json:"tabs"`
-		}
-		if json.Unmarshal(r, &tl) == nil {
-			for _, t := range tl.Tabs {
-				tabs[t.TabID] = meta{t.Label, t.Number}
-			}
-		}
-	}
 	wss := map[string]meta{}
-	if r, err := be.HerdrCall("workspace.list", map[string]any{}); err == nil {
-		var wl struct {
-			Workspaces []struct {
-				WorkspaceID string `json:"workspace_id"`
-				Label       string `json:"label"`
-				Number      int    `json:"number"`
-			} `json:"workspaces"`
-		}
-		if json.Unmarshal(r, &wl) == nil {
-			for _, w := range wl.Workspaces {
-				wss[w.WorkspaceID] = meta{w.Label, w.Number}
-			}
-		}
+	for _, p := range pl.Panes {
+		wss[p.WorkspaceID] = meta{p.WorkspaceNumber}
+		tabs[p.TabID] = meta{p.TabNumber}
 	}
 
 	out := make([]paneView, 0, len(pl.Panes))
@@ -1013,9 +934,9 @@ func fetchPanes(be Backend) ([]paneView, error) {
 		out = append(out, paneView{
 			PaneID:         p.PaneID,
 			WorkspaceID:    p.WorkspaceID,
-			WorkspaceLabel: wss[p.WorkspaceID].label,
+			WorkspaceLabel: p.WorkspaceLabel,
 			TabID:          p.TabID,
-			TabLabel:       tabs[p.TabID].label,
+			TabLabel:       p.TabLabel,
 			Cwd:            paneCwd(p),
 			Agent:          agent,
 			AgentStatus:    status,
@@ -1048,24 +969,21 @@ func servePanes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"panes": panes})
 }
 
-// serveFocus focuses a pane. herdr exposes no pane.focus, so focusing a pane
-// means focusing its workspace and then its tab (panes live one-per-tab in the
-// common case; for split tabs this focuses the tab the pane belongs to).
+// serveFocus targets the exact pane, including a split in an inactive workspace.
 func serveFocus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		WorkspaceID string `json:"workspace_id"`
-		TabID       string `json:"tab_id"`
+		PaneID string `json:"pane_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.WorkspaceID == "" || req.TabID == "" {
-		http.Error(w, "workspace_id and tab_id required", http.StatusBadRequest)
+	if req.PaneID == "" {
+		http.Error(w, "pane_id required", http.StatusBadRequest)
 		return
 	}
 	be, err := reqBackend(r, "")
@@ -1073,35 +991,31 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := be.HerdrCall("workspace.focus", map[string]any{"workspace_id": req.WorkspaceID}); err != nil {
-		http.Error(w, "workspace.focus: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	if _, err := be.HerdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
-		http.Error(w, "tab.focus: "+err.Error(), http.StatusBadGateway)
+	unlock := runtimeMutationLock(be)
+	defer unlock()
+	if _, err := be.LuvusCall("pane.focus", map[string]any{"pane": req.PaneID}); err != nil {
+		http.Error(w, "pane.focus: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// serveRename renames the tab a pane lives in. pane.rename sets a pane name
-// that herdr does not surface in pane.list, so the user-visible tab label is
-// the mutable name exposed by this endpoint.
+// serveRename renames a pane's tab without leaving the viewing focus changed.
 func serveRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		TabID string `json:"tab_id"`
-		Label string `json:"label"`
+		PaneID string `json:"pane_id"`
+		Label  string `json:"label"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.TabID == "" || strings.TrimSpace(req.Label) == "" {
-		http.Error(w, "tab_id and non-empty label required", http.StatusBadRequest)
+	if req.PaneID == "" || strings.TrimSpace(req.Label) == "" || len([]rune(req.Label)) > 40 {
+		http.Error(w, "pane_id and a label of 1–40 characters required", http.StatusBadRequest)
 		return
 	}
 	be, err := reqBackend(r, "")
@@ -1109,7 +1023,7 @@ func serveRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := be.HerdrCall("tab.rename", map[string]any{"tab_id": req.TabID, "label": req.Label}); err != nil {
+	if err := renameRuntimeTab(be, req.PaneID, req.Label); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1140,7 +1054,7 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := be.HerdrCall("workspace.rename", map[string]any{"workspace_id": req.WorkspaceID, "label": req.Label}); err != nil {
+	if _, err := be.LuvusCall("workspace.rename", map[string]any{"workspace_id": req.WorkspaceID, "name": req.Label}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1150,10 +1064,10 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// Bulk-close resilience knobs. Closing a pane makes herdr recompute layout /
+// Bulk-close resilience knobs. Closing a pane makes luvus recompute layout /
 // shift focus / maybe close the tab, so a burst of pane.close calls can race
 // that reconfiguration and fail transiently — hence retries plus a little
-// pacing so herdr settles between calls. Tuned to stay snappy for a handful of
+// pacing so luvus settles between calls. Tuned to stay snappy for a handful of
 // panes while clearing the flakiness that used to need a manual retry.
 const closeAttempts = 4 // total tries per pane
 
@@ -1165,9 +1079,9 @@ var (
 )
 
 // paneCloser performs a single pane.close round-trip against be. A package var
-// so tests can substitute a fake herdr without a live socket.
+// so tests can substitute a fake luvus without a live socket.
 var paneCloser = func(be Backend, id string) error {
-	_, err := be.HerdrCall("pane.close", map[string]any{"pane_id": id})
+	_, err := be.LuvusCall("pane.close", map[string]any{"pane": id})
 	return err
 }
 
@@ -1177,12 +1091,12 @@ func closePane(ctx context.Context, be Backend, id string) error {
 }
 
 // closePaneWith closes one pane via closer, absorbing the two flaky cases: a
-// transient herdr error (retried with exponential backoff) and a pane that's
+// transient luvus error (retried with exponential backoff) and a pane that's
 // already gone — e.g. cascade-closed when its tab's last sibling was closed —
 // which is treated as success since the goal (pane gone) is met. invalid_request
 // is our own bug, so it fails fast without burning retries. Honors ctx so a
 // client that walks away (closed tab / navigation) doesn't keep us hammering
-// herdr. closer is host-specific, so the same retry behavior applies wherever
+// luvus. closer is host-specific, so the same retry behavior applies wherever
 // a caller obtained the backend.
 func closePaneWith(ctx context.Context, closer func(string) error, id string) error {
 	var last error
@@ -1200,16 +1114,16 @@ func closePaneWith(ctx context.Context, closer func(string) error, id string) er
 		if err == nil {
 			return nil
 		}
-		var he *herdrError
+		var he *luvusError
 		if errors.As(err, &he) {
 			switch he.Code {
-			case "pane_not_found":
+			case "not_found":
 				return nil // already gone — idempotent success
 			case "invalid_request":
 				return err // malformed on our side; retrying won't help
 			}
 		}
-		last = err // transient (dial/timeout/herdr busy): back off and retry
+		last = err // transient (dial/timeout/luvus busy): back off and retry
 	}
 	return last
 }
@@ -1228,7 +1142,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // serveClose closes one or more panes (pane.close per id). Closing the last
 // pane in a tab closes the tab too. Calls are serialized with retries + pacing
-// (see closePane) so a bulk close is resilient to herdr's reconfiguration
+// (see closePane) so a bulk close is resilient to luvus's reconfiguration
 // races; any pane that still can't be closed is reported per-id.
 func serveClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1267,13 +1181,7 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
 }
 
-// serveThemeSet (Settings tab) switches the herdr/lasso theme by rewriting
-// [theme].name in the LOCAL herdr config.toml — the single source of truth both
-// already follow: the hub re-resolves the config every poll (bumping theme_rev
-// so the browser repaints chrome + terminals), and the running herdr server is
-// asked to reload its config over the API socket. The resolved theme then fans
-// out to every settled, usable host so mirrored terminals and their agent CLIs
-// stay in step even when their host was never made the active backend.
+// serveThemeSet changes downstream sync preferences only. Luvus owns selection.
 func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1293,6 +1201,10 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.Name != "" {
+		http.Error(w, "select the theme in Luvus; Lasso follows its active palette", http.StatusBadRequest)
 		return
 	}
 	if req.SyncAgentThemes != nil {
@@ -1319,52 +1231,25 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 			go convergeThemeSyncFor(req.ThemeSyncHost)
 		}
 	}
-	if req.Name == "" {
-		writeJSON(w, map[string]any{
-			"ok":                true,
-			"sync_agent_themes": syncAgentThemesEnabled(),
-			"theme_sync_off":    themeSyncOffHosts(),
-		})
-		return
-	}
-	name := normalizeThemeName(req.Name)
-	if _, ok := themes[name]; !ok {
-		http.Error(w, fmt.Sprintf("unknown theme %q", req.Name), http.StatusBadRequest)
-		return
-	}
-	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
-		http.Error(w, "write config.toml: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Repaint the running local herdr TUI: it doesn't watch its config file, so
-	// ask the server to reload it over the API socket (no herdr-on-PATH needed).
-	// Best-effort — if herdr is down the theme still applies on its next start,
-	// and lasso's own repaint (below) doesn't depend on it.
-	if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
-		log.Printf("theme:    herdr reload-config: %v", err)
-	}
-	// Fan the resolved theme out after the local config write so [theme.custom]
-	// overrides reach local and settled remote agents. Off the request path:
-	// remote SFTP writes can wait on ssh latency.
-	go syncThemeEverywhere(loadHerdrTheme(""))
-	// Skip the poll wait so the browser's theme_rev bump (and repaint) is
-	// near-immediate.
-	srvHub.kick("") // every tab, whatever host it is on, repaints on the new theme
-	writeJSON(w, map[string]any{"ok": true, "name": name})
+	writeJSON(w, map[string]any{
+		"ok":                true,
+		"sync_agent_themes": syncAgentThemesEnabled(),
+		"theme_sync_off":    themeSyncOffHosts(),
+	})
 }
 
 // ---------------------------------------------------------------------------
-// herdr self-update (Settings tab)
+// luvus self-update (Settings tab)
 // ---------------------------------------------------------------------------
 
-// herdrBinary is the herdr executable to invoke for out-of-session commands
+// luvusBinary is the luvus executable to invoke for out-of-session commands
 // (version, update) — the first field of -term-cmd (what ttyd runs in the
-// terminal), defaulting to "herdr".
-func herdrBinary() string {
+// terminal), defaulting to "luvus".
+func luvusBinary() string {
 	if f := strings.Fields(*termCmd); len(f) > 0 {
 		return f[0]
 	}
-	return "herdr"
+	return "luvus"
 }
 
 // rlimitNice is RLIMIT_NICE on Linux; Go's syscall package doesn't export it.
@@ -1382,7 +1267,7 @@ func canLowerNiceTo(n int) bool {
 	return uint64(20-n) <= rl.Cur
 }
 
-// termPrefix builds a command prefix that launches the herdr terminal so the
+// termPrefix builds a command prefix that launches the luvus terminal so the
 // interactive client stays responsive under load. Two independent, opt-in parts:
 //
 //   - -term-no-swap: run the client in a transient systemd scope with
@@ -1415,14 +1300,18 @@ func termPrefix() string {
 	return p.String()
 }
 
-// outsideHerdrEnv returns the current environment minus the markers herdr uses
-// to detect it's running *inside* a session (HERDR_ENV is set to "1" in every
-// pane; HERDR_PANE_ID / HERDR_SESSION identify the pane/session). The viewer's
-// out-of-herdr shell terminal runs with this env so commands that refuse to run
-// inside a session — notably `herdr update` — work there, even when the viewer
-// itself was launched from a herdr pane and inherited the markers.
-func outsideHerdrEnv() []string {
-	drop := map[string]bool{"HERDR_ENV": true, "HERDR_PANE_ID": true, "HERDR_SESSION": true}
+// outsideLuvusEnv returns the current environment minus the markers luvus uses
+// to detect it's running *inside* a session (LUVUS_ENV is set to "1" in every
+// pane; LUVUS_PANE_ID / LUVUS_SESSION identify the pane/session). The viewer's
+// out-of-luvus shell terminal runs with this env so commands that refuse to run
+// inside a session — notably `luvus update` — work there, even when the viewer
+// itself was launched from a luvus pane and inherited the markers.
+func outsideLuvusEnv() []string {
+	drop := map[string]bool{
+		"LUVUS_ENV": true, "LUVUS_PANE_ID": true, "LUVUS_SESSION": true,
+		"LUVUS_SOCKET_PATH": true, "LUVUS_API_ADDRESS": true, "LUVUS_BIN_PATH": true,
+		"LUVUS_WORKSPACE_ID": true, "LUVUS_TAB_ID": true, "LUVUS_HOME": true,
+	}
 	src := os.Environ()
 	out := make([]string, 0, len(src))
 	for _, kv := range src {
@@ -1434,88 +1323,20 @@ func outsideHerdrEnv() []string {
 	return out
 }
 
-// lassoHerdrProtocol is the herdr wire-protocol version this lasso build targets:
-// the protocol of the *released* herdr lasso is developed and tested against
-// (herdr 0.6.8 → protocol 12), NOT whatever the herdr source tree is mid-bumping
-// to. Bump it in lockstep when lasso adopts a newer herdr release. We target one
-// protocol exactly — no backwards compatibility — so a mismatch in either
-// direction reads as incompatible. The Settings tab compares it against the
-// protocol the installed herdr daemon actually speaks (from a socket ping) so a
-// drifted install — where terminals/RPC silently break — is visible.
-//
-// Bumped 11→12 for herdr 0.6.7. Protocol 12 first shipped in 0.6.6, which lasso
-// briefly targeted then reverted to 11 (0.6.5) over a 0.6.6 idle-CPU regression
-// (commit 29b1e2d). 0.6.7 kept protocol 12 and fixed that regression; 0.6.8 also
-// keeps protocol 12 (verified by pinging the 0.6.8 binary on an isolated socket —
-// it pongs protocol 12, capabilities.live_handoff), so adopting it is value-only:
-// the wire formats lasso uses are unchanged, no request/response handling differs.
-// Bumped 12→14 for herdr 0.7.0 (which pongs protocol 14): the wire shapes lasso
-// uses are unchanged across the bump, so adopting it is value-only (the 0.7.0
-// plugin surface), the same as the 0.6.x line.
-// Bumped 14→16 for herdr 0.7.3 (0.7.1 pongs protocol 15, 0.7.3 pongs 16 — both
-// verified by pinging the binaries on an isolated socket). The 0.7.1/0.7.2/0.7.3
-// releases only *add* to the socket API (layout.updated, session.snapshot,
-// pane.scroll_changed events, terminal-session bridge commands) and fix bugs — no
-// method lasso calls (ping, events.subscribe, foreground_cwd) changed shape, so
-// adopting 0.7.3 is value-only, the same as prior bumps.
-// Unchanged at 16 for herdr 0.7.4 (verified by pinging the 0.7.4 binary on an
-// isolated socket — it pongs protocol 16). 0.7.4 only adds sidebar row layouts,
-// popup panes, and copy-mode search, and its socket-API additions (pane/workspace
-// metadata reporting) don't touch the methods lasso calls, so adopting it needs
-// no constant change — only the pins below track the release.
-// Bumped 16→17 for herdr 0.7.5 (verified by pinging the 0.7.5 binary on an
-// isolated socket — it pongs protocol 17, session_snapshot works). 0.7.5 only
-// *adds* to the socket API (the live-agent CLI facade start/prompt/send-keys,
-// declarative agent.view.set/clear queries, plugin [[startup]] hooks) and its
-// breaking change is plugin-registry scoping, not the wire — no method lasso
-// calls (ping, events.subscribe, foreground_cwd, terminal input/resize/scroll/
-// release) changed shape, so adopting it is value-only, the same as prior bumps.
-// Bumped 17→19 for herdr 0.8.0 (verified by pinging the 0.8.0 binary on an
-// isolated socket — it pongs protocol 19, capabilities.live_handoff, and
-// session.snapshot / pane.list / workspace.list / agent.list / events.subscribe
-// all answer in their existing shapes). 18 was skipped because no herdr release
-// ever carried it: both 17→18 ("preserve kitty printable key releases",
-// e7fc85bf) and 18→19 ("preserve native key lifecycle across routing", #2142,
-// b76adc15) landed between the 0.7.5 and 0.8.0 tags, and both bump the *TUI
-// client↔server* bincode input envelope (ClientInputEvent gains repeat_count /
-// generated_text / source, plus a TextCommit variant) — a surface lasso does
-// not speak. On the JSON socket API lasso does speak, 0.8.0 is purely additive:
-// a new workspace.move_block method, a new workspace.reordered event, two new
-// integration targets, and pane.read's long-existing `truncated` field now
-// actually being set true when rows are dropped (it was hardcoded false before,
-// and lasso doesn't read it). No method lasso calls changed shape, so adopting
-// it is value-only, the same as prior bumps.
-// Bumped 19→20 for herdr 0.8.2 (protocol 20 first ships in the v0.8.2 tag; there
-// is no v0.8.1). Same shape of change as 17→18/18→19: the bump commit is
-// "fix: forward pane terminal bells" (#2498, 6f311498), which adds a
-// ServerMessage::TerminalBell{count} variant to the *TUI client↔server* bincode
-// envelope — a surface lasso does not speak — and herdr's own changelog names
-// exactly that reason ("Bumped the client/server protocol version to 20 for pane
-// terminal bell forwarding"). On the JSON socket API lasso does speak, v0.8.0 →
-// v0.8.2 is purely additive: 143 lines added and 3 changed in
-// docs/next/api/herdr-api.schema.json, and all three changed lines are additions
-// (the schema's own `protocol` number, `bgra` joining the image-format enum, and
-// `pane_visible` joining pane_graphics_info's required set — a kitty-graphics
-// event lasso doesn't consume).
-//
-// Verified against a RELEASE-provisioned 0.8.2 (a workspace box, not this
-// machine's locally patched build): ping pongs protocol 20 with
-// capabilities.live_handoff + detached_server_daemon, and every method lasso
-// calls answers in its existing shape — pane.list, pane.get, pane.read
-// {pane_id,source}, workspace.list, tab.list, agent.list, and events.subscribe
-// with lasso's own 13-subscription payload (-> subscription_started).
-const lassoHerdrProtocol = 20
+// Lasso targets public UHP major 1. Capability discovery additionally verifies
+// the methods it requires; the private TUI protocol is not an API contract.
+const lassoLuvusProtocol = 1
 
-// versionInfo is the /api/version payload: the herdr socket protocol this lasso
-// build targets, the protocol the installed herdr daemon reports over its socket,
+// versionInfo is the /api/version payload: the luvus socket protocol this lasso
+// build targets, the protocol the installed luvus daemon reports over its socket,
 // that daemon's version string (display only), and whether the two protocols match.
-// Err carries why the herdr protocol couldn't be read (daemon down, socket gone) so
+// Err carries why the luvus protocol couldn't be read (daemon down, socket gone) so
 // the tab can say so rather than falsely claim a mismatch.
 type versionInfo struct {
 	LassoProtocol int    `json:"lasso_protocol"`
 	LassoVersion  string `json:"lasso_version"`
-	HerdrProtocol int    `json:"herdr_protocol"`
-	HerdrVersion  string `json:"herdr_version,omitempty"`
+	LuvusProtocol int    `json:"luvus_protocol"`
+	LuvusVersion  string `json:"luvus_version,omitempty"`
 	Compatible    bool   `json:"compatible"`
 	Updatable     bool   `json:"updatable"`
 	// UpdateState (only meaningful when Updatable) says whether the running build
@@ -1533,13 +1354,13 @@ type versionInfo struct {
 	Err           string `json:"err,omitempty"`
 }
 
-// serveVersion reports whether the installed herdr speaks the same socket protocol
-// this lasso build targets. It pings the local herdr socket fresh on every request
+// serveVersion reports whether the installed luvus speaks the same socket protocol
+// this lasso build targets. It pings the local luvus socket fresh on every request
 // — so the tab's refresh button re-checks a daemon that has since restarted —
 // rather than reusing the once-cached localProtocol().
 func serveVersion(w http.ResponseWriter, r *http.Request) {
 	vi := versionInfo{
-		LassoProtocol: lassoHerdrProtocol,
+		LassoProtocol: lassoLuvusProtocol,
 		LassoVersion:  lassoVersion(),
 		Updatable:     selfUpdateAvailable(),
 	}
@@ -1559,22 +1380,22 @@ func serveVersion(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if v, p, err := herdrPinger(); err != nil {
+	if v, p, err := luvusPinger(); err != nil {
 		vi.Err = err.Error()
 	} else {
-		vi.HerdrVersion = v
-		vi.HerdrProtocol = p
-		vi.Compatible = p == lassoHerdrProtocol
+		vi.LuvusVersion = v
+		vi.LuvusProtocol = p
+		vi.Compatible = p == lassoLuvusProtocol
 	}
 	writeJSON(w, vi)
 }
 
-// herdrPinger reports the installed (local) herdr daemon's version and protocol.
-// A seam over herdrPing(*herdrSock) so serveVersion is unit-testable without a
+// luvusPinger reports the installed (local) luvus daemon's version and protocol.
+// A seam over luvusPing(*luvusSock) so serveVersion is unit-testable without a
 // live daemon. It deliberately pings the local socket, not the active backend's,
-// so the Settings tab reflects the local lasso↔herdr install even when a remote
+// so the Settings tab reflects the local lasso↔luvus install even when a remote
 // host is selected.
-var herdrPinger = func() (string, int, error) { return herdrPing(*herdrSock) }
+var luvusPinger = func() (string, int, error) { return luvusPing(*luvusSock) }
 
 // ---------------------------------------------------------------------------
 // file drop: save a file the browser hands over — a pasted screenshot, a photo
@@ -2125,7 +1946,7 @@ func isBinary(b []byte) bool {
 	return false
 }
 
-// subscribeEvents opens a long-lived connection subscribed to ONE host's herdr
+// subscribeEvents opens a long-lived connection subscribed to ONE host's luvus
 // events and signals `trigger` whenever one arrives (that host's feed then
 // re-fetches state). Reconnects on failure. Beyond the *.focused events that
 // drive the active-pane view, it listens to the workspace/tab/pane lifecycle
@@ -2137,7 +1958,7 @@ func isBinary(b []byte) bool {
 // currently holds rather than the one this goroutine started on.
 func subscribeEvents(ctx context.Context, be func() Backend, trigger chan<- struct{}) {
 	for ctx.Err() == nil {
-		sock := be().HerdrSock()
+		sock := be().LuvusSock()
 		if sock == "" {
 			// A backend with no socket to subscribe to (a files-only connection,
 			// a fake in a test). The feed's poll still runs; there is just no
@@ -2166,12 +1987,7 @@ func subscribeEvents(ctx context.Context, be func() Backend, trigger chan<- stru
 			case <-stop:
 			}
 		}()
-		sub := `{"id":"ui-sub","method":"events.subscribe","params":{"subscriptions":[` +
-			`{"type":"workspace.created"},{"type":"workspace.updated"},{"type":"workspace.renamed"},` +
-			`{"type":"workspace.closed"},{"type":"workspace.focused"},` +
-			`{"type":"tab.created"},{"type":"tab.closed"},{"type":"tab.renamed"},{"type":"tab.focused"},` +
-			`{"type":"pane.created"},{"type":"pane.closed"},{"type":"pane.exited"},{"type":"pane.focused"}` +
-			`]}}` + "\n"
+		sub := "{\"id\":\"ui-sub\",\"method\":\"events.subscribe\",\"params\":{}}\n"
 		if _, err := conn.Write([]byte(sub)); err != nil {
 			close(stop)
 			conn.Close()
@@ -2180,6 +1996,12 @@ func subscribeEvents(ctx context.Context, be func() Backend, trigger chan<- stru
 		sc := bufio.NewScanner(conn)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
+			var frame struct {
+				Event string `json:"event"`
+			}
+			if json.Unmarshal(sc.Bytes(), &frame) != nil || frame.Event == "terminal.output_ready" {
+				continue // output streaming must not force full topology reads
+			}
 			select {
 			case trigger <- struct{}{}:
 			default:
@@ -2223,7 +2045,7 @@ func notifyUI(n notice) {
 //
 // The split is the point: theme and UI prefs are properties of this lasso, so
 // every tab sees the same ones whatever host it is on, while panes, focus, cwd
-// and herdr liveness belong to a host and reach only the tabs watching it.
+// and luvus liveness belong to a host and reach only the tabs watching it.
 type hub struct {
 	rootCtx context.Context
 
@@ -2297,7 +2119,7 @@ func (h *hub) kick(host string) {
 }
 
 // bumpUIStateRev broadcasts a UI-prefs revision bump to every SSE client
-// immediately (no herdr refetch — the prefs live in lasso's own db). Tabs
+// immediately (no luvus refetch — the prefs live in lasso's own db). Tabs
 // refetch /api/ui-state when the rev moves, so starring a pane or collapsing
 // the sidebar in one tab converges every other open tab within a beat,
 // including tabs sitting on a different host.
@@ -2321,14 +2143,8 @@ func (h *hub) snapshot(host string) (Active, error) {
 
 func (h *hub) themeSnapshot() resolvedTheme { h.mu.RLock(); defer h.mu.RUnlock(); return h.curTheme }
 
-// run watches herdr's config.toml for theme changes for the life of the server.
-// This is all that is left of the old global poll loop: everything else it did
-// was host-scoped and now lives in hostFeed.run, one per watched host.
-//
-// It stays on the hub rather than being duplicated per feed because the config
-// it reads is the LOCAL one — the single source of truth both lasso and herdr
-// follow — so re-resolving it once per watched host would multiply a file read,
-// a theme diff, and a fleet-wide theme sync by the number of hosts open in tabs.
+// run reads the default Luvus theme once per poll, independently of host feeds.
+// Palette changes fan out to browsers and opted-in agent theme files only.
 func (h *hub) run(ctx context.Context) {
 	h.rootCtx = ctx
 	// Keep the default host's feed warm from boot: it is what a fresh tab lands
@@ -2349,11 +2165,12 @@ func (h *hub) run(ctx context.Context) {
 	}
 }
 
-// refreshTheme re-resolves herdr's theme from config.toml (a cheap file read +
-// parse) so an edit to [theme].name is picked up live, bumping themeRev and
-// pushing it to every tab when it moves.
+// refreshTheme publishes changes to the actual palette, not unrelated UHP state.
 func (h *hub) refreshTheme() {
-	rt := loadHerdrTheme(*themeName) // outside the lock: it does I/O
+	rt, err := loadLuvusTheme() // outside the lock: it does I/O
+	if err != nil {
+		return // an unavailable source must never overwrite the last good theme
+	}
 	h.mu.Lock()
 	if rt == h.curTheme {
 		h.mu.Unlock()
@@ -2367,9 +2184,7 @@ func (h *hub) refreshTheme() {
 	} else {
 		log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
 	}
-	// An edit to herdr's config.toml made outside lasso (herdr's own theme
-	// popup, a hand edit) must reach every settled host too, not only local
-	// agents. Async so this loop never blocks on I/O.
+	// Downstream writes are off the poll's critical path.
 	go syncThemeEverywhere(rt)
 	h.eachFeed((*hostFeed).pushCurrent)
 }
@@ -2812,16 +2627,8 @@ func serveSPAIndex(w http.ResponseWriter, dist fs.FS) {
 		http.Error(w, "frontend build missing (run `bun run build` in web/)", http.StatusInternalServerError)
 		return
 	}
-	// Serve index.html verbatim. The chrome is the static Nothing design palette
-	// (web/src/index.css --h-* vars; dark/light only, chosen by the inline mode
-	// script). herdr's theme deliberately no longer paints the chrome — it
-	// dictates the *terminal* (xterm) palette only, applied client-side after
-	// boot (web/src/lib/theme.ts).
-	//
-	// We used to inject a <style id="lasso-theme-boot"> here that mapped herdr's
-	// resolved theme onto --h-*; placed at the end of <head> it overrode
-	// index.css's :root and made the whole chrome track config.toml (e.g. the
-	// rose-pine purple), defeating the Nothing palette. Removed.
+	// The pre-paint script restores chrome appearance. The client then reads
+	// Luvus's active palette for terminals and the optional matching chrome.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(b)
@@ -2859,7 +2666,7 @@ func withAuth(next http.Handler, user, pass string, enabled bool) http.Handler {
 		userOK := subtle.ConstantTimeCompare([]byte(u), []byte(user)) == 1
 		passOK := subtle.ConstantTimeCompare([]byte(p), []byte(pass)) == 1
 		if !ok || !userOK || !passOK {
-			w.Header().Set("WWW-Authenticate", `Basic realm="herdr", charset="UTF-8"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="luvus", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -13,7 +13,7 @@ import (
 // and the per-task-agent overrides folded in after the named roles.
 func TestOmpRoleModels(t *testing.T) {
 	cfg := []byte(`theme:
-  dark: herdr
+  dark: luvus
 modelRoles:
   default: anthropic/claude-opus-5:high
   vision: openai-codex/gpt-5.6-sol
@@ -53,7 +53,7 @@ task:
 func TestOmpRoleModelsRejectsUnusableConfig(t *testing.T) {
 	for name, in := range map[string]string{
 		"not yaml":        "modelRoles: [unclosed\n",
-		"no roles":        "theme:\n  dark: herdr\n",
+		"no roles":        "theme:\n  dark: luvus\n",
 		"roles not a map": "modelRoles: opus\n",
 		"empty":           "",
 	} {

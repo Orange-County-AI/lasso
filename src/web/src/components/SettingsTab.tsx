@@ -118,13 +118,13 @@ function SaveStatus({
   )
 }
 
-// The Settings tab: lasso↔herdr socket-protocol compatibility (top) plus the
-// "New Agent" creator configuration. Lasso targets a fixed protocol (baked in
-// at build time); the daemon reports its own over the socket, and when they
-// drift terminals and RPC silently break, so we surface it here. The creator
-// defaults (where to scan for repos, the default agent, the scratch setup
-// script) are global; each repo's files-to-copy + setup commands are scoped to
-// the active host. All of it persists in ~/.lasso/lasso.db.
+// The Settings tab: lasso↔Luvus UHP compatibility (top) plus the "New Agent"
+// creator configuration. Lasso targets a fixed UHP major (baked in at build
+// time); the luvus server reports its own over the socket, and when they drift
+// terminals and RPC silently break, so we surface it here. The creator defaults
+// (where to scan for repos, the default agent, the scratch setup script) are
+// global; each repo's files-to-copy + setup commands are scoped to the active
+// host. All of it persists in ~/.lasso/lasso.db.
 export function SettingsTab({
   active,
   onOpenShortcuts,
@@ -166,23 +166,24 @@ export function SettingsTab({
   }, [activeHost, selectedHost])
   const host = selectedHost ?? activeHost ?? "local"
 
-  // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
-  let herdr: React.ReactNode
+  // The Luvus-side pill: the UHP major the server speaks and how it compares to
+  // lasso's.
+  let luvus: React.ReactNode
   if (loading) {
-    herdr = <Pill>herdr …</Pill>
+    luvus = <Pill>luvus …</Pill>
   } else if (errored || !info) {
-    herdr = <Pill tone="warn">herdr unavailable</Pill>
+    luvus = <Pill tone="warn">luvus unavailable</Pill>
   } else if (info.err) {
-    herdr = (
+    luvus = (
       <Pill tone="warn" title={info.err}>
-        herdr unreachable
+        luvus unreachable
       </Pill>
     )
   } else {
-    const ver = info.herdr_version ? ` (${info.herdr_version})` : ""
-    herdr = (
+    const ver = info.luvus_version ? ` (${info.luvus_version})` : ""
+    luvus = (
       <Pill tone={info.compatible ? "good" : "bad"} multiline>
-        herdr protocol {info.herdr_protocol}
+        luvus UHP {info.luvus_protocol}
         {ver} · {info.compatible ? "compatible" : "incompatible"}
       </Pill>
     )
@@ -196,7 +197,7 @@ export function SettingsTab({
             lasso
           </span>
           <Pill multiline>
-            targets protocol{" "}
+            targets UHP{" "}
             {loading ? "…" : errored || !info ? "unknown" : info.lasso_protocol}
           </Pill>
           {info?.lasso_version && (
@@ -213,10 +214,11 @@ export function SettingsTab({
               update available → {info.latest_version}
             </Pill>
           )}
-          {herdr}
+          {luvus}
           {!loading && !errored && info && !info.err && !info.compatible && (
             <span className="text-[13px] text-warn">
-              rebuild lasso (or update herdr) so both speak the same protocol
+              run `luvus update` (or rebuild lasso) so both speak the same UHP
+              major
             </span>
           )}
           <Button
@@ -232,7 +234,7 @@ export function SettingsTab({
             variant="outline"
             size="icon"
             className="size-7"
-            title="re-check protocol compatibility"
+            title="re-check UHP compatibility"
             onClick={() => versionQuery.refetch()}
           >
             <RotateCw />
@@ -242,7 +244,7 @@ export function SettingsTab({
 
       <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
         <AppearanceToggle />
-        <HerdrThemeSelect active={active} />
+        <LuvusThemeSection active={active} />
         <AutoTitleToggle active={active} />
         <NotificationsSettings active={active} />
         <UsageFooterSettings />
@@ -279,22 +281,22 @@ export function SettingsTab({
 }
 
 // AppearanceToggle picks the chrome theme: System (follow the OS), Light, Dark,
-// or Herdr (match herdr's own theme — the default). The choice persists in
-// localStorage and applies live: setMode sets the html dark/light class the
+// or Luvus (match the active Luvus palette — the default). The choice persists
+// in localStorage and applies live: setMode sets the html dark/light class the
 // Nothing --h-* tokens cascade from, then refreshTheme applies or clears the
-// herdr --h-* override (see lib/theme.ts). The terminal palette is always
-// herdr's and is unaffected by this control.
+// Luvus --h-* override (see lib/theme.ts). The terminal palette is always
+// Luvus's and is unaffected by this control.
 function AppearanceToggle() {
   const [mode, setModeState] = React.useState<Mode>(() => getMode())
   const choose = (m: Mode) => {
     setModeState(m)
     setMode(m)
-    // Repaint the chrome for the new mode: applies herdr's palette when entering
-    // "herdr", removes the override when leaving it.
+    // Repaint the chrome for the new mode: applies Luvus's palette when entering
+    // "luvus", removes the override when leaving it.
     refreshTheme()
   }
   const opts: { m: Mode; label: string; Icon: typeof Monitor }[] = [
-    { m: "herdr", label: "Herdr", Icon: Palette },
+    { m: "luvus", label: "Luvus", Icon: Palette },
     { m: "system", label: "System", Icon: Monitor },
     { m: "light", label: "Light", Icon: Sun },
     { m: "dark", label: "Dark", Icon: Moon },
@@ -321,22 +323,22 @@ function AppearanceToggle() {
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Sets the UI theme. Herdr matches herdr's own colors; System follows your
-        OS; Light/Dark pin the Nothing palette. The terminal always keeps
-        herdr's theme.
+        Sets the UI theme. Luvus matches the active Luvus palette (light or dark,
+        whichever Luvus reports for it); System follows your OS; Light/Dark pin
+        the Nothing palette. The terminal always keeps Luvus's theme.
       </p>
     </div>
   )
 }
 
-// HerdrThemeSelect picks the herdr theme itself — distinct from Appearance,
-// which only chooses whether the chrome follows it. Saving writes [theme].name
-// in herdr's config.toml, the source of truth both already track: the herdr
-// TUI reloads it, and lasso repaints the terminals (and, in Herdr mode, the
-// chrome) off the theme_rev SSE bump. When lasso is connected to a remote
-// host, the theme is mirrored to that host's herdr config too (see
-// syncRemoteTheme), so the remote TUI follows as well.
-function HerdrThemeSelect({ active }: { active: boolean }) {
+// LuvusThemeSection shows the palette Luvus currently has active. It is
+// READ-ONLY: Luvus owns the theme, so `luvus theme use <id>` (or Luvus's own
+// Settings) is what changes it, and lasso follows over the theme_rev SSE bump —
+// repainting the terminals and, in Luvus appearance mode, the chrome. Lasso
+// never writes a theme into Luvus's config; the sync controls below are the part
+// it does own, mirroring whatever Luvus has active into the agent CLIs' own
+// theme files, per host.
+function LuvusThemeSection({ active }: { active: boolean }) {
   const { themeRev } = useApp()
   const themeQuery = useQuery({
     queryKey: qk.theme(themeRev),
@@ -344,55 +346,33 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
     enabled: active,
   })
   const t = themeQuery.data
-  // Optimistic selection so the dropdown doesn't snap back while the config
-  // write → theme_rev bump round-trips; cleared once the server agrees (or the
-  // write fails).
-  const [pending, setPending] = React.useState<string | null>(null)
-  React.useEffect(() => {
-    if (pending && t?.resolved === pending) setPending(null)
-  }, [pending, t])
-  const setMutation = useMutation({
-    mutationFn: (name: string) => api.setTheme(name),
-    onError: (e: Error) => {
-      setPending(null)
-      toast.error(`Couldn't set theme: ${e.message}`)
-    },
-  })
-  const value = pending ?? t?.resolved ?? ""
-  const group = (light: boolean) =>
-    (t?.themes ?? [])
-      .filter((o) => o.light === light)
-      .map((o) => (
-        <option key={o.name} value={o.name}>
-          {o.label}
-        </option>
-      ))
   return (
     <div className="mb-4 flex flex-col gap-1">
-      <label className={labelClass} htmlFor="settings-herdr-theme">
-        Herdr theme
-      </label>
-      <select
-        id="settings-herdr-theme"
-        className={cn(fieldClass, "max-w-xs")}
-        value={value}
-        disabled={!t}
-        onChange={(e) => {
-          setPending(e.target.value)
-          setMutation.mutate(e.target.value)
-        }}
-      >
-        {!t?.themes.some((o) => o.name === value) && (
-          <option value={value}>{value || "…"}</option>
+      <span className={labelClass}>Luvus theme</span>
+      <div className="flex flex-wrap items-center gap-2">
+        {themeQuery.isError ? (
+          <Pill tone="warn">palette unavailable</Pill>
+        ) : (
+          <>
+            <Pill multiline title={t ? `theme id: ${t.name}` : undefined}>
+              {t ? t.label || t.name : "…"}
+            </Pill>
+            {/* Luvus's own verdict for the palette. "terminal" means it takes
+                its canvas from the terminal, which says nothing to show here. */}
+            {t && t.appearance !== "terminal" && <Pill>{t.appearance}</Pill>}
+            {/* A theme file outside Luvus's built-ins contributed colors, so the
+                id above names something only that machine has. */}
+            {t?.customized && (
+              <Pill title={`resolves onto ${t.resolved}`}>custom</Pill>
+            )}
+          </>
         )}
-        <optgroup label="Dark">{group(false)}</optgroup>
-        <optgroup label="Light">{group(true)}</optgroup>
-      </select>
+      </div>
       <p className="text-[11px] text-muted-foreground">
-        Sets herdr's own theme in its config.toml; herdr and the terminals
-        follow it live.
-        {t?.forced &&
-          " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
+        Luvus owns the palette. Change it with{" "}
+        <code className="font-mono">luvus theme use &lt;id&gt;</code> (
+        <code className="font-mono">luvus theme list</code> names them) or in
+        Luvus's own Settings — the terminals here repaint live, no restart.
       </p>
       <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
       <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
@@ -400,11 +380,11 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
   )
 }
 
-// SyncAgentThemesToggle gates lasso's mirroring of the herdr theme into agent
-// CLIs' own theme files (opencode's tui.json, Claude Code's herdr.json, omp's
-// themes/herdr.json — the one a running agent picks up live) on this host and
-// any connected remote host. Server-level setting, default on; a host switched
-// off below is excluded from it regardless.
+// SyncAgentThemesToggle gates lasso's mirroring of the active Luvus palette
+// into agent CLIs' own theme files (opencode's tui.json, Claude Code's
+// luvus.json, omp's themes/luvus.json — the one a running agent picks up live)
+// on this host and any connected remote host. Server-level setting, default on;
+// a host switched off below is excluded from it regardless.
 function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient()
   const mutation = useMutation({
@@ -429,12 +409,14 @@ function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
 }
 
 // ThemeSyncHosts is the per-host opt-out: an unchecked host is left entirely
-// alone by lasso's theme writes — neither herdr's [theme].name (which a host
-// switch would otherwise mirror onto it) nor its agents' theme files — so a
-// machine that is themed independently stops being dragged along. Every host
-// lasso can address is listed, reachable or not: the preference is stored here,
-// so an asleep laptop can be excluded before it next answers. Hidden when the
-// ssh config names no hosts, since then it only restates the toggle above.
+// alone by lasso's theme writes — none of its agents' theme files, which a host
+// switch would otherwise restyle — so a machine that is themed independently
+// stops being dragged along. Its Luvus config is never lasso's to write in any
+// case: each machine's palette is its own Luvus's business.
+// Every host lasso can address is listed, reachable or not: the preference is
+// stored here, so an asleep laptop can be excluded before it next answers.
+// Hidden when the ssh config names no hosts, since then it only restates the
+// toggle above.
 function ThemeSyncHosts({ active, off }: { active: boolean; off: string[] }) {
   const queryClient = useQueryClient()
   const hostsQuery = useQuery({
@@ -493,9 +475,9 @@ function ThemeSyncHosts({ active, off }: { active: boolean; off: string[] }) {
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        An unchecked host keeps its own theme: lasso writes neither herdr's
-        config.toml nor any agent theme file there. Re-checking one pushes the
-        current theme to it right away if it's reachable.
+        An unchecked host keeps its own theme: lasso writes no agent theme file
+        there. Re-checking one pushes the current palette to it right away if
+        it's reachable. Each machine's Luvus theme is always its own to set.
       </p>
     </div>
   )

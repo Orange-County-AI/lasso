@@ -26,8 +26,8 @@ import (
 //	lasso restart         stop (if running) then start
 //	lasso status          report whether the background server is running
 //	lasso update          update to the latest release (or git-pull a supervised checkout)
-//	lasso doctor          check the local install (herdr, socket, port, version)
-//	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
+//	lasso doctor          check the local install (luvus, socket, port, version)
+//	lasso closeme         close the calling agent itself (uses $LUVUS_PANE_ID)
 //	lasso notify          push a notification to the human (the `notify` MCP tool)
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
@@ -100,7 +100,7 @@ func main() {
 }
 
 func printUsage(w *os.File) {
-	fmt.Fprint(w, `lasso — a web UI over herdr for launching and managing agents
+	fmt.Fprint(w, `lasso — a web UI over luvus for launching and managing agents
 
 usage:
   lasso [flags]            run the server in the foreground
@@ -111,7 +111,7 @@ usage:
   lasso status             show whether the background server is running
   lasso update             update lasso to the latest release
   lasso doctor             check the local install
-  lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
+  lasso closeme            close the calling agent itself (uses $LUVUS_PANE_ID)
   lasso notify <message>   push a notification to the human running lasso
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
@@ -126,7 +126,7 @@ run "lasso -h" style flags after serve/start/restart; see the README for details
 // ---------------------------------------------------------------------------
 
 // cliCloseMe lets a lasso-spawned agent shut itself down with a single command —
-// no MCP round-trip, and nothing to pass beyond the $HERDR_PANE_ID herdr already
+// no MCP round-trip, and nothing to pass beyond the $LUVUS_PANE_ID Luvus already
 // exports into every pane. It POSTs that pane id to the running server's
 // /api/agent/close, which maps the pane to the agent that owns it and runs the
 // same soft-close the UI and the close_agent MCP tool perform (kill the agent
@@ -136,9 +136,9 @@ run "lasso -h" style flags after serve/start/restart; see the README for details
 // address with LASSO_LISTEN (host:port) for a non-default port. UI_AUTH is
 // honored if set in the environment.
 func cliCloseMe() {
-	pane := os.Getenv("HERDR_PANE_ID")
+	pane := os.Getenv("LUVUS_PANE_ID")
 	if pane == "" {
-		fatal("closeme: $HERDR_PANE_ID is unset — you are not running inside a lasso-managed herdr pane")
+		fatal("closeme: $LUVUS_PANE_ID is unset — you are not running inside a lasso-managed luvus pane")
 	}
 	addr := defaultListenAddr
 	if env := os.Getenv("LASSO_LISTEN"); env != "" {
@@ -158,8 +158,8 @@ func cliCloseMe() {
 // is reported.
 //
 // host is pinned to "local": closeme talks to the lasso on its own machine
-// (LASSO_LISTEN must stay a same-machine address), and $HERDR_PANE_ID names a
-// pane of that machine's herdr. Pane ids are only unique per host, so saying
+// (LASSO_LISTEN must stay a same-machine address), and $LUVUS_PANE_ID names a
+// pane of that machine's Luvus. Pane ids are only unique per host, so saying
 // where the pane lives keeps a colliding id on some other host from ever being
 // resolved instead. The agent record itself may still live on a peer lasso
 // that spawned this agent remotely — the server adopts those (see closeme.go).

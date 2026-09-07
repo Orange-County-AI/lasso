@@ -8,7 +8,7 @@ import "strings"
 // builder that turns launch options into the shell line typed into the pane.
 // Adding a harness (gemini, pi, …) means adding one entry here; the frontend
 // and MCP schema pick it up without further plumbing (the remote-host
-// provisioning script's herdr integration list is generated from it too).
+// provisioning script's luvus integration list is generated from it too).
 
 // harnessDef describes one launchable agent CLI. The exported fields are
 // serialized into the /api/agent-config response so the creator UI renders
@@ -228,7 +228,7 @@ func promptArg(o launchOpts) string {
 
 func claudeCommand(o launchOpts) string {
 	// env -u scrubs the three CLAUDE_CODE_* session markers the lasso (and
-	// herdr) daemon leaks because it was itself launched from inside a Claude
+	// luvus) daemon leaks because it was itself launched from inside a Claude
 	// Code session. Claude Code 2.1.193+ treats their presence as "this is a
 	// child session" and SUPPRESSES transcript persistence for an INTERACTIVE
 	// agent — so the spawned agent writes no ~/.claude/projects/.../*.jsonl,

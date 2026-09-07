@@ -50,19 +50,19 @@ func TestMCPMetadataDoesNotRecommendTincan(t *testing.T) {
 // targetRecords are the host's lasso-created agents.
 func targetRecords() []AgentRecord {
 	return []AgentRecord{
-		{ID: "a1", Title: "clem", RootPane: "w1-1"},
+		{ID: "a1", Title: "clem", RootPane: "11"},
 		{ID: "a2", Title: "builder", RootPane: "w2-1"},
 	}
 }
 
-// targetPanes are the host's live herdr panes: two lasso-owned (w1-1, w2-1) and
+// targetPanes are the host's live luvus panes: two lasso-owned (w1-1, w2-1) and
 // two foreign sessions lasso never created (a bot "Clem (OCAI)" and "Ticket
 // 500"), plus a bare shell that carries no agent.
 func targetPanes() []hostPane {
 	return []hostPane{
-		{PaneID: "w1-1", WorkspaceID: "w1", WorkspaceLabel: "clem", Agent: "claude", AgentStatus: "idle", HasAgent: true},
+		{PaneID: "11", WorkspaceID: "w1", WorkspaceLabel: "clem", Agent: "claude", AgentStatus: "idle", HasAgent: true},
 		{PaneID: "w2-1", WorkspaceID: "w2", WorkspaceLabel: "builder", Agent: "codex", AgentStatus: "working", HasAgent: true},
-		{PaneID: "w9-1", WorkspaceID: "w9", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working", HasAgent: true},
+		{PaneID: "91", WorkspaceID: "w9", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working", HasAgent: true},
 		{PaneID: "w8-1", WorkspaceID: "w8", WorkspaceLabel: "Ticket 500", Agent: "claude", AgentStatus: "idle", HasAgent: true},
 		{PaneID: "w7-1", WorkspaceID: "w7", WorkspaceLabel: "scratch", HasAgent: false},
 	}
@@ -71,7 +71,7 @@ func targetPanes() []hostPane {
 func TestResolveTargetByID(t *testing.T) {
 	// Exact lasso id resolves to its record (the pre-existing id-based path).
 	got, err := resolveTarget("local", "a1", targetRecords(), targetPanes())
-	if err != nil || got.Record == nil || got.Record.ID != "a1" || got.PaneID != "w1-1" {
+	if err != nil || got.Record == nil || got.Record.ID != "a1" || got.PaneID != "11" {
 		t.Fatalf("a1 -> %+v (err %v), want lasso a1 on w1-1", got, err)
 	}
 	if got.Pane != nil {
@@ -86,8 +86,8 @@ func TestResolveTargetByPaneID(t *testing.T) {
 		t.Fatalf("w2-1 -> %+v (err %v), want lasso a2", got, err)
 	}
 	// ...a foreign pane id resolves to the session, with no lasso record.
-	got, err = resolveTarget("local", "w9-1", targetRecords(), targetPanes())
-	if err != nil || got.Record != nil || got.Pane == nil || got.PaneID != "w9-1" {
+	got, err = resolveTarget("local", "91", targetRecords(), targetPanes())
+	if err != nil || got.Record != nil || got.Pane == nil || got.PaneID != "91" {
 		t.Fatalf("w9-1 -> %+v (err %v), want foreign pane w9-1", got, err)
 	}
 }
@@ -99,9 +99,9 @@ func TestResolveTargetByName(t *testing.T) {
 		t.Fatalf("BUILDER -> %+v (err %v), want lasso a2", got, err)
 	}
 	// A foreign session's sidebar name resolves to its pane — this is the clem
-	// bug: "Clem (OCAI)" is a herdr session lasso did not create.
+	// bug: "Clem (OCAI)" is a luvus session lasso did not create.
 	got, err = resolveTarget("local", "clem (ocai)", targetRecords(), targetPanes())
-	if err != nil || got.Record != nil || got.Pane == nil || got.PaneID != "w9-1" {
+	if err != nil || got.Record != nil || got.Pane == nil || got.PaneID != "91" {
 		t.Fatalf("clem (ocai) -> %+v (err %v), want foreign pane w9-1", got, err)
 	}
 }
@@ -133,7 +133,7 @@ func TestResolveTargetNotFoundAndBareShell(t *testing.T) {
 }
 
 func TestSidebarNameFallback(t *testing.T) {
-	// Workspace label wins; then the pane's own label; then the tab label.
+	// Workspace name wins; then the pane's own name; then the tab name.
 	if got := sidebarName(hostPane{WorkspaceLabel: "ws", PaneLabel: "pn", TabLabel: "tb"}); got != "ws" {
 		t.Errorf("sidebarName = %q, want ws", got)
 	}
@@ -143,10 +143,9 @@ func TestSidebarNameFallback(t *testing.T) {
 	if got := sidebarName(hostPane{TabLabel: "tb"}); got != "tb" {
 		t.Errorf("sidebarName = %q, want tb", got)
 	}
-	// Nothing labelled anywhere: the terminal title is the only name left.
-	if got := sidebarName(hostPane{TerminalTitle: "Check Norm outline wiki connection"}); got != "Check Norm outline wiki connection" {
-		t.Errorf("sidebarName = %q, want the terminal title", got)
-	}
+	// Nothing named anywhere — the normal state of a fresh pane, since the
+	// runtime names nothing by default and publishes no pane title to fall back
+	// to. The caller is left addressing it by pane id.
 	if got := sidebarName(hostPane{}); got != "" {
 		t.Errorf("sidebarName = %q, want empty", got)
 	}
@@ -158,35 +157,26 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	if ai := agentInfoFrom("local", AgentRecord{ID: "a1", Title: "clem"}, "idle"); !ai.LassoCreated {
 		t.Error("agentInfoFrom should set lasso_created=true")
 	}
-	ai := agentInfoFromPane("local", hostPane{PaneID: "w9-1", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working"})
+	ai := agentInfoFromPane("local", hostPane{PaneID: "9", WorkspaceLabel: "Clem (OCAI)", Agent: "claude", AgentStatus: "working"})
 	if ai.LassoCreated {
 		t.Error("agentInfoFromPane should set lasso_created=false")
 	}
-	if ai.SidebarName != "Clem (OCAI)" || ai.Title != "Clem (OCAI)" || ai.RootPane != "w9-1" || ai.ID != "" {
+	if ai.SidebarName != "Clem (OCAI)" || ai.Title != "Clem (OCAI)" || ai.RootPane != "9" || ai.ID != "" {
 		t.Errorf("foreign pane info = %+v, want name/pane populated and no lasso id", ai)
-	}
-	// With a terminal title the session keeps its sidebar name as the address but
-	// reports what it is actually working on as the title.
-	ai = agentInfoFromPane("norm", hostPane{
-		PaneID: "w3:p1", WorkspaceLabel: "norm", TerminalTitle: "Check Norm outline wiki connection",
-		Agent: "claude", AgentStatus: "idle",
-	})
-	if ai.SidebarName != "norm" || ai.Title != "Check Norm outline wiki connection" {
-		t.Errorf("foreign pane info = %q/%q, want sidebar name norm and the terminal title", ai.SidebarName, ai.Title)
 	}
 }
 
 func TestSendAgentRefusesWhenComposerHasDraft(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", Agent: "claude", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "clem", Agent: "claude", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "claude", status: "idle", drafted: true}
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "11", agent: "claude", status: "idle", drafted: true}
 	prevResolver := resolveBackend
 	resolveBackend = func(string) (Backend, error) { return b, nil }
 	t.Cleanup(func() { resolveBackend = prevResolver })
-	if got := paneComposerState(b, "w1-1", "claude"); got != ComposerDraft {
+	if got := paneComposerState(b, "11", "claude"); got != ComposerDraft {
 		t.Fatalf("drafted fake state = %v, want draft", got)
 	}
 	target, targetBackend, targetErr := resolveAgentTarget("local", "a1")
@@ -213,10 +203,11 @@ func TestSendAgentRefusesWhenComposerHasDraft(t *testing.T) {
 // create_agent: MCP input -> launch line
 // ---------------------------------------------------------------------------
 
-// launchFake records the command lines herdr is asked to type into a pane, so a
+// launchFake records the command lines luvus is asked to type into a pane, so a
 // test can assert on the launch line an agent's boot actually produced.
 type launchFake struct {
 	*memBackend
+	*fixtureTopology
 	mu sync.Mutex
 	// cli is the token that marks the launch line among everything typed into
 	// the pane (setup script, trust confirmations). Empty means "claude ", the
@@ -234,24 +225,28 @@ func (b *launchFake) cliToken() string {
 	return b.cli
 }
 
-func (b *launchFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *launchFake) LuvusCall(method string, params any) (json.RawMessage, error) {
 	switch method {
-	case "worktree.create", "workspace.create":
-		return json.RawMessage(`{"workspace":{"workspace_id":"ws"},"root_pane":{"pane_id":"p1"}}`), nil
 	case "pane.read":
 		// Stable non-empty text so waitPaneReady settles on the first two polls.
-		return json.RawMessage(`{"read":{"text":"$ "}}`), nil
-	case "pane.send_text":
+		return json.RawMessage(`{"type":"pane_read","text":"$ "}`), nil
+	case "pane.run", "pane.send_input":
+		// The launch line is SUBMITTED with pane.run (`command`); pane.send_input
+		// carries only the raw keystrokes the trust dialog needs.
 		p, _ := params.(map[string]any)
-		text, _ := p["text"].(string)
+		text, _ := p["command"].(string)
+		if text == "" {
+			text, _ = p["text"].(string)
+		}
 		b.mu.Lock()
 		b.sent = append(b.sent, text)
 		b.mu.Unlock()
 		if strings.Contains(text, b.cliToken()) {
 			b.once.Do(func() { close(b.launched) })
 		}
+		return json.RawMessage(`{"type":"ok"}`), nil
 	}
-	return json.RawMessage(`{}`), nil
+	return b.reply(method, params)
 }
 
 func (b *launchFake) GitOut(string, ...string) (string, error) { return "", nil }
@@ -271,12 +266,12 @@ func (b *launchFake) launchLine() string {
 // TestMCPCreateAgentEffortReachesLaunchCommand walks the whole MCP create path
 // for the field that silently went missing — the tool's input struct, the
 // mapping onto createAgentReq, normalizeEffort's harness check, and the command
-// herdr is asked to type — and proves effort:"xhigh" comes out as
+// luvus is asked to type — and proves effort:"xhigh" comes out as
 // `--effort xhigh` on the launch line. The parity tests in create_params_test.go
 // prove no field can go undeclared; this proves this one actually arrives.
 //
 // Only host resolution is skipped (createAgentTool's resolveBackend hands
-// createAgent a real herdr connection; the fake stands in for it).
+// createAgent a real luvus connection; the fake stands in for it).
 func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	if err := openDB(); err != nil {
@@ -284,7 +279,7 @@ func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
+	b := &launchFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}, launched: make(chan struct{})}
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -302,7 +297,7 @@ func TestMCPCreateAgentEffortReachesLaunchCommand(t *testing.T) {
 	select {
 	case <-b.launched:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+		t.Fatalf("agent CLI was never launched; luvus saw %q", b.sent)
 	}
 	// The value rides the line shell-quoted, so build the expectation with the
 	// same quoter rather than hard-coding today's quoting.
@@ -337,7 +332,7 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &launchFake{memBackend: newMemBackend(), launched: make(chan struct{})}
+	b := &launchFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}, launched: make(chan struct{})}
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -353,7 +348,7 @@ func TestMCPCreateAgentPlanModeReachesLaunchCommand(t *testing.T) {
 	select {
 	case <-b.launched:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+		t.Fatalf("agent CLI was never launched; luvus saw %q", b.sent)
 	}
 	line := b.launchLine()
 	if !strings.Contains(line, "--permission-mode plan") {
@@ -382,7 +377,7 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &launchFake{memBackend: newMemBackend(), cli: "omp ", launched: make(chan struct{})}
+	b := &launchFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}, cli: "omp ", launched: make(chan struct{})}
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -398,7 +393,7 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 	select {
 	case <-b.launched:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("agent CLI was never launched; herdr saw %q", b.sent)
+		t.Fatalf("agent CLI was never launched; luvus saw %q", b.sent)
 	}
 	line := b.launchLine()
 	overlay := ompConfigPath(b, rec.ID)

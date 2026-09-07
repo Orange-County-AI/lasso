@@ -8,7 +8,7 @@ import { invalidateHostScoped } from "@/lib/query"
 import { refreshTheme } from "@/lib/theme"
 import { syncUIState } from "@/lib/ui-state"
 
-// App-wide state derived from herdr, kept live over the /api/events SSE stream.
+// App-wide state derived from Luvus, kept live over the /api/events SSE stream.
 // Components read activeCwd/activePaneID/panesRev reactively and run their own
 // effects off them (Files follows the cwd, Diff reloads, the pane switcher's
 // cached listing is refreshed on a layout change).
@@ -22,9 +22,9 @@ interface AppState {
   // no longer shows up here — that is the point.
   host: string | null
   hostSlug: string | null
-  // The host the focused pane's cwd lives on — normally `host`, but a pane
-  // ssh-attached to another host's herdr reports that host instead. Sticky like
-  // activeCwd: null only until the first /api/active answer lands.
+  // The host the focused pane's cwd lives on, per Luvus's own report for that
+  // pane — normally `host`. Sticky like activeCwd: null only until the first
+  // /api/active answer lands.
   cwdHost: string | null
 }
 
@@ -175,13 +175,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Chrome light/dark follows the system color scheme (same as the main branch).
   // The inline script in index.html sets the class pre-paint; here we re-assert
   // it on mount and keep it live as the OS theme flips. The terminal palette is
-  // herdr's and is handled separately (refreshTheme), so this never touches it.
+  // Luvus's and is handled separately (refreshTheme), so this never touches it.
   React.useEffect(() => {
     applyMode()
     watchSystemMode()
   }, [])
 
-  // Re-pin the terminals to herdr's theme whenever its theme revision moves
+  // Re-pin the terminals to Luvus's theme whenever its theme revision moves
   // (including the priming value, so a reload always converges). The chrome is
   // not repainted here — it's the system-driven Nothing palette. themeRev is a
   // trigger-only dep: refreshTheme() re-fetches /api/theme on each bump (SSE)

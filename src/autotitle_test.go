@@ -131,11 +131,11 @@ func TestTitleInstructionCarriesThePromptAndItsGuardRails(t *testing.T) {
 }
 
 // autoTitleAgent's job is a rename that reaches BOTH places an agent's name
-// lives: the herdr workspace (what the agents sidebar shows) and the lasso
+// lives: the luvus workspace (what the agents sidebar shows) and the lasso
 // record (the address list_agents/message_agent hand out). Renaming one and not
 // the other is how an agent ends up unreachable by the name on screen.
 //
-// The herdr TAB is not one of those places — it's the user's own organization
+// The luvus TAB is not one of those places — it's the user's own organization
 // of the terminal, and retitling it puts a generated sentence across the top of
 // their screen.
 type renameFake struct {
@@ -144,13 +144,15 @@ type renameFake struct {
 	calls   []string
 }
 
-func (b *renameFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *renameFake) LuvusCall(method string, params any) (json.RawMessage, error) {
 	b.calls = append(b.calls, method)
 	p, _ := params.(map[string]any)
 	if method == "workspace.rename" {
-		b.renamed[p["workspace_id"].(string)] = p["label"].(string)
+		id, _ := p["workspace_id"].(string)
+		name, _ := p["name"].(string)
+		b.renamed[id] = name
 	}
-	return json.RawMessage(`{"panes":[{"pane_id":"p1","tab_id":"t1"}]}`), nil
+	return json.RawMessage(`{"type":"ok"}`), nil
 }
 
 func TestAutoTitleAgentRenamesWorkspaceAndRecordButNotTheTab(t *testing.T) {
@@ -179,7 +181,7 @@ func TestAutoTitleAgentRenamesWorkspaceAndRecordButNotTheTab(t *testing.T) {
 	}
 	for _, m := range b.calls {
 		if m == "tab.rename" {
-			t.Error("auto-titling renamed the herdr tab — the tab is the user's, not the agent's")
+			t.Error("auto-titling renamed the tab — the tab is the user's, not the agent's")
 		}
 	}
 	got, err := findAgentRecord("local", "a1")
@@ -236,7 +238,7 @@ func TestAutoTitleToggleDefaultsOnAndRoundTrips(t *testing.T) {
 func TestCreateAgentAutoTitlesAPromptDerivedTitle(t *testing.T) {
 	called := newTitlerSpy(t, "Generated title")
 
-	b := &createAgentBackend{memBackend: newMemBackend()}
+	b := newCreateAgentBackend()
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -259,7 +261,7 @@ func TestCreateAgentAutoTitlesAPromptDerivedTitle(t *testing.T) {
 func TestCreateAgentLeavesAnExplicitTitleAlone(t *testing.T) {
 	called := newTitlerSpy(t, "Generated title")
 
-	b := &createAgentBackend{memBackend: newMemBackend()}
+	b := newCreateAgentBackend()
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
@@ -304,7 +306,7 @@ func newTitlerSpy(t *testing.T, title string) <-chan struct{} {
 // fires, which is indistinguishable from the failure never happening.
 func TestHubNoticeReachesTheEventStream(t *testing.T) {
 	// The stream is per host now, so it needs a host to resolve to. Its poll
-	// against a herdr that isn't there just marks the feed down; the notice
+	// against a luvus that isn't there just marks the feed down; the notice
 	// fan-out under test is global and unaffected.
 	setDefaultBackend(&localBackend{})
 	t.Cleanup(func() { setDefaultBackend(nil) })

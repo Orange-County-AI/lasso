@@ -15,33 +15,30 @@ import (
 // A harness's working directory is not the pane's. Claude Code keeps its own
 // cwd — it moves when the agent cds inside its Bash tool — while the claude
 // process (and the pane's shell) stay in the dir claude was launched from. So a
-// pane where `claude` was started in ~ reports ~ for both of herdr's cwds even
-// after the agent has been working in ~/projects/foo for an hour, and a viewer
+// pane where `claude` was started in ~ reports ~ for the pane cwd even after
+// the agent has been working in ~/projects/foo for an hour, and a viewer
 // following the pane sits on the wrong tree.
 //
 // Claude records the live value in its session transcript: every entry carries
-// the session's cwd at the time it was written. herdr hands us the session id
-// per pane (pane.agent_session), so the last cwd in
-// ~/.claude/projects/<slug>/<session>.jsonl is the agent's real working dir —
-// and it is authoritative in a way no process inspection is.
+// the session's cwd at the time it was written. Luvus hands us the session id
+// per pane (the snapshot's `agent_session`, also `session` on agent.get), so
+// the last cwd in ~/.claude/projects/<slug>/<session>.jsonl is the agent's real
+// working dir — and it is authoritative in a way no process inspection is.
+//
+// Process inspection is in fact no longer available at all: UHP's
+// pane.processes reports executable NAMES and a root pid, never an argument
+// vector and never a per-process cwd ("Full argument vectors are never exposed
+// because they can contain prompts, credentials, or tokens"). So the transcript
+// is the only source for an agent's own cwd, and a pane that is a window onto
+// another machine is not detectable — see the note on activeCwd.
 //
 // Panes with no readable harness cwd (plain shells, other harnesses, an agent
 // whose transcript we can't find) fall back to the pane's own cwd — see
 // activeCwd.
 
-// agentSession mirrors herdr's pane.agent_session: the harness session herdr
-// would resume this pane with. Kind is "id" (a session identifier) or "path" (a
-// transcript file).
-type agentSession struct {
-	Source string `json:"source"`
-	Agent  string `json:"agent"`
-	Kind   string `json:"kind"`
-	Value  string `json:"value"`
-}
-
 const (
 	// How long a resolved harness cwd is served without re-checking the
-	// transcript. The hub refreshes on every herdr event, which bursts while an
+	// transcript. The hub refreshes on every luvus event, which bursts while an
 	// agent streams output; this keeps a burst down to one stat.
 	harnessCwdTTL = time.Second
 	// How long a failed lookup is remembered before the project dirs are
@@ -65,16 +62,13 @@ var harnessCwdCache = struct {
 }{m: map[string]*harnessCwdEntry{}}
 
 // harnessCwd returns the working directory the pane's harness is itself using,
-// or "" when there is none to read. launchHint is a directory the harness was
-// plausibly launched from (the foreground leader's cwd — for claude that IS its
-// launch dir), used to guess the transcript's project dir before falling back to
-// scanning them all.
-func harnessCwd(b Backend, p pane, launchHint string) string {
-	id, path := claudeSessionRef(p)
-	if id == "" && path == "" {
+// or "" when there is none to read.
+func harnessCwd(b Backend, p pane) string {
+	id := claudeSessionID(p)
+	if id == "" {
 		return ""
 	}
-	key := b.Name() + "|" + id + "|" + path
+	key := b.Name() + "|" + id
 
 	harnessCwdCache.Lock()
 	e := harnessCwdCache.m[key]
@@ -99,11 +93,7 @@ func harnessCwd(b Backend, p pane, launchHint string) string {
 	// remote host. Two refreshes racing here just do the work twice.
 	cur := harnessCwdEntry{path: known.path, at: time.Now()}
 	if cur.path == "" {
-		if path != "" {
-			cur.path = path
-		} else {
-			cur.path = findClaudeTranscript(b, id, launchHint, p)
-		}
+		cur.path = findClaudeTranscript(b, id, p)
 	}
 	if cur.path != "" {
 		if fi, err := b.Stat(cur.path); err != nil || fi.IsDir() {
@@ -130,29 +120,20 @@ func harnessCwd(b Backend, p pane, launchHint string) string {
 	return cur.cwd
 }
 
-// claudeSessionRef returns the pane's claude session as (id, transcript path) —
-// exactly one is non-empty, both are "" when the pane isn't currently running a
-// claude session. herdr keeps agent_session around after the agent exits so it
-// can resume the pane, so this is gated on the pane's live agent label: once the
-// shell is back in the foreground, the pane's own cwd is the truth again.
-func claudeSessionRef(p pane) (id, path string) {
-	s := p.AgentSession
-	if s == nil || p.Agent == "" || !strings.EqualFold(s.Agent, "claude") {
-		return "", ""
+// claudeSessionID returns the pane's claude session id, or "" when the pane
+// isn't currently running a claude session. Luvus reports the session as a bare
+// identifier string and keeps it around after the agent exits so it can resume
+// the pane, so this is gated on the pane's live agent label: once the shell is
+// back in the foreground, the pane's own cwd is the truth again.
+func claudeSessionID(p pane) string {
+	if p.AgentSession == "" || !strings.EqualFold(p.Agent, "claude") {
+		return ""
 	}
-	switch s.Kind {
-	case "id":
-		return safeSessionID(s.Value), ""
-	case "path":
-		if filepath.IsAbs(s.Value) && strings.HasSuffix(s.Value, ".jsonl") {
-			return "", s.Value
-		}
-	}
-	return "", ""
+	return safeSessionID(p.AgentSession)
 }
 
 // safeSessionID accepts only the [A-Za-z0-9_-] shape of a claude session id, so
-// the value herdr reports can never escape the projects dir once it is joined
+// the value Luvus reports can never escape the projects dir once it is joined
 // into a path.
 func safeSessionID(v string) string {
 	if v == "" || len(v) > 128 {
@@ -169,17 +150,17 @@ func safeSessionID(v string) string {
 }
 
 // findClaudeTranscript locates ~/.claude/projects/<slug>/<id>.jsonl. Claude
-// names the project dir after the directory it was launched in, so the launch
-// hint (and the pane's cwds) usually name it outright; when they don't — the
-// agent was started with `cd x && claude`, or resumed from elsewhere — every
-// project dir is probed for the id. "" when the transcript isn't there.
-func findClaudeTranscript(b Backend, id, launchHint string, p pane) string {
+// names the project dir after the directory it was launched in, so the pane's
+// cwd usually names it outright; when it doesn't — the agent was started with
+// `cd x && claude`, or resumed from elsewhere — every project dir is probed for
+// the id. "" when the transcript isn't there.
+func findClaudeTranscript(b Backend, id string, p pane) string {
 	home, err := b.HomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
 	root := filepath.Join(home, ".claude", "projects")
-	for _, dir := range []string{launchHint, p.Cwd, p.ForegroundCwd} {
+	for _, dir := range []string{p.Cwd} {
 		if dir == "" {
 			continue
 		}
@@ -269,95 +250,26 @@ func lastTranscriptCwd(data []byte) string {
 	return ""
 }
 
-// paneProcess is one foreground process of a pane, as herdr's
-// pane.process_info reports it. Argv is what makes an ssh attach recoverable
-// (see panehost.go); the rest resolves the pane's own cwd.
-type paneProcess struct {
-	PID  uint32   `json:"pid"`
-	Name string   `json:"name"`
-	Cwd  string   `json:"cwd"`
-	Argv []string `json:"argv"`
-}
-
-type paneProcessInfo struct {
-	ForegroundProcessGroupID uint32        `json:"foreground_process_group_id"`
-	ForegroundProcesses      []paneProcess `json:"foreground_processes"`
-}
-
-// paneForeground asks herdr what the pane is running. One call answers both
-// questions activeCwd has — where the foreground leader sits, and whether the
-// pane is really a window onto another host — so neither pays its own RPC. The
-// zero value is returned when herdr predates pane.process_info or the pane is
-// gone; every consumer reads that as "no answer".
-func paneForeground(be Backend, paneID string) paneProcessInfo {
-	if paneID == "" {
-		return paneProcessInfo{}
-	}
-	res, err := be.HerdrCall("pane.process_info", map[string]any{"pane_id": paneID})
-	if err != nil {
-		return paneProcessInfo{}
-	}
-	return parsePaneProcessInfo(res)
-}
-
-func parsePaneProcessInfo(res json.RawMessage) paneProcessInfo {
-	var r struct {
-		ProcessInfo paneProcessInfo `json:"process_info"`
-	}
-	if json.Unmarshal(res, &r) != nil {
-		return paneProcessInfo{}
-	}
-	return r.ProcessInfo
-}
-
-// leaderCwd is the cwd of the pane's foreground process-group LEADER: the shell
-// when the pane is idle, the harness while it runs. herdr's foreground_cwd
-// deliberately prefers a *descendant* whose cwd differs from the shell's, which
-// under an agent is whatever transient subprocess is running (a plugin under
-// ~/.claude/plugins/cache, a git hook) — enough to yank the file viewer off the
-// tree. Asking for the leader specifically keeps the answer stable while still
-// tracking a `cd repo && claude` that herdr's shell-reported cwd never sees.
-// "" when there is no foreground job or the cwd is unreadable.
-func leaderCwd(pi paneProcessInfo) string {
-	if pi.ForegroundProcessGroupID == 0 {
-		return ""
-	}
-	for _, proc := range pi.ForegroundProcesses {
-		if proc.PID == pi.ForegroundProcessGroupID && filepath.IsAbs(proc.Cwd) {
-			return proc.Cwd
-		}
-	}
-	return ""
-}
-
 // activeCwd resolves the directory the file viewer follows for the focused pane,
 // and the host that directory lives on.
 //
-// The ssh hop comes first: when the pane is an attach onto another host's herdr,
-// every local answer below is the ssh client's directory and none of them
-// describes what is on screen. Otherwise, most-authoritative first: the
-// harness's own cwd (which the pane never sees), then the pane's foreground
-// leader, then herdr's pane cwds — all on be, since that is whose herdr reported
-// the pane. The second return is the Active.CwdSource label naming which
-// resolver answered, prefixed "ssh:" when it answered on the far side of an
-// attach.
+// Most-authoritative first: the harness's own cwd (which the pane never sees),
+// then the pane's own cwd. Both come from be, since that is whose Luvus
+// reported the pane. The second return is the Active.CwdSource label naming
+// which resolver answered.
+//
+// The host is always be's. It used to be able to differ: a pane could be an
+// `ssh <host> luvus agent attach …` window onto another machine, and lasso
+// recovered that from the foreground argv luvus exposed. UHP exposes no
+// argument vector at all (pane.processes reports executable names and a root
+// pid, deliberately withholding argv), so a remote-attach pane is no longer
+// distinguishable from a local shell — and guessing would repoint the viewer,
+// and its editor's saves, at the wrong filesystem. A pane's work is therefore
+// resolved on the host whose Luvus reported it, full stop.
 func activeCwd(be Backend, p pane) (cwd, source, host string) {
-	pi := paneForeground(be, p.PaneID)
-	if hop, ok := paneSSHHop(pi); ok {
-		if c, src := remoteAttachCwd(hop); c != "" {
-			return c, "ssh:" + src, hop.host
-		}
-	}
 	local := be.Name()
-	leader := leaderCwd(pi)
-	if c := harnessCwd(be, p, leader); c != "" {
+	if c := harnessCwd(be, p); c != "" {
 		return c, "harness", local
-	}
-	if leader != "" {
-		return leader, "leader", local
-	}
-	if paneCwdUsesForeground(p) {
-		return paneCwd(p), "foreground", local
 	}
 	return paneCwd(p), "shell", local
 }

@@ -17,16 +17,21 @@ import (
 // reproduced the launch failure.
 func nastyPrompt() string {
 	para := "# Bug: the caller's pane broke\n\n" +
-		"Run `whoami` and `close_agent`, then check `$HERDR_PANE_ID`.\n" +
+		"Run `whoami` and `close_agent`, then check `$LUVUS_PANE_ID`.\n" +
 		"Beware $(rm -rf /tmp/nope), \"double quotes\", 'single quotes',\n" +
 		"backslashes \\ and % signs.\n\n"
 	return strings.Repeat(para, 30) // ~4KB, like the observed failure
 }
 
-// A short single-line prompt must keep riding the typed launch line inline —
-// the pre-existing, known-good path — while newlines or size force the staged
-// file. The size check looks at the whole built command, so a modest prompt on
-// top of long flags still trips it.
+// A short single-line prompt must keep riding the submitted launch line inline
+// — the pre-existing, known-good path — while newlines or sheer size force the
+// staged file. The size check looks at the whole built command, since a modest
+// prompt on top of long flags is what actually decides the line's length.
+//
+// The size bound is no longer the kernel's TTY input queue: pane.run submits
+// the command as one shell action rather than typing raw bytes at the PTY, so
+// what remains is the request frame (see maxTypedLaunch). The newline hazard is
+// unchanged — pane.run submits a multi-line command one line at a time.
 func TestNeedsPromptFile(t *testing.T) {
 	short := "fix the login bug"
 	if needsPromptFile(short, agentCommand("claude", launchOpts{prompt: short})) {
@@ -40,9 +45,15 @@ func TestNeedsPromptFile(t *testing.T) {
 	if !needsPromptFile(cr, agentCommand("claude", launchOpts{prompt: cr})) {
 		t.Errorf("carriage-return prompt must need a file")
 	}
-	long := strings.Repeat("all work and no play makes jack a dull agent ", 20)
+	// A prompt that used to be staged purely for length now rides inline: an
+	// 8000-byte single-line command was verified to arrive and execute intact.
+	wasLong := strings.Repeat("all work and no play makes jack a dull agent ", 20)
+	if needsPromptFile(wasLong, agentCommand("claude", launchOpts{prompt: wasLong})) {
+		t.Errorf("a ~900-byte single-line command must no longer need a file")
+	}
+	long := strings.Repeat("all work and no play makes jack a dull agent ", 2000)
 	if !needsPromptFile(long, agentCommand("claude", launchOpts{prompt: long})) {
-		t.Errorf("oversized command must need a file")
+		t.Errorf("a command past the frame budget must need a file")
 	}
 }
 
@@ -143,21 +154,26 @@ func TestStagedPromptDeliveredAsSingleArgument(t *testing.T) {
 
 // promptBootFake backs the bootAgent-level test: pane reads return the trust
 // dialog (stable text, so waitPaneReady settles fast and confirmAgentTrust
-// fires instead of polling out its 30s window) and every pane.send_text
-// payload is captured for assertions on what actually got typed.
+// fires instead of polling out its 30s window) and every pane.run command
+// is captured for launch assertions.
 type promptBootFake struct {
 	*memBackend
+	*fixtureTopology
 	mu    sync.Mutex
 	sends []string
 }
 
-func (b *promptBootFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *promptBootFake) LuvusCall(method string, params any) (json.RawMessage, error) {
 	switch method {
 	case "pane.read":
-		return json.RawMessage(`{"read":{"text":"trust this folder"}}`), nil
-	case "pane.send_text":
+		return json.RawMessage(`{"type":"pane_read","text":"trust this folder"}`), nil
+	case "pane.run", "pane.send_input":
 		if p, ok := params.(map[string]any); ok {
-			if txt, ok := p["text"].(string); ok {
+			txt, _ := p["command"].(string)
+			if txt == "" {
+				txt, _ = p["text"].(string)
+			}
+			{
 				b.mu.Lock()
 				b.sends = append(b.sends, txt)
 				b.mu.Unlock()
@@ -180,7 +196,7 @@ func TestBootAgentStagesLongPromptAndCloseCleansUp(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &promptBootFake{memBackend: newMemBackend()}
+	b := &promptBootFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}}
 	rec := AgentRecord{
 		ID:          "promptboot1",
 		Host:        "local",
@@ -199,21 +215,17 @@ func TestBootAgentStagesLongPromptAndCloseCleansUp(t *testing.T) {
 	if len(sends) == 0 {
 		t.Fatal("bootAgent never sent the launch command")
 	}
-	launch := sends[0]
-	if !strings.HasSuffix(launch, "\n") {
-		t.Errorf("launch line must end with Enter: %q", launch)
-	}
-	// The launch line leads with ^U so a keystroke typed into the focused pane
-	// during the boot window can't concatenate with the command (see paneRun).
-	if !strings.HasPrefix(launch, "\x15") {
-		t.Errorf("launch line must lead with ^U to discard pending input: %q", launch)
-	}
-	body := strings.TrimSuffix(strings.TrimPrefix(launch, "\x15"), "\n")
+	// pane.run submits the command as one shell action, so the line carries no
+	// framing of its own: no trailing newline to accept it and no leading ^U to
+	// discard a half-typed line, both of which luvus's raw PTY write needed.
+	// What still matters is that the command is single-line (pane.run submits a
+	// multi-line command one line at a time) and inside the frame budget.
+	body := sends[0]
 	if strings.ContainsAny(body, "\n\r") {
-		t.Errorf("typed launch command must be single-line: %q", body)
+		t.Errorf("submitted launch command must be single-line: %q", body)
 	}
 	if len(body) > maxTypedLaunch {
-		t.Errorf("typed launch command len = %d, want <= %d: %q", len(body), maxTypedLaunch, body)
+		t.Errorf("submitted launch command len = %d, want <= %d: %q", len(body), maxTypedLaunch, body)
 	}
 	if !strings.Contains(body, `"$(cat `) {
 		t.Errorf("launch command must expand the staged prompt file: %q", body)
@@ -248,7 +260,7 @@ func TestBootAgentLaunchesAPromptlessAgentIdle(t *testing.T) {
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &promptBootFake{memBackend: newMemBackend()}
+	b := &promptBootFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}}
 	rec := AgentRecord{
 		ID:       "idleboot1",
 		Host:     "local",

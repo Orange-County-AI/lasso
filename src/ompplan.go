@@ -23,7 +23,7 @@ import (
 //
 //  2. The theme pin. theme.dark/theme.light name the themes omp picks between
 //     from the terminal's background; lasso points both at its generated
-//     themes/herdr.json so the pick can't matter and the file omp watches is the
+//     themes/luvus.json so the pick can't matter and the file omp watches is the
 //     one lasso repaints (see agentsync.go). agentsync also pins them in
 //     config.yml, for omp runs lasso didn't launch — but that pin is best-effort
 //     by nature: omp rewrites config.yml wholesale from its in-memory settings
@@ -37,7 +37,7 @@ import (
 //   - Interactive only. Under -p/print mode omp deliberately IGNORES
 //     plan.defaultOnStartup ("no interactive surface to review the plan") and
 //     points you at --plan-yolo instead. lasso always launches omp interactively
-//     in a herdr pane, so this is fine — but don't reuse the plan keys on any
+//     in a luvus pane, so this is fine — but don't reuse the plan keys on any
 //     headless omp path.
 //   - `--config` is accepted on the main `omp` invocation only, never on a
 //     subcommand (`omp config --config …` is an unknown-option error).
@@ -52,7 +52,7 @@ var ompPlanOverlay []byte
 // ompThemeOverlay is the theme half. Built from ompThemeName rather than shipped
 // as an asset so the pin and the generated theme file cannot drift apart.
 var ompThemeOverlay = []byte("# lasso's theme pin: both of omp's mode-selected slots name the theme\n" +
-	"# lasso generates from herdr's palette (~/.omp/agent/themes/" + ompThemeName + ".json),\n" +
+	"# lasso generates from luvus's palette (~/.omp/agent/themes/" + ompThemeName + ".json),\n" +
 	"# so the light/dark pick can't matter and omp watches the file lasso rewrites.\n" +
 	"theme:\n" +
 	"  dark: " + ompThemeName + "\n" +
@@ -105,17 +105,17 @@ func stageOmpConfig(b Backend, agentID string, planMode bool) (string, error) {
 //
 // lasso's plan_mode contract is that the agent's status goes "blocked" when it
 // wants to execute. claude and opencode satisfy it for free: their gate is a
-// prompt herdr's own detection recognizes. omp's does not.
+// prompt luvus's own detection recognizes. omp's does not.
 //
-// herdr learns an omp pane's state from an event-driven integration extension
-// (herdr-omp-agent-state.ts) that emits "blocked" for exactly two things — a
+// luvus learns an omp pane's state from an event-driven integration extension
+// (luvus-omp-agent-state.ts) that emits "blocked" for exactly two things — a
 // tool_approval_requested event and the `ask` tool. omp's plan gate is neither:
 // it is a TUI overlay (showPlanReview) raised after the turn ends, so the
 // extension has already published idle. Measured on omp 17.3.4: an omp agent
 // parked on the Plan Review overlay reports agent_status "done".
 //
 // So lasso reads the screen for it. ompGateStatus asks paneShowsOmpPlanReview
-// when herdr says an omp pane is at rest, and reports "blocked" when the overlay
+// when luvus says an omp pane is at rest, and reports "blocked" when the overlay
 // is up. It is applied on the three MCP surfaces the plan_mode contract names —
 // wait_agent (via paneAgentStatus), get_agent and list_agents — and on the
 // cross-host pane enumeration (enumerateHostPanes) behind /api/all-panes, which
@@ -124,26 +124,26 @@ func stageOmpConfig(b Backend, agentID string, planMode bool) (string, error) {
 // that is the only population that can be at the gate lasso promised, and it is
 // usually empty.
 //
-// What this cannot reach is HERDR's own sidebar, which renders herdr's answer
-// and not lasso's. herdr accepts a state report only from the source that
+// What this cannot reach is LUVUS's own sidebar, which renders luvus's answer
+// and not lasso's. luvus accepts a state report only from the source that
 // already owns the pane's agent lifecycle: a report from a "lasso" source is
-// dropped, and reporting as "herdr:omp" instead outranks the real integration's
+// dropped, and reporting as "luvus:omp" instead outranks the real integration's
 // seq counter — that counter is seeded at the omp process's START time, so a
 // report stamped with the current time wins forever and the pane's status
 // freezes at whatever lasso last said. Both were measured, the second by
 // wedging a probe pane at "blocked" while omp was demonstrably working. The
-// integration does expose a `herdr:blocked` event another omp extension could
+// integration does expose a `luvus:blocked` event another omp extension could
 // emit, and omp takes a per-run `-e <file>` so lasso could stage one — but omp
 // fires no extension event when the plan review opens (a probe extension
 // subscribed to every documented event sees `agent_end` and then nothing), so
-// there is nothing for such an extension to hang off. Making herdr's sidebar
-// agree needs a change in omp or in herdr's omp integration, not here.
+// there is nothing for such an extension to hang off. Making luvus's sidebar
+// agree needs a change in omp or in luvus's omp integration, not here.
 
-// ompGateStatus is that upgrade: given the agent kind and status herdr reported
+// ompGateStatus is that upgrade: given the agent kind and status luvus reported
 // for a pane, it returns "blocked" when the pane is an omp parked on its plan
 // gate, and the status unchanged otherwise. Both guards come first so the screen
 // read never happens for another harness, for a working agent, or (b nil) for a
-// host whose enumeration failed — the status is then whatever herdr managed to
+// host whose enumeration failed — the status is then whatever luvus managed to
 // say, not a gate we could not check for.
 func ompGateStatus(b Backend, paneID, agent, status string) string {
 	if b == nil || agent != "omp" || paneID == "" || !agentAtRest(status) {
@@ -155,8 +155,8 @@ func ompGateStatus(b Backend, paneID, agent, status string) string {
 	return status
 }
 
-// agentAtRest reports whether a herdr agent status means "not currently doing
-// anything" — the states omp's plan gate can be hiding behind. herdr publishes
+// agentAtRest reports whether a luvus agent status means "not currently doing
+// anything" — the states omp's plan gate can be hiding behind. luvus publishes
 // "done" for a pane whose agent finished a turn it hasn't been looked at since,
 // which is idle wearing a badge.
 func agentAtRest(status string) bool {
@@ -176,7 +176,7 @@ var ompPlanReviewMarkers = []string{"Plan Review", "Plan mode - next step"}
 // a thing the pane is showing NOW, and a finished plan review scrolled up in the
 // history would otherwise pin the agent at "blocked" forever.
 //
-// A read failure answers false — herdr's own status stands rather than an
+// A read failure answers false — luvus's own status stands rather than an
 // invented gate.
 func paneShowsOmpPlanReview(b Backend, paneID string) bool {
 	text, ok := paneVisibleText(b, paneID)

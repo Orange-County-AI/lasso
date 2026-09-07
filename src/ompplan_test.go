@@ -9,28 +9,33 @@ import (
 
 // ompPlanBootFake backs the bootAgent-level tests: pane.read returns the trust
 // dialog (stable text, so waitPaneReady settles fast and confirmAgentTrust
-// fires instead of polling out its 30s window) and every pane.send_text payload
-// is captured, so a test can assert on the launch line that actually got typed.
+// fires instead of polling out its 30s window) and every submitted command and
+// raw keystroke is captured, so a test can assert on the launch line that
+// actually reached the pane.
 type ompPlanBootFake struct {
 	*memBackend
+	*fixtureTopology
 	mu    sync.Mutex
 	sends []string
 }
 
-func (b *ompPlanBootFake) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *ompPlanBootFake) LuvusCall(method string, params any) (json.RawMessage, error) {
 	switch method {
 	case "pane.read":
-		return json.RawMessage(`{"read":{"text":"trust this folder"}}`), nil
-	case "pane.send_text":
+		return json.RawMessage(`{"type":"pane_read","text":"trust this folder"}`), nil
+	case "pane.run", "pane.send_input":
 		if p, ok := params.(map[string]any); ok {
-			if txt, ok := p["text"].(string); ok {
-				b.mu.Lock()
-				b.sends = append(b.sends, txt)
-				b.mu.Unlock()
+			txt, _ := p["command"].(string)
+			if txt == "" {
+				txt, _ = p["text"].(string)
 			}
+			b.mu.Lock()
+			b.sends = append(b.sends, txt)
+			b.mu.Unlock()
 		}
+		return json.RawMessage(`{"type":"ok"}`), nil
 	}
-	return json.RawMessage(`{}`), nil
+	return b.reply(method, params)
 }
 
 func (b *ompPlanBootFake) GitOut(string, ...string) (string, error) { return "", nil }
@@ -53,7 +58,7 @@ func bootOmpAgent(t *testing.T, id string, planMode bool) (*ompPlanBootFake, Age
 	}
 	t.Cleanup(closeTestDB)
 
-	b := &ompPlanBootFake{memBackend: newMemBackend()}
+	b := &ompPlanBootFake{memBackend: newMemBackend(), fixtureTopology: &fixtureTopology{}}
 	rec := AgentRecord{
 		ID:          id,
 		Host:        "local",
@@ -63,7 +68,7 @@ func bootOmpAgent(t *testing.T, id string, planMode bool) (*ompPlanBootFake, Age
 		Description: "plan the thing",
 		PlanMode:    planMode,
 		WorkDir:     "/work",
-		RootPane:    "p1",
+		RootPane:    "1",
 	}
 	bootAgent(b, "local", rec, "")
 	return b, rec
@@ -128,9 +133,9 @@ func TestBootAgentStagesOmpThemeOverlayWithoutPlanMode(t *testing.T) {
 	}
 }
 
-// ompScreenFake answers pane.list with one omp pane at the given herdr status
-// and pane.read with the given screen — the two inputs paneAgentStatus combines
-// to decide whether omp is parked on its plan gate.
+// ompScreenFake enumerates one omp pane at the given runtime status and answers
+// pane.read with the given screen — the two inputs paneAgentStatus combines to
+// decide whether omp is parked on its plan gate.
 type ompScreenFake struct {
 	*memBackend
 	agent  string
@@ -138,19 +143,15 @@ type ompScreenFake struct {
 	screen string
 }
 
-func (b *ompScreenFake) HerdrCall(method string, params any) (json.RawMessage, error) {
-	switch method {
-	case "pane.list":
-		pl := map[string]any{"panes": []map[string]any{{
-			"pane_id": "p1", "agent": b.agent, "agent_status": b.status,
-		}}}
-		raw, _ := json.Marshal(pl)
-		return raw, nil
-	case "pane.read":
-		raw, _ := json.Marshal(map[string]any{"read": map[string]any{"text": b.screen}})
+func (b *ompScreenFake) LuvusCall(method string, params any) (json.RawMessage, error) {
+	if method == "pane.read" {
+		raw, _ := json.Marshal(map[string]any{"type": "pane_read", "text": b.screen})
 		return raw, nil
 	}
-	return json.RawMessage(`{}`), nil
+	return uhpFixtureReply([]pane{{
+		PaneID: "1", Agent: b.agent, AgentStatus: b.status,
+		WorkspaceID: "w1", TabID: "w1-t1", Focused: true,
+	}}, method, params)
 }
 
 // The real screen omp draws when it is parked on its plan gate, as captured
@@ -166,9 +167,9 @@ const ompPlanReviewScreen = `╭─ Plan Review ──────────�
 │ ↑↓ select · ⏎ confirm · c copy · tab regions · esc cancel        │
 ╰──────────────────────────────────────────────────────────────────╯`
 
-// herdr cannot see omp's plan gate: its omp integration publishes state from
+// luvus cannot see omp's plan gate: its omp integration publishes state from
 // tool-approval and `ask` events, and the plan review is a TUI overlay raised
-// after the turn ended — so herdr has already said "done". lasso reads the
+// after the turn ended — so luvus has already said "done". lasso reads the
 // screen and reports "blocked", which is what wait_agent status=blocked needs.
 func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 	cases := []struct {
@@ -181,7 +182,7 @@ func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 		{"parked on the gate (done)", "omp", "done", ompPlanReviewScreen, "blocked"},
 		{"parked on the gate (idle)", "omp", "idle", ompPlanReviewScreen, "blocked"},
 		// Mid-turn omp is working whatever is on screen; no read should override
-		// a status herdr is actively reporting.
+		// a status luvus is actively reporting.
 		{"working", "omp", "working", ompPlanReviewScreen, "working"},
 		// An idle omp with no overlay stays idle.
 		{"idle, no overlay", "omp", "idle", "❯ ", "idle"},
@@ -195,7 +196,7 @@ func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			b := &ompScreenFake{memBackend: newMemBackend(), agent: c.agent, status: c.status, screen: c.screen}
-			if got := paneAgentStatus(b, "p1"); got != c.want {
+			if got := paneAgentStatus(b, "1"); got != c.want {
 				t.Errorf("paneAgentStatus = %q, want %q", got, c.want)
 			}
 		})
@@ -217,8 +218,8 @@ func TestEnumerateHostPanesReportsOmpPlanGate(t *testing.T) {
 	// Two omp agents on the host, both resting on a screen showing the overlay.
 	// Only the plan-mode one may be reported blocked: the other never asked to
 	// plan, so lasso has no gate to claim on its behalf.
-	planned := AgentRecord{ID: "g1", Host: "local", Agent: "omp", PlanMode: true, RootPane: "p1", Type: "scratch"}
-	plain := AgentRecord{ID: "g2", Host: "local", Agent: "omp", PlanMode: false, RootPane: "p2", Type: "scratch"}
+	planned := AgentRecord{ID: "g1", Host: "local", Agent: "omp", PlanMode: true, RootPane: "1", Type: "scratch"}
+	plain := AgentRecord{ID: "g2", Host: "local", Agent: "omp", PlanMode: false, RootPane: "2", Type: "scratch"}
 	for _, rec := range []AgentRecord{planned, plain} {
 		if err := appendAgent("local", rec); err != nil {
 			t.Fatalf("appendAgent %s: %v", rec.ID, err)
@@ -234,13 +235,13 @@ func TestEnumerateHostPanesReportsOmpPlanGate(t *testing.T) {
 	for _, p := range panes {
 		got[p.PaneID] = p.AgentStatus
 	}
-	if got["p1"] != "blocked" {
-		t.Errorf("plan-mode omp pane status = %q, want blocked", got["p1"])
+	if got["1"] != "blocked" {
+		t.Errorf("plan-mode omp pane status = %q, want blocked", got["1"])
 	}
-	if got["p2"] != "idle" {
-		t.Errorf("non-plan omp pane status = %q, want idle (lasso claims no gate for it)", got["p2"])
+	if got["2"] != "idle" {
+		t.Errorf("non-plan omp pane status = %q, want idle (lasso claims no gate for it)", got["2"])
 	}
-	if b.reads["p2"] {
+	if b.reads["2"] {
 		t.Error("the enumeration must not screen-read a pane whose record never asked for plan mode")
 	}
 }
@@ -254,34 +255,30 @@ type panesGateFake struct {
 	reads  map[string]bool
 }
 
-func (b *panesGateFake) HerdrCall(method string, params any) (json.RawMessage, error) {
-	switch method {
-	case "pane.list":
-		raw, _ := json.Marshal(map[string]any{"panes": []map[string]any{
-			{"pane_id": "p1", "agent": "omp", "agent_status": "idle", "workspace_id": "w1", "tab_id": "t1"},
-			{"pane_id": "p2", "agent": "omp", "agent_status": "idle", "workspace_id": "w1", "tab_id": "t1"},
-		}})
-		return raw, nil
-	case "pane.read":
+func (b *panesGateFake) LuvusCall(method string, params any) (json.RawMessage, error) {
+	if method == "pane.read" {
 		if p, ok := params.(map[string]any); ok {
-			if id, ok := p["pane_id"].(string); ok {
+			if id, ok := p["pane"].(string); ok {
 				if b.reads == nil {
 					b.reads = map[string]bool{}
 				}
 				b.reads[id] = true
 			}
 		}
-		raw, _ := json.Marshal(map[string]any{"read": map[string]any{"text": b.screen}})
+		raw, _ := json.Marshal(map[string]any{"type": "pane_read", "text": b.screen})
 		return raw, nil
 	}
-	return json.RawMessage(`{}`), nil
+	return uhpFixtureReply([]pane{
+		{PaneID: "1", Agent: "omp", AgentStatus: "idle", WorkspaceID: "w1", TabID: "w1-t1", Focused: true},
+		{PaneID: "2", Agent: "omp", AgentStatus: "idle", WorkspaceID: "w1", TabID: "w1-t1"},
+	}, method, params)
 }
 
 // list_agents applies the gate check with whatever backend it got, and it got
-// none when the host's herdr enumeration failed. That must leave the status
+// none when the host's luvus enumeration failed. That must leave the status
 // alone, not panic and not invent a gate nobody could look for.
 func TestOmpGateStatusWithoutBackend(t *testing.T) {
-	if got := ompGateStatus(nil, "p1", "omp", "idle"); got != "idle" {
+	if got := ompGateStatus(nil, "1", "omp", "idle"); got != "idle" {
 		t.Errorf("ompGateStatus(nil backend) = %q, want the status unchanged", got)
 	}
 	if got := ompGateStatus(nil, "", "omp", ""); got != "" {

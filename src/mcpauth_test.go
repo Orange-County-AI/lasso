@@ -216,7 +216,7 @@ func TestMCPHostGroupsOverTheRealEndpoint(t *testing.T) {
 	}
 
 	// message_agent resolves recipients against the same bound. There is no live
-	// herdr behind these hosts, so an in-group recipient can only get as far as
+	// luvus behind these hosts, so an in-group recipient can only get as far as
 	// dialing its host — but that is the distinction under test: the group-mate
 	// resolves to its host, while the outsider is stopped by the credential.
 	var msg messageAgentOut

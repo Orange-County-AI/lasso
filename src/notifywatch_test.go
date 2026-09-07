@@ -114,43 +114,6 @@ func TestObserveTreatsAReusedPaneAsFresh(t *testing.T) {
 	}
 }
 
-// herdr-mirror makes one blocked agent appear twice in the fleet listing: once
-// as the remote host's own pane, once as the local pane streaming it. One agent
-// is one notification, attributed to the machine the work is on.
-func TestObserveDedupesMirroredPanes(t *testing.T) {
-	direct := blockedTestPane("norm", "remote-1", "blocked")
-	mirror := blockedTestPane("titan", "local-7", "blocked")
-	mirror.MirrorHost, mirror.MirrorPane = "norm", "remote-1"
-	mirror.MirrorLabel, mirror.WorkspaceLabel = "Fix the push flow", "norm: Fix the push flow"
-
-	for _, order := range [][]hostPane{{direct, mirror}, {mirror, direct}} {
-		w := &blockedWatcher{}
-		got := w.observe(order, time.Now())
-		if len(got) != 1 {
-			t.Fatalf("want 1 notification, got %d", len(got))
-		}
-		if got[0].Host != "norm" {
-			t.Errorf("host = %q, want the machine the agent is on", got[0].Host)
-		}
-	}
-}
-
-// A mirror of a host lasso cannot reach directly is the only view of that
-// agent, so it must still notify — attributed to the remote host.
-func TestObserveNotifiesForAMirrorOnlyAgent(t *testing.T) {
-	mirror := blockedTestPane("titan", "local-7", "blocked")
-	mirror.MirrorHost, mirror.MirrorPane = "blackbird", "remote-2"
-	mirror.WorkspaceLabel = "blackbird: Ship the thing"
-	mirror.MirrorLabel = "Ship the thing"
-	got := (&blockedWatcher{}).observe([]hostPane{mirror}, time.Now())
-	if len(got) != 1 {
-		t.Fatalf("want 1 notification, got %d", len(got))
-	}
-	if got[0].Host != "blackbird" || !strings.Contains(got[0].Body, "blackbird") {
-		t.Errorf("notification = %+v, want it attributed to blackbird", got[0])
-	}
-}
-
 // The aggregation serves a failed host's last-good panes, so an unreachable
 // host re-states panes the watcher already recorded. That must not read as a
 // fresh block.
@@ -179,45 +142,6 @@ func TestObserveForgetsPanesThatStayGone(t *testing.T) {
 	w.mu.Unlock()
 	if stillThere || n != 1 {
 		t.Errorf("closed pane not forgotten: %d entries remembered", n)
-	}
-}
-
-func TestBlockedNotificationFallsBackThroughTheAvailableNames(t *testing.T) {
-	p := hostPane{
-		Host:          "titan",
-		HostLabel:     "titan",
-		PaneID:        "p1",
-		TerminalTitle: "Reticulating splines",
-		Agent:         "codex",
-		AgentStatus:   "blocked",
-		HasAgent:      true,
-	}
-	n := blockedNotification(p, "titan\x00p1", false)
-	if n.Title != "Reticulating splines" {
-		t.Errorf("title = %q, want the terminal title when there is no workspace label", n.Title)
-	}
-	// The terminal title is already the headline, so it must not be repeated in
-	// the body.
-	if strings.Count(n.Body, "Reticulating splines") != 0 {
-		t.Errorf("body repeats the title: %q", n.Body)
-	}
-	if !strings.Contains(n.Body, "codex") {
-		t.Errorf("body = %q, want the harness named", n.Body)
-	}
-
-	// A named workspace plus a distinct task line: both are useful, so the task
-	// rides in the body.
-	p.WorkspaceLabel = "Push notifications"
-	n = blockedNotification(p, "titan\x00p1", false)
-	if n.Title != "Push notifications" || !strings.Contains(n.Body, "Reticulating splines") {
-		t.Errorf("notification = %+v", n)
-	}
-
-	// Nothing to name it by at all still produces a usable notification.
-	bare := hostPane{Host: "local", PaneID: "p2", HasAgent: true, AgentStatus: "blocked"}
-	n = blockedNotification(bare, "local\x00p2", false)
-	if n.Title == "" || n.Body == "" {
-		t.Errorf("unnamed agent produced %+v", n)
 	}
 }
 
@@ -320,7 +244,7 @@ func useNotifTransport(t *testing.T, ts ...notifTransport) {
 	})
 }
 
-// The field bug: a herdr workspace named "cheese" on blackbird held two claude
+// The field bug: a luvus workspace named "cheese" on blackbird held two claude
 // panes, both parked on approvals. Both inherited the workspace label, neither
 // had a terminal title of its own, so the phone showed two notifications
 // identical down to the last character — with nothing to say which agent either
@@ -381,10 +305,5 @@ func TestPaneDiscriminatorFallsBackToThePaneID(t *testing.T) {
 	p.TabLabel = "2"
 	if got := paneDiscriminator(p); got != "tab 2" {
 		t.Errorf("got %q, want the tab label", got)
-	}
-	mirror := blockedTestPane("titan", "local-7", "blocked")
-	mirror.MirrorHost, mirror.MirrorPane = "norm", "remote-2"
-	if got := paneDiscriminator(mirror); got != "remote-2" {
-		t.Errorf("mirror got %q, want the remote pane id", got)
 	}
 }

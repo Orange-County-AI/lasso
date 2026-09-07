@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-// Lasso self-update. Unlike herdr (which runs on each host and is updated there
+// Lasso self-update. Unlike luvus (which runs on each host and is updated there
 // via the host switcher's "Update"), lasso runs only on the local machine, as a
-// systemd --user service. New features change behavior and can shift the herdr
+// systemd --user service. New features change behavior and can shift the luvus
 // protocol lasso targets, so the host switcher also offers "Update lasso": pull
 // the latest source and let the supervisor rebuild + restart it, bringing lasso
-// in line with a host running a newer herdr.
+// in line with a host running a newer luvus.
 //
 // The supervised source install is a systemd --user unit (default name "lasso")
 // whose start command does `git checkout main; go build; exec ./lasso` from the

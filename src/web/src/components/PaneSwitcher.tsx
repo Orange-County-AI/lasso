@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { Laptop, Server, X } from "lucide-react"
+import { X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -13,8 +13,7 @@ import {
 import { api, type HostPane } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
-import { aliasFamilies, familyOf, LOCAL_KEY } from "@/lib/hosts"
-import { focusPaneInHerdr } from "@/lib/pane-focus"
+import { focusPaneInLuvus } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
@@ -28,24 +27,14 @@ const cellKey = (p: HostPane) => {
   return `${p.host}|${p.pane_id}`
 }
 
-// originHost names the machine a row's work actually lives on. For a
-// herdr-mirror row that is NOT p.host: the mirror is a real local pane
-// streaming another box's terminal, so it reports host "local" while everything
-// it shows is elsewhere. "" for the machine lasso itself runs on.
-const originHost = (p: HostPane) =>
-  p.mirror_host || (p.host === "local" ? "" : p.host)
-
 // The descriptive pane title shown bold at the top of each row. Prefer the
-// workspace label (e.g. "accessibility") over the bare herdr tab number. A
-// mirror's workspace label carries herdr-mirror's "<host>: " sidebar prefix
-// ("ocai: clem"), which the host header above the row already says — so it
-// shows the label as it reads on the remote instead.
+// workspace label (e.g. "accessibility") over the bare Luvus tab number.
 const primaryLabel = (p: HostPane) =>
-  p.mirror_label || p.workspace_label || p.tab_label || p.pane_id
+  p.workspace_label || p.tab_label || p.pane_id
 
 // The most specific name *below* the workspace, shown as a badge to tell
-// sibling panes apart. Prefer the pane's own label (herdr's per-pane title);
-// fall back to the tab label — which, for an unnamed pane, is the name herdr
+// sibling panes apart. Prefer the pane's own label (Luvus's per-pane title);
+// fall back to the tab label — which, for an unnamed pane, is the name Luvus
 // shows on its tab. "" when neither adds anything over the primary label.
 const detailLabel = (p: HostPane) => {
   const detail = p.pane_label || p.tab_label
@@ -54,25 +43,15 @@ const detailLabel = (p: HostPane) => {
 
 // Everything worth matching against, lowercased and joined. A query token is a
 // hit if it's a substring anywhere in here.
-//
-// A mirror row is searchable by its host AND its remote label independently
-// ("gigachad lasso" and "clem" both find their row), which the prefixed
-// workspace label alone would only manage while herdr-mirror's prefix happens
-// to equal its host key — it is configurable, so it can't be relied on. Its
-// cwd is deliberately left out: every mirror pane on the box reports the same
-// herdr-mirror streamer directory, so including it would make one stray token
-// match all 32 of them.
 const haystack = (p: HostPane) =>
   [
     p.tab_label,
     p.pane_label,
     p.workspace_label,
-    p.mirror_host,
-    p.mirror_label,
     p.host_label,
     p.host,
     p.agent,
-    p.mirror_host ? "" : p.cwd,
+    p.cwd,
     p.pane_id,
     p.prompt, // full initial prompt — searchable but not shown in the list
   ]
@@ -80,33 +59,22 @@ const haystack = (p: HostPane) =>
     .join(" ")
     .toLowerCase()
 
-// One host's rows in the list, with the index its first row occupies in the
-// flattened set the keyboard navigates.
-interface PaneSection {
-  key: string
-  label: string
-  local: boolean
-  start: number
-  panes: HostPane[]
-}
-
-// PaneSwitcher: the MOBILE command-palette over the panes of the ACTIVE host —
-// which, with herdr-mirror running, is the whole fleet anyway: every other
-// machine's workspaces are mirrored into this herdr as real local panes. Type to
-// filter; ↑/↓ to move; Enter to open + focus the pane in the herdr terminal
-// (handing the keyboard straight to its xterm).
+// PaneSwitcher: lasso's command-palette over the panes of the ACTIVE host, plus
+// the sessions it has records for. ⌘K, the header's search bar and the mobile
+// dial's Search all open it; type to filter, ↑/↓ to move, Enter to open + focus
+// the pane in the Luvus terminal (handing the keyboard straight to its xterm).
 //
-// Desktop search (⌘K, the header bar) opens herdr's OWN pane search instead —
-// see openHerdrGoto. This one stays for the mobile dial, whose software keyboard
-// has no prefix key to chord with, and it is also the only picker that can show
-// CLOSED sessions (the Active filter off) and reopen their workspaces.
+// It is lasso's own list rather than a route into Luvus's global fuzzy finder
+// (`Ctrl+Space /`, still there in the terminal) because of the one thing that
+// finder cannot know: CLOSED sessions. With the Active filter off, the rows
+// include agents whose pane is gone — records lasso kept, not panes Luvus has —
+// and picking one re-creates its work directory as a new pane. After a
+// clean-break upgrade, that is the recovery path for every retired record.
 //
-// It deliberately drops the other hosts' rows /api/all-panes also carries. A
-// mirrored pane would otherwise be listed twice — once as the local mirror,
-// once as the remote pane it streams — and picking the remote copy switches
-// lasso's active host (a seconds-long terminal reload) to show what the mirror
-// row already had on screen. Nothing is lost from view: the rows still bucket by
-// the machine their work is on (see sections), so the fleet reads as the fleet.
+// It deliberately drops the other hosts' rows /api/all-panes also carries:
+// picking a remote row would move this tab to that host (a seconds-long
+// terminal reload) out from under a palette opened to navigate the session on
+// screen. The host switcher is where a host change belongs.
 export function PaneSwitcher({
   open,
   onOpenChange,
@@ -118,7 +86,7 @@ export function PaneSwitcher({
   const [query, setQuery] = React.useState("")
   const [active, setActive] = React.useState(0)
   // "Active" filter — on by default, so the switcher shows only live panes (its
-  // historical behavior). Turning it off folds in past agents whose herdr pane was
+  // historical behavior). Turning it off folds in past agents whose Luvus pane was
   // closed, so an old session can be found and its workspace reopened. Reset to on
   // every time the modal opens (see the open effect below).
   const [activeOnly, setActiveOnly] = React.useState(true)
@@ -142,7 +110,7 @@ export function PaneSwitcher({
   // Shares the prefetched cross-host pane cache (same key), so the palette is
   // usually instant; otherwise it fetches on open. The request stays the
   // cross-host aggregation rather than one host's listing: its per-host success
-  // branch is also what reconciles lasso's agent records against herdr
+  // branch is also what reconciles lasso's agent records against Luvus
   // (fetchAllPanes → reconcileHostAgents), and this endpoint is the only thing
   // that drives it on a schedule. The narrowing happens here.
   const q = useQuery({
@@ -150,8 +118,7 @@ export function PaneSwitcher({
     queryFn: () => api.allPanes(),
     enabled: open,
   })
-  // The active host's live panes, mirrors included — a mirror IS a local pane
-  // (it reports host "local" and names the machine it streams in mirror_host).
+  // The active host's live panes.
   const livePanes = React.useMemo(
     // backend order = newest first
     () => (q.data?.panes ?? []).filter((p) => p.host === hostKey),
@@ -166,7 +133,7 @@ export function PaneSwitcher({
     enabled: open && !activeOnly,
   })
 
-  // Closed sessions = history rows whose herdr pane is no longer live: recorded
+  // Closed sessions = history rows whose Luvus pane is no longer live: recorded
   // agents and orphan worktree/scratch dirs alike. Scoped to the active host
   // like the live rows (the history endpoint spans every host), then diffed
   // against the live set by host+pane_id (a still-running agent already shows as
@@ -224,64 +191,11 @@ export function PaneSwitcher({
     })
   }, [panes, query])
 
-  // The alias families to group on — computed off the FULL set (like
-  // multiPaneWorkspaces) so typing a query never re-buckets the rows underneath
-  // the cursor. Mirror host keys sit in the same namespace as ssh aliases here
-  // on purpose: a mirror of a box lasso can also drive directly joins that
-  // box's group instead of forming a parallel one beside it.
-  const families = React.useMemo(
-    () => aliasFamilies(panes.map(originHost).filter(Boolean)),
-    [panes]
-  )
-
-  // Rows grouped by the machine their work lives on, using the navbar host
-  // switcher's family rule (familyOf) rather than a second scheme of this
-  // palette's own. Without this a mirror sorts in among the local panes by
-  // herdr workspace number and reads as local — on titan that is 32 of 61 rows.
-  //
-  // lasso's own machine leads; the rest are alphabetical, because herdr's
-  // creation order (which is what the payload carries) says nothing useful
-  // across nine hosts, whereas an alphabetical list of hosts is scannable.
-  const sections = React.useMemo(() => {
-    const byKey = new Map<string, PaneSection>()
-    for (const p of matched) {
-      const origin = originHost(p)
-      const key = origin ? familyOf(origin, families) : LOCAL_KEY
-      let s = byKey.get(key)
-      if (!s) {
-        s = {
-          key,
-          label: origin ? key : p.host_label || "local",
-          local: !origin,
-          start: 0,
-          panes: [],
-        }
-        byKey.set(key, s)
-      }
-      s.panes.push(p)
-    }
-    const out = [...byKey.values()].sort((a, b) =>
-      a.local === b.local ? a.label.localeCompare(b.label) : a.local ? -1 : 1
-    )
-    let start = 0
-    for (const s of out) {
-      s.start = start
-      start += s.panes.length
-    }
-    return out
-  }, [matched, families])
-
   // The flattened rows, in the order they render — what ↑/↓ and Enter index
-  // into.
-  const filtered = React.useMemo(
-    () => sections.flatMap((s) => s.panes),
-    [sections]
-  )
-
-  // With one host in the list there is nothing to tell apart, so the headers
-  // are pure noise — a lasso with no mirrors and no remote hosts looks exactly
-  // as it did.
-  const showHeaders = sections.length > 1
+  // into. Every row belongs to this tab's own host, so there is nothing left to
+  // group by: the order is the backend's (live panes newest-first, then closed
+  // ones).
+  const filtered = matched
 
   // Reset the highlight to the top whenever the query changes.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on query change
@@ -325,12 +239,12 @@ export function PaneSwitcher({
         .then((np) => {
           queryClient.invalidateQueries({ queryKey: qk.panes })
           queryClient.invalidateQueries({ queryKey: qk.agentHistory })
-          return focusPaneInHerdr(np, activeHost)
+          return focusPaneInLuvus(np, activeHost)
         })
         .catch((e) => toast.error(`reopen failed: ${(e as Error).message}`))
       return
     }
-    focusPaneInHerdr(p, activeHost).catch((e) =>
+    focusPaneInLuvus(p, activeHost).catch((e) =>
       toast.error(`focus failed: ${(e as Error).message}`)
     )
   }
@@ -455,146 +369,97 @@ export function PaneSwitcher({
               )}
             </div>
           ) : (
-            sections.map((s) => (
-              <div key={s.key}>
-                {/* Host header, in the Grid rail's idiom: an icon + UPPERCASE
-                    tracked label, so it reads as structure and can't be taken
-                    for a pane row. */}
-                {showHeaders && (
-                  <div className="flex items-center gap-1.5 px-3 pt-2 pb-0.5 font-semibold text-[10px] text-muted-foreground/80 uppercase tracking-wide">
-                    {s.local ? (
-                      <Laptop className="size-3 shrink-0" />
-                    ) : (
-                      <Server className="size-3 shrink-0" />
-                    )}
-                    <span className="truncate">{s.label}</span>
-                  </div>
+            filtered.map((p, i) => (
+              <button
+                key={cellKey(p)}
+                type="button"
+                data-index={i}
+                onClick={() => choose(p)}
+                onMouseMove={() => {
+                  navSource.current = "pointer"
+                  setActive(i)
+                }}
+                className={cn(
+                  "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
+                  // The keyboard/hover highlight uses the primary tint so the
+                  // active row reads clearly — `bg-accent` resolves to --h-hover,
+                  // the same color as the dialog surface (DialogContent is
+                  // bg-popover, also --h-hover), so the highlight was
+                  // imperceptible and ↑/↓ navigation looked like it did nothing.
+                  i === active && "bg-primary text-primary-foreground"
                 )}
-                {s.panes.map((p, j) => {
-                  const i = s.start + j
-                  return (
-                    <button
-                      key={cellKey(p)}
-                      type="button"
-                      data-index={i}
-                      onClick={() => choose(p)}
-                      onMouseMove={() => {
-                        navSource.current = "pointer"
-                        setActive(i)
-                      }}
-                      className={cn(
-                        "flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none",
-                        // The keyboard/hover highlight uses the primary tint so the
-                        // active row reads clearly — `bg-accent` resolves to --h-hover,
-                        // the same color as the dialog surface (DialogContent is
-                        // bg-popover, also --h-hover), so the highlight was
-                        // imperceptible and ↑/↓ navigation looked like it did nothing.
-                        i === active && "bg-primary text-primary-foreground"
-                      )}
-                    >
-                      <span className="flex w-full items-center gap-2">
-                        <span className="truncate font-bold text-sm">
-                          {primaryLabel(p)}
-                        </span>
-                        {/* When a workspace holds several panes, the bold workspace
+              >
+                <span className="flex w-full items-center gap-2">
+                  <span className="truncate font-bold text-sm">
+                    {primaryLabel(p)}
+                  </span>
+                  {/* When a workspace holds several panes, the bold workspace
                       label is shared, so each row surfaces its more-specific
                       name (pane label, else tab label) to tell siblings apart —
-                      the same name herdr shows on the pane/tab. */}
-                        {p.workspace_id &&
-                          multiPaneWorkspaces.has(p.workspace_id) &&
-                          detailLabel(p) && (
-                            <span
-                              className={cn(
-                                "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                                // On the active (bg-primary) row the foreground tints
-                                // wash out, so swap to primary-foreground tints.
-                                i === active
-                                  ? "bg-primary-foreground/20 text-primary-foreground"
-                                  : "bg-foreground/10 text-foreground/70"
-                              )}
-                            >
-                              {detailLabel(p)}
-                            </span>
-                          )}
-                        {/* Closed agents (no live pane) read distinctly so it's clear
-                      selecting one reopens its workspace rather than focusing a
-                      running pane. */}
-                        {p.closed && (
-                          <span
-                            className={cn(
-                              "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                              i === active
-                                ? "bg-primary-foreground/20 text-primary-foreground"
-                                : "bg-foreground/10 text-muted-foreground"
-                            )}
-                          >
-                            closed
-                          </span>
-                        )}
-                        {/* A mirror is a real local pane, but everything in it is
-                      happening on another machine. Marked on the row itself
-                      (not only in the header) so it still reads as remote when
-                      a search has narrowed the list to one group. */}
-                        {p.mirror_host && (
-                          <span
-                            className={cn(
-                              "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                              i === active
-                                ? "bg-primary-foreground/20 text-primary-foreground"
-                                : "bg-foreground/10 text-muted-foreground"
-                            )}
-                            title={`mirrored from ${p.mirror_host}${
-                              p.mirror_pane ? ` (${p.mirror_pane})` : ""
-                            }`}
-                          >
-                            mirror
-                          </span>
-                        )}
-                        {p.has_agent && p.agent && (
-                          <span
-                            className={cn(
-                              "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
-                              // text-primary on a bg-primary row is invisible — use
-                              // the contrasting primary-foreground when active.
-                              i === active
-                                ? "bg-primary-foreground/20 text-primary-foreground"
-                                : "bg-primary/15 text-primary"
-                            )}
-                          >
-                            {p.agent}
-                            {p.agent_status ? ` · ${p.agent_status}` : ""}
-                          </span>
-                        )}
-                      </span>
+                      the same name Luvus shows on the pane/tab. */}
+                  {p.workspace_id &&
+                    multiPaneWorkspaces.has(p.workspace_id) &&
+                    detailLabel(p) && (
                       <span
                         className={cn(
-                          "flex w-full items-center gap-2 truncate text-xs",
-                          // The muted gray subtitle is unreadable on the active row;
-                          // ride the row's primary-foreground at reduced opacity.
+                          "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                          // On the active (bg-primary) row the foreground tints
+                          // wash out, so swap to primary-foreground tints.
                           i === active
-                            ? "text-primary-foreground/80"
-                            : "text-muted-foreground"
+                            ? "bg-primary-foreground/20 text-primary-foreground"
+                            : "bg-foreground/10 text-foreground/70"
                         )}
                       >
-                        <span className="shrink-0">
-                          {p.mirror_host || p.host_label}
-                        </span>
-                        {/* A mirror has no local working directory: herdr-mirror parks
-                      every streamer in one sentinel dir, and herdr can't see the
-                      remote's cwd (nor its repo/branch, which is why mirror rows
-                      carry no git chip anywhere in lasso). Showing that path
-                      would put the same meaningless line under 32 rows, so the
-                      subtitle is just the host it lives on. */}
-                        {!p.mirror_host && p.cwd && (
-                          <span className="truncate font-mono">
-                            {tilde(p.cwd)}
-                          </span>
-                        )}
+                        {detailLabel(p)}
                       </span>
-                    </button>
-                  )
-                })}
-              </div>
+                    )}
+                  {/* Closed agents (no live pane) read distinctly so it's clear
+                      selecting one reopens its workspace rather than focusing a
+                      running pane. */}
+                  {p.closed && (
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                        i === active
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-foreground/10 text-muted-foreground"
+                      )}
+                    >
+                      closed
+                    </span>
+                  )}
+                  {p.has_agent && p.agent && (
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 font-medium text-[11px]",
+                        // text-primary on a bg-primary row is invisible — use
+                        // the contrasting primary-foreground when active.
+                        i === active
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-primary/15 text-primary"
+                      )}
+                    >
+                      {p.agent}
+                      {p.agent_status ? ` · ${p.agent_status}` : ""}
+                    </span>
+                  )}
+                </span>
+                <span
+                  className={cn(
+                    "flex w-full items-center gap-2 truncate text-xs",
+                    // The muted gray subtitle is unreadable on the active row;
+                    // ride the row's primary-foreground at reduced opacity.
+                    i === active
+                      ? "text-primary-foreground/80"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  <span className="shrink-0">{p.host_label}</span>
+                  {p.cwd && (
+                    <span className="truncate font-mono">{tilde(p.cwd)}</span>
+                  )}
+                </span>
+              </button>
             ))
           )}
         </div>

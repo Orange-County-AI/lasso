@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your human's attention with a push notification (notify / `lasso notify`).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $LUVUS_PANE_ID) and getting your human's attention with a push notification (notify / `lasso notify`).
 ---
 
 # lasso
@@ -32,25 +32,26 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 # lasso self-identity
 
 If you were spawned by [lasso](https://github.com/Orange-County-AI/lasso), you are running
-inside a herdr pane that lasso created, and your own identity is already in your
+inside a Luvus pane that lasso created, and your own identity is already in your
 environment. You do **not** need to call `list_repos` / `list_agents` and guess
 which entry is you — that wastes tokens. Read your pane id from the env instead.
 
-## Your environment variable
+## Your environment variables
 
 | Variable         | Meaning                                                              |
 | ---------------- | ------------------------------------------------------------------- |
-| `HERDR_PANE_ID`  | **Your herdr pane id** (e.g. `p_82`) — what every self-targeting tool resolves you by. |
+| `LUVUS_PANE_ID`  | **Your Luvus pane id** (a decimal string, e.g. `7`) — what every self-targeting tool resolves you by. |
+| `LUVUS_ENV`      | `1` inside any Luvus pane. Set for every pane, lasso-created or not. |
 
-Check whether you're a lasso agent at all by testing `HERDR_PANE_ID`:
+Check whether you're a lasso agent at all by testing `LUVUS_PANE_ID`:
 
 ```bash
-echo "$HERDR_PANE_ID"   # empty/unset => you are NOT in a lasso-managed herdr pane
+echo "$LUVUS_PANE_ID"   # empty/unset => you are NOT in a lasso-managed Luvus pane
 ```
 
 ## Closing yourself when you're done
 
-The easiest way to shut yourself down is the CLI — it reads `$HERDR_PANE_ID` for
+The easiest way to shut yourself down is the CLI — it reads `$LUVUS_PANE_ID` for
 you, so there's nothing to pass:
 
 ```bash
@@ -67,9 +68,9 @@ an address of the machine you run on.
 ## Acting on yourself via the lasso MCP tools
 
 The lasso MCP server runs inside lasso's own process, **not your shell**, so it
-cannot read your environment — you must pass `$HERDR_PANE_ID` yourself.
+cannot read your environment — you must pass `$LUVUS_PANE_ID` yourself.
 
-- **`whoami`** — pass `$HERDR_PANE_ID` as `pane_id` to get your own agent record,
+- **`whoami`** — pass `$LUVUS_PANE_ID` as `pane_id` to get your own agent record,
   including your agent `id` and the `host` your pane lives on. Pane ids are only
   unique **per host**, so if the same pane id exists on several hosts, whoami
   refuses to guess (`found:false`) and names the candidate hosts — call it again
@@ -79,27 +80,25 @@ cannot read your environment — you must pass `$HERDR_PANE_ID` yourself.
   shut yourself down (the long-hand of `lasso closeme`). Never guess the host:
   passing the wrong one (or another agent's id) kills an unrelated agent.
 
-If `$HERDR_PANE_ID` is empty, you are not running under lasso and none of this
+If `$LUVUS_PANE_ID` is empty, you are not running under lasso and none of this
 applies to you.
 
-## Broadcasting what you're working on
+## Naming your pane
 
-Your pane has a status card in the herdr sidebar and lasso's ⌘K pane switcher. You can
-put a live one-line summary on it so the human can see what you're doing
-without opening your terminal:
+Luvus pane names are addressable handles, not free-form progress messages. Use a
+short, stable name only when one is useful:
 
 ```bash
-herdr pane report-metadata "$HERDR_PANE_ID" --source agent:self \
-  --token summary="migrating auth tests to vitest" --ttl-ms 1800000
+luvus pane name auth-tests --pane "$LUVUS_PANE_ID"
 ```
 
-Update it when you change phases (exploring → implementing → testing); the
-TTL clears it automatically if you go quiet. Keep it under ~60 characters.
+Names must match `[a-z][a-z0-9_-]{0,31}`. Keep the handle stable so other callers
+can address it. `--clear` removes it.
 
-Do **not** use `herdr pane report-agent` — that claims lifecycle authority
-over your pane, overriding herdr's own idle/working/blocked detection, and a
-stale claim sticks if you exit uncleanly. `report-metadata` is display-only
-and fails safe.
+Do **not** use `luvus agent report` — that publishes a *leased authoritative*
+state, overriding Luvus's own idle/working/blocked detection for your pane, and a
+lease remains until it expires or is released (`luvus agent release`). It is an
+integration API for a harness that owns the lifecycle, not a progress message.
 
 ## Getting your human's attention
 
@@ -124,31 +123,33 @@ treat it as a real interruption:
   device is registered — nothing was delivered, so don't tell your human you
   notified them. (Same signal in the MCP tool's `sent` field.)
 - The notification is titled with **your** agent name and opens on your host,
-  resolved from `$HERDR_PANE_ID` (the CLI reads it for you). `-title` overrides
+  resolved from `$LUVUS_PANE_ID` (the CLI reads it for you). `-title` overrides
   it; a piped message works too: `make test 2>&1 | tail -3 | lasso notify`.
 
 The **`notify`** MCP tool is the same call — pass `message` and your
-`$HERDR_PANE_ID` as `pane_id`. Use the CLI unless you're already in an MCP
+`$LUVUS_PANE_ID` as `pane_id`. Use the CLI unless you're already in an MCP
 round trip; use the tool when you want the structured `sent` / `transports`
 reply.
 
-## Using the rest of the herdr CLI
+## Using the rest of the Luvus CLI
 
-herdr ships its own agent skill (`npx skills add herdrdev/herdr --skill
-herdr`) covering pane orchestration — splitting panes, starting sibling
-agents with `herdr agent start` / `prompt` / `wait`, and running commands with
-`herdr pane run` / `wait-output`. Those all work from inside a lasso pane too
-(you are in a herdr session; `HERDR_ENV=1` is set). Two lasso-specific rules
-on top of it:
+Luvus ships its own agent skill (`luvus skill show` prints the bundled,
+version-matched copy; `luvus skill enable` installs it into the agent hosts it
+detects) covering pane orchestration — splitting panes, starting sibling agents
+with `luvus agent start` / `agent prompt` / `wait agent-status`, and running
+commands with `luvus pane run` / `wait output`. All of it works from inside a
+lasso pane too (you are in a Luvus session; `LUVUS_ENV=1` is set, and
+`LUVUS_PANE_ID` is your default split anchor). Two lasso-specific rules on top
+of it:
 
-- Never `herdr pane close` yourself or any pane lasso created. `lasso
-  closeme` (or the `close_agent` MCP tool) is the only sanctioned way to shut
-  yourself down — it also cleans up lasso's agent record and staged prompt
-  files, which a raw pane close leaves behind.
-- Panes and agents you spawn directly via `herdr` are invisible to lasso's
-  agent list (no record, no repo/branch, no close tracking). Prefer lasso's
+- Never `luvus pane close` yourself or any pane lasso created. `lasso closeme`
+  (or the `close_agent` MCP tool) is the only sanctioned way to shut yourself
+  down — it also cleans up lasso's agent record and staged prompt files, which a
+  raw pane close leaves behind.
+- Panes and agents you spawn directly via `luvus` are invisible to lasso's agent
+  list (no record, no repo/branch, no close tracking). Prefer lasso's
   `create_agent` MCP tool when the new agent should show up as a first-class
-  lasso agent; use raw herdr panes only for short-lived helpers.
+  lasso agent; use raw Luvus panes only for short-lived helpers.
 
 ## Inspecting and managing lasso agents
 

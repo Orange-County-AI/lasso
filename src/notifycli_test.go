@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// The headline case: an agent passes its own $HERDR_PANE_ID and the notification
+// The headline case: an agent passes its own $LUVUS_PANE_ID and the notification
 // is titled with its name and points at its host, so a lock screen says who is
 // asking without the human reading the body.
 func TestNotifyToolAttributesToTheCallingAgent(t *testing.T) {

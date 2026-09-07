@@ -1,8 +1,8 @@
 package main
 
-// Reconciliation of lasso's agent records against herdr's live panes.
+// Reconciliation of lasso's agent records against luvus's live panes.
 //
-// The agents table is an append-only log; herdr's panes are not. Left alone the
+// The agents table is an append-only log; luvus's panes are not. Left alone the
 // two diverge in one direction only — every agent whose pane is closed leaves a
 // record that still reads as a live, "ready" agent — and the gap only ever
 // grows. It is not cosmetic: such a record is listed, cannot be messaged, and
@@ -10,7 +10,7 @@ package main
 // workspace_not_found), so a caller cannot tell a live agent from a tombstone
 // and has no way to clear one.
 //
-// So reconciliation lives here, at the seam where lasso already learns herdr's
+// So reconciliation lives here, at the seam where lasso already learns luvus's
 // truth for a host: every place that enumerates a host's panes hands the result
 // to reconcileHostAgents, which stamps closed_at on the records those panes
 // contradict. It is a write, not a read-time filter, and it is idempotent — a
@@ -18,23 +18,23 @@ package main
 // store stops growing in the dimension that mattered.
 //
 // The whole design problem is that "no pane" has two causes — the agent is gone,
-// or herdr could not be asked properly — and only the first may condemn a
+// or luvus could not be asked properly — and only the first may condemn a
 // record. Hence the rules below, each of which exists because getting it wrong
 // deletes a live agent:
 //
-//  1. Only a SUCCESSFUL enumeration reconciles. A herdr that is restarting, a
+//  1. Only a SUCCESSFUL enumeration reconciles. A luvus that is restarting, a
 //     host briefly unreachable, an SSH master caught mid-heal — none of those are
 //     evidence about any agent. Callers pass panes only when their enumeration
 //     returned no error; list_agents already reports the failure as a partial
 //     listing instead.
 //  2. Per host, always. Ids, pane ids and workspace ids are unique only within a
-//     host, so one host's herdr state says nothing about another's records. The
+//     host, so one host's luvus state says nothing about another's records. The
 //     UPDATE is scoped by host as well as id.
 //  3. An empty pane list never condemns. A host lasso is talking to has panes by
-//     construction (herdr is what lasso drives); zero is far likelier to be
+//     construction (luvus is what lasso drives); zero is far likelier to be
 //     protocol drift than a truthful "nothing is running".
 //  4. Agents mid-create are exempt — for agentBootGrace. A record at
-//     BootCreating/BootBooting is legitimately pane-less, or has a pane herdr is
+//     BootCreating/BootBooting is legitimately pane-less, or has a pane luvus is
 //     still materializing, so reaping on "no pane yet" would kill agents during
 //     create. But the exemption has to expire: boot_status only advances while
 //     the lasso that started the boot is alive, so a process that dies mid-boot
@@ -45,9 +45,9 @@ package main
 //  6. A pane must be missing from agentReapMisses CONSECUTIVE successful
 //     enumerations of its host. One miss is already good evidence; requiring two
 //     costs a poll interval and covers the one racy window left (reopen
-//     re-points a record at a workspace herdr has only just created).
+//     re-points a record at a workspace luvus has only just created).
 //
-// Foreign herdr sessions — panes lasso did not create, like a long-lived bot in
+// Foreign luvus sessions — panes lasso did not create, like a long-lived bot in
 // its own pane — are untouched by all of this: they have no record to tombstone,
 // they are derived from the pane enumeration itself on every call, and so they
 // appear and disappear with the panes they are.
@@ -64,7 +64,7 @@ const agentReapMisses = 2
 
 // agentBootGrace is how long a record may sit at creating/booting before it
 // stops being exempt from reconciliation (rule 4). Generous next to a real boot,
-// which takes seconds — and which in any case holds a pane herdr can see for all
+// which takes seconds — and which in any case holds a pane luvus can see for all
 // but the first instant of it, so a slow boot is protected by having a pane, not
 // by this. What the grace is really sized against is a lasso restart landing
 // mid-boot: long enough that no live create is caught, short enough that the
@@ -72,7 +72,7 @@ const agentReapMisses = 2
 const agentBootGrace = 10 * time.Minute
 
 // agentReapMiss counts those consecutive misses per host|id. In memory on
-// purpose: the count is evidence about the current process's view of herdr, and
+// purpose: the count is evidence about the current process's view of luvus, and
 // a restarted lasso should start counting again rather than act on what a
 // previous one thought it saw.
 var agentReapMiss = struct {
@@ -105,7 +105,7 @@ func agentReapMissed(host, id string) bool {
 	return false
 }
 
-// reconcileHostAgents tombstones records on host whose herdr pane is gone,
+// reconcileHostAgents tombstones records on host whose luvus pane is gone,
 // given a successful enumeration (never call it with a failed or partial
 // listing). Best effort throughout: /api/all-panes polling and list_agents
 // both trigger it, so a database hiccup is logged and retried next pass rather
@@ -152,7 +152,7 @@ func reconcileHostAgents(host string, panes []hostPane) int {
 		closed++
 	}
 	if closed > 0 {
-		log.Printf("agents:   reconciled %s: closed %d record(s) whose herdr pane is gone", host, closed)
+		log.Printf("agents:   reconciled %s: closed %d record(s) whose luvus pane is gone", host, closed)
 	}
 	return closed
 }

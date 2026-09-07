@@ -43,7 +43,6 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
-import { openHerdrGoto } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -140,11 +139,11 @@ function FitTabs({
 }
 
 // A search affordance for the header: styled like an input but it's a button
-// that fires ⌘K, i.e. herdr's own pane search inside the terminal. It
-// fills its centre slot (flex-1, capped at max-w-xs) so it reads as a real
-// search bar at every width — the label just truncates when space runs out
-// rather than collapsing to a lone icon. The ⌘K hint shows once the strip has
-// room for it (container query, `/lnav`).
+// that fires ⌘K, i.e. lasso's own pane palette. It fills its centre slot
+// (flex-1, capped at max-w-xs) so it reads as a real search bar at every width —
+// the label just truncates when space runs out rather than collapsing to a lone
+// icon. The ⌘K hint shows once the strip has room for it (container query,
+// `/lnav`).
 function HeaderSearch({ onOpen }: { onOpen: () => void }) {
   return (
     <button
@@ -209,7 +208,7 @@ function Shell() {
   const ui = useUIState()
 
   // The active host (SSE-driven), mirrored into a ref so the (referentially
-  // stable) popstate handler always sees the current one. herdr's focused pane
+  // stable) popstate handler always sees the current one. Luvus's focused pane
   // is deliberately NOT part of the URL — see lib/url.
   const { host } = useApp()
   const hostRef = React.useRef(host)
@@ -250,7 +249,7 @@ function Shell() {
   }, [])
 
   // Back/forward re-points lasso at the host the history entry names. The
-  // focused pane is not restored — that is herdr's state, and a browser history
+  // focused pane is not restored — that is Luvus's state, and a browser history
   // step must not re-point it (see lib/pane-focus's restoreHost).
   React.useEffect(() => {
     const onPop = () => {
@@ -307,10 +306,9 @@ function Shell() {
       } else if (command === "host") {
         setMobileHostOpen(true)
       } else if (command === "search") {
-        // Same destination as ⌘K: herdr's own search. The dial supplies the
-        // chord a software keyboard can't type, and openHerdrGoto hands the
-        // keyboard to xterm so the query can be typed straight into it.
-        openHerdrGoto()
+        // Same destination as ⌘K: lasso's own pane palette. The dial is the
+        // only way to reach it on a phone, where there is no ⌘ to press.
+        setPaletteOpen(true)
       }
     }
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
@@ -318,10 +316,10 @@ function Shell() {
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
   }, [toggleSidebar])
 
-  // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
+  // ⌘K → lasso's pane palette, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
   // never clobbers terminal control keys like Ctrl-H (backspace). The
-  // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
+  // Luvus/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
   // these work even while a terminal holds focus. (See SHORTCUTS, the reference
   // list shown in Settings.)
   React.useEffect(() => {
@@ -333,7 +331,7 @@ function Shell() {
         toggleSidebar()
       } else if (k === "k") {
         e.preventDefault()
-        openHerdrGoto()
+        setPaletteOpen(true)
       } else if (k === "o" || k === "i") {
         e.preventDefault()
         setNewTab(k === "o" ? "agent" : "terminal")
@@ -349,7 +347,7 @@ function Shell() {
 
   // Apply the synced sidebar layout continuously — including changes arriving
   // from other tabs over SSE — not just once at load. The sidebar's footprint
-  // sets the shared herdr pty's width, so tabs must agree on it or the wider
+  // sets the shared Luvus pty's width, so tabs must agree on it or the wider
   // one renders a blank gutter. Value guards make the echo of this tab's own
   // writes a no-op, and remote applies don't re-persist because the debounced
   // persist below compares against the incoming state before writing.
@@ -413,7 +411,7 @@ function Shell() {
             className="flex h-full min-h-0 flex-col"
           >
             {/* The left column's header row. It is not a tab strip: the column
-                is always the Herdr terminal, so the row carries the host picker,
+                is always the Luvus terminal, so the row carries the host picker,
                 ⌘K search, and the shared New agent/terminal action. Styled with
                 the sidebar's strip classes so both columns share one chrome. */}
             <div
@@ -424,9 +422,7 @@ function Shell() {
             >
               <HostSwitcher variant="nav" />
               <div className="flex min-w-0 flex-1 justify-center px-2">
-                {/* Arrow, not the bare function: onClick would otherwise hand
-                    the click event in as `tries` and kill the retry. */}
-                <HeaderSearch onOpen={() => openHerdrGoto()} />
+                <HeaderSearch onOpen={() => setPaletteOpen(true)} />
               </div>
               {/* New sits at the far-right of the row; when the sidebar is
                   collapsed the git status + expand control follow it. The
@@ -468,9 +464,9 @@ function Shell() {
               <TerminalFrame
                 id="term"
                 base="/terminal"
-                title="Herdr terminal"
+                title="Luvus terminal"
                 suppressContext
-                inputMode="herdr"
+                inputMode="luvus"
                 hidden={false}
               />
             </div>
@@ -577,7 +573,7 @@ function Shell() {
                   <TerminalFrame
                     id="shellframe"
                     base="/shell"
-                    title="Terminal (outside herdr)"
+                    title="Terminal (outside Luvus)"
                     suppressContext={false}
                     inputMode="shell"
                     hidden={rightView !== "terminal"}
@@ -599,13 +595,11 @@ function Shell() {
           open={mobileHostOpen}
           onOpenChange={setMobileHostOpen}
         />
-        {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
-          with herdr-mirror running covers the fleet (other machines' workspaces
-          are mirrored in as local panes), and focuses the chosen one in the
-          herdr terminal. Desktop ⌘K goes to herdr's own search instead; this is
-          what the dial's search command opens, since a prefix chord isn't
-          reachable from a software keyboard. focusPaneInHerdr still pushes the
-          landing host's history entry; same-host now, so pushQueryParam
+        {/* The pane palette — searches the ACTIVE host's panes (and, with its
+          Active filter off, the closed sessions lasso has records for) and
+          focuses the chosen one in the Luvus terminal. Opened by ⌘K, the header
+          search bar and the mobile dial's Search. focusPaneInLuvus still pushes
+          the landing host's history entry; same-host now, so pushQueryParam
           collapses it into a replace rather than a dead Back step. */}
         <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's

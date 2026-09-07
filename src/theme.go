@@ -1,45 +1,194 @@
-// Theme resolution: mirror herdr's own theming so the UI adapts to whichever
-// theme the user has selected in ~/.config/herdr/config.toml — instead of
-// hardcoding one palette.
+// Theme resolution: Luvus owns the theme; lasso only READS it.
 //
-// herdr has no socket method that exposes the resolved theme, so we read the
-// config the same way it does: pick a built-in theme by name, apply any
-// [theme.custom] per-token overrides, then the legacy [ui].accent override.
+// The active theme, its metadata and — for an installed/community theme — the
+// path to its file all come from one UHP `theme.list` call on the host's own
+// session socket. Nothing is guessed from a config file and nothing is ever
+// written back: `luvus theme use <id>` is the only way the selection changes,
+// so a stale palette in lasso can never override the user's choice.
 //
-// herdr's theme is a 16-token *UI* palette (catppuccin-style names) — it styles
-// herdr's own chrome, NOT the 16 ANSI colors of terminals running inside panes.
-// So we use two derived things:
+// A Luvus theme (schema 1) is 18 SEMANTIC roles — crust..text, accent, sel_bg,
+// the two border tiers, and four hues. It styles Luvus's own chrome, not the 16
+// ANSI colors of terminals running inside panes, and UHP exposes no resolved
+// color for a bundled theme. So two things happen here:
 //
-//   - the sidebar/file-viewer CSS  <- herdr's UI tokens (matches herdr's chrome)
-//   - the embedded terminal theme  <- bg/fg/cursor from the UI tokens (so the
-//     iframe blends with herdr) + the *canonical* 16-color ANSI palette for
-//     that scheme (so colored output inside the terminal looks right) + a
-//     translucent-accent selection highlight (visible on every theme — see
-//     termSelectionAlpha).
+//   - the 17 bundled palettes are transcribed from Luvus's own theme registry
+//     (the same data its Settings picker and luvus.dev render), keyed by the id
+//     `theme.list` reports;
+//   - an installed or community theme is resolved from ITS OWN file — the path
+//     `theme.list` hands over — applied on top of its `extends` ancestor, so a
+//     custom palette lands verbatim instead of collapsing to its parent.
 //
-// UI token values are transcribed verbatim from herdr's src/app/state.rs
-// (v0.6.4); ANSI palettes from each scheme's canonical Alacritty/iTerm export.
+// The 16 ANSI colors are DERIVED from those roles (deriveANSI) rather than
+// transcribed per theme: a custom palette has no canonical Alacritty export to
+// copy, and a derivation that reads the theme's own hues is the only mapping
+// that can serve every theme a user installs.
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"math"
 	"strconv"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-// uiPalette is herdr's 16-token UI palette (see src/app/state.rs `Palette`).
-type uiPalette struct {
-	Accent, PanelBg, Surface0, Surface1, SurfaceDim, Overlay0, Overlay1 string
-	Text, Subtext0, Mauve, Green, Yellow, Red, Blue, Teal, Peach        string
+// luvusPalette is a Luvus theme's 18 semantic color roles (schema 1). Every
+// role is a "#rrggbb" once resolved; an empty one means the theme left it to
+// the terminal (`reset`) and nothing could fill it.
+type luvusPalette struct {
+	// Backgrounds, darkest to lightest on a dark theme. Mantle is the pane
+	// background — it is what Luvus answers an OSC 11 query with.
+	Crust, Mantle, Base, Surface0, Surface1 string
+	// Foreground tiers, dimmest to brightest.
+	Overlay0, Overlay1, Subtext0, Subtext1, Text string
+	// Signature color, selection wash, and the two border tiers.
+	Accent, SelBg, Border, BorderFocus string
+	// The four hues every theme carries.
+	Green, Mint, Amber, Coral string
 }
 
-// ansiPalette is a canonical 16-color terminal palette. (The terminal's
-// selection highlight is derived from the UI accent, not stored here — see
-// xtermJSON.)
+// luvusDefaultTheme is Luvus's bundled default — what it falls back to itself
+// (removing the active installed theme switches here first), and therefore the
+// palette to stand in for a theme whose colors this build cannot resolve.
+const luvusDefaultTheme = "quattro-rally"
+
+// bundledPalettes holds Luvus's 17 built-in palettes, keyed by the id
+// `theme.list` reports. It is a VERSION-MATCHED transcription of Luvus's own
+// theme registry (0.13.4), and it exists because UHP publishes a bundled
+// theme's identity but not its colors: theme.list, config.get, theme.path,
+// uhp.capabilities and session.snapshot all carry the active theme's NAME and
+// nothing about its palette, and `luvus theme init` writes a fixed starter
+// rather than exporting the active one. So there is no runtime source to read.
+//
+// The values come from the registry Luvus publishes for its own docs site
+// (luvus.dev/_astro/themes.*.css, "the colours come straight from luvus's own
+// registry"), cross-checked against the installed binary. The consequence to
+// know: a new bundled ID is unresolved until this table is refreshed. Lasso
+// preserves the last good palette and skips downstream writes in that case.
+// Installed/community themes carry their own colors and are read from their file.
+var bundledPalettes = map[string]luvusPalette{
+	"quattro-rally": {
+		Crust: "#181926", Mantle: "#1e2030", Base: "#24273a", Surface0: "#363a4f", Surface1: "#494d64",
+		Overlay0: "#6e738d", Overlay1: "#8087a2", Subtext0: "#a5adcb", Subtext1: "#b8c0e0", Text: "#cad3f5",
+		Accent: "#dbc66f", SelBg: "#3a3416", Border: "#5a5130", BorderFocus: "#9a8a50",
+		Green: "#94a143", Mint: "#b8cf6a", Amber: "#e0a154", Coral: "#cf5a44",
+	},
+	"noir": {
+		Crust: "#070709", Mantle: "#111116", Base: "#202028", Surface0: "#1a1a20", Surface1: "#25252d",
+		Overlay0: "#4a4a54", Overlay1: "#686873", Subtext0: "#93939f", Subtext1: "#b6b6c0", Text: "#e7e7ed",
+		Accent: "#c6ff1a", SelBg: "#33450e", Border: "#383840", BorderFocus: "#8c8c96",
+		Green: "#8fbc7a", Mint: "#6fc6a3", Amber: "#e09a4d", Coral: "#e06c66",
+	},
+	"ocean": {
+		Crust: "#02102a", Mantle: "#061d42", Base: "#0c2e5e", Surface0: "#05224a", Surface1: "#123a6e",
+		Overlay0: "#355886", Overlay1: "#5276a4", Subtext0: "#8fa8c8", Subtext1: "#b8cce6", Text: "#e8f2ff",
+		Accent: "#46c6ff", SelBg: "#123e76", Border: "#2a4e80", BorderFocus: "#5a86c0",
+		Green: "#6fcf97", Mint: "#4fd6c8", Amber: "#f2c14e", Coral: "#f06a6a",
+	},
+	"dracula": {
+		Crust: "#1a1b23", Mantle: "#282a36", Base: "#333647", Surface0: "#21222c", Surface1: "#3c3f52",
+		Overlay0: "#565869", Overlay1: "#6272a4", Subtext0: "#a0a4c0", Subtext1: "#cccee0", Text: "#f8f8f2",
+		Accent: "#bd93f9", SelBg: "#44475a", Border: "#44475a", BorderFocus: "#6272a4",
+		Green: "#50fa7b", Mint: "#8be9fd", Amber: "#ffb86c", Coral: "#ff5555",
+	},
+	"nord": {
+		Crust: "#242933", Mantle: "#2e3440", Base: "#3b4252", Surface0: "#292f3a", Surface1: "#434c5e",
+		Overlay0: "#4c566a", Overlay1: "#616e88", Subtext0: "#b0b8c8", Subtext1: "#d8dee9", Text: "#eceff4",
+		Accent: "#88c0d0", SelBg: "#3b4a5e", Border: "#434c5e", BorderFocus: "#6a7690",
+		Green: "#a3be8c", Mint: "#8fbcbb", Amber: "#ebcb8b", Coral: "#bf616a",
+	},
+	"sky": {
+		Crust: "#f5f8fc", Mantle: "#ebf1f9", Base: "#e1eaf5", Surface0: "#d6e1f0", Surface1: "#c4d3e8",
+		Overlay0: "#93a4bd", Overlay1: "#74849e", Subtext0: "#566579", Subtext1: "#42505f", Text: "#2f3a48",
+		Accent: "#2477c7", SelBg: "#cbe2f7", Border: "#c0cde0", BorderFocus: "#6a7a92",
+		Green: "#3f8f56", Mint: "#1c8f88", Amber: "#c07d12", Coral: "#cc3b52",
+	},
+	"catppuccin-mocha": {
+		Crust: "#11111b", Mantle: "#181825", Base: "#1e1e2e", Surface0: "#313244", Surface1: "#45475a",
+		Overlay0: "#6c7086", Overlay1: "#7f849c", Subtext0: "#a6adc8", Subtext1: "#bac2de", Text: "#cdd6f4",
+		Accent: "#cba6f7", SelBg: "#3f3359", Border: "#45475a", BorderFocus: "#7f849c",
+		Green: "#a6e3a1", Mint: "#94e2d5", Amber: "#fab387", Coral: "#f38ba8",
+	},
+	"catppuccin-macchiato": {
+		Crust: "#181926", Mantle: "#1e2030", Base: "#24273a", Surface0: "#363a4f", Surface1: "#494d64",
+		Overlay0: "#6e738d", Overlay1: "#8087a2", Subtext0: "#a5adcb", Subtext1: "#b8c0e0", Text: "#cad3f5",
+		Accent: "#c6a0f6", SelBg: "#3b3254", Border: "#494d64", BorderFocus: "#8087a2",
+		Green: "#a6da95", Mint: "#8bd5ca", Amber: "#f5a97f", Coral: "#ed8796",
+	},
+	"catppuccin-frappe": {
+		Crust: "#232634", Mantle: "#292c3c", Base: "#303446", Surface0: "#414559", Surface1: "#51576d",
+		Overlay0: "#737994", Overlay1: "#838ba7", Subtext0: "#a5adce", Subtext1: "#b5bfe2", Text: "#c6d0f5",
+		Accent: "#ca9ee6", SelBg: "#463e5e", Border: "#51576d", BorderFocus: "#838ba7",
+		Green: "#a6d189", Mint: "#81c8be", Amber: "#ef9f76", Coral: "#e78284",
+	},
+	"gruvbox": {
+		Crust: "#1d2021", Mantle: "#282828", Base: "#3c3836", Surface0: "#32302f", Surface1: "#504945",
+		Overlay0: "#665c54", Overlay1: "#7c6f64", Subtext0: "#a89984", Subtext1: "#bdae93", Text: "#ebdbb2",
+		Accent: "#fabd2f", SelBg: "#453d21", Border: "#504945", BorderFocus: "#928374",
+		Green: "#b8bb26", Mint: "#8ec07c", Amber: "#fe8019", Coral: "#fb4934",
+	},
+	"sunset": {
+		Crust: "#160a1e", Mantle: "#221030", Base: "#2e1640", Surface0: "#1c0d2a", Surface1: "#3a1d50",
+		Overlay0: "#5a3a70", Overlay1: "#7a5a90", Subtext0: "#b89ad0", Subtext1: "#d6bce8", Text: "#f6e8ff",
+		Accent: "#ff5fd0", SelBg: "#4a2466", Border: "#4a2a64", BorderFocus: "#8a5aa8",
+		Green: "#5fe0a8", Mint: "#5fd6e0", Amber: "#ffb54f", Coral: "#ff5f8f",
+	},
+	"homebrew": {
+		Crust: "#000000", Mantle: "#040a04", Base: "#081608", Surface0: "#061006", Surface1: "#0e240e",
+		Overlay0: "#1e4c1e", Overlay1: "#2e6c2e", Subtext0: "#22b422", Subtext1: "#2ee02e", Text: "#3cff3c",
+		Accent: "#00ff41", SelBg: "#0a3a0a", Border: "#1a4e1a", BorderFocus: "#2ea82e",
+		Green: "#35e035", Mint: "#5effb0", Amber: "#c8ff3c", Coral: "#ff6050",
+	},
+	"grass": {
+		Crust: "#052012", Mantle: "#0a361d", Base: "#104c28", Surface0: "#082c18", Surface1: "#155830",
+		Overlay0: "#367850", Overlay1: "#54966c", Subtext0: "#a8c898", Subtext1: "#c8e0ae", Text: "#fff0a5",
+		Accent: "#bee632", SelBg: "#1a6c3a", Border: "#287648", BorderFocus: "#56a66c",
+		Green: "#8fd07a", Mint: "#5ed6b0", Amber: "#f2c84e", Coral: "#f06a5a",
+	},
+	"redsands": {
+		Crust: "#1f0a06", Mantle: "#38120c", Base: "#4e1c12", Surface0: "#2c0e08", Surface1: "#5c261a",
+		Overlay0: "#8a4a38", Overlay1: "#a86854", Subtext0: "#c89a80", Subtext1: "#dcba9c", Text: "#f2daba",
+		Accent: "#ff8a3c", SelBg: "#702e1e", Border: "#7c3c2a", BorderFocus: "#ba6e4c",
+		Green: "#a6bf5e", Mint: "#5ec8a8", Amber: "#ffb454", Coral: "#ff6a5a",
+	},
+	"catppuccin-latte": {
+		Crust: "#eff1f5", Mantle: "#e6e9ef", Base: "#dce0e8", Surface0: "#ccd0da", Surface1: "#bcc0cc",
+		Overlay0: "#9ca0b0", Overlay1: "#7c8090", Subtext0: "#6c6f85", Subtext1: "#50526c", Text: "#4c4f69",
+		Accent: "#40a02b", SelBg: "#c6e8a8", Border: "#acb0be", BorderFocus: "#7c8090",
+		Green: "#40a02b", Mint: "#179299", Amber: "#df8e1d", Coral: "#d20f39",
+	},
+	"gruvbox-light": {
+		Crust: "#fbf1c7", Mantle: "#f2e5bc", Base: "#ebdbb2", Surface0: "#d5c4a1", Surface1: "#bdae93",
+		Overlay0: "#a89984", Overlay1: "#928374", Subtext0: "#665c54", Subtext1: "#504945", Text: "#3c3836",
+		Accent: "#af3a03", SelBg: "#e0c68a", Border: "#bdae93", BorderFocus: "#7c6f64",
+		Green: "#79740e", Mint: "#427b58", Amber: "#b57614", Coral: "#9d0006",
+	},
+	"mono": {
+		Crust: "#070707", Mantle: "#121212", Base: "#1e1e1e", Surface0: "#181818", Surface1: "#282828",
+		Overlay0: "#4a4a4a", Overlay1: "#686868", Subtext0: "#939393", Subtext1: "#b6b6b6", Text: "#ececec",
+		Accent: "#eaeaea", SelBg: "#333333", Border: "#525252", BorderFocus: "#909090",
+		Green: "#828282", Mint: "#a6a6a6", Amber: "#c8c8c8", Coral: "#e6e6e6",
+	},
+}
+
+// neutralPalette is deliberately NOT one of Luvus's: it is what lasso paints
+// before it has ever managed to read a theme (lasso starts before ttyd
+// autostarts Luvus). Standing in a real bundled palette there would state a
+// selection the user may not have made, so this is a plain slate that reads as
+// "not yet known" — see unavailableTheme.
+var neutralPalette = luvusPalette{
+	Crust: "#101114", Mantle: "#16171b", Base: "#1c1e23", Surface0: "#22242a", Surface1: "#2c2f36",
+	Overlay0: "#4b4f59", Overlay1: "#666b77", Subtext0: "#9096a1", Subtext1: "#b4bac4", Text: "#dfe3ea",
+	Accent: "#6f9dc4", SelBg: "#25303a", Border: "#31353d", BorderFocus: "#7f8794",
+	Green: "#7fa76a", Mint: "#6bab9c", Amber: "#c8a15c", Coral: "#c2685f",
+}
+
+// ansiPalette is the 16-color terminal palette lasso hands to xterm.js and
+// ghostty. (The selection highlight is derived from the accent, not stored
+// here — see xtermJSON.)
 type ansiPalette struct {
 	Black, Red, Green, Yellow, Blue, Magenta, Cyan     string
 	White                                              string
@@ -47,475 +196,560 @@ type ansiPalette struct {
 	BrightBlue, BrightMagenta, BrightCyan, BrightWhite string
 }
 
-type themeDef struct {
-	ui   uiPalette
+// resolvedTheme is the theme lasso is painting: what Luvus says is active, plus
+// the concrete palette that resolves to.
+//
+// Every field is semantic state a caller may compare for equality to decide
+// "has the theme changed", so nothing incidental belongs here. In particular
+// theme.list's `revision` is deliberately NOT kept: it is the server's GLOBAL
+// session revision, which a workspace.open or tab.new moves without any theme
+// change — carrying it would make every pane mutation look like a new palette
+// and re-sync the whole fleet.
+type resolvedTheme struct {
+	Name       string // active Luvus theme id ("" when unavailable)
+	Label      string // Luvus's display_name
+	Appearance string // "dark", "light" or "terminal"
+	Resolved   string // id of the palette actually used (an ancestor, for a child theme)
+	Customized bool   // a theme FILE contributed colors (installed/community theme)
+	Available  bool   // Luvus answered; false means this is a stand-in, do not sync it
+
+	p    luvusPalette
 	ansi ansiPalette
 }
 
-// themes is keyed by canonical (normalized) herdr theme name.
-var themes = map[string]themeDef{
-	"catppuccin": {
-		ui: uiPalette{
-			Accent: "#89b4fa", PanelBg: "#181825", Surface0: "#313244", Surface1: "#45475a",
-			SurfaceDim: "#1e1e2e", Overlay0: "#6c7086", Overlay1: "#7f849c", Text: "#cdd6f4",
-			Subtext0: "#a6adc8", Mauve: "#cba6f7", Green: "#a6e3a1", Yellow: "#f9e2af",
-			Red: "#f38ba8", Blue: "#89b4fa", Teal: "#94e2d5", Peach: "#fab387",
-		},
-		ansi: ansiPalette{
-			Black: "#45475a", Red: "#f38ba8", Green: "#a6e3a1", Yellow: "#f9e2af",
-			Blue: "#89b4fa", Magenta: "#f5c2e7", Cyan: "#94e2d5", White: "#a6adc8",
-			BrightBlack: "#585b70", BrightRed: "#f37799", BrightGreen: "#89d88b", BrightYellow: "#ebd391",
-			BrightBlue: "#74a8fc", BrightMagenta: "#f2aede", BrightCyan: "#6bd7ca", BrightWhite: "#bac2de",
-		},
-	},
-	"tokyo-night": {
-		ui: uiPalette{
-			Accent: "#7aa2f7", PanelBg: "#1a1b26", Surface0: "#24283b", Surface1: "#414868",
-			SurfaceDim: "#1a1b26", Overlay0: "#565f89", Overlay1: "#697196", Text: "#c0caf5",
-			Subtext0: "#a9b1d6", Mauve: "#bb9af7", Green: "#9ece6a", Yellow: "#e0af68",
-			Red: "#f7768e", Blue: "#7aa2f7", Teal: "#7dcfff", Peach: "#ff9e64",
-		},
-		ansi: ansiPalette{
-			Black: "#15161e", Red: "#f7768e", Green: "#9ece6a", Yellow: "#e0af68",
-			Blue: "#7aa2f7", Magenta: "#bb9af7", Cyan: "#7dcfff", White: "#a9b1d6",
-			BrightBlack: "#414868", BrightRed: "#ff899d", BrightGreen: "#9fe044", BrightYellow: "#faba4a",
-			BrightBlue: "#8db0ff", BrightMagenta: "#c7a9ff", BrightCyan: "#a4daff", BrightWhite: "#c0caf5",
-		},
-	},
-	"dracula": {
-		ui: uiPalette{
-			Accent: "#bd93f9", PanelBg: "#282a36", Surface0: "#44475a", Surface1: "#6272a4",
-			SurfaceDim: "#282a36", Overlay0: "#6272a4", Overlay1: "#828cb4", Text: "#f8f8f2",
-			Subtext0: "#d2d2dc", Mauve: "#ff79c6", Green: "#50fa7b", Yellow: "#f1fa8c",
-			Red: "#ff5555", Blue: "#8be9fd", Teal: "#8be9fd", Peach: "#ffb86c",
-		},
-		ansi: ansiPalette{
-			Black: "#21222c", Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c",
-			Blue: "#bd93f9", Magenta: "#ff79c6", Cyan: "#8be9fd", White: "#f8f8f2",
-			BrightBlack: "#6272a4", BrightRed: "#ff6e6e", BrightGreen: "#69ff94", BrightYellow: "#ffffa5",
-			BrightBlue: "#d6acff", BrightMagenta: "#ff92df", BrightCyan: "#a4ffff", BrightWhite: "#ffffff",
-		},
-	},
-	"nord": {
-		ui: uiPalette{
-			Accent: "#88c0d0", PanelBg: "#2e3440", Surface0: "#3b4252", Surface1: "#434c5e",
-			SurfaceDim: "#2e3440", Overlay0: "#4c566a", Overlay1: "#646e82", Text: "#eceff4",
-			Subtext0: "#d8dee9", Mauve: "#b48ead", Green: "#a3be8c", Yellow: "#ebcb8b",
-			Red: "#bf616a", Blue: "#81a1c1", Teal: "#8fbcbb", Peach: "#d08770",
-		},
-		ansi: ansiPalette{
-			Black: "#3b4252", Red: "#bf616a", Green: "#a3be8c", Yellow: "#ebcb8b",
-			Blue: "#81a1c1", Magenta: "#b48ead", Cyan: "#88c0d0", White: "#e5e9f0",
-			BrightBlack: "#596377", BrightRed: "#bf616a", BrightGreen: "#a3be8c", BrightYellow: "#ebcb8b",
-			BrightBlue: "#81a1c1", BrightMagenta: "#b48ead", BrightCyan: "#8fbcbb", BrightWhite: "#eceff4",
-		},
-	},
-	"gruvbox": {
-		ui: uiPalette{
-			Accent: "#d79921", PanelBg: "#282828", Surface0: "#3c3836", Surface1: "#504945",
-			SurfaceDim: "#282828", Overlay0: "#928374", Overlay1: "#a89984", Text: "#ebdbb2",
-			Subtext0: "#d5c4a1", Mauve: "#d3869b", Green: "#b8bb26", Yellow: "#fabd2f",
-			Red: "#fb4934", Blue: "#83a598", Teal: "#8ec07c", Peach: "#fe8019",
-		},
-		ansi: ansiPalette{
-			Black: "#282828", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
-			Blue: "#458588", Magenta: "#b16286", Cyan: "#689d6a", White: "#a89984",
-			BrightBlack: "#928374", BrightRed: "#fb4934", BrightGreen: "#b8bb26", BrightYellow: "#fabd2f",
-			BrightBlue: "#83a598", BrightMagenta: "#d3869b", BrightCyan: "#8ec07c", BrightWhite: "#ebdbb2",
-		},
-	},
-	"one-dark": {
-		ui: uiPalette{
-			Accent: "#61afef", PanelBg: "#282c34", Surface0: "#2c313a", Surface1: "#3e4451",
-			SurfaceDim: "#282c34", Overlay0: "#5c6370", Overlay1: "#737a87", Text: "#abb2bf",
-			Subtext0: "#969ca8", Mauve: "#c678dd", Green: "#98c379", Yellow: "#e5c07b",
-			Red: "#e06c75", Blue: "#61afef", Teal: "#56b6c2", Peach: "#d19a66",
-		},
-		ansi: ansiPalette{
-			Black: "#21252b", Red: "#e06c75", Green: "#98c379", Yellow: "#e5c07b",
-			Blue: "#61afef", Magenta: "#c678dd", Cyan: "#56b6c2", White: "#abb2bf",
-			BrightBlack: "#767676", BrightRed: "#e06c75", BrightGreen: "#98c379", BrightYellow: "#e5c07b",
-			BrightBlue: "#61afef", BrightMagenta: "#c678dd", BrightCyan: "#56b6c2", BrightWhite: "#abb2bf",
-		},
-	},
-	"solarized": {
-		ui: uiPalette{
-			Accent: "#268bd2", PanelBg: "#002b36", Surface0: "#073642", Surface1: "#586e75",
-			SurfaceDim: "#002b36", Overlay0: "#586e75", Overlay1: "#657b83", Text: "#93a1a1",
-			Subtext0: "#839496", Mauve: "#d33682", Green: "#859900", Yellow: "#b58900",
-			Red: "#dc322f", Blue: "#268bd2", Teal: "#2aa198", Peach: "#cb4b16",
-		},
-		ansi: ansiPalette{
-			Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
-			Blue: "#268bd2", Magenta: "#d33682", Cyan: "#2aa198", White: "#eee8d5",
-			BrightBlack: "#586e75", BrightRed: "#cb4b16", BrightGreen: "#586e75", BrightYellow: "#657b83",
-			BrightBlue: "#839496", BrightMagenta: "#6c71c4", BrightCyan: "#93a1a1", BrightWhite: "#fdf6e3",
-		},
-	},
-	"kanagawa": {
-		ui: uiPalette{
-			Accent: "#7e9cd8", PanelBg: "#1f1f28", Surface0: "#2a2a37", Surface1: "#363646",
-			SurfaceDim: "#1f1f28", Overlay0: "#727169", Overlay1: "#87867d", Text: "#dcd7ba",
-			Subtext0: "#c8c3aa", Mauve: "#957fb8", Green: "#76946a", Yellow: "#c0a36e",
-			Red: "#c34043", Blue: "#7e9cd8", Teal: "#7fb4ca", Peach: "#ffa066",
-		},
-		ansi: ansiPalette{
-			Black: "#090618", Red: "#c34043", Green: "#76946a", Yellow: "#c0a36e",
-			Blue: "#7e9cd8", Magenta: "#957fb8", Cyan: "#6a9589", White: "#c8c093",
-			BrightBlack: "#727169", BrightRed: "#e82424", BrightGreen: "#98bb6c", BrightYellow: "#e6c384",
-			BrightBlue: "#7fb4ca", BrightMagenta: "#938aa9", BrightCyan: "#7aa89f", BrightWhite: "#dcd7ba",
-		},
-	},
-	"rose-pine": {
-		ui: uiPalette{
-			Accent: "#c4a7e7", PanelBg: "#191724", Surface0: "#1f1d2e", Surface1: "#26233a",
-			SurfaceDim: "#191724", Overlay0: "#6e6a86", Overlay1: "#908caa", Text: "#e0def4",
-			Subtext0: "#c8c5dc", Mauve: "#c4a7e7", Green: "#31748f", Yellow: "#f6c177",
-			Red: "#eb6f92", Blue: "#31748f", Teal: "#9ccfd8", Peach: "#ea9a97",
-		},
-		ansi: ansiPalette{
-			Black: "#26233a", Red: "#eb6f92", Green: "#31748f", Yellow: "#f6c177",
-			Blue: "#9ccfd8", Magenta: "#c4a7e7", Cyan: "#ebbcba", White: "#e0def4",
-			BrightBlack: "#6e6a86", BrightRed: "#eb6f92", BrightGreen: "#31748f", BrightYellow: "#f6c177",
-			BrightBlue: "#9ccfd8", BrightMagenta: "#c4a7e7", BrightCyan: "#ebbcba", BrightWhite: "#e0def4",
-		},
-	},
-	"vesper": {
-		ui: uiPalette{
-			Accent: "#ffc799", PanelBg: "#1a1a1a", Surface0: "#232323", Surface1: "#282828",
-			SurfaceDim: "#101010", Overlay0: "#5c5c5c", Overlay1: "#7e7e7e", Text: "#ffffff",
-			Subtext0: "#a0a0a0", Mauve: "#ffd1a8", Green: "#99ffe4", Yellow: "#ffc799",
-			Red: "#ff8080", Blue: "#b0b0b0", Teal: "#66ddcc", Peach: "#ffc799",
-		},
-		ansi: ansiPalette{
-			Black: "#101010", Red: "#f5a191", Green: "#90b99f", Yellow: "#e6b99d",
-			Blue: "#aca1cf", Magenta: "#e29eca", Cyan: "#ea83a5", White: "#a0a0a0",
-			BrightBlack: "#7e7e7e", BrightRed: "#ff8080", BrightGreen: "#99ffe4", BrightYellow: "#ffc799",
-			BrightBlue: "#b9aeda", BrightMagenta: "#ecaad6", BrightCyan: "#f591b2", BrightWhite: "#ffffff",
-		},
-	},
-	// herdr's "terminal" theme inherits the host terminal's palette via ANSI
-	// named colors / Reset. There's no host palette to inherit inside the
-	// iframe, so we fall back to a neutral dark scheme + the standard xterm 16.
-	"terminal": {
-		ui: uiPalette{
-			Accent: "#5f87d7", PanelBg: "#141414", Surface0: "#1c1c1c", Surface1: "#303030",
-			SurfaceDim: "#0a0a0a", Overlay0: "#6c6c6c", Overlay1: "#9e9e9e", Text: "#d0d0d0",
-			Subtext0: "#a8a8a8", Mauve: "#af87d7", Green: "#5faf5f", Yellow: "#d7af5f",
-			Red: "#d75f5f", Blue: "#5f87d7", Teal: "#5fd7d7", Peach: "#d7875f",
-		},
-		ansi: ansiPalette{
-			Black: "#000000", Red: "#cd0000", Green: "#00cd00", Yellow: "#cdcd00",
-			Blue: "#1e90ff", Magenta: "#cd00cd", Cyan: "#00cdcd", White: "#e5e5e5",
-			BrightBlack: "#7f7f7f", BrightRed: "#ff0000", BrightGreen: "#00ff00", BrightYellow: "#ffff00",
-			BrightBlue: "#5c5cff", BrightMagenta: "#ff00ff", BrightCyan: "#00ffff", BrightWhite: "#ffffff",
-		},
-	},
-
-	// Light variants (herdr 0.6.4). UI tokens transcribed verbatim from herdr's
-	// src/app/state.rs (the *_latte/_day/_light/_lotus/_dawn Palette fns); ANSI
-	// 16 from each scheme's canonical Alacritty export — same provenance as the
-	// dark themes above. On these the bg is light and the text is dark.
-	"catppuccin-latte": {
-		ui: uiPalette{
-			Accent: "#1e66f5", PanelBg: "#eff1f5", Surface0: "#ccd0da", Surface1: "#bcc0cc",
-			SurfaceDim: "#e6e9ef", Overlay0: "#9ca0b0", Overlay1: "#8c8fa1", Text: "#4c4f69",
-			Subtext0: "#6c6f85", Mauve: "#8839ef", Green: "#40a02b", Yellow: "#df8e1d",
-			Red: "#d20f39", Blue: "#1e66f5", Teal: "#179299", Peach: "#fe640b",
-		},
-		ansi: ansiPalette{
-			Black: "#5c5f77", Red: "#d20f39", Green: "#40a02b", Yellow: "#df8e1d",
-			Blue: "#1e66f5", Magenta: "#ea76cb", Cyan: "#179299", White: "#acb0be",
-			BrightBlack: "#6c6f85", BrightRed: "#de293e", BrightGreen: "#49af3d", BrightYellow: "#eea02d",
-			BrightBlue: "#456eff", BrightMagenta: "#fe85d8", BrightCyan: "#2d9fa8", BrightWhite: "#bcc0cc",
-		},
-	},
-	"tokyo-night-day": {
-		ui: uiPalette{
-			Accent: "#2e7de9", PanelBg: "#e1e2e7", Surface0: "#c4c8da", Surface1: "#a8aecb",
-			SurfaceDim: "#d2d3da", Overlay0: "#8990b3", Overlay1: "#68709a", Text: "#3760bf",
-			Subtext0: "#6172b0", Mauve: "#7847bd", Green: "#587539", Yellow: "#8c6c3e",
-			Red: "#f52a65", Blue: "#2e7de9", Teal: "#118c74", Peach: "#b15c00",
-		},
-		ansi: ansiPalette{
-			Black: "#e9e9ed", Red: "#f52a65", Green: "#587539", Yellow: "#8c6c3e",
-			Blue: "#2e7de9", Magenta: "#9854f1", Cyan: "#007197", White: "#6172b0",
-			BrightBlack: "#a1a6c5", BrightRed: "#f52a65", BrightGreen: "#587539", BrightYellow: "#8c6c3e",
-			BrightBlue: "#2e7de9", BrightMagenta: "#9854f1", BrightCyan: "#007197", BrightWhite: "#3760bf",
-		},
-	},
-	"gruvbox-light": {
-		ui: uiPalette{
-			Accent: "#076678", PanelBg: "#fbf1c7", Surface0: "#ebdbb2", Surface1: "#d5c4a1",
-			SurfaceDim: "#f2e5bc", Overlay0: "#928374", Overlay1: "#7c6f64", Text: "#3c3836",
-			Subtext0: "#504945", Mauve: "#8f3f71", Green: "#79740e", Yellow: "#b57614",
-			Red: "#9d0006", Blue: "#076678", Teal: "#427b58", Peach: "#af3a03",
-		},
-		ansi: ansiPalette{
-			Black: "#fbf1c7", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921",
-			Blue: "#458588", Magenta: "#b16286", Cyan: "#689d6a", White: "#7c6f64",
-			BrightBlack: "#928374", BrightRed: "#9d0006", BrightGreen: "#79740e", BrightYellow: "#b57614",
-			BrightBlue: "#076678", BrightMagenta: "#8f3f71", BrightCyan: "#427b58", BrightWhite: "#3c3836",
-		},
-	},
-	"one-light": {
-		ui: uiPalette{
-			Accent: "#4078f2", PanelBg: "#fafafa", Surface0: "#f0f0f1", Surface1: "#e5e5e6",
-			SurfaceDim: "#f5f5f6", Overlay0: "#a0a1a7", Overlay1: "#686b77", Text: "#383a42",
-			Subtext0: "#686b77", Mauve: "#a626a4", Green: "#50a14f", Yellow: "#c18401",
-			Red: "#e45649", Blue: "#4078f2", Teal: "#0184bc", Peach: "#986801",
-		},
-		ansi: ansiPalette{
-			Black: "#000000", Red: "#de3e35", Green: "#3f953a", Yellow: "#d2b67c",
-			Blue: "#2f5af3", Magenta: "#950095", Cyan: "#3f953a", White: "#bbbbbb",
-			BrightBlack: "#000000", BrightRed: "#de3e35", BrightGreen: "#3f953a", BrightYellow: "#d2b67c",
-			BrightBlue: "#2f5af3", BrightMagenta: "#a00095", BrightCyan: "#3f953a", BrightWhite: "#ffffff",
-		},
-	},
-	"solarized-light": {
-		ui: uiPalette{
-			Accent: "#268bd2", PanelBg: "#fdf6e3", Surface0: "#eee8d5", Surface1: "#93a1a1",
-			SurfaceDim: "#eee8d5", Overlay0: "#93a1a1", Overlay1: "#586e75", Text: "#657b83",
-			Subtext0: "#839496", Mauve: "#d33682", Green: "#859900", Yellow: "#b58900",
-			Red: "#dc322f", Blue: "#268bd2", Teal: "#2aa198", Peach: "#cb4b16",
-		},
-		ansi: ansiPalette{
-			Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900",
-			Blue: "#268bd2", Magenta: "#d33682", Cyan: "#2aa198", White: "#bbb5a2",
-			BrightBlack: "#002b36", BrightRed: "#cb4b16", BrightGreen: "#586e75", BrightYellow: "#657b83",
-			BrightBlue: "#839496", BrightMagenta: "#6c71c4", BrightCyan: "#93a1a1", BrightWhite: "#fdf6e3",
-		},
-	},
-	"kanagawa-lotus": {
-		ui: uiPalette{
-			Accent: "#4d699b", PanelBg: "#f2ecbc", Surface0: "#dcd5ac", Surface1: "#c9cbd1",
-			SurfaceDim: "#d5cea3", Overlay0: "#a09cac", Overlay1: "#8a8980", Text: "#545464",
-			Subtext0: "#43436c", Mauve: "#624c83", Green: "#6f894e", Yellow: "#77713f",
-			Red: "#c84053", Blue: "#4d699b", Teal: "#4e8ca2", Peach: "#cc6d00",
-		},
-		ansi: ansiPalette{
-			Black: "#1f1f28", Red: "#c84053", Green: "#6f894e", Yellow: "#77713f",
-			Blue: "#4d699b", Magenta: "#b35b79", Cyan: "#597b75", White: "#545464",
-			BrightBlack: "#8a8980", BrightRed: "#d7474b", BrightGreen: "#6e915f", BrightYellow: "#836f4a",
-			BrightBlue: "#6693bf", BrightMagenta: "#624c83", BrightCyan: "#5e857a", BrightWhite: "#43436c",
-		},
-	},
-	"rose-pine-dawn": {
-		ui: uiPalette{
-			Accent: "#907aa9", PanelBg: "#faf4ed", Surface0: "#f2e9e1", Surface1: "#fffaf3",
-			SurfaceDim: "#f2e9e1", Overlay0: "#9893a5", Overlay1: "#797593", Text: "#464261",
-			Subtext0: "#797593", Mauve: "#907aa9", Green: "#286983", Yellow: "#ea9d34",
-			Red: "#b4637a", Blue: "#286983", Teal: "#56949f", Peach: "#d7827e",
-		},
-		ansi: ansiPalette{
-			Black: "#f2e9e1", Red: "#b4637a", Green: "#286983", Yellow: "#ea9d34",
-			Blue: "#56949f", Magenta: "#907aa9", Cyan: "#d7827e", White: "#575279",
-			BrightBlack: "#9893a5", BrightRed: "#b4637a", BrightGreen: "#286983", BrightYellow: "#ea9d34",
-			BrightBlue: "#56949f", BrightMagenta: "#907aa9", BrightCyan: "#d7827e", BrightWhite: "#575279",
-		},
-	},
+// unavailableTheme is the stand-in for "Luvus has not answered yet". It carries
+// a complete, valid palette so every surface renders, and an empty Name/Resolved
+// so no caller mistakes it for a selection or writes it to a host.
+func unavailableTheme() resolvedTheme {
+	rt := resolvedTheme{p: neutralPalette}
+	rt.ansi = deriveANSI(rt.p, false)
+	return rt
 }
 
-// themeOption is one selectable built-in theme, served at /api/theme so the
-// Settings dropdown offers exactly the set this build can resolve (and herdr
-// accepts), with display labels and dark/light grouping.
-type themeOption struct {
-	Name  string `json:"name"`
-	Label string `json:"label"`
-	Light bool   `json:"light"`
+// bundledTheme resolves one of Luvus's built-in palettes by id, falling back to
+// the bundled default. Used for the omp fallback (a malformed token must not
+// cost the whole palette) and by tests.
+func bundledTheme(id string) resolvedTheme {
+	p, ok := bundledPalettes[id]
+	if !ok {
+		id, p = luvusDefaultTheme, bundledPalettes[luvusDefaultTheme]
+	}
+	rt := resolvedTheme{Name: id, Label: id, Resolved: id, Available: true, p: p}
+	rt.Appearance = "dark"
+	if luminance(p.Mantle) > 0.5 {
+		rt.Appearance = "light"
+	}
+	rt.ansi = deriveANSI(p, rt.light())
+	return rt
 }
 
-// themeOptions lists the selectable themes in display order: dark schemes
-// first, then the light variants. Every Name is a canonical key in themes.
-var themeOptions = []themeOption{
-	{Name: "catppuccin", Label: "Catppuccin"},
-	{Name: "tokyo-night", Label: "Tokyo Night"},
-	{Name: "dracula", Label: "Dracula"},
-	{Name: "nord", Label: "Nord"},
-	{Name: "gruvbox", Label: "Gruvbox"},
-	{Name: "one-dark", Label: "One Dark"},
-	{Name: "solarized", Label: "Solarized"},
-	{Name: "kanagawa", Label: "Kanagawa"},
-	{Name: "rose-pine", Label: "Rosé Pine"},
-	{Name: "vesper", Label: "Vesper"},
-	{Name: "terminal", Label: "Terminal"},
-	{Name: "catppuccin-latte", Label: "Catppuccin Latte", Light: true},
-	{Name: "tokyo-night-day", Label: "Tokyo Night Day", Light: true},
-	{Name: "gruvbox-light", Label: "Gruvbox Light", Light: true},
-	{Name: "one-light", Label: "One Light", Light: true},
-	{Name: "solarized-light", Label: "Solarized Light", Light: true},
-	{Name: "kanagawa-lotus", Label: "Kanagawa Lotus", Light: true},
-	{Name: "rose-pine-dawn", Label: "Rosé Pine Dawn", Light: true},
+// light reports whether this is a light palette. Luvus's own `appearance` is
+// authoritative when it says so; the virtual Terminal theme reports neither, so
+// the background decides.
+func (rt resolvedTheme) light() bool {
+	switch rt.Appearance {
+	case "light":
+		return true
+	case "dark":
+		return false
+	}
+	return luminance(rt.p.Mantle) > 0.5
 }
 
-// themeAliases maps herdr's alternate theme spellings to our canonical keys,
-// mirroring herdr's from_name match arms (src/app/state.rs) so every name herdr
-// accepts resolves to the same palette here. Unknown names fall back to
-// catppuccin, matching herdr (its from_name returns None → default).
-var themeAliases = map[string]string{
-	"catppuccin-mocha": "catppuccin",
-	"mocha":            "catppuccin",
-	"latte":            "catppuccin-latte",
-	"light":            "catppuccin-latte",
-	"tokyonight":       "tokyo-night",
-	"tokyo-day":        "tokyo-night-day",
-	"tokyonight-day":   "tokyo-night-day",
-	"gruvbox-dark":     "gruvbox",
-	"onedark":          "one-dark",
-	"onelight":         "one-light",
-	"solarized-dark":   "solarized",
-	"rosepine":         "rose-pine",
-	"rosepine-dawn":    "rose-pine-dawn",
-	"dawn":             "rose-pine-dawn",
-	"lotus":            "kanagawa-lotus",
+// fingerprint identifies the exact palette lasso would write to a host. It
+// covers the colors, not just the name: an installed theme's file can be edited
+// and reinstalled under the same id, and a convergence check keyed on the name
+// alone would call every host up to date while they all render the old palette.
+func (rt resolvedTheme) fingerprint() string {
+	if !rt.Available {
+		return ""
+	}
+	return rt.Name + "|" + fmt.Sprintf("%v", rt.p)
 }
 
-// resolvedTheme is a concrete palette after applying config overrides.
-type resolvedTheme struct {
-	Name       string // the name as found in config (for logging)
-	Resolved   string // canonical key we resolved to
-	Customized bool   // whether any [theme.custom]/legacy accent override applied
-	ui         uiPalette
-	ansi       ansiPalette
+// ---------------------------------------------------------------------------
+// theme.list: what Luvus says is active
+// ---------------------------------------------------------------------------
+
+// luvusThemeRow is one row of `theme.list`. Source is an enum: the strings
+// "built_in" and "virtual", or an object {"local":{"path":…}} whose path is the
+// installed theme's file ON THAT HOST — which is why nothing here needs
+// `theme.path` or a guess at $LUVUS_HOME.
+type luvusThemeRow struct {
+	ID          string          `json:"id"`
+	DisplayName string          `json:"display_name"`
+	Appearance  string          `json:"appearance"`
+	Extends     string          `json:"extends"`
+	Active      bool            `json:"active"`
+	Source      json.RawMessage `json:"source"`
 }
 
-// normalizeThemeName mirrors herdr's from_name normalization.
-func normalizeThemeName(name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	n = strings.NewReplacer(" ", "-", "_", "-").Replace(n)
-	if c, ok := themeAliases[n]; ok {
-		return c
+// localPath returns the row's theme file path, or "" for a bundled/virtual one.
+func (r luvusThemeRow) localPath() string {
+	var obj struct {
+		Local struct {
+			Path string `json:"path"`
+		} `json:"local"`
+	}
+	if json.Unmarshal(r.Source, &obj) != nil {
+		return "" // "built_in" / "virtual" — a bare string, not an object
+	}
+	return obj.Local.Path
+}
+
+// virtual reports the client-derived Terminal theme, which carries no palette
+// of its own by design (as opposed to one lasso merely failed to resolve).
+func (r luvusThemeRow) virtual() bool {
+	var s string
+	return json.Unmarshal(r.Source, &s) == nil && s == "virtual"
+}
+
+type luvusThemeList struct {
+	Themes []luvusThemeRow `json:"themes"`
+}
+
+// errNoActiveTheme means Luvus answered but named no active theme, which no
+// healthy server does. Kept distinct from a transport failure so a caller can
+// tell "cannot reach Luvus" from "Luvus is confused".
+var errNoActiveTheme = errors.New("luvus reported no active theme")
+
+// loadLuvusTheme resolves the theme from the DEFAULT host's Luvus — the one
+// lasso booted on. The theme is a property of this lasso, not of whichever host
+// a tab is looking at (see the per-tab hosts note in CLAUDE.md), so this is
+// deliberately not per-request.
+func loadLuvusTheme() (resolvedTheme, error) {
+	return loadLuvusThemeFrom(defaultBackend())
+}
+
+// loadLuvusThemeFrom resolves the active theme on one host. It returns an error
+// rather than a fallback palette: the caller keeps its last good theme and
+// skips syncing, because painting a stand-in — or worse, writing it into every
+// host's agent config — would misreport the user's selection.
+func loadLuvusThemeFrom(b Backend) (resolvedTheme, error) {
+	if b == nil {
+		return unavailableTheme(), errors.New("no backend to read the theme from")
+	}
+	raw, err := b.LuvusCall("theme.list", map[string]any{})
+	if err != nil {
+		return unavailableTheme(), fmt.Errorf("theme.list: %w", err)
+	}
+	var list luvusThemeList
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return unavailableTheme(), fmt.Errorf("theme.list: %w", err)
+	}
+	var active luvusThemeRow
+	for _, row := range list.Themes {
+		if row.Active {
+			active = row
+			break
+		}
+	}
+	if active.ID == "" {
+		return unavailableTheme(), errNoActiveTheme
+	}
+
+	rt := resolvedTheme{
+		Name:       active.ID,
+		Label:      active.DisplayName,
+		Appearance: active.Appearance,
+		Available:  true,
+	}
+	var resolveErr error
+	rt.p, rt.Resolved, rt.Customized, resolveErr = resolveLuvusPalette(b, list.Themes, active)
+	if resolveErr != nil {
+		return unavailableTheme(), resolveErr
+	}
+	if rt.Label == "" {
+		rt.Label = rt.Name
+	}
+	rt.ansi = deriveANSI(rt.p, rt.light())
+	return rt, nil
+}
+
+// maxThemeExtends is Luvus's own inheritance depth limit (documented as eight
+// levels), which also bounds the walk below against a cycle its validator would
+// have rejected but a hand-copied file may still contain.
+const maxThemeExtends = 8
+
+// resolveLuvusPalette resolves a row's palette, returning it with the id of the
+// palette it is BASED on and whether a theme file contributed colors.
+//
+// A bundled theme is a table lookup. An installed one is its file's [colors]
+// over its ancestor's palette, walked through the rows `theme.list` already
+// returned — so the whole chain costs one ReadFile per installed ancestor and
+// no directory scan. The virtual Terminal theme has no colors of its own (it is
+// client-derived from the host terminal, which lasso's embedded terminals are
+// not), so it resolves to Luvus's bundled fallback exactly as Luvus does for a
+// `reset` role it cannot probe.
+func resolveLuvusPalette(b Backend, rows []luvusThemeRow, row luvusThemeRow) (luvusPalette, string, bool, error) {
+	byID := make(map[string]luvusThemeRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+
+	// Collect the child-first chain of installed themes down to an ancestor
+	// whose palette is known (bundled), or to a complete installed theme.
+	var chain []map[string]string
+	seen := map[string]bool{}
+	cur := row
+	base, baseID := luvusPalette{}, ""
+	for depth := 0; ; depth++ {
+		if cur.ID == "" || seen[cur.ID] || depth > maxThemeExtends {
+			return luvusPalette{}, "", false, fmt.Errorf("invalid theme inheritance for %q", row.ID)
+		}
+		seen[cur.ID] = true
+		path := cur.localPath()
+		if path == "" {
+			if p, ok := bundledPalettes[cur.ID]; ok {
+				base, baseID = p, cur.ID
+				break
+			}
+			if cur.virtual() {
+				break
+			}
+			return luvusPalette{}, "", false, fmt.Errorf("unresolved Luvus palette %q", cur.ID)
+		}
+		data, err := b.ReadFile(path)
+		if err != nil {
+			return luvusPalette{}, "", false, fmt.Errorf("read Luvus theme %q: %w", cur.ID, err)
+		}
+		colors, extends, err := parseLuvusThemeTOML(data)
+		if err != nil {
+			return luvusPalette{}, "", false, fmt.Errorf("parse Luvus theme %q: %w", cur.ID, err)
+		}
+		chain = append(chain, colors)
+		if extends == "" {
+			extends = cur.Extends
+		}
+		if extends == "" {
+			break
+		}
+		next, ok := byID[extends]
+		if !ok {
+			next = luvusThemeRow{ID: extends}
+		}
+		cur = next
+	}
+
+	// Apply the chain parent-first so a child's override wins.
+	custom := false
+	for i := len(chain) - 1; i >= 0; i-- {
+		for role, rawVal := range chain[i] {
+			hex, ok := parseThemeColor(rawVal)
+			if !ok {
+				continue // `reset`, or unparseable: the ancestor's role stands
+			}
+			if base.applyRole(role, hex) {
+				custom = true
+			}
+		}
+	}
+	if baseID != "" {
+		return base, baseID, custom, nil
+	}
+
+	// No bundled ancestor. Either the files covered all 18 roles — a complete
+	// installed theme, which genuinely IS its own palette — or they did not,
+	// and Luvus's bundled default backs whatever is left, which is what Luvus
+	// itself falls back to. The distinction has to reach Resolved: reporting a
+	// half-filled palette under the theme's own name would state that lasso is
+	// painting a theme it is mostly not.
+	if missing := base.backfill(bundledPalettes[luvusDefaultTheme]); missing == 0 && custom {
+		return base, row.ID, custom, nil
+	}
+	return base, luvusDefaultTheme, custom, nil
+}
+
+// backfill copies every role donor has and p does not, returning how many it
+// had to fill.
+func (p *luvusPalette) backfill(donor luvusPalette) int {
+	n := 0
+	for _, role := range themeRoles {
+		if slot := p.roleRef(role); *slot == "" {
+			*slot = *donor.roleRef(role)
+			n++
+		}
 	}
 	return n
 }
 
-// herdrConfigPath returns the path to the LOCAL config.toml, resolved the way
-// herdr resolves it (see herdrConfigIn).
-func herdrConfigPath() string {
-	return herdrConfigIn(os.Getenv("HERDR_CONFIG_PATH"), os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
+// themeRoles is schema 1's role set, in the order a theme file declares them.
+var themeRoles = []string{
+	"crust", "mantle", "base", "surface0", "surface1",
+	"overlay0", "overlay1", "subtext0", "subtext1", "text",
+	"accent", "sel_bg", "border", "border_focus",
+	"green", "mint", "amber", "coral",
 }
 
-// herdrConfigIn resolves herdr's config.toml from one machine's environment:
-// $HERDR_CONFIG_PATH wins, else $XDG_CONFIG_HOME/herdr/config.toml, else
-// $HOME/.config/herdr/config.toml — herdr's own order, which is why the values
-// have to come from the machine that READS the file (see
-// remoteBackend.herdrConfigPath).
-//
-// It deliberately does not look beside the socket, which is where lasso used to
-// guess. That only ever worked because the default socket happens to live in
-// herdr's config dir: on a host where herdr puts its socket elsewhere — every
-// agent-workspace box, where it lands in /dev/shm/herdr/ — a theme write went to
-// a config.toml nothing reads, so the remote herdr TUI kept its old palette
-// while lasso logged a successful sync.
-func herdrConfigIn(configPath, xdgConfigHome, home string) string {
-	if configPath != "" {
-		return configPath
-	}
-	if xdgConfigHome != "" {
-		return filepath.Join(xdgConfigHome, "herdr", "config.toml")
-	}
-	return filepath.Join(home, ".config", "herdr", "config.toml")
-}
-
-// loadHerdrTheme resolves the active theme. If forceName != "" and != "auto" it
-// is used directly; otherwise the name (and overrides) come from config.toml.
-// Falls back to catppuccin (herdr's default) on anything unreadable/unknown.
-func loadHerdrTheme(forceName string) resolvedTheme {
-	name, custom, legacyAccent := "", map[string]string{}, ""
-	if forceName != "" && forceName != "auto" {
-		name = forceName
-	} else {
-		name, custom, legacyAccent = parseThemeConfig(herdrConfigPath())
-	}
-
-	rawName := name
-	if name == "" {
-		name = "catppuccin"
-	}
-	key := normalizeThemeName(name)
-	def, ok := themes[key]
-	if !ok {
-		key, def = "catppuccin", themes["catppuccin"]
-	}
-
-	rt := resolvedTheme{Name: rawName, Resolved: key, ui: def.ui, ansi: def.ansi}
-	if rt.Name == "" {
-		rt.Name = "(default catppuccin)"
-	}
-
-	// [theme.custom] per-token overrides, then legacy [ui].accent (only if
-	// [theme.custom].accent is unset and it's not the old "cyan" default).
-	for tok, raw := range custom {
-		if hex, ok := parseColor(raw); ok {
-			rt.applyToken(tok, hex)
-			rt.Customized = true
-		}
-	}
-	if _, hasCustomAccent := custom["accent"]; !hasCustomAccent && legacyAccent != "" && legacyAccent != "cyan" {
-		if hex, ok := parseColor(legacyAccent); ok {
-			rt.ui.Accent = hex
-			rt.Customized = true
-		}
-	}
-	return rt
-}
-
-// applyToken overwrites a single UI token by its config name.
-func (rt *resolvedTheme) applyToken(tok, hex string) {
-	switch tok {
-	case "accent":
-		rt.ui.Accent = hex
-	case "panel_bg":
-		rt.ui.PanelBg = hex
+// roleRef addresses one role by its schema-1 name, or nil for a name lasso does
+// not know — a later schema may add one, and the rest of the palette is still
+// correct, so an unknown role is ignored rather than refused.
+func (p *luvusPalette) roleRef(role string) *string {
+	switch role {
+	case "crust":
+		return &p.Crust
+	case "mantle":
+		return &p.Mantle
+	case "base":
+		return &p.Base
 	case "surface0":
-		rt.ui.Surface0 = hex
+		return &p.Surface0
 	case "surface1":
-		rt.ui.Surface1 = hex
-	case "surface_dim":
-		rt.ui.SurfaceDim = hex
+		return &p.Surface1
 	case "overlay0":
-		rt.ui.Overlay0 = hex
+		return &p.Overlay0
 	case "overlay1":
-		rt.ui.Overlay1 = hex
-	case "text":
-		rt.ui.Text = hex
+		return &p.Overlay1
 	case "subtext0":
-		rt.ui.Subtext0 = hex
-	case "mauve":
-		rt.ui.Mauve = hex
+		return &p.Subtext0
+	case "subtext1":
+		return &p.Subtext1
+	case "text":
+		return &p.Text
+	case "accent":
+		return &p.Accent
+	case "sel_bg":
+		return &p.SelBg
+	case "border":
+		return &p.Border
+	case "border_focus":
+		return &p.BorderFocus
 	case "green":
-		rt.ui.Green = hex
-	case "yellow":
-		rt.ui.Yellow = hex
-	case "red":
-		rt.ui.Red = hex
-	case "blue":
-		rt.ui.Blue = hex
-	case "teal":
-		rt.ui.Teal = hex
-	case "peach":
-		rt.ui.Peach = hex
+		return &p.Green
+	case "mint":
+		return &p.Mint
+	case "amber":
+		return &p.Amber
+	case "coral":
+		return &p.Coral
+	}
+	return nil
+}
+
+// applyRole overwrites one role, reporting whether the name was one lasso knows.
+func (p *luvusPalette) applyRole(role, hex string) bool {
+	slot := p.roleRef(role)
+	if slot == nil {
+		return false
+	}
+	*slot = hex
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// parseLuvusThemeTOML uses the TOML grammar Luvus accepts, including literal
+// strings, quoted keys, inline tables and Unicode escapes.
+func parseLuvusThemeTOML(data []byte) (map[string]string, string, error) {
+	var file struct {
+		Schema  int               `toml:"schema"`
+		Extends string            `toml:"extends"`
+		Colors  map[string]string `toml:"colors"`
+	}
+	if err := toml.Unmarshal(data, &file); err != nil {
+		return nil, "", err
+	}
+	if file.Schema != 0 && file.Schema != 1 {
+		return nil, "", fmt.Errorf("unsupported theme schema %d", file.Schema)
+	}
+	return file.Colors, file.Extends, nil
+}
+
+// ---------------------------------------------------------------------------
+// parseThemeColor: schema 1 accepts exactly three forms.
+// ---------------------------------------------------------------------------
+
+// parseThemeColor resolves a schema-1 color to "#rrggbb". ok=false means the
+// value names no color of its own — `reset` (defer to the terminal) or a
+// malformed value — and the role it was written to must keep what it inherited.
+func parseThemeColor(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case s == "" || s == "reset":
+		return "", false
+	case strings.HasPrefix(s, "#"):
+		if _, _, _, ok := hexRGB(s); ok {
+			return s, true
+		}
+		return "", false
+	case strings.HasPrefix(s, "ansi(") && strings.HasSuffix(s, ")"):
+		n, err := strconv.Atoi(strings.TrimSpace(s[5 : len(s)-1]))
+		if err != nil || n < 0 || n > 255 {
+			return "", false
+		}
+		return ansi256Hex(n), true
+	}
+	return "", false
+}
+
+// ansi256Hex renders an xterm 256-color index. A theme asking for ansi(0..15)
+// means "whatever the terminal calls color N", which lasso's own embedded
+// terminals cannot answer for; xterm's classic defaults are the honest stand-in.
+func ansi256Hex(n int) string {
+	switch {
+	case n < 16:
+		return [16]string{
+			"#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
+			"#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
+		}[n]
+	case n < 232:
+		steps := [6]int{0, 95, 135, 175, 215, 255}
+		n -= 16
+		return fmt.Sprintf("#%02x%02x%02x", steps[n/36], steps[n/6%6], steps[n%6])
+	default:
+		v := 8 + (n-232)*10
+		return fmt.Sprintf("#%02x%02x%02x", v, v, v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ANSI derivation
+// ---------------------------------------------------------------------------
+
+// deriveANSI builds the 16 terminal colors from a theme's semantic roles.
+//
+// It is a derivation rather than a per-theme transcription because a Luvus theme
+// has no ANSI palette at all — Luvus renders its own chrome and leaves the 16
+// colors to the host terminal — and because a palette a user just wrote in the
+// Theme Maker has no canonical export to copy. Reading the theme's own hues is
+// the only mapping that serves every theme, including the greyscale ones (mono
+// derives grey blues, which is what a monochrome theme should look like).
+//
+//   - red/green/yellow/cyan are the theme's four hues verbatim;
+//   - blue and magenta are the two hues schema 1 has no role for, synthesized at
+//     their canonical angles with the SATURATION AND LIGHTNESS this theme uses
+//     for its own hues, so they belong to the palette instead of being imported
+//     from somewhere else;
+//   - black/white are the two neutral tiers, ordered by luminance so a light
+//     theme does not end up with a white "black";
+//   - the brights are each color pushed toward the theme's text color, i.e.
+//     toward more contrast against the background — which is what "bright"
+//     means on a light theme too.
+func deriveANSI(p luvusPalette, light bool) ansiPalette {
+	sat, lum := chromaProfile(p)
+	blue := hslHex(214, sat, lum)
+	magenta := hslHex(300, sat, lum)
+
+	black, white := p.Surface1, p.Subtext1
+	if luminance(black) > luminance(white) {
+		black, white = white, black
+	}
+	dim := p.Overlay1
+	if light {
+		dim = p.Overlay0
+	}
+
+	bright := func(hex string) string { return blendHex(hex, p.Text, ansiBrightLift) }
+	return ansiPalette{
+		Black: black, Red: p.Coral, Green: p.Green, Yellow: p.Amber,
+		Blue: blue, Magenta: magenta, Cyan: p.Mint, White: white,
+		BrightBlack: dim, BrightRed: bright(p.Coral), BrightGreen: bright(p.Green),
+		BrightYellow: bright(p.Amber), BrightBlue: bright(blue),
+		BrightMagenta: bright(magenta), BrightCyan: bright(p.Mint), BrightWhite: p.Text,
+	}
+}
+
+// ansiBrightLift is how far a bright color is pushed toward the theme's text
+// color. Enough to read as a distinct second tier beside its normal, small
+// enough that eight brights don't collapse into the foreground.
+const ansiBrightLift = 0.28
+
+// chromaProfile averages the saturation and lightness of the four hue roles, so
+// a synthesized color sits at the same intensity as the ones the theme chose.
+// A palette whose hues are all grey yields a grey profile, by design.
+func chromaProfile(p luvusPalette) (sat, lum float64) {
+	n := 0
+	for _, hex := range []string{p.Green, p.Mint, p.Amber, p.Coral} {
+		_, s, l, ok := hexHSL(hex)
+		if !ok {
+			continue
+		}
+		sat, lum, n = sat+s, lum+l, n+1
+	}
+	if n == 0 {
+		return 0.5, 0.6
+	}
+	return sat / float64(n), lum / float64(n)
+}
+
+// hexHSL converts "#rrggbb" to hue (degrees), saturation and lightness (0..1).
+func hexHSL(hex string) (h, s, l float64, ok bool) {
+	ri, gi, bi, ok := hexRGB(hex)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	r, g, b := float64(ri)/255, float64(gi)/255, float64(bi)/255
+	max, min := math.Max(r, math.Max(g, b)), math.Min(r, math.Min(g, b))
+	l = (max + min) / 2
+	d := max - min
+	if d == 0 {
+		return 0, 0, l, true
+	}
+	s = d / (1 - math.Abs(2*l-1))
+	switch max {
+	case r:
+		h = math.Mod((g-b)/d, 6)
+	case g:
+		h = (b-r)/d + 2
+	default:
+		h = (r-g)/d + 4
+	}
+	h *= 60
+	if h < 0 {
+		h += 360
+	}
+	return h, s, l, true
+}
+
+// hslHex is hexHSL's inverse.
+func hslHex(h, s, l float64) string {
+	h = math.Mod(math.Mod(h, 360)+360, 360)
+	s, l = clamp01(s), clamp01(l)
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := l - c/2
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g, b = c, x, 0
+	case h < 120:
+		r, g, b = x, c, 0
+	case h < 180:
+		r, g, b = 0, c, x
+	case h < 240:
+		r, g, b = 0, x, c
+	case h < 300:
+		r, g, b = x, 0, c
+	default:
+		r, g, b = c, 0, x
+	}
+	to := func(v float64) int { return int(math.Round(clamp01(v+m) * 255)) }
+	return fmt.Sprintf("#%02x%02x%02x", to(r), to(g), to(b))
+}
+
+func clamp01(v float64) float64 { return math.Max(0, math.Min(1, v)) }
+
+// ---------------------------------------------------------------------------
+// rendering
+// ---------------------------------------------------------------------------
 
 // termSelectionAlpha is the opacity of the terminal's selection/highlight tint.
 // Selection is a *translucent* wash of the theme accent (see xtermJSON): unlike
 // an opaque color it composites over whatever cell content is underneath, so it
-// stays visible on every theme instead of vanishing when the canonical selection
-// color sits a shade off the background (e.g. tokyo-night's #283457 over
-// #1a1b26). ~40% reads as a clear band while the text below stays legible.
+// stays visible on every theme instead of vanishing when the theme's own sel_bg
+// sits a shade off the background. ~40% reads as a clear band while the text
+// below stays legible.
 const termSelectionAlpha = 0x66
 
-// xtermJSON builds an xterm.js ITheme: chrome (bg/fg/cursor) from the herdr UI
-// tokens so the terminal blends with herdr's own theme, a translucent-accent
-// selection highlight (theme-matched yet always visible — see
-// termSelectionAlpha), and the 16 ANSI colors from the scheme's canonical palette.
+// xtermJSON builds an xterm.js ITheme: chrome from the Luvus roles (mantle is
+// the pane background Luvus itself reports over OSC 11, so the iframe blends
+// with Luvus), a translucent-accent selection highlight (theme-matched yet
+// always visible — see termSelectionAlpha), and the derived 16 ANSI colors.
 func (rt resolvedTheme) xtermJSON() string {
 	a := rt.ansi
 	return `{` +
-		q("background", rt.ui.PanelBg) + "," + q("foreground", rt.ui.Text) + "," +
-		q("cursor", rt.ui.Text) + "," + q("cursorAccent", rt.ui.PanelBg) + "," +
-		q("selectionBackground", rgba(rt.ui.Accent, termSelectionAlpha)) + "," +
+		q("background", rt.p.Mantle) + "," + q("foreground", rt.p.Text) + "," +
+		q("cursor", rt.p.Text) + "," + q("cursorAccent", rt.p.Mantle) + "," +
+		q("selectionBackground", rgba(rt.p.Accent, termSelectionAlpha)) + "," +
 		q("black", a.Black) + "," + q("red", a.Red) + "," + q("green", a.Green) + "," +
 		q("yellow", a.Yellow) + "," + q("blue", a.Blue) + "," + q("magenta", a.Magenta) + "," +
 		q("cyan", a.Cyan) + "," + q("white", a.White) + "," +
@@ -527,42 +761,40 @@ func (rt resolvedTheme) xtermJSON() string {
 
 func q(k, v string) string { return `"` + k + `":"` + v + `"` }
 
+// peach is the warm tier between amber and coral. Schema 1 has no orange role,
+// and the agent themes want one distinct from their warning color, so it is
+// mixed from the two hues that bracket it instead of repeating amber twice.
+func (rt resolvedTheme) peach() string { return blendHex(rt.p.Amber, rt.p.Coral, 0.35) }
+
+// mauve is the palette's purple tier — the synthesized magenta, which is a
+// theme-consistent stand-in for the role schema 1 does not carry (used for
+// directories, headings and keywords).
+func (rt resolvedTheme) mauve() string { return rt.ansi.Magenta }
+
 // cssVars renders the :root custom-property declarations for the sidebar.
-// --accent maps to each theme's own Accent token (the signature color that
-// drives --primary in the chrome), so e.g. rose-pine reads purple, not teal.
-// --good stays on Teal since it's the success color, independent of the accent.
+// --accent is the theme's own Accent role (the signature color that drives
+// --primary in the chrome), so e.g. ocean reads cyan and quattro-rally gold.
+// --good stays on Mint since it is the success color, independent of the accent.
 // --muted is the secondary-text tier (form labels, metadata), so it maps to
 // Subtext0, not Overlay0 — Overlay0 is the dimmest "subtle line/disabled" tier
 // and reads at ~2:1 against the panel, too low for labels.
 func (rt resolvedTheme) cssVars() string {
-	u := rt.ui
+	p := rt.p
 	var b strings.Builder
 	put := func(name, val string) { fmt.Fprintf(&b, "    %s: %s;\n", name, val) }
-	put("--bg", u.PanelBg)
-	put("--panel", u.Surface0)
-	put("--border", u.Surface1)
-	put("--hover", u.Surface1)
-	put("--fg", u.Text)
-	put("--muted", u.Subtext0)
-	put("--accent", u.Accent)
-	put("--accent-dim", rgba(u.Accent, 0x26))
-	put("--dir", u.Mauve)
-	put("--good", u.Teal)
-	put("--warn", u.Yellow)
-	put("--bad", u.Red)
+	put("--bg", p.Mantle)
+	put("--panel", p.Surface0)
+	put("--border", p.Border)
+	put("--hover", p.Surface1)
+	put("--fg", p.Text)
+	put("--muted", p.Subtext0)
+	put("--accent", p.Accent)
+	put("--accent-dim", rgba(p.Accent, 0x26))
+	put("--dir", rt.mauve())
+	put("--good", p.Mint)
+	put("--warn", p.Amber)
+	put("--bad", p.Coral)
 	return b.String()
-}
-
-// cssVarsRoot returns the resolved palette as a ":root{…}" rule using the same
-// --h-* custom-property names the stylesheet (web/src/index.css) and the
-// runtime applier (lib/theme.ts:applyCSSVars) use. It's injected into the
-// served index.html so the first paint matches herdr's theme instead of
-// flashing the stylesheet's fallback palette before /api/theme lands.
-func (rt resolvedTheme) cssVarsRoot() string {
-	// cssVars() emits bare "--bg: …;" declarations; the live theme is keyed by
-	// "--h-bg" (applyCSSVars prefixes them). Prefix the leading "--" of each
-	// property to "--h-" — the palette values contain no other "--" sequences.
-	return ":root{\n" + strings.ReplaceAll(rt.cssVars(), "--", "--h-") + "}"
 }
 
 // rgba appends an 8-bit alpha to a #rrggbb hex (-> #rrggbbaa); passes other
@@ -572,236 +804,4 @@ func rgba(hex string, alpha int) string {
 		return fmt.Sprintf("%s%02x", hex, alpha&0xff)
 	}
 	return hex
-}
-
-// ---------------------------------------------------------------------------
-// minimal config.toml reader (only what we need: [theme].name,
-// [theme.custom].*, legacy [ui].accent) — avoids a TOML dependency.
-// ---------------------------------------------------------------------------
-
-// parseThemeConfig returns (theme name, [theme.custom] token map, legacy
-// [ui].accent). Missing/unreadable config yields zero values.
-func parseThemeConfig(path string) (name string, custom map[string]string, legacyAccent string) {
-	custom = map[string]string{}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", custom, ""
-	}
-	section := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(stripComment(line))
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
-			continue
-		}
-		key, val, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		val = unquote(strings.TrimSpace(val))
-		switch section {
-		case "theme":
-			if key == "name" {
-				name = val
-			}
-		case "theme.custom":
-			custom[key] = val
-		case "ui":
-			if key == "accent" {
-				legacyAccent = val
-			}
-		}
-	}
-	return name, custom, legacyAccent
-}
-
-// rewriteThemeConfigTOML returns config.toml content with [theme].name set to
-// name, preserving everything else (herdr owns this config; lasso only touches
-// the one key). prev is the existing file content ("" if it doesn't exist yet,
-// in which case a [theme] section is created).
-func rewriteThemeConfigTOML(prev, name string) string {
-	entry := fmt.Sprintf("name = %q", name)
-	var out []string
-	replaced := false
-	if prev != "" {
-		section := ""
-		themeAt := -1 // insertion point just after a bare [theme] header
-		for _, line := range strings.Split(prev, "\n") {
-			t := strings.TrimSpace(stripComment(line))
-			if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
-				section = strings.TrimSpace(t[1 : len(t)-1])
-				out = append(out, line)
-				if section == "theme" {
-					themeAt = len(out)
-				}
-				continue
-			}
-			if section == "theme" {
-				if key, _, found := strings.Cut(t, "="); found && strings.TrimSpace(key) == "name" {
-					// Replace the first name key; drop any (invalid) duplicates so
-					// the value we wrote is unambiguously the one in effect.
-					if !replaced {
-						out = append(out, entry)
-						replaced = true
-					}
-					continue
-				}
-			}
-			out = append(out, line)
-		}
-		if !replaced && themeAt >= 0 {
-			out = append(out[:themeAt], append([]string{entry}, out[themeAt:]...)...)
-			replaced = true
-		}
-	}
-	if !replaced {
-		// No [theme] section (or no file at all): append/create one.
-		for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
-			out = out[:len(out)-1]
-		}
-		if len(out) > 0 {
-			out = append(out, "")
-		}
-		out = append(out, "[theme]", entry)
-	}
-	content := strings.Join(out, "\n")
-	if !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-	return content
-}
-
-// setHerdrThemeName rewrites [theme].name in the LOCAL herdr config.toml.
-// Creates the file/section when missing. The write is atomic (temp file +
-// rename) so neither herdr nor our own poller ever reads a torn file.
-func setHerdrThemeName(path, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	prev := ""
-	if err == nil {
-		prev = string(data)
-	}
-	content := rewriteThemeConfigTOML(prev, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	mode := os.FileMode(0o644)
-	if fi, statErr := os.Stat(path); statErr == nil {
-		mode = fi.Mode().Perm()
-	}
-	tmp := path + ".lasso-tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-// writeHerdrThemeNameVia rewrites [theme].name in the herdr config at cfgPath on
-// backend b — the local machine (os) or a remote host (over SFTP). Unlike
-// setHerdrThemeName it writes in place rather than via temp+rename: SFTP's
-// rename-over-an-existing-file isn't portable, and no reader observes a torn
-// remote file (the remote herdr only reads its config on reload, which we
-// trigger after this returns, and lasso's own poller reads the LOCAL config).
-func writeHerdrThemeNameVia(b Backend, cfgPath, name string) error {
-	data, err := b.ReadFile(cfgPath)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	prev := ""
-	if err == nil {
-		prev = string(data)
-	}
-	content := rewriteThemeConfigTOML(prev, name)
-	if err := b.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		return err
-	}
-	perm := fs.FileMode(0o644)
-	if fi, statErr := b.Stat(cfgPath); statErr == nil {
-		perm = fi.Mode().Perm()
-	}
-	return b.WriteFile(cfgPath, []byte(content), perm)
-}
-
-// stripComment removes a trailing TOML comment that lies outside of quotes.
-func stripComment(line string) string {
-	inStr := false
-	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case '"':
-			inStr = !inStr
-		case '#':
-			if !inStr {
-				return line[:i]
-			}
-		}
-	}
-	return line
-}
-
-func unquote(s string) string {
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// ---------------------------------------------------------------------------
-// parse_color: mirrors herdr's src/config/theme.rs parser, returning #rrggbb.
-// ok=false means "leave the base token unchanged" (used for the reset aliases).
-// ---------------------------------------------------------------------------
-
-func parseColor(s string) (string, bool) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	switch s {
-	case "reset", "default", "none", "transparent":
-		return "", false // transparent / inherit — no hex to apply to our chrome
-	}
-	if strings.HasPrefix(s, "#") {
-		return normalizeHex(s)
-	}
-	if strings.HasPrefix(s, "rgb(") && strings.HasSuffix(s, ")") {
-		parts := strings.Split(s[4:len(s)-1], ",")
-		if len(parts) == 3 {
-			r, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-			g, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-			b, e3 := strconv.Atoi(strings.TrimSpace(parts[2]))
-			if e1 == nil && e2 == nil && e3 == nil &&
-				r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return fmt.Sprintf("#%02x%02x%02x", r, g, b), true
-			}
-		}
-		return "", false
-	}
-	if hex, ok := namedColors[s]; ok {
-		return hex, true
-	}
-	return "#00ffff", true // herdr's fallback: unknown -> cyan
-}
-
-// normalizeHex accepts #rgb or #rrggbb and returns #rrggbb.
-func normalizeHex(s string) (string, bool) {
-	h := s[1:]
-	switch len(h) {
-	case 3:
-		return fmt.Sprintf("#%c%c%c%c%c%c", h[0], h[0], h[1], h[1], h[2], h[2]), true
-	case 6:
-		return s, true
-	}
-	return "", false
-}
-
-// namedColors maps herdr's accepted color names to representative hex values.
-var namedColors = map[string]string{
-	"black": "#000000", "red": "#cc0000", "green": "#4e9a06", "yellow": "#c4a000",
-	"blue": "#3465a4", "magenta": "#75507b", "purple": "#75507b", "cyan": "#06989a",
-	"white": "#d3d7cf", "gray": "#808080", "grey": "#808080", "darkgray": "#555753",
-	"darkgrey": "#555753", "lightred": "#ef2929", "lightgreen": "#8ae234",
-	"lightyellow": "#fce94f", "lightblue": "#729fcf", "lightmagenta": "#ad7fa8",
-	"lightcyan": "#34e2e2",
 }

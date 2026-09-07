@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -12,8 +13,8 @@ import (
 )
 
 // Backend is one host lasso can drive: the local machine (localBackend) or a
-// herdr daemon on another box reached over SSH (remoteBackend). Every
-// per-request handler — herdr RPC, file browsing/editing, git diff, the paste
+// luvus daemon on another box reached over SSH (remoteBackend). Every
+// per-request handler — luvus RPC, file browsing/editing, git diff, the paste
 // scratch dir — runs against the backend its REQUEST resolves to (reqBackend,
 // reqhost.go), because "which host" is now a property of the calling browser tab
 // rather than of the process. hostBackend/namedHostBackend own the one
@@ -22,12 +23,12 @@ type Backend interface {
 	// Name is "local" or the ssh-config host alias.
 	Name() string
 
-	// HerdrSock is the unix socket to dial for herdr RPC and the event stream:
+	// LuvusSock is the unix socket to dial for luvus RPC and the event stream:
 	// the local socket for localBackend, the SSH-forwarded local socket for
 	// remoteBackend. subscribeEvents reads it each time it (re)connects.
-	HerdrSock() string
-	// HerdrCall does one request/response round-trip against HerdrSock.
-	HerdrCall(method string, params any) (json.RawMessage, error)
+	LuvusSock() string
+	// LuvusCall does one request/response round-trip against LuvusSock.
+	LuvusCall(method string, params any) (json.RawMessage, error)
 
 	// Filesystem ops mirror the os.* calls the file handlers used to make.
 	// Local impls hit os directly; remote impls go over SFTP.
@@ -46,7 +47,7 @@ type Backend interface {
 	GitOut(dir string, args ...string) (string, error)
 
 	// TermCmd / ShellCmd are the commands the two ttyd terminals run for this
-	// host (left "Herdr" terminal and the right shell tab). TermEnv overrides the
+	// host (left "Luvus" terminal and the right shell tab). TermEnv overrides the
 	// left terminal's environment (nil = inherit the viewer's env).
 	TermCmd() string
 	ShellCmd() string
@@ -100,33 +101,28 @@ func setDefaultBackend(b Backend) {
 	active.mu.Unlock()
 }
 
-// herdrReadTimeout is how long we wait for a herdr method's response. Most calls
-// are cheap reads that should fail fast so the UI stays snappy, but the worktree
-// and workspace mutations shell out to git — `git worktree add` alone runs several
-// seconds on a large repo, more once it's crossing an ssh-forwarded socket to a
-// remote host. Holding those to the read default made createAgent's worktree.create
-// time out and surface as a 502 from the New Agent modal.
-const herdrReadTimeout = 3 * time.Second
+// Cheap reads fail fast; workspace/PTY creation and teardown have separate
+// deadlines so a slow host does not turn a successful mutation into a retry.
+const luvusReadTimeout = 3 * time.Second
 
-var herdrSlowMethods = map[string]time.Duration{
-	"worktree.create":  120 * time.Second,
-	"worktree.remove":  120 * time.Second,
-	"workspace.create": 120 * time.Second,
-	"workspace.rename": 30 * time.Second,
-	"pane.close":       30 * time.Second,
+var luvusSlowMethods = map[string]time.Duration{
+	"workspace.open":          120 * time.Second,
+	"terminal.backend.create": 120 * time.Second,
+	"workspace.rename":        30 * time.Second,
+	"pane.close":              30 * time.Second,
 }
 
-func herdrTimeoutFor(method string) time.Duration {
-	if d, ok := herdrSlowMethods[method]; ok {
+func luvusTimeoutFor(method string) time.Duration {
+	if d, ok := luvusSlowMethods[method]; ok {
 		return d
 	}
-	return herdrReadTimeout
+	return luvusReadTimeout
 }
 
-// herdrCallSock does one newline-delimited JSON request/response round-trip on a
-// fresh connection to sock. This is the body the old package-level herdrCall
+// luvusCallSock does one newline-delimited JSON request/response round-trip on a
+// fresh connection to sock. This is the body the old package-level luvusCall
 // used; both backends share it (local socket vs forwarded remote socket).
-func herdrCallSock(sock, method string, params any) (json.RawMessage, error) {
+func luvusCallSock(sock, method string, params any) (json.RawMessage, error) {
 	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
 	if err != nil {
 		return nil, err
@@ -137,7 +133,7 @@ func herdrCallSock(sock, method string, params any) (json.RawMessage, error) {
 	if _, err := conn.Write(append(b, '\n')); err != nil {
 		return nil, err
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(herdrTimeoutFor(method)))
+	_ = conn.SetReadDeadline(time.Now().Add(luvusTimeoutFor(method)))
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		return nil, err
@@ -150,7 +146,7 @@ func herdrCallSock(sock, method string, params any) (json.RawMessage, error) {
 		return nil, err
 	}
 	if resp.Error != nil {
-		he := &herdrError{}
+		he := &luvusError{}
 		if json.Unmarshal(resp.Error, he) != nil || he.Code == "" {
 			he.Message = string(resp.Error) // non-structured error: keep the raw payload
 		}
@@ -159,22 +155,62 @@ func herdrCallSock(sock, method string, params any) (json.RawMessage, error) {
 	return resp.Result, nil
 }
 
-// herdrPing dials sock and issues the `ping` method, returning herdr's protocol
-// version. Used to confirm a (local or forwarded) socket is a live, compatible
-// herdr server before declaring a host switch successful.
-func herdrPing(sock string) (version string, protocol int, err error) {
-	res, err := herdrCallSock(sock, "ping", map[string]any{})
+// luvusPing verifies the public UHP contract, not the private TUI protocol.
+func luvusPing(sock string) (version string, protocol int, err error) {
+	res, err := luvusCallSock(sock, "uhp.capabilities", map[string]any{})
 	if err != nil {
 		return "", 0, err
 	}
-	var pong struct {
-		Version  string `json:"version"`
-		Protocol int    `json:"protocol"`
-	}
-	if err := json.Unmarshal(res, &pong); err != nil {
+	var caps uhpCaps
+	if err := json.Unmarshal(res, &caps); err != nil {
 		return "", 0, err
 	}
-	return pong.Version, pong.Protocol, nil
+	if err := validateLuvusCaps(caps); err != nil {
+		return "", caps.Protocol.Major, err
+	}
+	res, err = luvusCallSock(sock, "ping", map[string]any{})
+	if err != nil {
+		return "", caps.Protocol.Major, err
+	}
+	var pong struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(res, &pong); err != nil {
+		return "", caps.Protocol.Major, err
+	}
+	return pong.Version, caps.Protocol.Major, nil
+}
+
+var requiredLuvusMethods = []string{
+	"session.snapshot", "workspace.list", "workspace.open", "workspace.rename",
+	"workspace.focus", "workspace.close", "tab.new", "tab.rename",
+	"pane.get", "pane.current", "pane.focus", "pane.run", "pane.send_input", "pane.read",
+	"pane.close", "terminal.backend.create", "events.subscribe", "theme.list",
+}
+
+type uhpCaps struct {
+	Protocol struct {
+		Name  string `json:"name"`
+		Major int    `json:"major"`
+		Minor int    `json:"minor"`
+	} `json:"protocol"`
+	Methods []string `json:"methods"`
+}
+
+func validateLuvusCaps(c uhpCaps) error {
+	if c.Protocol.Name != "luvus-uhp" || c.Protocol.Major != lassoLuvusProtocol {
+		return fmt.Errorf("incompatible UHP protocol %q major %d", c.Protocol.Name, c.Protocol.Major)
+	}
+	methods := make(map[string]bool, len(c.Methods))
+	for _, m := range c.Methods {
+		methods[m] = true
+	}
+	for _, m := range requiredLuvusMethods {
+		if !methods[m] {
+			return fmt.Errorf("Luvus lacks required UHP method %s", m)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -182,14 +218,14 @@ func herdrPing(sock string) (version string, protocol int, err error) {
 // ---------------------------------------------------------------------------
 
 type localBackend struct {
-	sock string // herdr unix socket (defaults to *herdrSock)
+	sock string // luvus unix socket (defaults to *luvusSock)
 }
 
 func (b *localBackend) Name() string      { return "local" }
-func (b *localBackend) HerdrSock() string { return b.sock }
+func (b *localBackend) LuvusSock() string { return b.sock }
 
-func (b *localBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
-	return herdrCallSock(b.sock, method, params)
+func (b *localBackend) LuvusCall(method string, params any) (json.RawMessage, error) {
+	return luvusCallSock(b.sock, method, params)
 }
 
 func (b *localBackend) ReadDir(path string) ([]fileEntry, error) {
@@ -233,12 +269,18 @@ func (b *localBackend) PasteFileDir() string     { return pasteFileDir() }
 
 // TermCmd/ShellCmd/TermEnv reproduce the historical local terminal wiring: the
 // left terminal runs *termCmd inheriting the viewer's env (so it joins the same
-// herdr session); the shell tab runs the resolved shell. TermEnv is nil here —
+// luvus session); the shell tab runs the resolved shell. TermEnv is nil here —
 // startTtyd inherits the viewer env. (The shell tab's env-stripping is applied
-// by the caller via outsideHerdrEnv, unchanged.)
-func (b *localBackend) TermCmd() string   { return *termCmd }
-func (b *localBackend) ShellCmd() string  { return shellCommand() }
-func (b *localBackend) TermEnv() []string { return nil }
+// by the caller via outsideLuvusEnv, unchanged.)
+func (b *localBackend) TermCmd() string  { return *termCmd }
+func (b *localBackend) ShellCmd() string { return shellCommand() }
+func (b *localBackend) TermEnv() []string {
+	env := outsideLuvusEnv()
+	if home := os.Getenv("LUVUS_HOME"); home != "" {
+		env = append(env, "LUVUS_HOME="+home)
+	}
+	return append(env, "LUVUS_SOCKET_PATH="+b.sock, "LUVUS_API_ADDRESS="+b.sock)
+}
 
 func (b *localBackend) Close() error { return nil }
 

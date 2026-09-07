@@ -9,10 +9,10 @@ import (
 
 // MCP server: an unauthenticated Model Context Protocol endpoint mounted at /mcp
 // (see main.go's route table + withAuthExcept). Its purpose is to let an agent
-// session — typically a Claude Code session running inside herdr via lasso, or
+// session — typically a Claude Code session running inside luvus via lasso, or
 // Claude desktop/mobile reaching the HTTP endpoint — orchestrate OTHER lasso
 // agents: spawn them (in their own worktree/workspace, off a chosen base
-// branch), then converse with them statefully through their herdr pane.
+// branch), then converse with them statefully through their luvus pane.
 //
 // Every tool reuses the same machinery the React UI drives (createAgent,
 // hostBackend, listAgents, paneRun, pane.read, …). Tools take an optional
@@ -26,12 +26,12 @@ import (
 
 // newMCPHandler builds the MCP server, registers the tools, and returns the
 // Streamable-HTTP handler to mount at /mcp. The getServer closure hands every
-// request the one shared server (lasso has a single global herdr/state surface,
+// request the one shared server (lasso has a single global luvus/state surface,
 // so there's nothing per-connection to scope).
 // mcpInstructions is surfaced to the model once per MCP session through
 // initialize, so shared guidance belongs here rather than repeated in every
 // tool description.
-const mcpInstructions = `Lasso orchestrates coding agents in herdr panes: spawn them, inspect them, and manage their lifecycle.
+const mcpInstructions = `Lasso orchestrates coding agents in luvus panes: spawn them, inspect them, and manage their lifecycle.
 
 notify pushes a notification to the HUMAN who runs this lasso (their phone, if lasso is on its home screen). Use it only when you need them — a decision, a blocking question, a long job finishing while they are away — and check the reply's "sent": false means nobody received it.
 
@@ -72,7 +72,7 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 // reads like a machine that is merely down, and the distinction between "asleep
 // for now" and "not a host you may address at all" is the whole point of the
 // scope rule.
-// A var so a test can stand a fake herdr in for the pool (the same seam
+// A var so a test can stand a fake luvus in for the pool (the same seam
 // agentBackendResolver is for the close path).
 var resolveBackend = func(host string) (Backend, error) {
 	if host == "" {
@@ -85,7 +85,7 @@ var resolveBackend = func(host string) (Backend, error) {
 }
 
 // findAgentRecord looks up an agent created on host by its lasso id, so the
-// interaction tools can recover its root pane (the herdr pane the agent runs in)
+// interaction tools can recover its root pane (the luvus pane the agent runs in)
 // from the persisted record.
 func findAgentRecord(host, id string) (AgentRecord, error) {
 	if host == "" {

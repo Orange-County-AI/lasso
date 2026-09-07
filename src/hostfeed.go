@@ -7,19 +7,19 @@ import (
 	"time"
 )
 
-// A hostFeed is one host's live state — its pane.list poll, its herdr event
+// A hostFeed is one host's live state — its pane.list poll, its luvus event
 // subscription, its layout revision, and the SSE clients watching it.
 //
 // There used to be exactly one of these, unnamed, inside the hub: lasso polled
 // "the active host" and pushed the result to every open tab. That is what made
 // per-tab hosts impossible, and splitting it is the substance of this change.
 // Each host now gets its own poller and its own client set, so a tab on norm and
-// a tab on titan see their own machine and neither one's herdr events invalidate
+// a tab on titan see their own machine and neither one's luvus events invalidate
 // the other's cache.
 //
 // A feed is created on demand by the first tab to ask for that host and torn
 // down feedIdle after the last one leaves, so an unwatched host costs nothing —
-// which matters because the poll it runs (pane.list) is herdr's most expensive
+// which matters because the poll it runs (pane.list) is luvus's most expensive
 // method, ~0.5–1.5s on a busy session, and it would otherwise run once per alias
 // in the ssh config forever.
 type hostFeed struct {
@@ -52,7 +52,7 @@ type hostFeed struct {
 // visited once stops being polled well before its SSH master is idle-reaped.
 const feedIdle = 90 * time.Second
 
-// eventDebounce is the quiet window a feed waits after the first herdr event
+// eventDebounce is the quiet window a feed waits after the first luvus event
 // before refreshing, so a burst of events yields one refresh of the settled
 // state. Kept well under human perception so a single focus change still feels
 // immediate.
@@ -63,9 +63,9 @@ func newHostFeed(h *hub, be Backend) *hostFeed {
 		h:    h,
 		host: be.Name(),
 		be:   be,
-		// Seed HerdrUp=true so a tab connecting before the first poll doesn't
-		// briefly flash the "herdr disconnected" state.
-		cur:     Active{HerdrUp: true, Host: be.Name(), HostSlug: hostSlug(be.Name()), CwdHost: be.Name()},
+		// Seed LuvusUp=true so a tab connecting before the first poll doesn't
+		// briefly flash the "luvus disconnected" state.
+		cur:     Active{LuvusUp: true, Host: be.Name(), HostSlug: hostSlug(be.Name()), CwdHost: be.Name()},
 		clients: map[chan Active]struct{}{},
 		trigger: make(chan struct{}, 1),
 	}
@@ -103,7 +103,7 @@ func (f *hostFeed) snapshot() Active {
 	return f.cur
 }
 
-// startSub (re)starts this host's herdr event subscription under a fresh child
+// startSub (re)starts this host's luvus event subscription under a fresh child
 // of the feed's context, cancelling any prior one.
 func (f *hostFeed) startSub() {
 	f.subMu.Lock()
@@ -148,10 +148,8 @@ func (f *hostFeed) pushCurrent() {
 	f.push(cur)
 }
 
-// run polls this host until ctx ends. It is the old hub.run loop, scoped to one
-// host: the theme re-resolution that used to share it moved to the hub, since
-// herdr's config.toml is read locally and re-reading it once per watched host
-// would have multiplied that work by the number of open tabs' hosts.
+// run polls this host until ctx ends. Theme reads belong to the global hub,
+// rather than being repeated for every watched host.
 func (f *hostFeed) run(ctx context.Context) {
 	f.subMu.Lock()
 	f.cancel = func() {}
@@ -193,15 +191,15 @@ func (f *hostFeed) refresh() {
 	be := f.backend()
 	a, sig, err := fetchActive(be)
 	if err != nil {
-		// herdr's socket is unreachable (closed in the terminal, or the ssh
+		// luvus's socket is unreachable (closed in the terminal, or the ssh
 		// master died). Keep the last-known state but mark it stale, and notify
 		// watchers once on the up->down transition so the sidebar can show a
 		// disconnected cue.
 		f.mu.Lock()
 		var down Active
-		send := f.cur.HerdrUp
+		send := f.cur.LuvusUp
 		if send {
-			f.cur.HerdrUp = false
+			f.cur.LuvusUp = false
 			down = f.cur
 		}
 		f.mu.Unlock()
@@ -210,7 +208,7 @@ func (f *hostFeed) refresh() {
 		}
 		return
 	}
-	a.HerdrUp = true
+	a.LuvusUp = true
 	themeRev, uiStateRev := f.h.revs()
 	f.mu.Lock()
 	if sig != f.lastSig {
@@ -396,5 +394,5 @@ func hostInUse(host string) bool {
 			}
 		}
 	}
-	return terminals.herdr.resident(host) || terminals.shell.resident(host)
+	return terminals.luvus.resident(host) || terminals.shell.resident(host)
 }

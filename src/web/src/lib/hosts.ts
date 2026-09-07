@@ -17,7 +17,7 @@ import type { HostInfo } from "@/lib/api"
 // Synthetic key for the local machine. NUL-prefixed so it can never collide
 // with a real hostname or alias (neither can contain one) — it shares the group
 // map with resolved hostnames.
-export const LOCAL_KEY = "\u0000local"
+const LOCAL_KEY = "\u0000local"
 
 export function isLoopback(host?: string): boolean {
   if (!host) return false
@@ -43,11 +43,9 @@ export function splitAlias(
 // it keeps grouping by its physical host as before instead of splitting off
 // into a group of one.
 //
-// Takes bare names rather than HostInfo so callers that only have names —
-// the pane palette groups by ssh alias AND by herdr-mirror host key, neither of
-// which comes with a probed host row — use the same rule as the host pickers
-// instead of inventing a second one.
-export function aliasFamilies(aliases: readonly string[]): ReadonlySet<string> {
+// Takes bare names rather than HostInfo because the grouping is a property of
+// the alias strings alone (groupHosts feeds it the probed rows' aliases).
+function aliasFamilies(aliases: readonly string[]): ReadonlySet<string> {
   const counts = new Map<string, number>()
   const bare = new Set<string>()
   for (const alias of aliases) {
@@ -60,14 +58,6 @@ export function aliasFamilies(aliases: readonly string[]): ReadonlySet<string> {
     if (n > 1 || bare.has(name)) out.add(name)
   }
   return out
-}
-
-// familyOf names the group an alias belongs to: its family prefix when that
-// family exists, else the alias itself (a name that forms no family is its own
-// group).
-export function familyOf(alias: string, fams: ReadonlySet<string>): string {
-  const s = splitAlias(alias)
-  return s && fams.has(s.family) ? s.family : alias
 }
 
 function families(hosts: readonly HostInfo[]): ReadonlySet<string> {

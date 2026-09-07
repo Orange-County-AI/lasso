@@ -45,7 +45,7 @@ usage:
 
 flags:
   -title <text>   headline (default: your agent's name, resolved from your pane)
-  -pane <id>      your herdr pane id (default: $HERDR_PANE_ID)
+  -pane <id>      your luvus pane id (default: $LUVUS_PANE_ID)
   -host <alias>   host you run on (default: resolved from the pane)
 
 It reaches a locked phone, so use it when you actually need the human: a
@@ -68,7 +68,7 @@ func cliNotify(args []string) {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { printNotifyUsage(os.Stderr) }
 	title := fs.String("title", "", "headline (default: your agent's name)")
-	pane := fs.String("pane", os.Getenv("HERDR_PANE_ID"), "your herdr pane id")
+	pane := fs.String("pane", os.Getenv("LUVUS_PANE_ID"), "your luvus pane id")
 	host := fs.String("host", "", "host you run on")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)

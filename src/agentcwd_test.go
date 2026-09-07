@@ -45,59 +45,38 @@ func TestLastTranscriptCwd(t *testing.T) {
 	}
 }
 
-func TestLeaderCwd(t *testing.T) {
-	// The leader is claude; the second process is one of its Bash-tool shells,
-	// which is exactly the drift we must not follow.
-	res := json.RawMessage(`{"process_info":{"foreground_process_group_id":42,
-		"foreground_processes":[
-			{"pid":99,"name":"bash","cwd":"/home/u/.claude/plugins/cache"},
-			{"pid":42,"name":"claude","cwd":"/home/u/projects/app"}]}}`)
-	if got := leaderCwd(parsePaneProcessInfo(res)); got != "/home/u/projects/app" {
-		t.Errorf("leaderCwd = %q, want the leader's cwd", got)
+func TestClaudeSessionID(t *testing.T) {
+	live := pane{Agent: "claude", AgentSession: "24a7c912-71da"}
+	if id := claudeSessionID(live); id != "24a7c912-71da" {
+		t.Errorf("claudeSessionID(live) = %q, want the id", id)
 	}
 
-	// No leader in the list (its cwd was unreadable) -> no answer.
-	res = json.RawMessage(`{"process_info":{"foreground_process_group_id":42,
-		"foreground_processes":[{"pid":99,"name":"bash","cwd":"/tmp"}]}}`)
-	if got := leaderCwd(parsePaneProcessInfo(res)); got != "" {
-		t.Errorf("leaderCwd without the leader = %q, want \"\"", got)
-	}
-
-	// herdr too old for pane.process_info / no foreground job.
-	if got := leaderCwd(parsePaneProcessInfo(json.RawMessage(`{}`))); got != "" {
-		t.Errorf("leaderCwd of an empty result = %q, want \"\"", got)
-	}
-}
-
-func TestClaudeSessionRef(t *testing.T) {
-	live := pane{Agent: "claude", AgentSession: &agentSession{Agent: "claude", Kind: "id", Value: "24a7c912-71da"}}
-	if id, path := claudeSessionRef(live); id != "24a7c912-71da" || path != "" {
-		t.Errorf("claudeSessionRef(live) = (%q, %q), want the id", id, path)
-	}
-
-	// herdr keeps agent_session around for resume after the agent exits; once
+	// Luvus keeps agent_session around for resume after the agent exits; once
 	// the shell is back, the pane's own cwd is the truth again.
 	exited := live
 	exited.Agent = ""
-	if id, path := claudeSessionRef(exited); id != "" || path != "" {
-		t.Errorf("claudeSessionRef(exited agent) = (%q, %q), want empty", id, path)
+	if id := claudeSessionID(exited); id != "" {
+		t.Errorf("claudeSessionID(exited agent) = %q, want empty", id)
 	}
 
 	// A session id must never be able to escape the projects dir.
 	evil := live
-	evil.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: "../../etc/passwd"}
-	if id, _ := claudeSessionRef(evil); id != "" {
-		t.Errorf("claudeSessionRef with a path-traversing id = %q, want \"\"", id)
+	evil.AgentSession = "../../etc/passwd"
+	if id := claudeSessionID(evil); id != "" {
+		t.Errorf("claudeSessionID with a path-traversing id = %q, want \"\"", id)
 	}
 
+	// The session belongs to whatever agent the pane is running; only claude's
+	// transcripts are parseable, so another harness's session resolves to
+	// nothing.
 	other := live
-	other.AgentSession = &agentSession{Agent: "codex", Kind: "id", Value: "abc"}
-	if id, path := claudeSessionRef(other); id != "" || path != "" {
-		t.Errorf("claudeSessionRef(codex) = (%q, %q), want empty — only claude's format is parsed", id, path)
+	other.Agent = "codex"
+	if id := claudeSessionID(other); id != "" {
+		t.Errorf("claudeSessionID(codex) = %q, want empty — only claude's transcripts are read", id)
 	}
 
-	if id, path := claudeSessionRef(pane{Agent: "claude"}); id != "" || path != "" {
-		t.Errorf("claudeSessionRef without a session = (%q, %q), want empty", id, path)
+	if id := claudeSessionID(pane{Agent: "claude"}); id != "" {
+		t.Errorf("claudeSessionID without a session = %q, want empty", id)
 	}
 }
 
@@ -125,12 +104,11 @@ func jsonStr(s string) string {
 	return string(b)
 }
 
-// agentPane is a pane running claude, as herdr reports it: both cwds sit at the
-// dir claude was launched in, whatever the agent has cd'd to since.
+// agentPane is a pane running claude, as Luvus reports it: the pane cwd sits at
+// the dir claude was launched in, whatever the agent has cd'd to since.
 func agentPane(launchDir, id string) pane {
 	return pane{
-		PaneID: "w1:p1", Cwd: launchDir, ForegroundCwd: launchDir, Agent: "claude",
-		AgentSession: &agentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: id},
+		PaneID: "1", Cwd: launchDir, Agent: "claude", AgentSession: id,
 	}
 }
 
@@ -145,7 +123,7 @@ func TestHarnessCwdFollowsTheAgentNotThePane(t *testing.T) {
 
 	b := &localBackend{}
 	p := agentPane(home, "sess-a")
-	if got := harnessCwd(b, p, home); got != work {
+	if got := harnessCwd(b, p); got != work {
 		t.Errorf("harnessCwd = %q, want the agent's cwd %q", got, work)
 	}
 }
@@ -164,7 +142,7 @@ func TestHarnessCwdScansProjectDirsWhenThePaneCwdIsNotTheLaunchDir(t *testing.T)
 
 	b := &localBackend{}
 	p := agentPane(home, "sess-b")
-	if got := harnessCwd(b, p, ""); got != work {
+	if got := harnessCwd(b, p); got != work {
 		t.Errorf("harnessCwd = %q, want %q found by scanning the project dirs", got, work)
 	}
 }
@@ -183,7 +161,7 @@ func TestHarnessCwdRereadsWhenTheTranscriptGrows(t *testing.T) {
 
 	b := &localBackend{}
 	p := agentPane(home, "sess-c")
-	if got := harnessCwd(b, p, home); got != first {
+	if got := harnessCwd(b, p); got != first {
 		t.Fatalf("harnessCwd = %q, want %q", got, first)
 	}
 
@@ -197,7 +175,7 @@ func TestHarnessCwdRereadsWhenTheTranscriptGrows(t *testing.T) {
 	f.Close()
 
 	expireHarnessCwdCache()
-	if got := harnessCwd(b, p, home); got != second {
+	if got := harnessCwd(b, p); got != second {
 		t.Errorf("harnessCwd after the agent cd'd = %q, want %q", got, second)
 	}
 }
@@ -208,7 +186,7 @@ func TestHarnessCwdIgnoresADirectoryThatIsGone(t *testing.T) {
 	writeTranscript(t, home, home, "sess-d", filepath.Join(home, "deleted-worktree"))
 
 	b := &localBackend{}
-	if got := harnessCwd(b, agentPane(home, "sess-d"), home); got != "" {
+	if got := harnessCwd(b, agentPane(home, "sess-d")); got != "" {
 		t.Errorf("harnessCwd = %q, want \"\" so the viewer falls back to the pane's cwd", got)
 	}
 }
@@ -217,8 +195,8 @@ func TestHarnessCwdOfAPlainShellIsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	b := &localBackend{}
-	p := pane{PaneID: "w1:p2", Cwd: home, ForegroundCwd: home}
-	if got := harnessCwd(b, p, home); got != "" {
+	p := pane{PaneID: "2", Cwd: home}
+	if got := harnessCwd(b, p); got != "" {
 		t.Errorf("harnessCwd of a shell pane = %q, want \"\"", got)
 	}
 }

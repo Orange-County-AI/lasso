@@ -11,7 +11,7 @@ import (
 )
 
 // /api/agent/close — the soft-close behind `lasso closeme` (and the UI's agent
-// close). The caller identifies the agent by pane_id (its own $HERDR_PANE_ID)
+// close). The caller identifies the agent by pane_id (its own $LUVUS_PANE_ID)
 // or agent_id, plus an optional host. Everything here is host-aware: pane and
 // agent ids are only unique per host, so resolution never guesses across hosts
 // — an ambiguous id without a host fails loudly instead of closing the wrong
@@ -21,13 +21,13 @@ import (
 // agentBackendResolver resolves a host name to the Backend the agent
 // resolution paths (this close path, plus the whoami and close_agent MCP
 // tools) drive. A package var so tests can substitute fake hosts without a
-// live herdr or ssh fleet.
+// live luvus or ssh fleet.
 var agentBackendResolver = resolveBackend
 
 // serveAgentClose soft-closes a single agent: it kills the agent process and
 // closes its pane (the same teardown the close_agent MCP tool performs), so a
 // lasso-spawned agent can shut *itself* down with `lasso closeme` — no MCP
-// round-trip and nothing to pass but the $HERDR_PANE_ID the pane already
+// round-trip and nothing to pass but the $LUVUS_PANE_ID the pane already
 // exports. The caller identifies the agent by pane_id or agent_id, with an
 // optional host ("local" or an ssh-config alias) to pin which host's records
 // to resolve against. remove_worktree (git only) also discards the worktree.
@@ -205,13 +205,8 @@ func resolveCloseTarget(ctx context.Context, cs mcpCaller, host, agentID, paneID
 // address, the newest agent record whose root pane corresponds to paneID. Hosts
 // with no alias in the ssh config, and hosts outside the caller's own scope, are
 // skipped (hostscope.go / callerscope.go) — a pane on a machine lasso cannot
-// connect to, or in another trust zone, is not a target it may hand back. The raw id is
-// matched as-is on every host; canonicalization through herdr (raw
-// $HERDR_PANE_ID form → public root_pane form) is done only against the LOCAL
-// herdr — a raw pane id is an artifact of the machine the caller runs on, and
-// "resolving" it through some other host's herdr would name an unrelated pane
-// that happens to share the id (the exact collision this file exists to
-// prevent).
+// connect to, or in another trust zone, is not a target it may hand back.
+// Luvus has one decimal pane-ID form; it must still be scoped by host.
 func paneMatchesAcrossHosts(cs mcpCaller, paneID string) ([]AgentRecord, error) {
 	all, err := listAllAgents()
 	if err != nil {
@@ -222,18 +217,10 @@ func paneMatchesAcrossHosts(cs mcpCaller, paneID string) ([]AgentRecord, error) 
 		byHost[ha.Host] = append(byHost[ha.Host], ha.Agent)
 	}
 	var matches []AgentRecord
-	for host, recs := range byHost {
-		forms := map[string]bool{paneID: true}
-		if isLocalHost(host) {
-			if b, err := agentBackendResolver(host); err == nil {
-				if info, ok := paneGet(b, paneID); ok {
-					forms[info.PaneID] = true
-				}
-			}
-		}
+	for _, recs := range byHost {
 		var match *AgentRecord
 		for i := range recs {
-			if recs[i].RootPane != "" && forms[recs[i].RootPane] {
+			if recs[i].RootPane != "" && recs[i].RootPane == paneID {
 				match = &recs[i] // recs are oldest-first; keep the newest match
 			}
 		}
@@ -284,7 +271,7 @@ var (
 )
 
 // reachablePeerHosts lists the ssh-config hosts a peer lasso could be asked
-// on: probed reachable with a running, protocol-compatible herdr — the same
+// on: probed reachable with a running, protocol-compatible luvus — the same
 // bar hostBackend (and thus remoteDB) requires.
 func reachablePeerHosts(ctx context.Context) []string {
 	var out []string
@@ -336,7 +323,7 @@ func queryPeerAgents(peer, rootPane string) ([]AgentRecord, error) {
 
 // adoptPeerAgent resolves a pane on THIS machine that no local record claims
 // by asking peer lassos for the agent they created here. A candidate must
-// clear three bars: its root pane (canonicalized by the LOCAL herdr, which is
+// clear three bars: its root pane (canonicalized by the LOCAL luvus, which is
 // authoritative for local panes) matches the peer's recorded root_pane; the
 // peer recorded it as a non-local agent (see queryPeerAgents); and its work
 // dir actually exists on this machine. Exactly one surviving candidate is

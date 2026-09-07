@@ -29,8 +29,8 @@ import { qk } from "@/lib/query"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-// usable reports whether a host can be selected: reachable, herdr running, and
-// protocol-compatible with this lasso.
+// usable reports whether a host can be selected: reachable, a luvus server
+// session running, and drivable by this lasso.
 function usable(h: HostInfo): boolean {
   return h.reachable && h.running && h.compatible
 }
@@ -38,23 +38,9 @@ function usable(h: HostInfo): boolean {
 // pending reports whether the backend has no verdict for this host yet — its
 // probe is still in flight, or it ran out of budget. Such a row must render as
 // "we don't know" rather than as a failure, and must never offer a remote
-// action: a host we couldn't reach is not a host to install herdr onto.
+// action: a host we couldn't reach is not a host to install Luvus onto.
 function pending(h: HostInfo): boolean {
   return h.state === "probing" || h.state === "timeout"
-}
-
-// behind reports whether a reachable host runs an older herdr protocol than the
-// local one — the case a remote `herdr update` can fix (an ahead host can't be
-// helped by updating it; you'd update locally instead).
-function behind(h: HostInfo, localProtocol: number): boolean {
-  return (
-    h.reachable &&
-    h.running &&
-    !h.compatible &&
-    h.protocol > 0 &&
-    localProtocol > 0 &&
-    h.protocol < localProtocol
-  )
 }
 
 // formatBehind renders how far the running lasso is behind main for the update
@@ -65,17 +51,17 @@ function formatBehind(n: number | undefined): string {
   return `${n} commit${n === 1 ? "" : "s"}`
 }
 
-// provisionable reports whether a reachable host has no herdr server running
+// provisionable reports whether a reachable host has no Luvus server running
 // (missing entirely, or installed but stopped) — the case a fresh
 // install-and-supervise (via systemd --user) can fix. Explicitly excludes
 // pending rows: a probe that timed out used to be misreported as "reachable,
-// herdr not installed", which put a "set up" button on a machine lasso had
+// Luvus not installed", which put a "set up" button on a machine lasso had
 // never actually reached.
 function provisionable(h: HostInfo): boolean {
   return !pending(h) && h.reachable && !h.running
 }
 
-// versionOlder reports whether herdr version a is strictly older than b
+// versionOlder reports whether Luvus version a is strictly older than b
 // (dotted-numeric compare, e.g. "0.6.7" < "0.6.8"). Returns false when either is
 // missing or non-numeric, so an unparseable version never spuriously offers an
 // upgrade.
@@ -93,20 +79,20 @@ function versionOlder(a: string | undefined, b: string | undefined): boolean {
   return false
 }
 
-// upgradable reports whether a selectable (compatible) host runs an older herdr
-// than this box — a `herdr update` would bring it up to date even though the
-// protocol already matches. localVersion is this machine's herdr version, the
+// upgradable reports whether a selectable (compatible) host runs an older luvus
+// than this box — a `luvus update` would bring it up to date even though this
+// lasso can already drive it. localVersion is this machine's luvus version, the
 // reference the fleet tracks.
 function upgradable(h: HostInfo, localVersion: string | undefined): boolean {
   return usable(h) && versionOlder(h.version, localVersion)
 }
 
-// HostSwitcher lets the app drive a herdr daemon on any compatible ssh-config
+// HostSwitcher lets the app drive a luvus server on any compatible ssh-config
 // host as if it were local. It names the active host — the local machine's
 // hostname (laptop icon) or the remote alias (server icon, primary-tinted as a
 // "you are elsewhere" cue). Incompatible/unreachable hosts are listed greyed-out
 // with why. The "nav" variant sits inline in the left tab strip (left of the
-// Herdr tab, menu opening downward); "floating" keeps the old pinned-pill look.
+// Luvus tab, menu opening downward); "floating" keeps the old pinned-pill look.
 export function HostSwitcher({
   variant = "floating",
   className,
@@ -217,13 +203,22 @@ export function HostSwitcher({
   )
 
   // Run a remote action on a host then re-probe so its row reflects the result.
-  // "update" runs `herdr update` (host is behind; stops its old server/panes);
-  // "provision" installs herdr + supervises it with systemd --user (host had none
-  // running). Both are slow, but they run independently per host — several can be
-  // in flight at once (the button only disables for the host already running).
+  // "update" runs `luvus update` (its luvus is older, or too old for this lasso
+  // to drive; the update stops its old server and its panes); "provision"
+  // installs luvus + supervises it with systemd --user (host had no server
+  // session). Both are slow, but they run independently per host — several can
+  // be in flight at once (the button only disables for the host already
+  // running).
   const runHostAction = React.useCallback(
     async (alias: string, kind: "update" | "provision") => {
       if (busyHosts.has(alias)) return
+      if (
+        kind === "update" &&
+        !window.confirm(
+          `Update Luvus on ${alias}? Installing an update restarts its server and ends the running pane processes.`
+        )
+      )
+        return
       setBusyHosts((prev) => new Set(prev).add(alias))
       // Clear any stale failure for this host as the retry starts.
       setActionErrors((prev) => {
@@ -245,13 +240,13 @@ export function HostSwitcher({
         if (res.ok) {
           toast.success(
             kind === "update"
-              ? `Updated herdr on ${alias}`
-              : `Set up herdr on ${alias}`
+              ? `Updated Luvus on ${alias}`
+              : `Set up Luvus on ${alias}`
           )
           void load(true) // re-probe; the host should now be selectable
         } else {
           if (res.output)
-            console.error(`herdr ${kind} on ${alias}:\n${res.output}`)
+            console.error(`luvus ${kind} on ${alias}:\n${res.output}`)
           fail(res.error || "see console")
         }
       } catch (e) {
@@ -323,7 +318,7 @@ export function HostSwitcher({
     </div>
   )
 
-  // The local session row (direct herdr socket, no ssh). `label` is the machine
+  // The local session row (direct Luvus socket, no ssh). `label` is the machine
   // hostname when shown standalone, or the local username when nested under a
   // host header alongside loopback aliases.
   const localRow = (indent = false, label = localLabel) => (
@@ -347,15 +342,17 @@ export function HostSwitcher({
   // update/set-up action. `label` overrides the alias with the account name when
   // the row is nested under a shared-host header; `indent` insets it there.
   const remoteRow = (h: HostInfo, indent = false, label?: string) => {
-    const localProto = data?.local?.protocol ?? 0
     const localVer = data?.local?.version
     const ok = usable(h)
     const waiting = pending(h)
-    // A compatible host on an older herdr can still be updated in place; an
-    // incompatible host that's behind must be updated to be usable. Neither is
-    // offered while the host's probe has no verdict.
+    // A compatible host on an older luvus can still be updated in place; a host
+    // whose luvus this lasso cannot drive must be updated to become usable —
+    // every luvus speaks UHP major 1, so "incompatible while running" is a
+    // version problem, not a protocol-number gap. Neither action is offered
+    // while the host's probe has no verdict.
     const canUpgrade = upgradable(h, localVer)
-    const canUpdate = !waiting && (canUpgrade || (!ok && behind(h, localProto)))
+    const canUpdate =
+      !waiting && (canUpgrade || (h.reachable && h.running && !h.compatible))
     const canProvision = !ok && !canUpdate && provisionable(h)
     const action = canUpdate
       ? ("update" as const)
@@ -371,9 +368,11 @@ export function HostSwitcher({
         title={
           action === "update"
             ? canUpgrade
-              ? `Update herdr on ${h.alias} (${h.version} → ${localVer}; protocol unchanged)`
-              : `Run \`herdr update\` on ${h.alias} (protocol ${h.protocol} → ${localProto}; stops its running sessions)`
-            : `Install herdr on ${h.alias} and supervise it with systemd`
+              ? `Update luvus on ${h.alias} (${h.version} → ${localVer})`
+              : `Run \`luvus update\` on ${h.alias} — this lasso can't drive its luvus${
+                  h.err ? ` (${h.err})` : ""
+                }; updating stops its running sessions`
+            : `Install luvus on ${h.alias} and supervise it with systemd`
         }
         disabled={busy}
         onClick={(e) => {
@@ -580,7 +579,7 @@ export function HostSwitcher({
           )}
 
           {/* lasso itself: its version, and (on the supervised prod install) a
-              self-update — the local-side counterpart to a remote `herdr update`
+              self-update — the local-side counterpart to a remote `luvus update`
               when a host needs a newer lasso. */}
           <DropdownMenuSeparator />
           <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">

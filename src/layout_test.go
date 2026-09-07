@@ -4,7 +4,7 @@ import "testing"
 
 // layoutSignature must change when workspaces are reordered (their `number`
 // flips), because the pane list groups/sorts by that order — that's what makes
-// the sidebar re-render to match herdr after a reorder. It must NOT change on a
+// the sidebar re-render to match luvus after a reorder. It must NOT change on a
 // mere focus change, so a focus move doesn't trigger a full pane-list reload
 // (the focused pane is tracked separately).
 func TestLayoutSignatureReorder(t *testing.T) {
@@ -49,7 +49,7 @@ func TestLayoutSignatureMembership(t *testing.T) {
 	if layoutSignature(one, wss) == layoutSignature(two, wss) {
 		t.Fatal("signature unchanged after a pane was added; the pane list would miss the new pane")
 	}
-	// pane ordering from herdr is not guaranteed stable — the signature must not
+	// pane ordering from luvus is not guaranteed stable — the signature must not
 	// depend on the input slice order (it sorts internally).
 	twoRev := []pane{two[1], two[0]}
 	if layoutSignature(two, wss) != layoutSignature(twoRev, wss) {

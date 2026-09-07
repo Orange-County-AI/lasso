@@ -72,7 +72,7 @@ const hasChangesUnder = (changes: Map<string, FileChange>, dir: string) => {
   return false
 }
 
-// What the tab remembers for one herdr pane: where it was browsing, on which
+// What the tab remembers for one Luvus pane: where it was browsing, on which
 // host, whether it was still following that pane's cwd, and which directories
 // were open. The parent stashes it per pane and hands it back on remount, so
 // selecting an agent again returns you to its tree rather than the last one's.
@@ -84,7 +84,7 @@ export type FilesTabState = {
   expanded: string[]
 }
 
-// The Files tab: an inline, lazily-loaded directory tree rooted at herdr's
+// The Files tab: an inline, lazily-loaded directory tree rooted at Luvus's
 // active pane (by default). Clicking a directory either re-roots the tree into
 // it or expands it in place, per the persisted files_click_navigates pref
 // (toggled from the header); clicking a file opens it in the full-column viewer
@@ -106,10 +106,9 @@ export function FilesTab({
   // Absolute-path → git change status, used to hint changed rows. A directory
   // is hinted when any changed file lives beneath it.
   changes: Map<string, FileChange>
-  // The host the active pane's cwd lives on (the tree's follow target). The
-  // focused pane may be an ssh window onto another host, in which case this
-  // differs from the active host — every listing and mutation below addresses
-  // it, or we'd browse one machine and write another.
+  // The host the active pane's cwd lives on (the tree's follow target), as Luvus
+  // reports that pane. Every listing and mutation below addresses it explicitly,
+  // or we'd browse one machine and write another.
   host: string | null
   // This pane's saved state, or null for a pane not browsed yet. Read once, at
   // mount — the parent keys the tab by pane, so a switch remounts it.
@@ -123,7 +122,7 @@ export function FilesTab({
   const clickNavigates = useUIState().files_click_navigates
   // Seeded from this pane's saved state; falling back to the active cwd (rather
   // than null) so a pane visited for the first time starts loading its own
-  // directory immediately instead of painting "waiting for herdr…" for a frame.
+  // directory immediately instead of painting "waiting for Luvus…" for a frame.
   const [curPath, setCurPath] = React.useState<string | null>(
     initial?.path ?? activeCwd
   )
@@ -132,9 +131,8 @@ export function FilesTab({
   // user steers (types a path, navigates into a dir, goes up) — every request
   // the tab makes is addressed to it.
   // Seeded like curPath, and from the pane's cwd host rather than null, so the
-  // first listing is already addressed to the right machine: a pane that is an
-  // ssh window onto another host would otherwise fetch once against the active
-  // host before the follow effect below corrected it.
+  // first listing is already addressed to the right machine instead of fetching
+  // once against this tab's host before the follow effect below corrects it.
   const [curHost, setCurHost] = React.useState<string | null>(
     initial?.host ?? host
   )
@@ -191,8 +189,8 @@ export function FilesTab({
 
   // Follow the active pane's cwd (and the host it lives on) while "follow" is
   // on. The host tracks alongside the path for the same reason: the tree must
-  // browse the machine the focused pane's cwd actually sits on, which can be
-  // another host than the active one when the pane is an ssh window.
+  // browse the machine Luvus says that pane's cwd sits on, not whichever host
+  // this tab happens to be attached to.
   React.useEffect(() => {
     if (!follow) return
     if (activeCwd && activeCwd !== curPath) setCurPath(activeCwd)
@@ -587,7 +585,7 @@ export function FilesTab({
         }}
       >
         {!curPath ? (
-          <div className="empty">waiting for herdr…</div>
+          <div className="empty">waiting for Luvus…</div>
         ) : !rootPath ? (
           <div className="empty">loading…</div>
         ) : (

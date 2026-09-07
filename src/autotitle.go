@@ -17,7 +17,7 @@ import (
 )
 
 // Auto-titling: an agent's title is the first line of its prompt (see
-// promptTitle), which is what the branch, the work dir, the herdr workspace
+// promptTitle), which is what the branch, the work dir, the luvus workspace
 // label and therefore the agents sidebar all get named after. That first line
 // is written for the agent, not for a sidebar — a pasted paragraph gives every
 // entry the same opening words, and anything long is simply clipped mid-word.
@@ -34,7 +34,7 @@ import (
 //     so making it follow the agent to a remote box would mean shipping the
 //     prompt over SSH and requiring a logged-in CLI on every host in the fleet
 //     for a cosmetic rename. Only the resulting rename travels to the agent's
-//     host, over the herdr RPC that host is already driven by.
+//     host, over the luvus RPC that host is already driven by.
 //
 //   - Only the DISPLAY name changes. The branch, work dir and prompt file were
 //     all named from the original title before the CLI could answer, and
@@ -98,8 +98,8 @@ func serveAutoTitle(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // autoTitleAgent generates a title for rec from its prompt and applies it to
-// the agent's herdr workspace (what the agents sidebar shows) and to the
-// persisted record (the address list_agents / message_agent surface). Runs in
+// the agent's workspace (what the agents sidebar shows) and to the persisted
+// record (the address list_agents / message_agent surface). Runs in
 // its own goroutine off createAgent, alongside the boot: nothing downstream
 // waits on the title, and the CLI takes seconds.
 //
@@ -121,9 +121,13 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 	if title == rec.Title {
 		return
 	}
-	if _, err := b.HerdrCall("workspace.rename", map[string]any{
+	// workspace.rename caps its name at workspaceNameMaxLen and refuses a
+	// longer one outright, so what the runtime is asked for is the trimmed
+	// form; the record keeps the full generated title, which is what the
+	// sidebar and message_agent address it by.
+	if _, err := b.LuvusCall("workspace.rename", map[string]any{
 		"workspace_id": rec.WorkspaceID,
-		"label":        title,
+		"name":         workspaceName(title),
 	}); err != nil {
 		log.Printf("agent %s on %s: auto-title rename failed: %v", rec.ID, host, err)
 		notifyUI(notice{
@@ -133,11 +137,10 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 		})
 		return
 	}
-	// Only the workspace. The herdr TAB is deliberately left alone: it's the
-	// user's own organization of the terminal, shared with whatever else they
-	// put in it, and retitling it puts a generated sentence across the top of
-	// the screen — a rename they never asked for in a place that isn't the
-	// agent's.
+	// Only the workspace. The TAB is deliberately left alone: it's the user's
+	// own organization of the terminal, shared with whatever else they put in
+	// it, and retitling it puts a generated sentence across the top of the
+	// screen — a rename they never asked for in a place that isn't the agent's.
 	if err := updateAgentTitle(rec.ID, host, title); err != nil {
 		log.Printf("agent %s on %s: auto-title record update failed: %v", rec.ID, host, err)
 	}

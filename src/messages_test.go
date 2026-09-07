@@ -26,9 +26,9 @@ func fixedPanes(byHost map[string][]pane) paneLookup {
 
 func msgRecords() []hostAgent {
 	return []hostAgent{
-		{Host: "local", Agent: AgentRecord{ID: "a1", Title: "clem", RootPane: "w1-1"}},
+		{Host: "local", Agent: AgentRecord{ID: "a1", Title: "clem", RootPane: "11"}},
 		{Host: "local", Agent: AgentRecord{ID: "a2", Title: "stub", RootPane: "w2-1"}},
-		{Host: "gigachad", Agent: AgentRecord{ID: "b1", Title: "clem", RootPane: "w9-1"}},
+		{Host: "gigachad", Agent: AgentRecord{ID: "b1", Title: "clem", RootPane: "91"}},
 		{Host: "local", Agent: AgentRecord{ID: "a3", Title: "dead", RootPane: "w3-1"}},
 		{Host: "local", Agent: AgentRecord{ID: "a4", Title: "fix login flow", RootPane: "w4-1"}},
 	}
@@ -37,13 +37,13 @@ func msgRecords() []hostAgent {
 func msgPanes() map[string][]pane {
 	return map[string][]pane{
 		"local": {
-			{PaneID: "w1-1", Agent: "claude", AgentStatus: "idle"},
+			{PaneID: "11", Agent: "claude", AgentStatus: "idle"},
 			{PaneID: "w2-1", Agent: "codex", AgentStatus: "working"},
 			{PaneID: "w3-1"}, // agent exited: pane is a bare shell
 			{PaneID: "w4-1", Agent: "claude", AgentStatus: "idle"},
 		},
 		"gigachad": {
-			{PaneID: "w9-1", Agent: "claude", AgentStatus: "idle"},
+			{PaneID: "91", Agent: "claude", AgentStatus: "idle"},
 		},
 	}
 }
@@ -119,27 +119,6 @@ func TestResolveRecipientDeadAndUnknown(t *testing.T) {
 	}
 }
 
-func TestResolveRecipientRecoversUnidentifiedAgent(t *testing.T) {
-	// norm's shape: herdr never identified the agent in the pane, so it reports no
-	// `agent` and a status of "unknown" — but the harness reported its session and
-	// the title still shows claude's idle chrome. Such a recipient is live and
-	// addressable; refusing it as "none is running" would drop real messages.
-	records := []hostAgent{{Host: "norm", Agent: AgentRecord{ID: "n1", Title: "wiki check", RootPane: "w3:p1"}}}
-	panes := fixedPanes(map[string][]pane{"norm": {{
-		PaneID:        "w3:p1",
-		AgentStatus:   "unknown",
-		TerminalTitle: "✳ Check Norm outline wiki connection",
-		AgentSession:  &agentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "98bbd260"},
-	}}})
-	rec, status, err := resolveRecipient("wiki check", records, panes)
-	if err != nil {
-		t.Fatalf("resolveRecipient: %v", err)
-	}
-	if rec.ID != "n1" || status != "idle" {
-		t.Errorf("recipient = %q/%q, want n1/idle", rec.ID, status)
-	}
-}
-
 func TestMessageEnvelope(t *testing.T) {
 	m := AgentMessage{ID: "m_x1", SenderLabel: "clem", SenderAddr: "a1@titan", Body: "deploy is green"}
 	e := messageEnvelope(m)
@@ -181,7 +160,7 @@ func TestMessageQueueRoundTrip(t *testing.T) {
 
 func TestUpdateAgentTitleByWorkspace(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "old title", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "old title", WorkspaceID: "w1", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}
@@ -201,37 +180,25 @@ func TestUpdateAgentTitleByWorkspace(t *testing.T) {
 	}
 }
 
-// msgPaneBackend fakes the herdr surface the dispatcher drives: pane.list
-// (status), pane.send_text (capture + composer emulation), and pane.read
-// (composer state for paneSubmit's submit confirmation). The composer fills
-// when text is pasted and clears when Enter arrives, so paneSubmit's
+// msgPaneBackend fakes the runtime surface the dispatcher drives: the pane
+// enumeration (status), pane.send_input (capture + composer emulation), and
+// pane.read (composer state for paneSubmit's submit confirmation). The composer
+// fills when text is pasted and clears when Enter arrives, so paneSubmit's
 // paste-confirm/Enter loop completes quickly.
 type msgPaneBackend struct {
 	*memBackend
-	paneID string
-	status string
-	agent  string
-	// title/session mirror the pane fields a host whose herdr cannot identify the
-	// agent still reports: no `agent`, but a harness-reported session and a live
-	// terminal title.
-	title   string
-	session string
-	sent    []string // non-Enter text received by pane.send_text
+	paneID  string
+	status  string
+	agent   string
+	session string   // the harness session the runtime reports for the pane
+	sent    []string // non-Enter text received by pane.send_input
 	drafted bool     // composer currently holds an unsubmitted draft
 }
 
-func (b *msgPaneBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *msgPaneBackend) LuvusCall(method string, params any) (json.RawMessage, error) {
 	p, _ := params.(map[string]any)
 	switch method {
-	case "pane.list":
-		session := "null"
-		if b.session != "" {
-			session = fmt.Sprintf(`{"source":"herdr:%s","agent":%q,"kind":"id","value":"s1"}`, b.session, b.session)
-		}
-		return json.RawMessage(fmt.Sprintf(
-			`{"panes":[{"pane_id":%q,"agent":%q,"agent_status":%q,"terminal_title":%q,"agent_session":%s}]}`,
-			b.paneID, b.agent, b.status, b.title, session)), nil
-	case "pane.send_text":
+	case "pane.send_input":
 		text, _ := p["text"].(string)
 		if text == "\r" {
 			b.drafted = false
@@ -239,26 +206,29 @@ func (b *msgPaneBackend) HerdrCall(method string, params any) (json.RawMessage, 
 			b.sent = append(b.sent, text)
 			b.drafted = true
 		}
-		return json.RawMessage(`{}`), nil
+		return json.RawMessage(`{"type":"ok"}`), nil
 	case "pane.read":
 		box := "❯"
 		if b.drafted {
 			box = "❯ draft"
 		}
 		text := "──────────────\n" + box + "\n──────────────"
-		res, _ := json.Marshal(map[string]any{"read": map[string]any{"text": text}})
+		res, _ := json.Marshal(map[string]any{"type": "pane_read", "text": text})
 		return res, nil
 	}
-	return json.RawMessage(`{}`), nil
+	return uhpFixtureReply([]pane{{
+		PaneID: b.paneID, Agent: b.agent, AgentStatus: b.status, AgentSession: b.session,
+		WorkspaceID: "w1", TabID: "w1-t1", Focused: true,
+	}}, method, params)
 }
 
 func TestDispatchDeliversOnIdleOnly(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "claude", status: "working"}
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "11", agent: "claude", status: "working"}
 	resolver := func(string) (Backend, error) { return b, nil }
 
 	for i, body := range []string{"first", "second"} {
@@ -300,11 +270,11 @@ func TestDispatchDeliversOnIdleOnly(t *testing.T) {
 
 func TestDispatchHoldsDraftUntilComposerClears(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "claude", status: "idle", drafted: true}
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "11", agent: "claude", status: "idle", drafted: true}
 	m := AgentMessage{ID: "m_1", Host: "local", AgentID: "a1", SenderLabel: "u", Body: "do not clobber", CreatedAt: time.Now()}
 	if err := enqueueAgentMessage(m); err != nil {
 		t.Fatal(err)
@@ -330,12 +300,12 @@ func TestDispatchHoldsDraftUntilComposerClears(t *testing.T) {
 }
 func TestDispatchFailsMessagesForDeadAgent(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}
 	// The pane is now a bare shell — the agent exited.
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "", status: ""}
+	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "11", agent: "", status: ""}
 	m := AgentMessage{ID: "m_1", Host: "local", AgentID: "a1", SenderLabel: "u", Body: "hi", CreatedAt: time.Now()}
 	if err := enqueueAgentMessage(m); err != nil {
 		t.Fatal(err)
@@ -356,42 +326,9 @@ func TestDispatchFailsMessagesForDeadAgent(t *testing.T) {
 	}
 }
 
-func TestDispatchDeliversToUnidentifiedAgent(t *testing.T) {
-	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
-	if err := appendAgent("local", rec); err != nil {
-		t.Fatal(err)
-	}
-	// herdr cannot identify the agent here: no `agent`, status "unknown". Its own
-	// answer reads as a bare shell, which would fail the message outright.
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1",
-		agent: "", status: "unknown", session: "claude", title: "⠐ Working on it"}
-	m := AgentMessage{ID: "m_1", Host: "local", AgentID: "a1", SenderLabel: "u", Body: "hi", CreatedAt: time.Now()}
-	if err := enqueueAgentMessage(m); err != nil {
-		t.Fatal(err)
-	}
-	// Working: held, not failed.
-	dispatchPendingMessages(func(string) (Backend, error) { return b, nil })
-	if len(b.sent) != 0 {
-		t.Fatalf("delivered mid-turn: %q", b.sent)
-	}
-	if pending, _ := listPendingMessages(); len(pending) != 1 {
-		t.Fatalf("pending while working = %d, want 1 (held, not failed)", len(pending))
-	}
-	// Idle: delivered.
-	b.title = "✳ Working on it"
-	dispatchPendingMessages(func(string) (Backend, error) { return b, nil })
-	if len(b.sent) != 1 {
-		t.Fatalf("sent %d, want 1 once the title reads idle: %q", len(b.sent), b.sent)
-	}
-	if pending, _ := listPendingMessages(); len(pending) != 0 {
-		t.Fatalf("pending after delivery = %d, want 0", len(pending))
-	}
-}
-
 func TestDispatchLeavesMessagesOnUnreachableHost(t *testing.T) {
 	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	rec := AgentRecord{ID: "a1", Title: "clem", WorkspaceID: "w1", RootPane: "11", CreatedAt: time.Now()}
 	if err := appendAgent("local", rec); err != nil {
 		t.Fatal(err)
 	}

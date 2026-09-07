@@ -1,5 +1,5 @@
 // CodeMirror 6 wiring for the file viewer: a language resolver and a theme that
-// both track the live herdr palette (the --h-* CSS variables that lib/theme.ts
+// both track the live Luvus palette (the --h-* CSS variables that lib/theme.ts
 // rewrites at runtime). Kept out of FileViewer.tsx so the component stays lean.
 import { cpp } from "@codemirror/lang-cpp"
 import { css } from "@codemirror/lang-css"
@@ -181,7 +181,7 @@ const baseTheme = EditorView.theme(
     // band, so on light themes a faint accent wash over a light surface was nearly
     // invisible (and earlier attempts using color-mix() inside ::selection risk
     // failing to parse, leaving the band fully transparent). Recoloring the text
-    // too makes the highlight unmistakable and legible in every herdr theme, since
+    // too makes the highlight unmistakable and legible in every Luvus theme, since
     // accent vs background is the palette's strongest pairing by construction.
     // Plain var()s only — ::selection is finicky about anything fancier.
     "&.cm-focused .cm-line::selection, &.cm-focused .cm-line ::selection, .cm-line::selection, .cm-line ::selection, .cm-content ::selection":

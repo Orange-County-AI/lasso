@@ -23,13 +23,13 @@ export interface ActiveState {
   // Bumps whenever the persisted UI prefs change (any tab saving /api/ui-state)
   // so every open tab refetches and converges.
   ui_state_rev?: number
-  // The host `cwd` lives on — normally the active host, but the focused pane
-  // may be an ssh window onto another host's herdr, in which case this is that
-  // host and file/diff requests must address it explicitly.
+  // The host the focused pane's `cwd` lives on, as Luvus reports the pane —
+  // normally this tab's host. File and diff requests address it explicitly so a
+  // save can never land on a machine the sidebar isn't showing.
   cwd_host?: string
 }
 
-// One ssh-config host as a herdr target. Selectable in the footer switcher only
+// One ssh-config host as a Luvus target. Selectable in the footer switcher only
 // when reachable && running && compatible; otherwise greyed out with `err`.
 // A host row whose probe hasn't produced a verdict. Absent `state` means the
 // probe completed and reachable/running/compatible are authoritative;
@@ -46,10 +46,16 @@ export interface HostInfo {
   hostname: string
   user: string
   reachable: boolean
+  // Whether a luvus server session is up on the host.
   running: boolean
+  // The remote luvus release ("0.13.4"), the UHP protocol label it reports
+  // ("luvus-uhp/1.0", empty when unknown), and its UHP endpoint address.
   version: string
-  protocol: number
+  protocol: string
   socket: string
+  // Capability validation passed: protocol luvus-uhp major 1, with every UHP
+  // method lasso needs present. `err` carries the human reason when it didn't
+  // ("protocol luvus-uhp/2.0 ≠ luvus-uhp/1.x", "missing UHP methods: …").
   compatible: boolean
   err?: string
   state?: HostState
@@ -59,7 +65,7 @@ export interface HostInfo {
 
 export interface HostsPayload {
   active: string
-  local: { version: string; protocol: number; hostname: string; user: string }
+  local: { version: string; protocol: string; hostname: string; user: string }
   hosts: HostInfo[]
   // True while at least one host is still being probed — the cue to poll again
   // shortly, since the list is a partial answer that will fill in.
@@ -136,8 +142,8 @@ export interface Workspace {
   focused: boolean
 }
 
-// One herdr pane on a specific host, enriched with workspace/tab labels and
-// whether herdr detects an agent in it — the row shape of /api/all-panes and
+// One Luvus pane on a specific host, enriched with workspace/tab labels and
+// whether Luvus detects an agent in it — the row shape of /api/all-panes and
 // /api/agent-history. `host` is "local" or an ssh-config alias and is the key
 // for focusing the pane (switching the active host first when it isn't already
 // active).
@@ -167,16 +173,6 @@ export interface HostPane {
   // live) so the switcher renders it distinctly and reopens rather than focuses.
   agent_id?: string
   closed?: boolean
-  // Set when this pane is a herdr-mirror stream of another machine's pane (the
-  // plugin turns each mirrored remote workspace into a real LOCAL workspace, so
-  // `host` still says "local"). mirror_host is the herdr-mirror host key,
-  // mirror_label the workspace's label as it reads over there — the mirror's
-  // sidebar label minus its "<host>: " prefix — and mirror_workspace /
-  // mirror_pane the remote herdr's own ids. See src/mirror.go.
-  mirror_host?: string
-  mirror_label?: string
-  mirror_workspace?: string
-  mirror_pane?: string
 }
 
 export interface PanesPayload {
@@ -193,7 +189,7 @@ export interface PanesPayload {
 export interface UIState {
   sidebar_collapsed: boolean
   // The sidebar's open width (% of the panel group). Synced because the
-  // sidebar's footprint sets the shared herdr pty's width. 0 = never set.
+  // sidebar's footprint sets the shared Luvus pty's width. 0 = never set.
   sidebar_pct: number
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
@@ -261,17 +257,17 @@ export interface FileDiff {
   truncated: boolean
 }
 
-// Protocol-compatibility check for the Settings tab: the herdr socket protocol
-// this lasso build targets vs. the protocol the installed herdr daemon reports
-// over its socket. `err` is set (and herdr_protocol is 0) when the daemon can't
-// be reached, so the tab shows "herdr unreachable" instead of a false mismatch.
+// Protocol-compatibility check for the Settings tab: the UHP major this lasso
+// build targets vs. the one the installed luvus server reports over its socket.
+// `err` is set (and luvus_protocol is 0) when the server can't be reached, so
+// the tab shows "luvus unreachable" instead of a false mismatch.
 export interface VersionInfo {
   lasso_protocol: number
   // This lasso build's own version (git revision from the Go VCS stamp, or
   // "dev"). Shown in the host switcher so a stale install is visible.
   lasso_version: string
-  herdr_protocol: number
-  herdr_version?: string
+  luvus_protocol: number
+  luvus_version?: string
   compatible: boolean
   // Whether this install can self-update (a systemd-supervised git checkout).
   // False for dev/worktree runs, where the "Update lasso" action is hidden.
@@ -289,34 +285,32 @@ export interface VersionInfo {
   err?: string
 }
 
-// One selectable built-in theme (the server's canonical list, in display
-// order: dark schemes first, then light variants).
-export interface ThemeOption {
+export interface ThemePayload {
+  // The ACTIVE Luvus theme, which lasso only ever reads: its id, its display
+  // name, and whether Luvus calls the palette dark or light. `luvus theme use
+  // <id>` (or Luvus's own Settings) is the only way to change it — lasso never
+  // writes a theme into Luvus's config.
   name: string
   label: string
-  light: boolean
-}
-
-export interface ThemePayload {
-  name: string
+  appearance: "dark" | "light" | "terminal"
+  // The palette actually in force: `name`, or the last good one when Luvus
+  // couldn't be reached on this tick.
   resolved: string
+  // The active theme isn't one of Luvus's built-ins (an installed or virtual
+  // theme from its themes directory).
   customized: boolean
   css: string
   // xterm.js ITheme — shape is opaque to us; we hand it straight to the iframe.
   xterm: Record<string, unknown>
-  themes: ThemeOption[]
-  // True when lasso was launched with a -theme override, so writing herdr's
-  // config restyles herdr but this lasso instance won't follow.
-  forced: boolean
   // Whether lasso mirrors the theme into agent CLIs' theme files (opencode,
   // Claude Code, omp) — the "Sync agent themes" toggle.
   sync_agent_themes: boolean
-  // Hosts ("local" or ssh aliases) lasso writes no theme to at all — neither
-  // herdr's config.toml nor any agent theme file. Everything else syncs.
+  // Hosts ("local" or ssh aliases) lasso writes no theme to at all — none of
+  // their agents' theme files. Everything else syncs.
   theme_sync_off: string[]
 }
 
-// httpError builds a concise Error from a non-OK response. lasso/herdr return
+// httpError builds a concise Error from a non-OK response. lasso/Luvus return
 // short text or JSON errors, but a proxy in front of the app (e.g. the Cloudflare
 // tunnel exposing lasso.knowsuchagency.ai) answers with a full HTML error page
 // when the origin is down or briefly unreachable — during a host switch, a
@@ -538,24 +532,23 @@ function withHost(url: string, host?: string): string {
 // The host attach currently in flight (if any) — see api.attachHost.
 let hostAttach: {
   host: string
-  promise: Promise<{ active: string; version: string; protocol: number }>
+  promise: Promise<{ active: string; version: string; protocol: string }>
 } | null = null
 
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
+  // The ACTIVE Luvus theme. Read-only by design: lasso NEVER writes a theme
+  // into Luvus — `luvus theme use <id>` is the only way to change it, and lasso
+  // follows via the theme_rev SSE bump.
   theme: () => getJSON<ThemePayload>("/api/theme"),
-  // Writes [theme].name in herdr's config.toml (the shared source of truth) —
-  // herdr reloads it and lasso follows via the theme_rev SSE bump.
-  setTheme: (name: string) =>
-    postJSON<{ ok: boolean; name: string }>("/api/theme-set", { name }),
   // Flips the server-level "sync agent themes" toggle (no theme change).
   setSyncAgentThemes: (enabled: boolean) =>
     postJSON<{ ok: boolean; sync_agent_themes: boolean }>("/api/theme-set", {
       sync_agent_themes: enabled,
     }),
   // Switches every theme write lasso makes to ONE host on or off ("local" or an
-  // ssh alias): herdr's config.toml there plus its agent theme files. Turning it
-  // back on pushes the current theme to that host right away when it's reachable.
+  // ssh alias): the agent theme files there. Turning it back on pushes the
+  // current theme to that host right away when it's reachable.
   setHostThemeSync: (host: string, enabled: boolean) =>
     postJSON<{ ok: boolean; theme_sync_off: string[] }>("/api/theme-set", {
       theme_sync_host: host,
@@ -593,14 +586,14 @@ export const api = {
       {}
     ),
 
-  // The ssh-config hosts probed for a compatible herdr server. ?refresh=1 skips
+  // The ssh-config hosts probed for a compatible luvus server. ?refresh=1 skips
   // the server-side cache (the footer's manual refresh).
   hosts: (refresh = false) =>
     getJSON<HostsPayload>(`/api/hosts${refresh ? "?refresh=1" : ""}`),
 
   // Attach THIS tab to a host ("local" or an alias): the server resolves and
   // pools its connection and makes sure its terminals are spawned, then reports
-  // the herdr version/protocol to expect. It mutates nothing shared — the tab
+  // the luvus version/UHP protocol to expect. It mutates nothing shared — the tab
   // records its own choice (setTabHost) and sends it on every later request —
   // so a second tab on another machine is unaffected.
   //
@@ -613,7 +606,7 @@ export const api = {
     if (hostAttach?.host === host) return hostAttach.promise
     const prev = hostAttach?.promise.catch(() => {}) ?? Promise.resolve()
     const promise = prev.then(() =>
-      postJSON<{ active: string; version: string; protocol: number }>(
+      postJSON<{ active: string; version: string; protocol: string }>(
         "/api/host",
         { host }
       )
@@ -627,9 +620,8 @@ export const api = {
     return promise
   },
 
-  // Run `herdr update` on a remote host that's behind this lasso's protocol,
-  // auto-answering its interactive prompts (stop the old server = yes, which
-  // exits that host's pane processes; decline the star prompt = no). Slow — it
+  // Run `luvus update` on a remote host whose luvus this lasso can't drive (or
+  // is simply older), auto-answering its interactive prompts. Slow — it
   // downloads a release binary on the far side — and returns the captured output.
   updateHost: (host: string) =>
     postJSON<{ ok: boolean; output: string; error?: string }>(
@@ -637,10 +629,10 @@ export const api = {
       { host }
     ),
 
-  // Install herdr on a remote host (if missing) and bring it up supervised by
-  // systemd --user (also installing herdr's agent-state integrations). For hosts where herdr
-  // is missing or its server isn't running. Slow — downloads binaries — and
-  // returns a provisioning log.
+  // Install luvus on a remote host (if missing) and bring it up supervised by
+  // systemd --user (also installing its agent integrations). For hosts where
+  // luvus is missing or its server session isn't running. Slow — downloads
+  // binaries — and returns a provisioning log.
   provisionHost: (host: string) =>
     postJSON<{ ok: boolean; output: string; error?: string }>(
       "/api/host-provision",
@@ -658,7 +650,7 @@ export const api = {
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
 
-  // Every herdr pane across every reachable, protocol-compatible host (local +
+  // Every luvus pane across every reachable, compatible host (local +
   // remotes), for the ⌘K pane switcher. Aggregated server-side; per-host
   // failures come back in `errors` rather than failing the whole request.
   allPanes: () => getJSON<PanesPayload>("/api/all-panes", aggregateTimeout),
@@ -670,7 +662,7 @@ export const api = {
   agentHistory: () =>
     getJSON<{ agents: HostPane[] }>("/api/agent-history", aggregateTimeout),
 
-  // Re-open a past session's workspace: re-creates a herdr workspace at its work
+  // Re-open a past session's workspace: re-creates a Luvus workspace at its work
   // dir and focuses it unless focus:false (does NOT relaunch the agent). Identify
   // it by agent_id (a recorded agent — also re-points its record at the new pane)
   // or by work_dir (an orphan worktree/scratch dir with no record). Returns the
@@ -693,8 +685,8 @@ export const api = {
   usage: () => getJSON<UsagePayload>("/api/usage"),
 
   // List a directory. `host` (omitted = the active backend) is the host the
-  // path lives on — the sidebar browses the focused pane's host, which can
-  // differ from the active one when the pane is an ssh window.
+  // path lives on — the sidebar browses the focused pane's host, which the
+  // request must name rather than inherit.
   files: (path: string, host?: string) =>
     getJSON<DirListing>(
       withHost(`/api/files?path=${encodeURIComponent(path)}`, host)
@@ -804,12 +796,16 @@ export const api = {
     return getJSON<FileDiff>(withHost(`/api/diff-file?${params}`, host))
   },
 
-  // Both ids are required — /api/focus 400s on a missing tab_id.
-  focus: (workspace_id: string, tab_id: string) =>
-    postJSON<unknown>("/api/focus", { workspace_id, tab_id }),
+  // Focus one pane. Luvus's `pane.focus` takes the pane itself and jumps to its
+  // workspace/tab, so the pane id is both necessary and sufficient — a
+  // workspace/tab pair would land on whichever split that tab last had.
+  focus: (pane_id: string) => postJSON<unknown>("/api/focus", { pane_id }),
 
-  rename: (tab_id: string | undefined, label: string) =>
-    postJSON<unknown>("/api/rename", { tab_id, label }),
+  // Label the tab a pane sits in. Sent as the pane id: Luvus 0.13.4's
+  // `tab.rename` renames the ACTIVE tab of the pane's workspace, so the server
+  // resolves and targets the tab from the pane rather than trusting a tab id.
+  rename: (pane_id: string, label: string) =>
+    postJSON<unknown>("/api/rename", { pane_id, label }),
 
   // Rename a workspace (relabels every pane/agent grouped under it).
   workspaceRename: (workspace_id: string | undefined, label: string) =>
@@ -908,7 +904,7 @@ export const api = {
   createAgent: (payload: CreateAgentPayload) =>
     postJSON<AgentRecord>("/api/create-agent", payload),
 
-  // Live Herdr workspaces on one host, for terminal creation and defaults.
+  // Live Luvus workspaces on one host, for terminal creation and defaults.
   workspaces: (host?: string) =>
     getJSON<{ workspaces: Workspace[] }>(withHost("/api/workspaces", host)),
 

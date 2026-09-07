@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -22,7 +21,7 @@ var (
 	srvCtx context.Context
 )
 
-// switchMu serializes host switches: a switch re-points the herdr subscription
+// switchMu serializes host switches: a switch re-points the luvus subscription
 // and both terminals, so two in flight at once would race. A second concurrent
 // request gets 409 (the footer also disables its control while one is pending).
 var switchMu sync.Mutex
@@ -58,7 +57,7 @@ type ttydInstance struct {
 	lastActive time.Time
 }
 
-// ttydRole owns one terminal role — the left herdr terminal (/terminal) or the
+// ttydRole owns one terminal role — the left luvus terminal (/terminal) or the
 // right shell tab (/shell) — across every host lasso has driven. Each host gets
 // its OWN ttyd, on its own socket AND its own proxy path (/terminal/<slug>/),
 // because the browser is what picks between them now: a tab viewing norm loads
@@ -73,7 +72,7 @@ type ttydInstance struct {
 // The single-socket predecessor to THAT respawned in place on every switch, and
 // that respawn was the dominant cost of switching: the new ttyd could not bind
 // until the old one had released the shared path, which measured ~2.8s of a
-// ~3.9s switch (ttyd drops its client, SIGHUPs the child `herdr --remote`, then
+// ~3.9s switch (ttyd drops its client, SIGHUPs the child `luvus --remote`, then
 // unlinks), serially for both roles, on the request path.
 type ttydRole struct {
 	parent      context.Context
@@ -272,19 +271,19 @@ func (r *ttydRole) sweepIdle() {
 
 // terminals holds the two roles (nil when -spawn-ttyd=false).
 var terminals struct {
-	herdr *ttydRole // left "Herdr" terminal (/terminal)
+	luvus *ttydRole // left "Luvus" terminal (/terminal)
 	shell *ttydRole // right shell tab (/shell)
 }
 
 // ensureTerminals makes backend b's pair of terminals resident: the left one
-// runs b.TermCmd() (local herdr, or `herdr --remote <host>`); the shell tab runs
-// b.ShellCmd() (local shell, or `ssh <host>`) with the herdr session markers
+// runs b.TermCmd() (local luvus, or `luvus --remote <host>`); the shell tab runs
+// b.ShellCmd() (local shell, or `ssh <host>`) with the luvus session markers
 // stripped. Idempotent, so a tab arriving on a warm host pays nothing.
 func ensureTerminals(b Backend) error {
-	if err := terminals.herdr.ensure(b.Name(), termPrefix()+b.TermCmd(), b.TermEnv()); err != nil {
+	if err := terminals.luvus.ensure(b.Name(), termPrefix()+b.TermCmd(), b.TermEnv()); err != nil {
 		return fmt.Errorf("terminal on %s: %w", b.Name(), err)
 	}
-	if err := terminals.shell.ensure(b.Name(), b.ShellCmd(), outsideHerdrEnv()); err != nil {
+	if err := terminals.shell.ensure(b.Name(), b.ShellCmd(), outsideLuvusEnv()); err != nil {
 		return fmt.Errorf("shell on %s: %w", b.Name(), err)
 	}
 	return nil
@@ -309,7 +308,7 @@ func waitSocketUp(sock string, timeout time.Duration) bool {
 
 // serveHostAttach prepares a host for a browser tab that is moving onto it:
 // resolves (and pools) its connection, spawns its terminals if they aren't warm
-// already, and reports the herdr version/protocol the tab should expect.
+// already, and reports the luvus version/protocol the tab should expect.
 //
 // It replaces a handler that SWITCHED a process-wide active host. Nothing here
 // mutates shared state any more — the tab records its own choice and sends it on
@@ -336,11 +335,11 @@ func serveHostAttach(w http.ResponseWriter, r *http.Request) {
 
 	var b Backend
 	if target == "local" {
-		b = &localBackend{sock: *herdrSock}
+		b = &localBackend{sock: *luvusSock}
 	} else {
 		hi, ok := findHost(target)
 		if !ok || !hi.Reachable || !hi.Running || !hi.Compatible {
-			http.Error(w, "host not available (no compatible herdr server)", http.StatusBadRequest)
+			http.Error(w, "host not available (no compatible luvus server)", http.StatusBadRequest)
 			return
 		}
 		// One pooled connection per host, shared by every tab on it and by all
@@ -357,17 +356,21 @@ func serveHostAttach(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		b = rb
-		// Mirror the local machine's theme onto the target host's herdr — but in
-		// the BACKGROUND, off the attach's critical path. It's ~2 SSH round trips
-		// (write config + reload_config), and blocking on it made every cross-host
-		// move feel ~2s slower for a purely cosmetic change: the ttyd palette comes
-		// from lasso's LOCAL resolved theme (startTtyd's -t theme=), not from the
-		// remote herdr, so terminals already render correctly; this only repaints
-		// the remote herdr TUI's own chrome, which can lag a beat harmlessly.
+		// Mirror the palette lasso is painting into the target host's AGENT
+		// theme files — but in the BACKGROUND, off the attach's critical path.
+		// It's several SFTP round trips, and blocking on it made every
+		// cross-host move feel ~2s slower for a purely cosmetic change: the
+		// ttyd palette comes from lasso's own resolved theme (startTtyd's
+		// -t theme=), so terminals already render correctly.
+		//
+		// The host's own Luvus is NOT touched: its theme selection belongs to
+		// that machine, and an attach restating a palette read elsewhere is the
+		// fleet-wide override this no longer does.
+		//
 		// A theme CHANGE reaches every host on its own (syncThemeEverywhere);
 		// this covers a host that was asleep or unreachable when that happened.
 		if srvHub != nil {
-			go syncRemoteTheme(rb, srvHub.themeSnapshot().Resolved)
+			go syncThemeToHost(rb.Name(), srvHub.themeSnapshot())
 		}
 	}
 
@@ -393,75 +396,21 @@ func serveHostAttach(w http.ResponseWriter, r *http.Request) {
 	writeHostResult(w, b)
 }
 
-// syncRemoteTheme writes theme name into the config.toml the remote herdr reads,
-// mirrors it into that host's agent CLI theme files, and asks its herdr to reload
-// so the TUI repaints. name is a canonical theme key. It returns the joined
-// failure of the file writes; every caller treats it as best-effort (a host
-// switch, a theme change, a convergence push) and lets the next pass retry.
-//
-// The three steps are independent and all three are attempted: an unwritable
-// herdr config must not cost the host its ghostty palette, and the reload is the
-// LAST thing, not a gate — asking a herdr to reload used to happen before the
-// agent themes were written, so any host whose herdr could not be reached (one
-// speaking a protocol this build refuses, reached over a files-only connection)
-// silently kept a month-old ghostty theme. A reload lasso cannot make is a stale
-// TUI until that herdr restarts, nothing more, so it is logged and not returned.
-//
-// A host switched off in the theme_sync_off deny-list is left entirely alone —
-// its herdr config and its agents' theme files stay whatever that machine set
-// them to (see agentsync.go).
-func syncRemoteTheme(t themeTarget, name string) error {
-	if t == nil || name == "" {
-		return nil
-	}
-	host := t.Name()
-	if !themeSyncEnabledFor(host) {
-		log.Printf("host:     theme sync to %s off (disabled for this host)", host)
-		return nil
-	}
-	var errs []error
-	// The path comes from the remote's environment, never from the socket's
-	// directory: herdr picks its socket independently of its config dir, and on
-	// every agent-workspace box (socket in /dev/shm/herdr/) the socket-adjacent
-	// guess wrote a config.toml nothing reads — the sync logged success while the
-	// remote TUI kept its old palette.
-	switch cfg := t.herdrConfigPath(); {
-	case cfg == "":
-		log.Printf("host:     herdr theme name on %s skipped: config path unknown", host)
-		errs = append(errs, errors.New("herdr config path unknown"))
-	default:
-		if err := writeHerdrThemeNameVia(t, cfg, name); err != nil {
-			log.Printf("host:     herdr theme name on %s failed: %v", host, err)
-			errs = append(errs, err)
-		}
-	}
-	// Mirror the theme into the host's agent CLIs too (opencode, Claude Code,
-	// omp, ghostty). Resolved by name only — the remote's own [theme.custom]
-	// tokens stay herdr's business.
-	if err := syncAgentThemesVia(t, resolveThemeByName(name)); err != nil {
-		errs = append(errs, err)
-	}
-	// Only a host with a herdr this lasso can speak to has a socket to ask.
-	if t.HerdrSock() != "" {
-		if _, err := t.HerdrCall("server.reload_config", map[string]any{}); err != nil {
-			log.Printf("host:     theme reload on %s failed: %v", host, err)
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		return err
-	}
-	log.Printf("host:     synced theme %q -> %s", name, host)
-	return nil
-}
-
-// writeHostResult reports the now-active host plus its herdr version/protocol.
+// writeHostResult reports the now-active host plus its Luvus version and UHP
+// protocol identity. The protocol is the same label /api/hosts publishes
+// ("luvus-uhp/1"), not a bare number: one shape for the client to render, and
+// one that says WHICH protocol rather than implying a comparable version.
 func writeHostResult(w http.ResponseWriter, b Backend) {
 	var version string
-	var protocol int
+	var major int
 	if rb, ok := b.(*remoteBackend); ok {
-		version, protocol = rb.version, rb.protocol
+		version, major = rb.version, rb.protocol
 	} else {
-		version, protocol = localProtocol()
+		version, major = localProtocol()
 	}
-	writeJSON(w, map[string]any{"active": b.Name(), "version": version, "protocol": protocol})
+	writeJSON(w, map[string]any{
+		"active":   b.Name(),
+		"version":  version,
+		"protocol": uhpLabel(luvusUHPName, major),
+	})
 }

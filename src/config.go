@@ -13,7 +13,7 @@ import (
 // (non-git agents); staged attachment uploads land in ~/.lasso/uploads.
 //
 // The store is host-local: it belongs to the machine lasso runs on, while the
-// creation itself routes through defaultBackend() so it targets whichever herdr host
+// creation itself routes through defaultBackend() so it targets whichever luvus host
 // is active. Selections that name a repo/branch on that host are therefore keyed
 // by the active host name (defaultBackend().Name()).
 
@@ -31,7 +31,7 @@ type LassoConfig struct {
 	// back to LastAgent.
 	DefaultAgent string `json:"default_agent"`
 	// DefaultTerminalWorkspace is the workspace label preselected by the new
-	// terminal form. Labels survive Herdr session restarts; defaults to "~".
+	// terminal form. Labels survive Luvus session restarts; defaults to "~".
 	DefaultTerminalWorkspace string `json:"default_terminal_workspace"`
 	// LastRepo is the repo path selected last time on this host, preselected next.
 	LastRepo string `json:"last_repo,omitempty"`
@@ -104,7 +104,7 @@ type AgentRecord struct {
 	// BootError is the reason a boot failed, kept for get_agent/list_agents. Empty
 	// unless BootStatus is BootFailed.
 	BootError string `yaml:"boot_error,omitempty" json:"boot_error,omitempty"`
-	// ClosedAt is when reconciliation (agentreap.go) confirmed the agent's herdr
+	// ClosedAt is when reconciliation (agentreap.go) confirmed the agent's luvus
 	// pane no longer exists. Non-empty means this record is a tombstone: kept for
 	// history and reopen, excluded from every "which agents are there" listing.
 	// Empty on live agents (and on every record predating reconciliation).
@@ -114,14 +114,14 @@ type AgentRecord struct {
 // Boot status values for AgentRecord.BootStatus.
 const (
 	// BootCreating: the write-ahead state — the record is persisted before the
-	// worktree/workspace herdr calls run, so a create that dies mid-flight (a
+	// worktree/workspace luvus calls run, so a create that dies mid-flight (a
 	// lasso restart, a lost SSH forward) leaves a visible, resumable record
 	// instead of an untracked branch + worktree. Flipped to BootBooting once
-	// herdr returns the workspace, or BootFailed if the create RPC errors;
+	// luvus returns the workspace, or BootFailed if the create RPC errors;
 	// sweepInterruptedCreates catches the crash case at next startup.
 	BootCreating = "creating"
 	// BootBooting: create returned; the async boot (file copy, setup, CLI launch)
-	// is still running. Not surfaced as a status string — the agent's live herdr
+	// is still running. Not surfaced as a status string — the agent's live luvus
 	// status takes over as soon as the CLI comes up.
 	BootBooting = "booting"
 	// BootReady: the async boot finished launching the agent CLI.

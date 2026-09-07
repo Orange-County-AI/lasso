@@ -569,4 +569,4 @@ func defaultsFromRows(rows []struct{ Key, Value string }) creatorDefaults {
 
 // localFsBackend is a localBackend for reading the local machine's filesystem,
 // independent of whichever host is currently active.
-func localFsBackend() Backend { return &localBackend{sock: *herdrSock} }
+func localFsBackend() Backend { return &localBackend{sock: *luvusSock} }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -10,10 +12,10 @@ import (
 	"time"
 )
 
-// `lasso doctor` — a quick health check of the local install: is herdr present
-// and speaking a compatible protocol, is the state dir writable, is the binary on
-// PATH, and is a newer release available. Prints a line per check and exits
-// non-zero if any hard requirement fails.
+// `lasso doctor` — a quick health check of the local install: is luvus present
+// and speaking a UHP contract lasso can use, is the state dir writable, is the
+// binary on PATH, and is a newer release available. Prints a line per check and
+// exits non-zero if any hard requirement fails.
 
 type checkResult int
 
@@ -42,48 +44,79 @@ func cliDoctor() {
 	var d doctorReport
 	fmt.Printf("lasso %s\n", lassoVersion())
 
-	// herdr binary — lasso is a UI over herdr, so it's required.
-	if path, err := exec.LookPath("herdr"); err == nil {
-		d.line(checkPass, "herdr binary", path)
+	// luvus binary — lasso is a UI over Luvus, so it's required.
+	if path, err := exec.LookPath(luvusCLI()); err == nil {
+		d.line(checkPass, "luvus binary", path)
 	} else {
-		d.line(checkFail, "herdr binary", "not found on PATH — install: curl -fsSL https://herdr.dev/install.sh | sh")
+		d.line(checkFail, "luvus binary", "not found on PATH — install: curl -fsSL https://luvus.dev/install.sh | sh")
 	}
 
-	// herdr socket + protocol compatibility.
+	// The session endpoint Luvus itself reports, then the UHP handshake against
+	// it. Asking Luvus where its socket is (rather than assembling a path) is
+	// what makes this check agree with the server lasso actually drives — a
+	// custom LUVUS_HOME, or a named session, moves it.
 	sock := defaultSock()
-	if v, p, err := herdrPing(sock); err != nil {
-		d.line(checkWarn, "herdr daemon", fmt.Sprintf("socket %s unreachable (%v) — start herdr", sock, err))
-	} else if p != lassoHerdrProtocol {
-		d.line(checkWarn, "herdr protocol", fmt.Sprintf("herdr %s speaks protocol %d, lasso targets %d — update one to match", v, p, lassoHerdrProtocol))
+	if disc := discoverLocalLuvusSocket(); disc != "" && disc != sock {
+		d.line(checkWarn, "luvus endpoint", fmt.Sprintf("lasso targets %s but luvus reports %s — unset LUVUS_SOCKET_PATH or pass -luvus-sock", sock, disc))
+	}
+	if v, p, err := luvusPing(sock); err != nil {
+		d.line(checkWarn, "luvus server", fmt.Sprintf("%s: %v — start it with `luvus server start`", sock, err))
 	} else {
-		d.line(checkPass, "herdr daemon", fmt.Sprintf("%s, protocol %d", v, p))
+		d.line(checkPass, "luvus server", fmt.Sprintf("%s, %s", v, uhpLabel(luvusUHPName, p)))
 	}
 
-	// Agent-state integrations — lifecycle hooks that give herdr authoritative
-	// idle/working/blocked states for the harnesses lasso can spawn. Missing
-	// ones degrade to screen-buffer detection, so warn rather than fail.
-	// Harness IDs (claude/codex/opencode/omp/pi) match herdr's integration targets.
-	if _, err := exec.LookPath("herdr"); err == nil {
-		if out, err := exec.Command("herdr", "integration", "status").Output(); err == nil {
-			installed := map[string]bool{}
-			for _, ln := range strings.Split(string(out), "\n") {
-				if name, rest, ok := strings.Cut(ln, ":"); ok {
-					installed[strings.TrimSpace(name)] = !strings.Contains(rest, "not installed")
+	// Agent-state integrations — the session-resume hooks that give Luvus
+	// authoritative agent identity and state for the harnesses lasso can spawn.
+	// Missing ones degrade to process/screen detection, so warn rather than fail.
+	// Harness IDs match Luvus's `integration install` targets.
+	//
+	// integration.status is a HOST-PROFILE method: it is answered inside a
+	// short-lived `luvus uhp proxy` and is deliberately not served by the session
+	// socket, so this reports honestly even with no server running.
+	ctx, cancel := context.WithTimeout(context.Background(), luvusProxyTimeout)
+	defer cancel()
+	if res, err := luvusProxyCall(ctx, "integration.status", nil); err == nil {
+		var st struct {
+			Integrations []struct {
+				Agent     string `json:"agent"`
+				Installed bool   `json:"installed"`
+			} `json:"integrations"`
+		}
+		if json.Unmarshal(res, &st) == nil {
+			installed := make(map[string]bool, len(st.Integrations))
+			known := make(map[string]bool, len(st.Integrations))
+			for _, in := range st.Integrations {
+				installed[in.Agent] = in.Installed
+				known[in.Agent] = true
+			}
+			var have, missing, unsupported []string
+			for _, h := range harnesses {
+				switch {
+				case installed[h.ID]:
+					have = append(have, h.ID)
+				case known[h.ID]:
+					missing = append(missing, h.ID)
+				default:
+					// A harness Luvus has no integration for: its agents are
+					// detected, never reported. Saying "missing" would suggest a
+					// fix that does not exist.
+					unsupported = append(unsupported, h.ID)
 				}
 			}
-			var have, missing []string
-			for _, h := range harnesses {
-				if installed[h.ID] {
-					have = append(have, h.ID)
-				} else {
-					missing = append(missing, h.ID)
+			detail := strings.Join(have, ", ")
+			if len(missing) > 0 {
+				detail = strings.Join(missing, ", ") + " missing — `luvus integration install <agent>` gives Luvus authoritative agent states"
+			}
+			if len(unsupported) > 0 {
+				if detail != "" {
+					detail += "; "
 				}
+				detail += "no luvus integration for " + strings.Join(unsupported, ", ") + " (detection only)"
 			}
 			if len(missing) == 0 {
-				d.line(checkPass, "agent integrations", strings.Join(have, ", "))
+				d.line(checkPass, "agent integrations", detail)
 			} else {
-				d.line(checkWarn, "agent integrations",
-					strings.Join(missing, ", ")+" missing — `herdr integration install <agent>` gives herdr authoritative agent states")
+				d.line(checkWarn, "agent integrations", detail)
 			}
 		}
 	}

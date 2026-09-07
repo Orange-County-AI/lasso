@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path"
@@ -21,29 +22,28 @@ import (
 	"github.com/pkg/sftp"
 )
 
-// remoteBackend drives a herdr daemon on another host, reached entirely through
+// remoteBackend drives a Luvus server on another host, reached entirely through
 // the system `ssh` binary so the user's full ~/.ssh/config (ProxyJump,
 // IdentityFile, agent, known_hosts) is honored exactly as it would be on the
 // command line. One SSH ControlMaster connection is opened per remote host and
 // everything multiplexes over it:
 //
-//   - herdr RPC + events: the remote herdr unix socket is forwarded (-L) to a
-//     local socket, which the shared dial code (herdrCallSock / subscribeEvents)
-//     points at — identical to the local case.
+//   - UHP requests + events: the remote Luvus session's unix socket is forwarded
+//     (-L) to a local socket, which the shared dial code (luvusCallSock /
+//     subscribeEvents) points at — identical to the local case.
 //   - file ops: the SFTP subsystem (`ssh host -s sftp`), driven by pkg/sftp.
 //   - git: `ssh host "git -C <dir> ..."`.
 //
-// The left terminal and shell tab use herdr's own `herdr --remote <host>` and
+// The left terminal and shell tab use Luvus's own `luvus --remote <host>` and
 // `ssh <host>` (wired in startTtyd via the active backend's TermCmd/ShellCmd).
 type remoteBackend struct {
 	alias      string // ssh-config host alias
-	remoteSock string // absolute herdr socket path on the remote host
+	remoteSock string // the remote session's UHP endpoint address (absolute unix socket path)
 	ctlPath    string // ssh ControlMaster control socket (local)
-	localSock  string // local end of the forwarded herdr socket
+	localSock  string // local end of the forwarded UHP socket
 	home       string // remote $HOME, for ~-expansion
-	herdrCfg   string // where herdr on the remote reads config.toml
-	protocol   int    // remote herdr protocol (verified == local at connect)
-	version    string // remote herdr version (for display)
+	protocol   int    // remote UHP protocol major (capability-validated at connect)
+	version    string // remote Luvus version (for display)
 
 	cancel context.CancelFunc // tears down the control master + sockets
 	done   chan struct{}      // closed once teardown completes
@@ -125,13 +125,13 @@ func killProcessGroup(cmd *exec.Cmd) error {
 // once, on top of the repo listing and any probe). Whichever of those get
 // cancelled die mid-authentication, and OpenSSH >= 9.8 scores an aborted
 // handshake as authfail under PerSourcePenalties: the remote then drops every
-// new connection from this IP for 15-600s, which surfaces as herdr's "remote
+// new connection from this IP for 15-600s, which surfaces as Luvus's "remote
 // platform detection failed: Connection closed by <ip> port 22". With auto, the
 // first op to find no master becomes one and the rest of the cycle rides it.
 //
 // ControlPersist is bounded here, unlike the yes on the forward-carrying master
 // in newRemoteBackend: a master created by this path has no -L forwards, so it
-// can't serve the backend. The health check (herdrPing over the forwarded
+// can't serve the backend. The health check (luvusPing over the forwarded
 // socket, see hostBackend) fails against it and redials, and newRemoteBackend
 // unlinks the socket before dialing — leaving the ad-hoc master orphaned with no
 // socket for -O exit to reach. A timed persist bounds that to a minute instead
@@ -145,45 +145,49 @@ func (b *remoteBackend) ctlOpts() []string {
 	}
 }
 
-// newRemoteBackend establishes the SSH control master + forwarded herdr socket
-// for alias (whose remote herdr socket path is remoteSock, from the probe),
-// verifies the forwarded socket answers `ping` with a protocol matching the
-// local one, and resolves the remote home dir. parent is the root context: the
-// backend tears itself down when parent is cancelled (process exit) or when
-// Close is called (an idle-reaped or unhealthy pool entry). On any failure it
-// cleans up and returns the error so the caller can roll back.
+// newRemoteBackend establishes the SSH control master + forwarded UHP socket for
+// alias (whose remote endpoint address is remoteSock, from the probe), verifies
+// the forwarded socket answers with capabilities lasso can use, and resolves the
+// remote home dir. parent is the root context: the backend tears itself down
+// when parent is cancelled (process exit) or when Close is called (an
+// idle-reaped or unhealthy pool entry). On any failure it cleans up and returns
+// the error so the caller can roll back.
+//
+// There is no wanted-protocol argument: compatibility is the remote's own
+// capability set measured against lasso's contract (validateLuvusCaps, via
+// luvusPing), the same rule the ssh probe applied — so a host cannot pass
+// discovery and then be refused here for a different reason.
 //
 // The socket filenames carry lasso's pid and the alias, and nothing else: there
 // is exactly one connection per host now that a host switch adopts the pooled
 // one (see hostBackend), so no second backend to the same alias exists to
 // clobber these paths.
-func newRemoteBackend(parent context.Context, alias, remoteSock string, wantProtocol int) (*remoteBackend, error) {
+func newRemoteBackend(parent context.Context, alias, remoteSock string) (*remoteBackend, error) {
 	if remoteSock == "" {
-		return nil, fmt.Errorf("no remote herdr socket for %s", alias)
+		return nil, fmt.Errorf("no remote luvus socket for %s", alias)
 	}
-	return dialRemote(parent, alias, remoteSock, wantProtocol)
+	return dialRemote(parent, alias, remoteSock)
 }
 
 // newRemoteFileBackend opens a FILES-ONLY connection to alias: the same control
 // master, SFTP and remote-command plumbing as newRemoteBackend, but no forwarded
-// herdr socket and no protocol check. HerdrCall on it fails by construction, so
-// a caller must treat talking to that host's herdr as optional.
+// UHP socket and no capability check. LuvusCall on it fails by construction, so
+// a caller must treat talking to that host's Luvus as optional.
 //
-// It exists for work that is pure file I/O on a host lasso cannot DRIVE: today
-// the theme sync, which has to keep a machine's ghostty/Claude/opencode/omp
-// theme files in step with herdr even when that machine runs a herdr whose
-// protocol this build refuses to speak (see agentsync.go).
+// It exists for work that is pure file I/O on a host lasso cannot DRIVE: a
+// machine whose Luvus is stopped, or too old for the capabilities this build
+// needs, still has files worth reading (see agentsync.go).
 //
 // It is never pooled and never becomes the active backend — the caller Closes
 // it — and its control socket carries a "-files" suffix so it cannot collide
 // with the one pooled master per host that hostBackend owns.
 func newRemoteFileBackend(parent context.Context, alias string) (*remoteBackend, error) {
-	return dialRemote(parent, alias, "", 0)
+	return dialRemote(parent, alias, "")
 }
 
 // dialRemote is the body both constructors share. An empty remoteSock means
-// files-only: no -L forward, no readiness ping, no version/protocol.
-func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol int) (*remoteBackend, error) {
+// files-only: no -L forward, no readiness handshake, no version/protocol.
+func dialRemote(parent context.Context, alias, remoteSock string) (*remoteBackend, error) {
 	filesOnly := remoteSock == ""
 	tag := sanitizeAlias(alias)
 	if filesOnly {
@@ -196,7 +200,7 @@ func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol i
 		done:       make(chan struct{}),
 	}
 	if !filesOnly {
-		b.localSock = filepath.Join(os.TempDir(), fmt.Sprintf("lasso-herdr-%d-%s.sock", os.Getpid(), tag))
+		b.localSock = filepath.Join(os.TempDir(), fmt.Sprintf("lasso-luvus-%d-%s.sock", os.Getpid(), tag))
 	}
 	// Clear stale sockets a crashed prior run may have left so ssh can bind.
 	_ = os.Remove(b.ctlPath)
@@ -204,13 +208,13 @@ func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol i
 		_ = os.Remove(b.localSock)
 	}
 
-	// Open the control master and the forwarded herdr socket. -fNT backgrounds
+	// Open the control master and the forwarded UHP socket. -fNT backgrounds
 	// the master after authentication, so this returns once the forward is up.
 	mctx, cancelDial := context.WithTimeout(parent, sshConnectTimeout)
 	defer cancelDial()
 	// ExitOnForwardFailure=no so a conflicting forward the user's config attaches
 	// to this host (e.g. a busy-port tunnel) can't abort our master — our own
-	// herdr-socket forward is verified separately by the ping readiness check.
+	// UHP-socket forward is verified separately by the readiness handshake.
 	// ControlPersist=yes: the master's lifetime is the backend's lifetime —
 	// Close/teardown kills it explicitly, and the sshreap loop cleans up after a
 	// crashed lasso. A timed persist (formerly 60) let the master exit during any
@@ -247,10 +251,11 @@ func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol i
 		return nil, fmt.Errorf("ssh %s: %s", alias, msg)
 	}
 
-	// Wait for the forwarded socket to accept connections and answer ping with a
-	// matching protocol (doubles as the compatibility re-check).
+	// Wait for the forwarded socket to accept connections and answer with
+	// capabilities lasso can use (doubles as the compatibility re-check, against
+	// the running server rather than the probe's snapshot of it).
 	if !filesOnly {
-		ver, proto, perr := b.waitForSocket(parent, wantProtocol)
+		ver, proto, perr := b.waitForSocket(parent)
 		if perr != nil {
 			b.killMaster()
 			return nil, perr
@@ -258,16 +263,13 @@ func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol i
 		b.version, b.protocol = ver, proto
 	}
 
-	// Resolve the remote $HOME (for ~-expansion) and the env that decides where
-	// herdr on that host reads config.toml, in ONE round trip on the fresh
-	// master (both are cheap; see herdrConfigPath below).
-	if out, herr := b.runOut(`printf '%s\n%s\n%s\n' "$HOME" "$XDG_CONFIG_HOME" "$HERDR_CONFIG_PATH"`); herr == nil {
-		lines := strings.Split(out, "\n")
-		for len(lines) < 3 {
-			lines = append(lines, "")
-		}
-		b.home = strings.TrimSpace(lines[0])
-		b.herdrCfg = herdrConfigIn(strings.TrimSpace(lines[2]), strings.TrimSpace(lines[1]), b.home)
+	// Resolve the remote $HOME, for ~-expansion, on the fresh master. Nothing
+	// else is read out of that host's environment: where its Luvus keeps state
+	// and which theme it has active are questions its own server answers over
+	// UHP, so guessing at paths from env vars would only be a second, drifting
+	// answer to something already authoritative.
+	if out, herr := b.runOut(`printf '%s\n' "$HOME"`); herr == nil {
+		b.home = strings.TrimSpace(out)
 	}
 
 	// Tie teardown to the root context so process exit (Ctrl-C) cleans up every
@@ -279,51 +281,60 @@ func dialRemote(parent context.Context, alias, remoteSock string, wantProtocol i
 		b.teardown()
 	}()
 	if filesOnly {
-		log.Printf("host:     connected to %s for files only (no herdr socket)", alias)
+		log.Printf("host:     connected to %s for files only (no luvus socket)", alias)
 	} else {
-		log.Printf("host:     connected to %s (herdr %s, protocol %d) via %s", alias, b.version, b.protocol, b.localSock)
+		log.Printf("host:     connected to %s (luvus %s, UHP major %d) via %s", alias, b.version, b.protocol, b.localSock)
 	}
 	return b, nil
 }
 
-// waitForSocket polls the forwarded local socket until it answers ping (or the
-// readiness window elapses), returning the remote herdr version/protocol. It
-// fails if the protocol doesn't match wantProtocol — a host that changed or
-// downgraded since discovery.
-func (b *remoteBackend) waitForSocket(ctx context.Context, wantProtocol int) (string, int, error) {
+// waitForSocket waits for the forwarded local socket to accept connections and
+// answer with capabilities lasso can use, returning the remote Luvus version and
+// UHP protocol major.
+//
+// Only a TRANSPORT failure is retried: the -L forward takes a moment to appear,
+// so a refused or absent socket means "not yet". A server that answers and is
+// then refused by capability validation is a VERDICT, not a race — retrying it
+// would burn the whole readiness window and report the honest reason as a
+// timeout.
+func (b *remoteBackend) waitForSocket(ctx context.Context) (string, int, error) {
 	deadline := time.Now().Add(sshForwardReady)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	for {
 		if ctx.Err() != nil {
 			return "", 0, ctx.Err()
 		}
-		ver, proto, err := herdrPing(b.localSock)
+		ver, proto, err := luvusPing(b.localSock)
 		if err == nil {
-			if wantProtocol != 0 && proto != wantProtocol {
-				return "", 0, fmt.Errorf("protocol mismatch: %s speaks %d, this lasso speaks %d", b.alias, proto, wantProtocol)
-			}
 			return ver, proto, nil
 		}
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) {
+			return "", 0, fmt.Errorf("luvus on %s: %w", b.alias, err)
+		}
 		lastErr = err
+		if !time.Now().Before(deadline) {
+			break
+		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timed out")
 	}
-	return "", 0, fmt.Errorf("herdr socket on %s not reachable: %v", b.alias, lastErr)
+	return "", 0, fmt.Errorf("luvus socket on %s not reachable: %v", b.alias, lastErr)
 }
 
 func (b *remoteBackend) Name() string { return b.alias }
 
-// HerdrSock is empty on a files-only connection (newRemoteFileBackend), which is
-// how a caller tells there is no herdr on the far end to talk to.
-func (b *remoteBackend) HerdrSock() string { return b.localSock }
+// LuvusSock is empty on a files-only connection (newRemoteFileBackend), which is
+// how a caller tells there is no Luvus on the far end to talk to.
+func (b *remoteBackend) LuvusSock() string { return b.localSock }
 
-func (b *remoteBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *remoteBackend) LuvusCall(method string, params any) (json.RawMessage, error) {
 	if b.localSock == "" {
-		return nil, fmt.Errorf("no herdr connection to %s (files-only)", b.alias)
+		return nil, fmt.Errorf("no luvus connection to %s (files-only)", b.alias)
 	}
-	return herdrCallSock(b.localSock, method, params)
+	return luvusCallSock(b.localSock, method, params)
 }
 
 // runOut runs a shell command string on the remote host over the control master
@@ -386,12 +397,6 @@ func (b *remoteBackend) GitOut(dir string, args ...string) (string, error) {
 	}
 	return b.runOut(strings.Join(parts, " "))
 }
-
-// herdrConfigPath is the config.toml the remote herdr READS — resolved from that
-// host's own environment at connect (see newRemoteBackend), because the answer
-// is the remote's, not ours. Empty only if the probe failed, in which case the
-// caller has nothing safe to write and should skip.
-func (b *remoteBackend) herdrConfigPath() string { return b.herdrCfg }
 
 func (b *remoteBackend) HomeDir() (string, error) {
 	if b.home != "" {
@@ -698,13 +703,15 @@ func (b *remoteBackend) killMaster() {
 }
 
 // TermCmd / ShellCmd / TermEnv give the per-host commands the two ttyd
-// terminals run. A remote backend attaches the left terminal through herdr's own
-// SSH remote mode and opens the right shell tab as a plain ssh session. The left
-// terminal runs with the HERDR_* session markers stripped (outsideHerdrEnv) so
-// `herdr --remote` doesn't think it's nested inside the local session.
-func (b *remoteBackend) TermCmd() string   { return herdrBinary() + " --remote " + b.alias }
+// terminals run. A remote backend attaches the left terminal through Luvus's own
+// SSH remote mode (`luvus --remote <host>`, which attaches to that host's
+// session over plain ssh) and opens the right shell tab as a plain ssh session.
+// The left terminal runs with the LUVUS_* session markers stripped
+// (outsideLuvusEnv) so the client doesn't think it is nested inside the local
+// session, and doesn't inherit a socket path pointing at it.
+func (b *remoteBackend) TermCmd() string   { return luvusBinary() + " --remote " + b.alias }
 func (b *remoteBackend) ShellCmd() string  { return "ssh " + b.alias }
-func (b *remoteBackend) TermEnv() []string { return outsideHerdrEnv() }
+func (b *remoteBackend) TermEnv() []string { return outsideLuvusEnv() }
 
 var _ Backend = (*remoteBackend)(nil)
 

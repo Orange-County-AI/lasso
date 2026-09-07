@@ -12,7 +12,7 @@ package main
 // It reuses panesSnapshot (hostpanes.go) rather than enumerating hosts itself,
 // for three reasons: that aggregation already fans out with per-host deadlines
 // and degrades to last-good panes; it already resolves the agent status lasso
-// considers authoritative (herdr's, corrected by title reads and omp's plan
+// considers authoritative (luvus's, corrected by title reads and omp's plan
 // gate — see enumerateHostPanes); and its 1.5s cache means a poll that lands
 // near a browser's ⌘K refresh costs nothing at all.
 
@@ -25,7 +25,7 @@ import (
 )
 
 // notifyPollEvery is how often the fleet is checked for newly blocked agents.
-// It gates a pane.list per host (herdr's most expensive method), which is why
+// It gates a pane.list per host (luvus's most expensive method), which is why
 // the loop first asks notifyEnabled(): with no device subscribed this costs one
 // COUNT(*) against a local sqlite file every ten seconds and nothing else.
 //
@@ -137,32 +137,13 @@ func (w *blockedWatcher) observe(panes []hostPane, now time.Time) []notification
 	return out
 }
 
-// notifyPaneIdentities keys this poll's panes by the pane they actually ARE.
-//
-// The dedupe matters because of herdr-mirror (mirror.go): a mirrored pane is a
-// real local pane streaming another machine's, so a blocked agent on norm can
-// appear twice in one snapshot — once as norm's own pane, once as titan's
-// mirror of it. Keying a mirror row by the REMOTE host and pane collapses the
-// pair, and the direct row wins when both are present (it is the machine the
-// work is on, and its status came from that machine's own herdr).
-//
-// It also protects the state map from the aggregation's last-good fallback,
-// where a host that failed this poll contributes its previous panes: those keys
-// are the same keys, so a stale listing re-states what the watcher already
-// recorded instead of reading as new.
+// notifyPaneIdentities keys panes by host and runtime ID. Last-good snapshots
+// re-state the same identities, so a reconnect is not a new blocked transition.
 func notifyPaneIdentities(panes []hostPane) map[string]hostPane {
 	out := make(map[string]hostPane, len(panes))
 	for _, p := range panes {
 		key := p.Host + "\x00" + p.PaneID
-		if p.MirrorHost != "" {
-			key = p.MirrorHost + "\x00" + p.MirrorPane
-			if _, ok := out[key]; ok {
-				continue // the direct row (or an earlier mirror of it) is already in
-			}
-			out[key] = p
-			continue
-		}
-		out[key] = p // a direct row always outranks a mirror of the same pane
+		out[key] = p
 	}
 	return out
 }
@@ -175,21 +156,18 @@ func notifyPaneIdentities(panes []hostPane) map[string]hostPane {
 // Its own function because the watcher needs the answer twice: once to render,
 // once to find out whether two agents would render the same.
 func blockedTitle(p hostPane) string {
-	if t := firstNonEmpty(p.WorkspaceLabel, p.MirrorLabel, p.PaneLabel, p.TerminalTitle); t != "" {
+	if t := firstNonEmpty(p.WorkspaceLabel, p.PaneLabel); t != "" {
 		return t
 	}
 	return "Agent"
 }
 
 // paneDiscriminator tells sibling agents apart when their shared name cannot.
-// herdr's tab label is what the human sees beside them in the sidebar; the pane
+// luvus's tab label is what the human sees beside them in the sidebar; the pane
 // id is the fallback for a tab carrying no label at all.
 func paneDiscriminator(p hostPane) string {
 	if tab := strings.TrimSpace(p.TabLabel); tab != "" {
 		return "tab " + tab
-	}
-	if p.MirrorPane != "" {
-		return p.MirrorPane
 	}
 	return p.PaneID
 }
@@ -203,9 +181,6 @@ func paneDiscriminator(p hostPane) string {
 func blockedNotification(p hostPane, key string, ambiguous bool) notification {
 	host := p.Host
 	hostLabel := p.HostLabel
-	if p.MirrorHost != "" {
-		host, hostLabel = p.MirrorHost, p.MirrorHost
-	}
 	title := blockedTitle(p)
 	if d := paneDiscriminator(p); ambiguous && d != "" {
 		// Clip the shared part, never the discriminator: it is the only thing
@@ -218,14 +193,7 @@ func blockedNotification(p hostPane, key string, ambiguous bool) notification {
 		agent = "An agent"
 	}
 	where := firstNonEmpty(hostLabel, host)
-	// The terminal title is what the agent was working on when it stopped — the
-	// most useful thing to add, unless it is already the headline, in which case
-	// saying what lasso wants from the reader is worth more.
-	tail := "needs your input"
-	if task := strings.TrimSpace(p.TerminalTitle); task != "" && task != blockedTitle(p) {
-		tail = clipNotifyText(task, 90)
-	}
-	body := fmt.Sprintf("%s is blocked on %s — %s", agent, where, tail)
+	body := fmt.Sprintf("%s is blocked on %s — needs your input", agent, where)
 	return notification{
 		Kind:  notifAgentBlocked,
 		Title: clipNotifyText(title, 70),

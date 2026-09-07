@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// paneHostBackend is a fake herdr for one host: pane.list answers with a single
+// paneHostBackend is a fake luvus for one host: pane.list answers with a single
 // focused pane whose cwd names the host, so a frame can be traced back to the
 // machine it came from. calls counts pane.list round-trips, which is how the
 // per-host cache is observed.
@@ -23,19 +23,19 @@ type paneHostBackend struct {
 }
 
 func (b *paneHostBackend) Name() string      { return b.host }
-func (b *paneHostBackend) HerdrSock() string { return "" } // no event stream; the poll carries everything
+func (b *paneHostBackend) LuvusSock() string { return "" } // no event stream; the poll carries everything
 
-func (b *paneHostBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *paneHostBackend) LuvusCall(method string, params any) (json.RawMessage, error) {
 	switch method {
-	case "pane.list":
+	case "session.snapshot":
 		b.calls.Add(1)
 		return json.RawMessage(fmt.Sprintf(
-			`{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"t1","cwd":"/work/%s","focused":true}]}`,
+			`{"workspaces":[{"name":"ws","index":1,"tabs":[{"name":"tab","index":1,"panes":[{"pane_id":"1","terminal_id":"terminal","cwd":"/work/%s","focused":true}]}]}]}`,
 			b.host)), nil
+	case "pane.get":
+		return json.RawMessage(fmt.Sprintf(`{"pane":"1","terminal_id":"terminal","workspace_id":"w1","tab_id":"t1","cwd":"/work/%s","focused":true}`, b.host)), nil
 	case "workspace.list":
-		return json.RawMessage(`{"workspaces":[{"workspace_id":"w1","label":"ws","number":1,"focused":true}]}`), nil
-	case "tab.get":
-		return json.RawMessage(`{"tab":{"label":"tab"}}`), nil
+		return json.RawMessage(`{"workspaces":[{"workspace_id":"w1","workspace":"0","name":"ws","display_position":"0","active":true}]}`), nil
 	}
 	return json.RawMessage(`{}`), nil
 }
@@ -68,7 +68,6 @@ func stubTwoHosts(t *testing.T, a, b string) (*paneHostBackend, *paneHostBackend
 // hosts in the probe store for the duration of a test.
 func stubProbedHosts(t *testing.T, aliases ...string) {
 	t.Helper()
-	_, proto := localProtocol()
 	hostStore.mu.Lock()
 	prevEntries, prevOrder := hostStore.entries, hostStore.order
 	hostStore.entries = map[string]HostInfo{}
@@ -76,7 +75,7 @@ func stubProbedHosts(t *testing.T, aliases ...string) {
 	for _, a := range aliases {
 		hostStore.entries[a] = HostInfo{
 			Alias: a, Hostname: a, Reachable: true, Running: true,
-			Protocol: proto, Compatible: true, Socket: "/tmp/" + a + ".sock",
+			Protocol: "luvus-uhp/1", Compatible: true, Socket: "/tmp/" + a + ".sock",
 		}
 		hostStore.order = append(hostStore.order, a)
 	}
@@ -123,31 +122,31 @@ func TestFeedsAreIndependentPerHost(t *testing.T) {
 
 // The pane.list cache is keyed by host. Sharing one entry would serve titan's
 // panes under norm's name the moment two tabs polled close together, and
-// invalidating on one host's herdr event would throw away the other's snapshot.
+// invalidating on one host's luvus event would throw away the other's snapshot.
 func TestPaneListCacheIsPerHost(t *testing.T) {
 	a, b := &paneHostBackend{host: "hostA"}, &paneHostBackend{host: "hostB"}
 
-	ra, err := herdrPaneList(a)
+	ra, err := luvusPaneList(a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rb, err := herdrPaneList(b)
+	rb, err := luvusPaneList(b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(ra), "hostB") || strings.Contains(string(rb), "hostA") {
 		t.Fatalf("cache crossed hosts: A=%s B=%s", ra, rb)
 	}
-	// Both are warm: a second read inside the TTL hits neither herdr.
-	_, _ = herdrPaneList(a)
-	_, _ = herdrPaneList(b)
+	// Both are warm: a second read inside the TTL hits neither luvus.
+	_, _ = luvusPaneList(a)
+	_, _ = luvusPaneList(b)
 	if a.calls.Load() != 1 || b.calls.Load() != 1 {
 		t.Fatalf("calls A=%d B=%d, want 1 each (cached)", a.calls.Load(), b.calls.Load())
 	}
 	// An event on A drops only A's entry.
 	invalidatePaneList("hostA")
-	_, _ = herdrPaneList(a)
-	_, _ = herdrPaneList(b)
+	_, _ = luvusPaneList(a)
+	_, _ = luvusPaneList(b)
 	if got := a.calls.Load(); got != 2 {
 		t.Errorf("hostA calls = %d, want 2 after its own invalidation", got)
 	}

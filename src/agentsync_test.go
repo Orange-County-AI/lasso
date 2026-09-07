@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The opencode sync writes a generated theme file — herdr's resolved palette
+// The opencode sync writes a generated theme file — Luvus's resolved palette
 // mapped onto opencode's tokens as mode-invariant bare hexes — and pins it by
 // name in tui.json, with the state kv.json mode lock as a fallback hint.
 // opencode never writes the theme file or tui.json, so the pin survives
@@ -24,7 +24,7 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
 	tuiPath := filepath.Join(home, ".config", "opencode", "tui.json")
-	themePath := filepath.Join(home, ".config", "opencode", "themes", "herdr.json")
+	themePath := filepath.Join(home, ".config", "opencode", "themes", opencodeThemeName+".json")
 	kvPath := filepath.Join(home, ".local", "state", "opencode", "kv.json")
 	themeDir := filepath.Dir(themePath)
 
@@ -46,14 +46,14 @@ func TestSyncOpencodeTheme(t *testing.T) {
 		return f.Theme
 	}
 
-	// Fresh write: theme file with herdr's palette, tui.json pinning it by
+	// Fresh write: theme file with Luvus's palette, tui.json pinning it by
 	// name, kv.json with the mode hint pinned dark.
-	dark := resolveThemeByName("catppuccin")
+	dark := bundledTheme("catppuccin-mocha")
 	if err := syncOpencodeTheme(b, home, dark); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	toks := readTheme()
-	if toks["background"] != dark.ui.PanelBg || toks["backgroundPanel"] != dark.ui.Surface0 || toks["text"] != dark.ui.Text {
+	if toks["background"] != dark.p.Mantle || toks["backgroundPanel"] != dark.p.Surface0 || toks["text"] != dark.p.Text {
 		t.Errorf("theme file missing core tokens: %v", toks)
 	}
 	for _, name := range opencodeThemeNames {
@@ -72,7 +72,7 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("written file isn't json: %v", err)
 	}
-	if got["theme"] != "herdr" || got["$schema"] == nil {
+	if got["theme"] != "luvus" || got["$schema"] == nil {
 		t.Fatalf("created file: %s", data)
 	}
 	var kv map[string]any
@@ -85,24 +85,24 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	}
 
 	// Flip to light: the theme file is rewritten with the light palette, a
-	// legacy "catppuccin" pin migrates to "herdr", existing keys in both
+	// legacy "catppuccin" pin migrates to "luvus", existing keys in both
 	// config files survive, and the kv hint flips.
 	os.WriteFile(tuiPath, []byte(`{"theme": "catppuccin", "keybinds": {"leader": "ctrl+x"}}`), 0o644)
 	os.WriteFile(kvPath, []byte(`{"sidebar":"auto","theme_mode_lock":"dark","theme_mode":"dark"}`), 0o644)
-	light := resolveThemeByName("catppuccin-latte")
+	light := bundledTheme("catppuccin-latte")
 	if err := syncOpencodeTheme(b, home, light); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 	toks = readTheme()
-	if toks["background"] != light.ui.PanelBg || toks["text"] != light.ui.Text {
+	if toks["background"] != light.p.Mantle || toks["text"] != light.p.Text {
 		t.Errorf("theme file not rewritten on flip: background=%q text=%q", toks["background"], toks["text"])
 	}
 	data, _ = os.ReadFile(tuiPath)
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("after flip: %v", err)
 	}
-	if got["theme"] != "herdr" {
-		t.Errorf("theme = %v, want herdr", got["theme"])
+	if got["theme"] != "luvus" {
+		t.Errorf("theme = %v, want %s", got["theme"], opencodeThemeName)
 	}
 	if _, ok := got["keybinds"]; !ok {
 		t.Errorf("existing keys dropped: %s", data)
@@ -133,7 +133,7 @@ func TestSyncOpencodeTheme(t *testing.T) {
 		t.Errorf("no-op sync rewrote tui.json")
 	}
 	if after, _ := os.ReadFile(themePath); string(after) != string(themeBefore) {
-		t.Errorf("no-op sync rewrote herdr.json")
+		t.Errorf("no-op sync rewrote the generated theme file")
 	}
 	for name, before := range aliasesBefore {
 		after, _ := os.ReadFile(filepath.Join(themeDir, name+".json"))
@@ -160,12 +160,11 @@ func TestSyncOpencodeTheme(t *testing.T) {
 	}
 }
 
-// The generated opencode theme mirrors herdr's palette: core tokens come
-// straight from the theme's UI tokens, diff backgrounds are blends, and
-// every value is a bare hex so opencode's
-// light/dark mode can't change the result.
+// The generated opencode theme mirrors Luvus's palette: core tokens come
+// straight from the semantic roles, diff backgrounds are blends, and every
+// value is a bare hex so opencode's light/dark mode can't change the result.
 func TestOpencodeThemeBody(t *testing.T) {
-	rt := resolveThemeByName("tokyo-night")
+	rt := bundledTheme("ocean")
 	var got struct {
 		Schema string            `json:"$schema"`
 		Theme  map[string]string `json:"theme"`
@@ -177,36 +176,47 @@ func TestOpencodeThemeBody(t *testing.T) {
 		t.Errorf("missing $schema")
 	}
 	for tok, want := range map[string]string{
-		"primary":         "#7aa2f7", // Accent
-		"secondary":       "#bb9af7", // Mauve
-		"accent":          "#bb9af7", // ansi Magenta
-		"text":            "#c0caf5", // Text
-		"background":      "#1a1b26", // PanelBg
-		"backgroundPanel": "#24283b", // Surface0
-		"syntaxString":    "#9ece6a", // Green
-		"error":           "#f7768e", // Red
+		"primary":           rt.p.Accent,
+		"secondary":         rt.mauve(),
+		"text":              rt.p.Text,
+		"background":        rt.p.Mantle,
+		"backgroundPanel":   rt.p.Surface0,
+		"border":            rt.p.Border,
+		"syntaxString":      rt.p.Green,
+		"error":             rt.p.Coral,
+		"warning":           rt.p.Amber,
+		"info":              rt.p.Mint,
+		"syntaxFunction":    rt.ansi.Blue,
+		"markdownCodeBlock": rt.p.Text,
 	} {
 		if got.Theme[tok] != want {
 			t.Errorf("%s = %q, want %q", tok, got.Theme[tok], want)
 		}
 	}
+	// Every emitted value must be a literal hex: opencode resolves a bare
+	// non-hex string as a color REFERENCE and throws at render time.
+	for tok, v := range got.Theme {
+		if _, _, _, ok := hexRGB(v); !ok {
+			t.Errorf("%s = %q, not a #rrggbb literal", tok, v)
+		}
+	}
 	// Blended tokens must be neither parent color.
 	for _, tok := range []string{"diffAddedBg", "diffRemovedBg"} {
 		v := got.Theme[tok]
-		if v == "" || v == rt.ui.Green || v == rt.ui.Red || v == rt.ui.PanelBg {
+		if v == "" || v == rt.p.Green || v == rt.p.Coral || v == rt.p.Mantle {
 			t.Errorf("%s = %q, want a blend", tok, v)
 		}
 	}
 }
 
-// The Claude theme file maps herdr's UI tokens onto Claude's, with the base
+// The Claude theme file maps Luvus's semantic roles onto Claude's, with the base
 // (dark/light) following the theme's background luminance.
 func TestSyncClaudeTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
-	path := filepath.Join(home, ".claude", "themes", "herdr.json")
+	path := filepath.Join(home, ".claude", "themes", opencodeThemeName+".json")
 
-	dark := resolveThemeByName("catppuccin")
+	dark := bundledTheme("catppuccin-mocha")
 	if err := syncClaudeTheme(b, home, dark, false); err != nil {
 		t.Fatalf("dark: %v", err)
 	}
@@ -215,10 +225,10 @@ func TestSyncClaudeTheme(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got.Base != "dark" || got.Name != "herdr (catppuccin)" {
+	if got.Base != "dark" || got.Name != "luvus (catppuccin-mocha)" {
 		t.Errorf("dark file: base=%q name=%q", got.Base, got.Name)
 	}
-	if got.Overrides["background"] != dark.ui.PanelBg || got.Overrides["text"] != dark.ui.Text {
+	if got.Overrides["background"] != dark.p.Mantle || got.Overrides["text"] != dark.p.Text {
 		t.Errorf("overrides missing core tokens: %v", got.Overrides)
 	}
 	for _, tok := range []string{"diffAdded", "diffRemoved", "diffAddedDimmed", "diffRemovedDimmed", "planMode", "warning"} {
@@ -227,7 +237,7 @@ func TestSyncClaudeTheme(t *testing.T) {
 		}
 	}
 
-	light := resolveThemeByName("catppuccin-latte")
+	light := bundledTheme("catppuccin-latte")
 	if err := syncClaudeTheme(b, home, light, true); err != nil {
 		t.Fatalf("light: %v", err)
 	}
@@ -235,7 +245,7 @@ func TestSyncClaudeTheme(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("parse light: %v", err)
 	}
-	if got.Base != "light" || got.Overrides["background"] != light.ui.PanelBg {
+	if got.Base != "light" || got.Overrides["background"] != light.p.Mantle {
 		t.Errorf("light file: base=%q bg=%q", got.Base, got.Overrides["background"])
 	}
 }
@@ -253,7 +263,7 @@ func TestSyncLassoResolved(t *testing.T) {
 	if err := json.Unmarshal(data, &root); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if root["theme"]["resolved"] != "light" || root["theme"]["mode"] != "herdr" {
+	if root["theme"]["resolved"] != "light" || root["theme"]["mode"] != "luvus" {
 		t.Fatalf("created: %s", data)
 	}
 
@@ -279,16 +289,17 @@ func TestSyncLassoResolved(t *testing.T) {
 	}
 }
 
-// resolveThemeByName normalizes aliases and falls back to catppuccin.
-func TestResolveThemeByName(t *testing.T) {
-	if got := resolveThemeByName("mocha").Resolved; got != "catppuccin" {
-		t.Errorf("alias mocha -> %q, want catppuccin", got)
+// bundledTheme resolves one of Luvus's built-in palettes, and an id it does not
+// know falls back to Luvus's own default rather than to an empty palette.
+func TestBundledTheme(t *testing.T) {
+	if got := bundledTheme("catppuccin-latte"); got.Resolved != "catppuccin-latte" || !got.light() {
+		t.Errorf("latte -> resolved=%q light=%v", got.Resolved, got.light())
 	}
-	if got := resolveThemeByName("nonsense").Resolved; got != "catppuccin" {
-		t.Errorf("unknown -> %q, want catppuccin", got)
+	if got := bundledTheme("nonsense").Resolved; got != luvusDefaultTheme {
+		t.Errorf("unknown -> %q, want %s", got, luvusDefaultTheme)
 	}
-	if got := resolveThemeByName("catppuccin-latte").Resolved; got != "catppuccin-latte" {
-		t.Errorf("latte -> %q", got)
+	if got := bundledTheme("nord"); got.p != bundledPalettes["nord"] || !got.Available {
+		t.Errorf("nord palette mismatch or unavailable: %+v", got)
 	}
 }
 
@@ -305,20 +316,28 @@ func TestColorMath(t *testing.T) {
 	}
 }
 
-// The ghostty theme file mirrors the embedded terminal: chrome from the herdr
-// UI tokens, the 16 ANSI colors from the scheme's canonical palette.
+// The ghostty theme file mirrors the embedded terminal: chrome from the Luvus
+// semantic roles, the 16 ANSI colors from the same derivation xtermJSON uses,
+// so a ghostty window and an embedded terminal render identically.
 func TestGhosttyThemeBody(t *testing.T) {
-	rt := resolveThemeByName("tokyo-night")
+	rt := bundledTheme("ocean")
 	body := string(ghosttyThemeBody(rt))
 	for _, want := range []string{
-		"background = #1a1b26",
-		"foreground = #c0caf5",
-		"palette = 0=#15161e",
-		"palette = 15=#c0caf5",
+		"background = " + rt.p.Mantle,
+		"foreground = " + rt.p.Text,
+		"cursor-text = " + rt.p.Mantle,
+		"palette = 0=" + rt.ansi.Black,
+		"palette = 1=" + rt.ansi.Red,
+		"palette = 15=" + rt.ansi.BrightWhite,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}
+	}
+	// All 16 slots must be emitted: ghostty keeps its own default for any it
+	// does not see, which is how a window ends up half-themed.
+	if got := strings.Count(body, "palette = "); got != 16 {
+		t.Errorf("emitted %d palette entries, want 16:\n%s", got, body)
 	}
 	// Selection is the accent pre-composited over the bg (ghostty has no alpha),
 	// so it must be neither the raw accent nor the raw background.
@@ -328,7 +347,7 @@ func TestGhosttyThemeBody(t *testing.T) {
 			sel = v
 		}
 	}
-	if sel == "" || sel == rt.ui.Accent || sel == rt.ui.PanelBg {
+	if sel == "" || sel == rt.p.Accent || sel == rt.p.Mantle {
 		t.Errorf("selection-background = %q, want a blend", sel)
 	}
 }
@@ -341,26 +360,26 @@ func TestGhosttySetTheme(t *testing.T) {
 		{
 			name:    "replaces an auto light/dark pair",
 			in:      "font-size = 18\ntheme = light:Catppuccin Latte,dark:Catppuccin Frappe\n",
-			want:    "font-size = 18\ntheme = herdr\n",
+			want:    "font-size = 18\ntheme = luvus\n",
 			changed: true,
 		},
 		{
 			name:    "appends when the key is absent",
 			in:      "font-size = 18\n",
-			want:    "font-size = 18\ntheme = herdr\n",
+			want:    "font-size = 18\ntheme = luvus\n",
 			changed: true,
 		},
 		{
 			name:    "leaves comments alone",
 			in:      "# theme = Dracula\ntheme = Dracula\n",
-			want:    "# theme = Dracula\ntheme = herdr\n",
+			want:    "# theme = Dracula\ntheme = luvus\n",
 			changed: true,
 		},
-		{name: "no-op when already in step", in: "theme = herdr\n"},
+		{name: "no-op when already in step", in: "theme = luvus\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, changed := ghosttySetTheme([]byte(c.in), "herdr")
+			got, changed := ghosttySetTheme([]byte(c.in), "luvus")
 			if changed != c.changed {
 				t.Fatalf("changed = %v, want %v", changed, c.changed)
 			}
@@ -376,12 +395,12 @@ func TestGhosttySetTheme(t *testing.T) {
 func TestSyncGhosttyTheme(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
-	rt := resolveThemeByName("catppuccin")
+	rt := bundledTheme("catppuccin-mocha")
 
 	if err := syncGhosttyTheme(b, home, rt); err != nil {
 		t.Fatalf("no config: %v", err)
 	}
-	if _, err := os.ReadFile(filepath.Join(home, ".config", "ghostty", "themes", "herdr")); err != nil {
+	if _, err := os.ReadFile(filepath.Join(home, ".config", "ghostty", "themes", "luvus")); err != nil {
 		t.Fatalf("theme file not written: %v", err)
 	}
 	for _, parts := range ghosttyConfigPaths {
@@ -398,17 +417,17 @@ func TestSyncGhosttyTheme(t *testing.T) {
 		t.Fatalf("with config: %v", err)
 	}
 	got, _ := os.ReadFile(cfg)
-	if string(got) != "font-size = 18\ntheme = herdr\n" {
+	if string(got) != "font-size = 18\ntheme = luvus\n" {
 		t.Errorf("config = %q", got)
 	}
 
 	// A theme flip rewrites the theme file, not the (already-correct) config.
 	before, _ := os.Stat(cfg)
-	if err := syncGhosttyTheme(b, home, resolveThemeByName("gruvbox")); err != nil {
+	if err := syncGhosttyTheme(b, home, bundledTheme("gruvbox")); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
-	body, _ := os.ReadFile(filepath.Join(home, ".config", "ghostty", "themes", "herdr"))
-	if !strings.Contains(string(body), resolveThemeByName("gruvbox").ui.PanelBg) {
+	body, _ := os.ReadFile(filepath.Join(home, ".config", "ghostty", "themes", "luvus"))
+	if !strings.Contains(string(body), bundledTheme("gruvbox").p.Mantle) {
 		t.Errorf("theme file not updated on flip: %s", body)
 	}
 	if after, _ := os.Stat(cfg); !after.ModTime().Equal(before.ModTime()) {
@@ -420,7 +439,7 @@ func TestSyncGhosttyTheme(t *testing.T) {
 // "dark"/"light". That made its terminal-background detection irrelevant but
 // could never reach a RUNNING omp (config.yml is read once, at startup, and omp
 // watches no built-in theme file). Now it gets a generated palette at
-// ~/.omp/agent/themes/herdr.json with both slots pinned to it — the file omp
+// ~/.omp/agent/themes/luvus.json with both slots pinned to it — the file omp
 // discovers, resolves ahead of nothing (no built-in shadows the name), and
 // watches for live reload.
 func TestSyncOmpTheme(t *testing.T) {
@@ -428,7 +447,7 @@ func TestSyncOmpTheme(t *testing.T) {
 	b := &localBackend{}
 	dir := filepath.Join(home, ".omp", "agent")
 	path := filepath.Join(dir, "config.yml")
-	themePath := filepath.Join(dir, "themes", "herdr.json")
+	themePath := filepath.Join(dir, "themes", opencodeThemeName+".json")
 
 	readTheme := func() map[string]any {
 		data, err := os.ReadFile(path)
@@ -455,15 +474,15 @@ func TestSyncOmpTheme(t *testing.T) {
 		if err := json.Unmarshal(data, &f); err != nil {
 			t.Fatalf("theme file isn't json: %v", err)
 		}
-		if f.Schema == "" || f.Name != "herdr" {
-			t.Errorf("theme file must carry $schema and name %q: %s", "herdr", data)
+		if f.Schema == "" || f.Name != "luvus" {
+			t.Errorf("theme file must carry $schema and name %q: %s", "luvus", data)
 		}
 		return f.Colors
 	}
 
 	// A host where omp has never run is left completely alone — a theme switch
 	// must not litter config for a CLI that isn't there.
-	if err := syncOmpTheme(b, home, resolveThemeByName("catppuccin")); err != nil {
+	if err := syncOmpTheme(b, home, bundledTheme("catppuccin-mocha")); err != nil {
 		t.Fatalf("syncOmpTheme (no omp): %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -481,11 +500,11 @@ func TestSyncOmpTheme(t *testing.T) {
 	if err := os.WriteFile(path, []byte("symbolPreset: nerd\ntheme:\n  dark: titanium\n  light: light-paper\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dark := resolveThemeByName("catppuccin")
+	dark := bundledTheme("catppuccin-mocha")
 	if err := syncOmpTheme(b, home, dark); err != nil {
 		t.Fatalf("syncOmpTheme dark: %v", err)
 	}
-	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
+	if got := readTheme(); got["dark"] != "luvus" || got["light"] != "luvus" {
 		t.Errorf("both slots must name the generated theme, got %v", got)
 	}
 	data, _ := os.ReadFile(path)
@@ -495,20 +514,20 @@ func TestSyncOmpTheme(t *testing.T) {
 		t.Errorf("unrelated settings must survive the rewrite: %s", data)
 	}
 	cols := readColors()
-	if cols["text"] != dark.ui.Text || cols["accent"] != dark.ui.Accent || cols["statusLineBg"] != dark.ui.Surface0 {
+	if cols["text"] != dark.p.Text || cols["accent"] != dark.p.Accent || cols["statusLineBg"] != dark.p.Surface0 {
 		t.Errorf("theme file missing core tokens: %v", cols)
 	}
 
 	// A theme flip rewrites the palette file — that write is what a running omp
 	// reloads on, so it is the whole point of the mirror.
-	light := resolveThemeByName("catppuccin-latte")
+	light := bundledTheme("catppuccin-latte")
 	if err := syncOmpTheme(b, home, light); err != nil {
 		t.Fatalf("syncOmpTheme light: %v", err)
 	}
-	if cols := readColors(); cols["text"] != light.ui.Text {
+	if cols := readColors(); cols["text"] != light.p.Text {
 		t.Errorf("theme file not repainted for the light theme: %v", cols)
 	}
-	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
+	if got := readTheme(); got["dark"] != "luvus" || got["light"] != "luvus" {
 		t.Errorf("slots must stay pinned across a flip, got %v", got)
 	}
 
@@ -551,13 +570,13 @@ func TestSyncOmpTheme(t *testing.T) {
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "not a map") {
 		t.Errorf("unparseable config.yml was clobbered: %s", data)
 	}
-	if cols := readColors(); cols["text"] != dark.ui.Text {
+	if cols := readColors(); cols["text"] != dark.p.Text {
 		t.Errorf("theme file should still be written when the config is unreadable: %v", cols)
 	}
 }
 
 // Every token omp requires must be present and a literal "#rrggbb" for every
-// herdr theme: omp resolves a non-hex token as a var reference, throws when it
+// Luvus theme: omp resolves a non-hex token as a var reference, throws when it
 // finds none, and answers a failed load by falling back to its own built-in
 // "dark" — so one malformed value costs the entire palette.
 func TestOmpThemeBodyComplete(t *testing.T) {
@@ -581,11 +600,11 @@ func TestOmpThemeBodyComplete(t *testing.T) {
 		"statusLineStaged", "statusLineDirty", "statusLineUntracked",
 		"statusLineOutput", "statusLineCost", "statusLineSubagents",
 	}
-	// resolveThemeByName, not loadHerdrTheme: the assertions are about the
-	// built-in palettes, and the machine's own herdr config must not decide
-	// whether this test passes.
-	for name := range themes {
-		rt := resolveThemeByName(name)
+	// bundledTheme, not loadLuvusTheme: the assertions are about the bundled
+	// palettes, and the machine's own Luvus selection must not decide whether
+	// this test passes.
+	for name := range bundledPalettes {
+		rt := bundledTheme(name)
 		var f struct {
 			Colors map[string]string `json:"colors"`
 			Export map[string]string `json:"export"`
@@ -610,17 +629,17 @@ func TestOmpThemeBodyComplete(t *testing.T) {
 		}
 	}
 
-	// A herdr [theme.custom] token lasso couldn't parse to a hex must not reach
-	// the file: it falls back to the built-in's value for that token.
-	rt := resolveThemeByName("nord")
-	rt.ui.Text = "steel-blue"
+	// A theme-file role lasso couldn't parse to a hex must not reach the file:
+	// it falls back to the bundled palette's value for that token.
+	rt := bundledTheme("nord")
+	rt.p.Text = "steel-blue"
 	var f struct {
 		Colors map[string]string `json:"colors"`
 	}
 	if err := json.Unmarshal(ompThemeBody(rt), &f); err != nil {
 		t.Fatalf("theme body isn't json: %v", err)
 	}
-	if f.Colors["text"] != themes["nord"].ui.Text {
+	if f.Colors["text"] != bundledPalettes["nord"].Text {
 		t.Errorf("a non-hex token should fall back to the built-in value, got %q", f.Colors["text"])
 	}
 }
@@ -712,7 +731,7 @@ func TestSyncAgentThemesViaHonorsDenyList(t *testing.T) {
 	if err := setThemeSyncFor("minime", false); err != nil {
 		t.Fatalf("disable minime: %v", err)
 	}
-	syncAgentThemesVia(spy, resolveThemeByName("catppuccin"))
+	syncAgentThemesVia(spy, bundledTheme("catppuccin-mocha"))
 	if spy.homeCalls != 0 {
 		t.Errorf("HomeDir called %d times for a switched-off host, want 0", spy.homeCalls)
 	}
@@ -723,11 +742,11 @@ func TestSyncAgentThemesViaHonorsDenyList(t *testing.T) {
 	if err := setThemeSyncFor("minime", true); err != nil {
 		t.Fatalf("re-enable minime: %v", err)
 	}
-	syncAgentThemesVia(spy, resolveThemeByName("catppuccin"))
+	syncAgentThemesVia(spy, bundledTheme("catppuccin-mocha"))
 	if spy.homeCalls != 1 {
 		t.Fatalf("HomeDir called %d times once switched back on, want 1", spy.homeCalls)
 	}
-	claude := filepath.Join(home, ".claude", "themes", "herdr.json")
+	claude := filepath.Join(home, ".claude", "themes", opencodeThemeName+".json")
 	if _, err := os.Stat(claude); err != nil {
 		t.Errorf("%s not written after switching sync back on: %v", claude, err)
 	}
@@ -789,9 +808,9 @@ func TestSyncThemeEverywhereWritesLocal(t *testing.T) {
 	resetHostStore(t)
 	t.Cleanup(func() { resetHostStore(t) })
 
-	syncThemeEverywhere(resolveThemeByName("nord"))
+	syncThemeEverywhere(bundledTheme("nord"))
 
-	path := filepath.Join(home, ".claude", "themes", "herdr.json")
+	path := filepath.Join(home, ".claude", "themes", opencodeThemeName+".json")
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("local theme %s was not written: %v", path, err)
 	}
@@ -799,8 +818,8 @@ func TestSyncThemeEverywhereWritesLocal(t *testing.T) {
 
 // A deny-listed host is excluded before the fan-out reaches themeBackend, which
 // is what prevents an opted-out alias from being dialed merely to sync it. Every
-// other reachable, settled host is in — including one running a herdr this build
-// refuses to speak to ("old") and one running no herdr at all ("stopped"):
+// other reachable, settled host is in — including one running a Luvus this build
+// refuses to speak to ("old") and one running no Luvus at all ("stopped"):
 // writing a theme file is SFTP, and gating it on protocol agreement is how two
 // Macs sat a month behind the fleet's palette. Unreachable ("down") and
 // still-probing ("probeing") rows are no verdict, so they wait for one.
@@ -842,12 +861,12 @@ func TestSyncThemeEverywhereConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			syncThemeEverywhere(resolveThemeByName("catppuccin"))
+			syncThemeEverywhere(bundledTheme("catppuccin-mocha"))
 		}()
 	}
 	wg.Wait()
 
-	path := filepath.Join(home, ".config", "opencode", "themes", "herdr.json")
+	path := filepath.Join(home, ".config", "opencode", "themes", opencodeThemeName+".json")
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("local theme %s was not written: %v", path, err)
 	}

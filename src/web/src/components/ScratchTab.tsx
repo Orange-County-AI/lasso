@@ -8,9 +8,9 @@ import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import { editorTheme } from "@/lib/codemirror"
-import { typeIntoHerdr } from "@/lib/terminal"
+import { typeIntoLuvus } from "@/lib/terminal"
 
-// A persistent scratch pad in the sidebar: jot text, send it to the herdr
+// A persistent scratch pad in the sidebar: jot text, send it to the Luvus
 // terminal without submitting (so the user reviews and presses Enter), save it
 // to a file, or clear it. Content lives in localStorage so it survives reloads.
 // Mirrors fulcrum's scratch editor, adapted to lasso's CodeMirror + API.
@@ -18,16 +18,16 @@ const STORAGE_KEY = "lasso-scratch"
 
 export function ScratchTab() {
   // cwdHost matters here as much as activeCwd: the default save path lands
-  // under the focused pane's cwd, which can live on another host (an
-  // ssh-attached pane) — writing it without the host would create the file on
-  // the wrong machine.
+  // under the focused pane's cwd, which can live on another host than the one
+  // this tab is attached to — writing it without the host would create the file
+  // on the wrong machine.
   const { activeCwd, cwdHost } = useApp()
   const [content, setContent] = React.useState(() => lsGet(STORAGE_KEY) ?? "")
   const [showSave, setShowSave] = React.useState(false)
   const [savePath, setSavePath] = React.useState("")
   const saveInputRef = React.useRef<HTMLInputElement>(null)
 
-  // The editor (plain text — no language) themed to the live herdr palette.
+  // The editor (plain text — no language) themed to the live Luvus palette.
   const extensions = React.useMemo(
     () => [editorTheme, EditorView.lineWrapping],
     []
@@ -43,7 +43,7 @@ export function ScratchTab() {
 
   const handleSend = React.useCallback(() => {
     if (!content) return
-    typeIntoHerdr(content)
+    typeIntoLuvus(content)
   }, [content])
 
   const handleClear = React.useCallback(() => {
@@ -102,7 +102,7 @@ export function ScratchTab() {
           size="sm"
           className="h-7"
           disabled={!content}
-          title="send to the herdr terminal (⌘/Ctrl+Enter)"
+          title="send to the Luvus terminal (⌘/Ctrl+Enter)"
           onClick={handleSend}
         >
           <ArrowRight />

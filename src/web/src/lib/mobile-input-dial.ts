@@ -487,7 +487,7 @@ export function mountTerminalInputDial(
 
   // The dial renders inside the ttyd iframe, so the parent's --h-* palette has to
   // be copied across the document boundary. An appearance change (Settings →
-  // light/dark/herdr, or the OS flipping under "system") only rewrites the parent
+  // light/dark/Luvus, or the OS flipping under "system") only rewrites the parent
   // <html>, and nothing remounts the dial — so watch that element and re-copy,
   // otherwise the control stays painted in whichever palette it mounted with.
   const syncTheme = () => {

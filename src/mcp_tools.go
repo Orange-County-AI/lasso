@@ -10,16 +10,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MCP tool surface. Each tool is a thin wrapper over lasso's existing herdr
+// MCP tool surface. Each tool is a thin wrapper over lasso's existing luvus
 // machinery, resolved against an optional `host` (default "local") via
 // resolveBackend. Three groups:
 //   - discovery:   list_hosts, list_repos, list_branches
 //   - spawning:    create_agent (loop it for the bulk "one per repo" case)
 //   - interaction: list_agents, get_agent, send_agent, read_agent, wait_agent,
-//                  close_agent  (the herdr pane is the stateful conversation)
+//                  close_agent  (the luvus pane is the stateful conversation)
 //   - messaging:   message_agent (queued, sender-enveloped, multi-recipient
 //                  agent-to-agent messages, delivered when the recipient idles)
-//   - introspection: whoami (an agent maps its own $HERDR_PANE_ID back to its
+//   - introspection: whoami (an agent maps its own $LUVUS_PANE_ID back to its
 //                  lasso record, typically to then close_agent itself)
 //   - notifying:   notify (an agent pushes a notification to its HUMAN — the
 //                  deliberate counterpart to the blocked watcher; see notify.go)
@@ -45,37 +45,37 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude, codex, opencode, omp, or pi) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, opencode, omp, or pi) in its own luvus workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the luvus view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. Only agents herdr still has a pane for are listed: a lasso agent whose pane or workspace was closed is reconciled away on this call, so every id you get back is one you can actually send to, read, and close. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing, nothing was reconciled (an unreachable herdr is not evidence that an agent died, so records are kept), and the host may well have agents this call cannot see.",
+		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the luvus pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign luvus sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. Only agents luvus still has a pane for are listed: a lasso agent whose pane or workspace was closed is reconciled away on this call, so every id you get back is one you can actually send to, read, and close. `agents` is an empty array when the host genuinely has none; a `luvus_error` alongside it means the listing is PARTIAL — luvus could not be enumerated, so live statuses, sidebar names, and every foreign session are missing, nothing was reconciled (an unreachable luvus is not evidence that an agent died, so records are kept), and the host may well have agents this call cannot see.",
 	}, listAgentsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "whoami",
-		Description: "Identify the calling agent's OWN lasso agent record, so it can then act on itself — most commonly to call close_agent with the returned id once its work is done. Pass the value of your $HERDR_PANE_ID environment variable as pane_id (e.g. \"p_82\"); lasso maps that herdr pane to the agent it created there. The lasso MCP server runs in lasso's own process, NOT your shell, so it cannot read your environment — you MUST supply $HERDR_PANE_ID yourself. With no `host`: if your credential names the host you run on, that host alone is searched (so a pane id that exists on several hosts still resolves); otherwise every host lasso can address is searched — the local box plus hosts with an alias in its ssh config (pane ids are only unique per host, and your pane is not necessarily on the box the MCP server runs on): a unique match resolves; a cross-host collision returns found:false naming the candidate hosts, so call again with the host you run on. On success returns found:true and the same fields as a list_agents entry (id, type, title, repo, branch, work_dir, root_pane, workspace_id, status, host, ...) under `agent` — pass BOTH the returned id and host to close_agent. If it can't resolve (no pane_id given, or the pane isn't one lasso manages) it returns found:false with a human-readable `detail` instead of erroring.",
+		Description: "Identify the calling agent's OWN lasso agent record, so it can then act on itself — most commonly to call close_agent with the returned id once its work is done. Pass the value of your $LUVUS_PANE_ID environment variable as pane_id (e.g. \"6\"); lasso maps that pane to the agent it created there. The lasso MCP server runs in lasso's own process, NOT your shell, so it cannot read your environment — you MUST supply $LUVUS_PANE_ID yourself. With no `host`: if your credential names the host you run on, that host alone is searched (so a pane id that exists on several hosts still resolves); otherwise every host lasso can address is searched — the local box plus hosts with an alias in its ssh config (pane ids are only unique per host, and your pane is not necessarily on the box the MCP server runs on): a unique match resolves; a cross-host collision returns found:false naming the candidate hosts, so call again with the host you run on. On success returns found:true and the same fields as a list_agents entry (id, type, title, repo, branch, work_dir, root_pane, workspace_id, status, host, ...) under `agent` — pass BOTH the returned id and host to close_agent. If it can't resolve (no pane_id given, or the pane isn't one lasso manages) it returns found:false with a human-readable `detail` instead of erroring.",
 	}, whoamiTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_agent",
-		Description: "Get one agent's details, its live status, and a tail of its recent terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be inspected too.",
+		Description: "Get one agent's details, its live status, and a tail of its recent terminal output. Target it by lasso agent id, by its sidebar/display name, or by luvus pane id (via agent_id or to) — so a foreign luvus session lasso did not create can be inspected too.",
 	}, getAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_agent",
-		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Target it by lasso agent id, by its sidebar/display name (the name in the herdr pane switcher — the handle a human is most likely to use), or by herdr pane id, so this reaches a foreign herdr session lasso did not create (e.g. a bot like \"Clem (OCAI)\") as well as lasso's own agents. A name matching more than one agent/session on the host is refused with the candidates listed rather than guessed — names are only unique per host, so pass `host` (or an id/pane id) to disambiguate. Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
+		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Target it by lasso agent id, by its sidebar/display name (the name in the luvus pane switcher — the handle a human is most likely to use), or by luvus pane id, so this reaches a foreign luvus session lasso did not create (e.g. a bot like \"Clem (OCAI)\") as well as lasso's own agents. A name matching more than one agent/session on the host is refused with the candidates listed rather than guessed — names are only unique per host, so pass `host` (or an id/pane id) to disambiguate. Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
 	}, sendAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "message_agent",
-		Description: "Send one message to one or MORE lasso agents (multi-recipient = broadcast), with a sender envelope and store-and-forward delivery. Unlike send_agent — which types into the pane immediately and suits driving an agent you spawned — message_agent queues the message in lasso and delivers it only when the recipient goes idle, so it never interleaves with an in-flight turn and concurrent senders never race in the composer; everything queued for a recipient arrives together, in order, as one turn. Address recipients by agent title or agent id, optionally host-qualified (\"clem\", \"clem@gigachad\", \"<id>@titan\") — a title must resolve to exactly one live agent, else that recipient is refused with the candidates listed. Only agents on hosts list_hosts shows you are addressable — an ssh-config alias (or the local box) that your credential's scope covers. Agents on any other host are invisible here, and naming such a host is refused with the reason. Identify yourself with from_pane (your $HERDR_PANE_ID) so recipients can reply to your id, or with a free-text `from` label if you are not a lasso agent. Delivery is asynchronous: the call returns per-recipient queued/error results immediately; messages for an agent that stays busy wait, and messages whose agent exits are marked failed rather than delivered to a later occupant of the pane.",
+		Description: "Send one message to one or MORE lasso agents (multi-recipient = broadcast), with a sender envelope and store-and-forward delivery. Unlike send_agent — which types into the pane immediately and suits driving an agent you spawned — message_agent queues the message in lasso and delivers it only when the recipient goes idle, so it never interleaves with an in-flight turn and concurrent senders never race in the composer; everything queued for a recipient arrives together, in order, as one turn. Address recipients by agent title or agent id, optionally host-qualified (\"clem\", \"clem@gigachad\", \"<id>@titan\") — a title must resolve to exactly one live agent, else that recipient is refused with the candidates listed. Only agents on hosts list_hosts shows you are addressable — an ssh-config alias (or the local box) that your credential's scope covers. Agents on any other host are invisible here, and naming such a host is refused with the reason. Identify yourself with from_pane (your $LUVUS_PANE_ID) so recipients can reply to your id, or with a free-text `from` label if you are not a lasso agent. Delivery is asynchronous: the call returns per-recipient queued/error results immediately; messages for an agent that stays busy wait, and messages whose agent exits are marked failed rather than delivered to a later occupant of the pane.",
 	}, messageAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_agent",
-		Description: "Read an agent's terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be read too. source 'recent' returns scrollback (default), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
+		Description: "Read the tail of an agent's terminal screen. Target it by lasso agent id, by its sidebar/display name, or by pane id (via agent_id or to) — so a foreign session lasso did not create can be read too. `lines` bounds how much of the screen comes back (default 100). Pair with wait_agent to do request/response round-trips.",
 	}, readAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -85,12 +85,12 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "close_agent",
-		Description: "Stop an agent: first kill the agent process (claude/codex/opencode/omp/pi) in its pane, then — unless close_pane is false — close the associated herdr pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing the pane). Target it by `agent_id`, or by `pane_id` — pass your own $HERDR_PANE_ID to close YOURSELF without resolving your id via whoami first. Pass the `host` whoami/list_agents returned alongside the id; with no host every host you may address is searched (the local box and hosts with an alias in lasso's ssh config, narrowed to your credential's scope — anywhere else is out of reach), and an id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
+		Description: "Stop an agent: first kill the agent process (claude/codex/opencode/omp/pi) in its pane, then — unless close_pane is false — close the associated pane. For a git agent, set remove_worktree=true to also delete its git worktree (this discards any uncommitted work, so it defaults to false, and implies closing its workspace and pane). Target it by `agent_id`, or by `pane_id` — pass your own $LUVUS_PANE_ID to close YOURSELF without resolving your id via whoami first. Pass the `host` whoami/list_agents returned alongside the id; with no host every host you may address is searched (the local box and hosts with an alias in lasso's ssh config, narrowed to your credential's scope — anywhere else is out of reach), and an id that exists on several hosts is refused rather than guessed, so the wrong host's agent is never killed.",
 	}, closeAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "notify",
-		Description: "Push a notification to the HUMAN who runs this lasso — their phone, if they have lasso on its home screen. Use it when you genuinely need them: a decision only they can make, a question that blocks you, or a long job finishing while they are away. It reaches a locked device, so it is not free: an agent that pings on every step trains them to ignore it. Pass your own $HERDR_PANE_ID as pane_id and the notification is titled with your agent's name and opens on your host, so they know who is asking without reading the body; the server cannot read your environment, so you must supply it. Nothing is collapsed or rate-limited — you asked once and it is delivered once. Check `sent` in the reply: false means no device is registered (`detail` says so) and the human did NOT get it, so do not report that you notified them. `lasso notify \"<message>\"` in a shell is the same call.",
+		Description: "Push a notification to the HUMAN who runs this lasso — their phone, if they have lasso on its home screen. Use it when you genuinely need them: a decision only they can make, a question that blocks you, or a long job finishing while they are away. It reaches a locked device, so it is not free: an agent that pings on every step trains them to ignore it. Pass your own $LUVUS_PANE_ID as pane_id and the notification is titled with your agent's name and opens on your host, so they know who is asking without reading the body; the server cannot read your environment, so you must supply it. Nothing is collapsed or rate-limited — you asked once and it is delivered once. Check `sent` in the reply: false means no device is registered (`detail` says so) and the human did NOT get it, so do not report that you notified them. `lasso notify \"<message>\"` in a shell is the same call.",
 	}, notifyTool)
 }
 
@@ -100,17 +100,17 @@ func registerMCPTools(s *mcp.Server) {
 
 // agentInfo is the MCP-facing view of an agent: the persisted record fields a
 // caller needs to drive it, plus live status when known. It doubles as the view
-// of a herdr session lasso did NOT create (a long-lived bot in a pane lasso
-// never spawned): those carry LassoCreated=false, no lasso id, and are
-// addressed by SidebarName / RootPane instead.
+// of a session lasso did NOT create (a long-lived bot in a pane lasso never
+// spawned): those carry LassoCreated=false, no lasso id, and are addressed by
+// SidebarName / RootPane instead.
 type agentInfo struct {
 	ID   string `json:"id"`
 	Host string `json:"host"`
-	// SidebarName is the display name a human sees for this agent in the herdr
-	// sidebar/pane switcher (herdr's workspace label). It is the handle a user is
-	// most likely to reference — send_agent/get_agent/read_agent accept it as the
-	// target. For a lasso agent it tracks Title; for a foreign session it is the
-	// only human-facing name.
+	// SidebarName is the display name a human sees for this agent in the
+	// sidebar/pane switcher (the runtime's workspace name). It is the handle a
+	// user is most likely to reference — send_agent/get_agent/read_agent accept
+	// it as the target. For a lasso agent it tracks Title; for a foreign session
+	// it is the only human-facing name.
 	SidebarName string `json:"sidebar_name,omitempty"`
 	Title       string `json:"title"`
 	Type        string `json:"type"`
@@ -141,7 +141,7 @@ type agentInfo struct {
 	BootError  string `json:"boot_error,omitempty"`
 	CreatedAt  string `json:"created_at"`
 	// LassoCreated distinguishes agents lasso spawned (true — addressable by id,
-	// closeable, full record) from foreign herdr sessions it merely surfaces
+	// closeable, full record) from foreign sessions it merely surfaces
 	// (false — address by sidebar_name or root_pane; no lasso id to close).
 	LassoCreated bool `json:"lasso_created"`
 }
@@ -157,30 +157,28 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 	}
 }
 
-// agentInfoFromPane is the agentInfo view of a foreign herdr session — a pane
-// lasso did not create (e.g. a long-lived bot). It has no lasso record, so only
-// the herdr-known fields are populated; SidebarName/RootPane are its address.
+// agentInfoFromPane is the agentInfo view of a foreign session — a pane lasso
+// did not create (e.g. a long-lived bot). It has no lasso record, so only the
+// runtime-known fields are populated; SidebarName/RootPane are its address.
+//
+// Its Title is its sidebar name. luvus used to hand over the pane's OSC
+// terminal title, which for an agent pane said what it was working on and made
+// a better title than repeating a workspace label like "norm"; UHP publishes no
+// pane title at all, so there is nothing more specific to fall back to.
 func agentInfoFromPane(host string, gp hostPane) agentInfo {
 	name := sidebarName(gp)
-	// A foreign session has no lasso record to take a title from, so its terminal
-	// title — what the agent says it is working on — is the closest thing, and
-	// far more informative than repeating a workspace label like "norm".
-	title := gp.TerminalTitle
-	if title == "" {
-		title = name
-	}
 	return agentInfo{
-		Host: host, SidebarName: name, Title: title, Agent: gp.Agent,
+		Host: host, SidebarName: name, Title: name, Agent: gp.Agent,
 		WorkspaceID: gp.WorkspaceID, RootPane: gp.PaneID, Status: gp.AgentStatus,
 		LassoCreated: false,
 	}
 }
 
-// sidebarName is the human-facing name a herdr pane shows in the sidebar / pane
-// switcher: the workspace label, falling back to the pane's own label then the
-// tab label when a workspace is unnamed, and last to the terminal title — which
-// for an agent pane is what it is working on, and the only name left when
-// nothing along the way was ever labelled.
+// sidebarName is the human-facing name a pane shows in the sidebar / pane
+// switcher: the workspace name, falling back to the pane's own name and then
+// the tab name when a workspace is unnamed. All three can legitimately be
+// empty — the runtime names nothing by default — in which case a caller has
+// only the pane id to address it by.
 func sidebarName(gp hostPane) string {
 	if gp.WorkspaceLabel != "" {
 		return gp.WorkspaceLabel
@@ -188,10 +186,7 @@ func sidebarName(gp hostPane) string {
 	if gp.PaneLabel != "" {
 		return gp.PaneLabel
 	}
-	if gp.TabLabel != "" {
-		return gp.TabLabel
-	}
-	return gp.TerminalTitle
+	return gp.TabLabel
 }
 
 // ---------------------------------------------------------------------------
@@ -199,13 +194,13 @@ func sidebarName(gp hostPane) string {
 // ---------------------------------------------------------------------------
 
 // resolvedTarget is one addressable pane the interaction tools can drive: either
-// a lasso agent (Record set) or a foreign herdr session (Pane set). Both carry
+// a lasso agent (Record set) or a foreign luvus session (Pane set). Both carry
 // the Host and the PaneID to send_text / read from.
 type resolvedTarget struct {
 	Host   string
 	PaneID string
 	Record *AgentRecord // set when the target is a lasso-created agent
-	Pane   *hostPane    // set when the target is a foreign herdr session
+	Pane   *hostPane    // set when the target is a foreign luvus session
 }
 
 // info projects the target into the MCP-facing agentInfo, preferring the given
@@ -225,7 +220,7 @@ func (t resolvedTarget) info(host, status string) agentInfo {
 	return ai
 }
 
-// agentKind is herdr's harness label for this resolved target.
+// agentKind is luvus's harness label for this resolved target.
 func (t resolvedTarget) agentKind() string {
 	if t.Record != nil {
 		return t.Record.Agent
@@ -237,12 +232,12 @@ func (t resolvedTarget) agentKind() string {
 }
 
 // resolveTarget maps needle to exactly one addressable pane on host. needle may
-// be a lasso agent id, a herdr pane id, or a display name (a lasso agent's title
+// be a lasso agent id, a luvus pane id, or a display name (a lasso agent's title
 // OR a foreign session's sidebar name). Precedence resolves the unambiguous
 // forms first — exact lasso id, then exact pane id — before names, which can
 // collide: a name matching more than one agent/session is refused with the
 // candidates listed rather than guessed (names are only unique per host). recs
-// are the host's lasso agents; panes are its live herdr panes.
+// are the host's lasso agents; panes are its live luvus panes.
 func resolveTarget(host, needle string, recs []AgentRecord, panes []hostPane) (resolvedTarget, error) {
 	needle = strings.TrimSpace(needle)
 	if needle == "" {
@@ -263,7 +258,7 @@ func resolveTarget(host, needle string, recs []AgentRecord, panes []hostPane) (r
 			lassoByPane[recs[i].RootPane] = i
 		}
 	}
-	// Exact herdr pane id — also unique per host. Resolves to the owning lasso
+	// Exact luvus pane id — also unique per host. Resolves to the owning lasso
 	// agent if lasso created that pane, else to the foreign session.
 	for i := range panes {
 		if panes[i].PaneID == needle {
@@ -296,7 +291,7 @@ func resolveTarget(host, needle string, recs []AgentRecord, panes []hostPane) (r
 		}
 		if strings.EqualFold(sidebarName(panes[i]), needle) {
 			matches = append(matches, resolvedTarget{Host: host, PaneID: panes[i].PaneID, Pane: &panes[i]})
-			cands = append(cands, fmt.Sprintf("herdr session %q (pane %s@%s)", sidebarName(panes[i]), panes[i].PaneID, host))
+			cands = append(cands, fmt.Sprintf("luvus session %q (pane %s@%s)", sidebarName(panes[i]), panes[i].PaneID, host))
 		}
 	}
 	switch len(matches) {
@@ -305,23 +300,23 @@ func resolveTarget(host, needle string, recs []AgentRecord, panes []hostPane) (r
 	case 0:
 		return resolvedTarget{}, fmt.Errorf("no agent, pane, or session named %q on host %q — call list_agents to see the addressable names and pane ids", needle, host)
 	default:
-		return resolvedTarget{}, fmt.Errorf("%q is ambiguous on host %q — it matches %d: %s; re-target by lasso agent id or herdr pane id", needle, host, len(matches), strings.Join(cands, "; "))
+		return resolvedTarget{}, fmt.Errorf("%q is ambiguous on host %q — it matches %d: %s; re-target by lasso agent id or luvus pane id", needle, host, len(matches), strings.Join(cands, "; "))
 	}
 }
 
-// hostHerdrPanes lists a host's live herdr panes with their sidebar labels and
-// agent detection, best effort — an unreachable herdr yields nil, so id-based
+// hostLuvusPanes lists a host's live luvus panes with their sidebar labels and
+// agent detection, best effort — an unreachable luvus yields nil, so id-based
 // resolution still works against the lasso records alone. Callers that report
-// to a user should take hostHerdrPanesErr instead and say so: with no panes,
+// to a user should take hostLuvusPanesErr instead and say so: with no panes,
 // every live detail (status, sidebar name, foreign sessions) is silently
 // missing, which reads exactly like a host that simply has no agents.
-func hostHerdrPanes(b Backend, host string) []hostPane {
-	gps, _ := hostHerdrPanesErr(b, host)
+func hostLuvusPanes(b Backend, host string) []hostPane {
+	gps, _ := hostLuvusPanesErr(b, host)
 	return gps
 }
 
-// hostHerdrPanesErr is hostHerdrPanes with the enumeration failure kept.
-func hostHerdrPanesErr(b Backend, host string) ([]hostPane, error) {
+// hostLuvusPanesErr is hostLuvusPanes with the enumeration failure kept.
+func hostLuvusPanesErr(b Backend, host string) ([]hostPane, error) {
 	gps, err := enumerateHostPanes(b, host, host)
 	if err != nil {
 		return nil, err
@@ -342,7 +337,7 @@ func findPane(panes []hostPane, paneID string) (hostPane, bool) {
 // resolveAgentTarget is the tool-facing resolver behind get_agent/read_agent/
 // send_agent: it maps needle (id, pane id, or name) to one addressable pane on
 // host and hands back the backend to drive it. An exact lasso id resolves
-// without touching herdr (preserving the old id-only cost); anything else
+// without touching luvus (preserving the old id-only cost); anything else
 // enumerates the host's panes so names and foreign sessions resolve.
 func resolveAgentTarget(host, needle string) (resolvedTarget, Backend, error) {
 	needle = strings.TrimSpace(needle)
@@ -361,39 +356,39 @@ func resolveAgentTarget(host, needle string) (resolvedTarget, Backend, error) {
 		return resolvedTarget{}, nil, err
 	}
 	for i := range recs {
-		if recs[i].ID == needle { // fast path: exact id needs no herdr enumeration
+		if recs[i].ID == needle { // fast path: exact id needs no luvus enumeration
 			r := recs[i]
 			r.Host = host
 			return resolvedTarget{Host: host, PaneID: r.RootPane, Record: &r}, b, nil
 		}
 	}
-	t, err := resolveTarget(host, needle, recs, hostHerdrPanes(b, host))
+	t, err := resolveTarget(host, needle, recs, hostLuvusPanes(b, host))
 	if err != nil {
 		return resolvedTarget{}, nil, err
 	}
 	return t, b, nil
 }
 
-// surfacedStatus reconciles an agent's live herdr pane status with the outcome
+// surfacedStatus reconciles an agent's live luvus pane status with the outcome
 // of its async boot. A failed boot (the CLI never launched) is terminal and must
 // win, so a later get_agent/list_agents shows "failed" instead of a phantom
 // healthy agent — even if a zombie pane still reports idle. Otherwise the live
-// herdr status is authoritative (it means the agent actually came up).
-func surfacedStatus(rec AgentRecord, herdrStatus string) string {
+// luvus status is authoritative (it means the agent actually came up).
+func surfacedStatus(rec AgentRecord, luvusStatus string) string {
 	if rec.BootStatus == BootFailed {
 		return "failed"
 	}
-	return herdrStatus
+	return luvusStatus
 }
 
 // paneAgentStatus returns the agent status for a pane (working/idle/blocked/
 // unknown), or "" if the pane is gone or carries no agent. This is what
-// wait_agent polls, so it goes through paneAgentPresence: on a host where herdr
+// wait_agent polls, so it goes through paneAgentPresence: on a host where luvus
 // cannot identify the agent its status would otherwise be "unknown" forever, and
 // a wait for "idle" could never be satisfied.
 //
-// It then adds the one gate herdr cannot see: omp's plan approval is a TUI
-// overlay raised after the turn ends, so herdr's omp integration has already
+// It then adds the one gate luvus cannot see: omp's plan approval is a TUI
+// overlay raised after the turn ends, so luvus's omp integration has already
 // published idle/done by the time the agent is parked on it (see ompplan.go).
 func paneAgentStatus(b Backend, paneID string) string {
 	p, ok := paneListEntry(b, paneID)
@@ -405,7 +400,7 @@ func paneAgentStatus(b Backend, paneID string) string {
 }
 
 // paneHasAgent reports whether an agent is still running in the pane. It returns
-// false once the agent process has exited (herdr's agent field clears, and the
+// false once the agent process has exited (luvus's agent field clears, and the
 // harness's title chrome goes with it) or the pane is gone — the signal
 // killPaneAgent waits on.
 func paneHasAgent(b Backend, paneID string) bool {
@@ -417,20 +412,14 @@ func paneHasAgent(b Backend, paneID string) bool {
 	return kind != ""
 }
 
-// paneListEntry finds one pane in herdr's pane.list. ok is false when herdr is
-// unreachable or the pane is gone.
+// paneListEntry finds one pane in the host's topology. ok is false when the
+// runtime is unreachable or the pane is gone.
 func paneListEntry(b Backend, paneID string) (pane, bool) {
-	res, err := b.HerdrCall("pane.list", map[string]any{})
+	panes, err := runtimePanes(b)
 	if err != nil {
 		return pane{}, false
 	}
-	var pl struct {
-		Panes []pane `json:"panes"`
-	}
-	if json.Unmarshal(res, &pl) != nil {
-		return pane{}, false
-	}
-	for _, p := range pl.Panes {
+	for _, p := range panes {
 		if p.PaneID == paneID {
 			return p, true
 		}
@@ -440,16 +429,21 @@ func paneListEntry(b Backend, paneID string) (pane, bool) {
 
 // killPaneAgent terminates the agent process running in a pane without closing
 // the pane itself: it sends Ctrl-C (ETX) — claude and codex both exit on a
-// double interrupt at their prompt — and polls until herdr reports the agent
-// gone, so the pane drops back to a bare shell. Returns whether the agent is
-// confirmed gone. Deliberately avoids Ctrl-D (EOF), which would also exit the
-// shell and close the pane — the caller decides separately whether to close it.
+// double interrupt at their prompt — and polls until the runtime reports the
+// agent gone, so the pane drops back to a bare shell. Returns whether the agent
+// is confirmed gone. Deliberately avoids Ctrl-D (EOF), which would also exit
+// the shell and close the pane — the caller decides separately whether to close
+// it.
+//
+// The interrupt is a raw byte, so it goes through pane.send_input; pane.run
+// would submit "\x03" to the shell as a command line instead of delivering it
+// as a keypress to the agent.
 func killPaneAgent(b Backend, paneID string) bool {
 	if paneID == "" || !paneHasAgent(b, paneID) {
 		return true
 	}
 	interrupt := func() {
-		_, _ = b.HerdrCall("pane.send_text", map[string]any{"pane_id": paneID, "text": "\x03"})
+		_, _ = b.LuvusCall("pane.send_input", map[string]any{"pane": paneID, "text": "\x03"})
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		interrupt()
@@ -465,57 +459,64 @@ func killPaneAgent(b Backend, paneID string) bool {
 	return !paneHasAgent(b, paneID)
 }
 
-// paneReadText reads a pane's output via herdr's pane.read.
-func paneReadText(b Backend, paneID, source string, lines int) (string, error) {
-	params := map[string]any{"pane_id": paneID, "source": source}
+// paneReadText reads a pane's output via pane.read. UHP answers with the pane's
+// visible screen and carries the text flat on the result; `lines` keeps only
+// that many trailing rows. There is no source selector — a `source` param is
+// accepted and ignored — so the scrollback/visible distinction luvus offered is
+// gone and callers get the screen.
+func paneReadText(b Backend, paneID string, lines int) (string, error) {
+	params := map[string]any{"pane": paneID}
 	if lines > 0 {
 		params["lines"] = lines
 	}
-	res, err := b.HerdrCall("pane.read", params)
+	res, err := b.LuvusCall("pane.read", params)
 	if err != nil {
 		return "", err
 	}
 	var r struct {
-		Read struct {
-			Text string `json:"text"`
-		} `json:"read"`
+		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(res, &r); err != nil {
 		return "", err
 	}
-	return r.Read.Text, nil
+	return r.Text, nil
 }
 
-// herdrPaneInfo is herdr's pane.get response: the canonical public pane id and
-// the live agent status are all whoami reads, but pane.get returns the same
-// shape as pane.list, so embedding pane keeps the rest — session, terminal
-// title — available for paneAgentPresence to work from.
-type herdrPaneInfo struct {
-	pane
+// runtimePaneInfo is what pane.get answers with: the pane's canonical id plus
+// its stable workspace/tab identity and live agent state.
+type runtimePaneInfo struct {
+	PaneID      string `json:"pane"`
+	TerminalID  string `json:"terminal_id"`
+	WorkspaceID string `json:"workspace_id"`
+	TabID       string `json:"tab_id"`
+	Label       string `json:"name"`
+	Cwd         string `json:"cwd"`
+	Focused     bool   `json:"focused"`
+	Agent       string `json:"agent"`
+	AgentStatus string `json:"status"`
 }
 
-// paneGet resolves a pane id via herdr's pane.get. herdr accepts BOTH the raw
-// form an agent reads from its $HERDR_PANE_ID env var (e.g. "p_82", herdr's
-// internal global pane counter) AND the public form lasso persists as an agent's
-// root_pane (e.g. "w<workspace>-<n>"), and echoes back the public id either way —
-// so this is how whoami translates the env-reported pane id into the key it
-// matches agents on. ok is false if herdr can't resolve the id (pane gone, or
-// herdr unreachable). AgentStatus comes back resolved through paneAgentPresence,
-// so a caller sees the same status list_agents would show rather than the
-// "unknown" herdr reports for an agent it could not identify.
-func paneGet(b Backend, paneID string) (herdrPaneInfo, bool) {
-	res, err := b.HerdrCall("pane.get", map[string]any{"pane_id": paneID})
+// paneGet resolves a pane id via pane.get: it answers whether the id names a
+// live pane and echoes back its canonical decimal form, along with the stable
+// workspace/tab ids that whoami matches an agent record on. ok is false when
+// the id resolves to nothing (pane gone) or the runtime is unreachable.
+//
+// Under luvus this existed to TRANSLATE between two pane-id namespaces — the
+// raw internal id an agent read from its environment ("p_82") and the public
+// "w<workspace>-<n>" lasso persisted as an agent's root_pane. UHP has one id
+// form, the decimal string that is both what $LUVUS_PANE_ID holds and what
+// every method reports, so there is nothing left to translate; what remains is
+// the liveness check and the topology join.
+func paneGet(b Backend, paneID string) (runtimePaneInfo, bool) {
+	res, err := b.LuvusCall("pane.get", map[string]any{"pane": paneID})
 	if err != nil {
-		return herdrPaneInfo{}, false
+		return runtimePaneInfo{}, false
 	}
-	var r struct {
-		Pane herdrPaneInfo `json:"pane"`
+	var info runtimePaneInfo
+	if json.Unmarshal(res, &info) != nil || info.PaneID == "" {
+		return runtimePaneInfo{}, false
 	}
-	if json.Unmarshal(res, &r) != nil || r.Pane.PaneID == "" {
-		return herdrPaneInfo{}, false
-	}
-	_, r.Pane.AgentStatus = paneAgentPresence(r.Pane.pane)
-	return r.Pane, true
+	return info, true
 }
 
 // ---------------------------------------------------------------------------
@@ -534,8 +535,8 @@ type hostEntry struct {
 	Host       string `json:"host"`       // value to pass as `host` ("local" or an alias)
 	Label      string `json:"label"`      // display name
 	Reachable  bool   `json:"reachable"`  // ssh reachable + probed (always true for local)
-	Running    bool   `json:"running"`    // herdr server up on the host
-	Compatible bool   `json:"compatible"` // herdr protocol matches this lasso
+	Running    bool   `json:"running"`    // luvus server up on the host
+	Compatible bool   `json:"compatible"` // luvus protocol matches this lasso
 	Version    string `json:"version,omitempty"`
 	// State is empty when the probe completed and the booleans above are
 	// authoritative; "probing" when a probe is still in flight (never yet
@@ -681,13 +682,13 @@ type createAgentIn struct {
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
 	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent. Omit to launch it with no instruction at all: the CLI comes up idle, waiting for a send_agent (or for the human watching the pane) — which is how you park a ready-to-go agent on a branch without starting any work."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
-	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web all-panes listing still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
-	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and luvus reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — luvus's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web all-panes listing still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
+	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the luvus view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 }
 
 // toCreateReq maps the MCP tool's input onto the HTTP create payload. Split out
 // of createAgentTool so the parity test can drive the mapping directly — with no
-// backend and no herdr — and prove that every field createAgentIn advertises
+// backend and no luvus — and prove that every field createAgentIn advertises
 // actually lands in the req. A field declared in the schema but forgotten in
 // this literal would drop exactly as silently as one never declared at all,
 // which is the failure mode createParams exists to rule out.
@@ -749,13 +750,13 @@ type listAgentsOut struct {
 	Host string `json:"host"`
 	// Agents is never null: a host with nothing running answers with an empty
 	// array, so "no agents" and "the question could not be answered" stay
-	// distinguishable — the latter is what HerdrError is for.
+	// distinguishable — the latter is what LuvusError is for.
 	Agents []agentInfo `json:"agents"`
-	// HerdrError explains a herdr enumeration that failed. The listing is then
+	// LuvusError explains a luvus enumeration that failed. The listing is then
 	// partial by construction: it can still show the agents lasso *recorded* on
 	// this host, but nothing live — no statuses, no sidebar names, and no
 	// foreign sessions lasso never created. Absent when enumeration succeeded.
-	HerdrError string `json:"herdr_error,omitempty"`
+	LuvusError string `json:"luvus_error,omitempty"`
 }
 
 func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn) (*mcp.CallToolResult, listAgentsOut, error) {
@@ -769,7 +770,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	if err := cs.requireHost(host); err != nil {
 		return nil, listAgentsOut{}, err
 	}
-	// One herdr enumeration for the whole host: pane statuses + sidebar names, and
+	// One luvus enumeration for the whole host: pane statuses + sidebar names, and
 	// the foreign sessions (panes lasso did not create) to surface alongside.
 	// Failing that is not the same as finding nothing, so it is reported rather
 	// than swallowed: a host that list_hosts calls reachable+running+compatible
@@ -778,11 +779,11 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	b, err := resolveBackend(host)
 	var panes []hostPane
 	if err == nil {
-		panes, err = hostHerdrPanesErr(b, host)
+		panes, err = hostLuvusPanesErr(b, host)
 	}
 	// Reconcile before reading the records, so this listing already reflects what
 	// the enumeration just proved rather than answering stale and fixing it for
-	// the next caller. Only on success: an unreachable herdr is not evidence that
+	// the next caller. Only on success: an unreachable luvus is not evidence that
 	// anything died, and the partial listing below says so.
 	if err == nil {
 		reconcileHostAgents(host, panes)
@@ -797,7 +798,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 	}
 	out := listAgentsOut{Host: host, Agents: []agentInfo{}}
 	if err != nil {
-		out.HerdrError = fmt.Sprintf("could not enumerate herdr on host %q: %v — live status, sidebar names, and any herdr sessions lasso did not create are missing from this listing", host, err)
+		out.LuvusError = fmt.Sprintf("could not enumerate luvus on host %q: %v — live status, sidebar names, and any luvus sessions lasso did not create are missing from this listing", host, err)
 	}
 	lassoPanes := map[string]bool{}
 	for _, rec := range recs {
@@ -811,7 +812,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 			lassoPanes[rec.RootPane] = true
 		}
 	}
-	// Foreign herdr sessions — panes running an agent that lasso never created
+	// Foreign luvus sessions — panes running an agent that lasso never created
 	// (long-lived bots like "Clem (OCAI)"). Surfaced so they're discoverable and
 	// addressable by their sidebar name, flagged lasso_created:false.
 	for _, gp := range panes {
@@ -829,7 +830,7 @@ func listAgentsTool(_ context.Context, req *mcp.CallToolRequest, in listAgentsIn
 
 type whoamiIn struct {
 	Host   string `json:"host,omitempty" jsonschema:"Host the calling agent runs on. Omit to search every host this lasso knows: a pane id that matches exactly one host's agent resolves to it; a pane id that collides across hosts is refused (found:false) with the candidate hosts listed, so pass the host you actually run on (compare your hostname against list_hosts labels)."`
-	PaneID string `json:"pane_id,omitempty" jsonschema:"Your own herdr pane id — the value of the $HERDR_PANE_ID environment variable in your shell (e.g. \"p_82\"). The server cannot read your environment, so you must pass it. The public form (\"w<workspace>-<n>\") is also accepted."`
+	PaneID string `json:"pane_id,omitempty" jsonschema:"Your own pane id — the value of the $LUVUS_PANE_ID environment variable in your shell (e.g. \"6\"). The server cannot read your environment, so you must pass it."`
 }
 
 type whoamiOut struct {
@@ -848,7 +849,7 @@ func whoamiTool(ctx context.Context, req *mcp.CallToolRequest, in whoamiIn) (*mc
 // answer whoami would give, rather than a second, subtly different resolution.
 //
 // No host given: do NOT assume "local". The caller only knows its
-// $HERDR_PANE_ID, pane ids are only unique per host, and the box this MCP server
+// $LUVUS_PANE_ID, pane ids are only unique per host, and the box this MCP server
 // runs on is not necessarily the box the caller's pane lives on — so defaulting
 // to local can resolve the id to an unrelated agent on another host (which the
 // caller would then close). Search everywhere instead and refuse to guess on a
@@ -876,20 +877,23 @@ func resolveCallerAgent(ctx context.Context, cs mcpCaller, wantHost, paneID stri
 	return resolveWhoami(b, host, recs, paneID), nil
 }
 
-// resolveWhoami maps a herdr pane id to the lasso agent that owns it. It asks
-// herdr to canonicalize the id (so the raw $HERDR_PANE_ID form resolves to the
-// public root_pane lasso stores), then matches it against the host's agents.
-// Never errors — an unresolvable pane yields found:false with an explanation, so
-// an agent calling whoami on itself gets a usable answer either way.
+// resolveWhoami maps a pane id to the lasso agent that owns it: it confirms the
+// id names a live pane and reads its status, then matches it against the host's
+// agents. Never errors — an unresolvable pane yields found:false with an
+// explanation, so an agent calling whoami on itself gets a usable answer either
+// way.
+//
+// There is one pane-id form under UHP — the decimal string $LUVUS_PANE_ID
+// holds, which is also what lasso persists as root_pane — so this no longer
+// translates between namespaces the way it did against luvus. It still asks the
+// runtime, because that is what distinguishes a live pane from an id whose pane
+// is gone, and because the answer carries the live agent status; a runtime we
+// cannot reach falls back to matching the id as given.
 func resolveWhoami(b Backend, host string, recs []AgentRecord, paneID string) whoamiOut {
 	paneID = strings.TrimSpace(paneID)
 	if paneID == "" {
-		return whoamiOut{Detail: "no pane_id given: pass the value of your $HERDR_PANE_ID environment variable (e.g. \"p_82\"). If that variable is empty or unset, you are not running inside a lasso-managed herdr pane."}
+		return whoamiOut{Detail: "no pane_id given: pass the value of your $LUVUS_PANE_ID environment variable (e.g. \"6\"). If that variable is empty or unset, you are not running inside a lasso-managed pane."}
 	}
-	// herdr's pane.get accepts both the raw env form and the public form and
-	// echoes the public pane id lasso records as root_pane. Fall back to the raw
-	// id if herdr can't resolve it (so a caller that already passed the public
-	// form still matches even when herdr is unreachable).
 	match, status := paneID, ""
 	if info, ok := paneGet(b, paneID); ok {
 		match, status = info.PaneID, info.AgentStatus
@@ -903,20 +907,19 @@ func resolveWhoami(b Backend, host string, recs []AgentRecord, paneID string) wh
 			return whoamiOut{Found: true, Agent: &ai}
 		}
 	}
-	return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on host %q — you may be in a herdr pane lasso did not create, or on a different host than the one you queried.", paneID, host)}
+	return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on host %q — you may be in a pane lasso did not create, or on a different host than the one you queried.", paneID, host)}
 }
 
 // resolveWhoamiAcrossHosts handles whoami with no host argument, mirroring
 // resolveCloseTarget's no-host pane path: every host recorded in this lasso's
-// db is searched (raw-id canonicalization only through the LOCAL herdr — see
-// paneMatchesAcrossHosts), an unclaimed pane may still be adopted from a peer
+// db is searched, an unclaimed pane may still be adopted from a peer
 // lasso's records, and a pane id that matches agents on several hosts is
 // refused rather than guessed — misidentifying the caller as another host's
 // agent is what lets it close that agent next.
 func resolveWhoamiAcrossHosts(ctx context.Context, cs mcpCaller, paneID string) whoamiOut {
 	paneID = strings.TrimSpace(paneID)
 	if paneID == "" {
-		return whoamiOut{Detail: "no pane_id given: pass the value of your $HERDR_PANE_ID environment variable (e.g. \"p_82\"). If that variable is empty or unset, you are not running inside a lasso-managed herdr pane."}
+		return whoamiOut{Detail: "no pane_id given: pass the value of your $LUVUS_PANE_ID environment variable (e.g. \"6\"). If that variable is empty or unset, you are not running inside a lasso-managed pane."}
 	}
 	matches, err := paneMatchesAcrossHosts(cs, paneID)
 	if err != nil {
@@ -949,7 +952,7 @@ func resolveWhoamiAcrossHosts(ctx context.Context, cs mcpCaller, paneID string) 
 				}
 			}
 		}
-		return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on any host this lasso can address (the local box and the hosts with an alias in its ssh config) — you may be in a herdr pane lasso did not create, or the lasso that owns it is unreachable.", paneID)}
+		return whoamiOut{Detail: fmt.Sprintf("pane %q does not map to any lasso agent on any host this lasso can address (the local box and the hosts with an alias in its ssh config) — you may be in a pane lasso did not create, or the lasso that owns it is unreachable.", paneID)}
 	default:
 		return whoamiOut{Detail: fmt.Sprintf("pane id %q matches agents on hosts %s — pane ids are only unique per host, so lasso won't guess which one is you. Call whoami again with `host` set to the host your pane runs on (compare your machine's hostname against the labels in list_hosts).", paneID, hostsOf(matches))}
 	}
@@ -962,7 +965,7 @@ func resolveWhoamiAcrossHosts(ctx context.Context, cs mcpCaller, paneID string) 
 type notifyIn struct {
 	Message string `json:"message" jsonschema:"What to tell the human, in one or two sentences — it is read on a lock screen. Say what you need, not that you need something: \"the auth migration is green, ready to merge?\" rather than \"please look at lasso\"."`
 	Title   string `json:"title,omitempty" jsonschema:"Headline. Defaults to your own agent's name (resolved from pane_id), which is usually what the human wants to see — override it only when the subject matters more than the sender."`
-	PaneID  string `json:"pane_id,omitempty" jsonschema:"Your own herdr pane id — the value of the $HERDR_PANE_ID environment variable in your shell (e.g. \"p_82\"). Used to title the notification with your agent's name and to open it on your host. The server cannot read your environment, so you must pass it; without it the notification still goes out, unattributed."`
+	PaneID  string `json:"pane_id,omitempty" jsonschema:"Your own pane id — the value of the $LUVUS_PANE_ID environment variable in your shell (e.g. \"6\"). Used to title the notification with your agent's name and to open it on your host. The server cannot read your environment, so you must pass it; without it the notification still goes out, unattributed."`
 	Host    string `json:"host,omitempty" jsonschema:"Host you are running on. Omit to resolve it from pane_id, as whoami does."`
 }
 
@@ -1034,8 +1037,8 @@ func notifyTool(ctx context.Context, req *mcp.CallToolRequest, in notifyIn) (*mc
 
 type getAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
-	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id (from create_agent / list_agents). Alternatively use 'to' to target by sidebar name or herdr pane id."`
-	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id (from create_agent / list_agents). Alternatively use 'to' to target by sidebar name or luvus pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a luvus pane id — including a foreign luvus session lasso did not create. Given instead of, or as well as, agent_id."`
 	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines of recent output to include (default 50)."`
 }
 
@@ -1063,17 +1066,17 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 		lines = 50
 	}
 	// Re-enumerate so the returned agent carries a live status and sidebar name
-	// even when it resolved by id (the fast path skips herdr).
-	gp, ok := findPane(hostHerdrPanes(b, b.Name()), t.PaneID)
+	// even when it resolved by id (the fast path skips the runtime).
+	gp, ok := findPane(hostLuvusPanes(b, b.Name()), t.PaneID)
 	if ok {
 		t.Pane = &gp
 	}
-	// omp's plan gate is invisible to herdr's own detection, so a resting omp
-	// pane is checked for it here too — get_agent is where a caller reads the
+	// omp's plan gate is invisible to the runtime's own detection, so a resting
+	// omp pane is checked for it here too — get_agent is where a caller reads the
 	// plan, and it would be an odd contract if the status beside it disagreed
 	// with the one wait_agent just matched on. See ompplan.go.
 	status := ompGateStatus(b, t.PaneID, gp.Agent, gp.AgentStatus)
-	output, _ := paneReadText(b, t.PaneID, "recent", lines)
+	output, _ := paneReadText(b, t.PaneID, lines)
 	return nil, getAgentOut{Agent: t.info(b.Name(), status), Output: output}, nil
 }
 
@@ -1083,8 +1086,8 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 
 type sendAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped. Names are only unique per host — set this when a name exists on more than one host."`
-	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
-	To      string `json:"to,omitempty" jsonschema:"Who to send to: a lasso agent id, its sidebar/display name (the name shown in the herdr pane switcher), or a herdr pane id — including a foreign herdr session lasso did not create (a long-lived bot). A name that matches more than one agent/session is refused with the candidates listed, so re-target by id or pane id. Given instead of, or as well as, agent_id."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Who to send to: a lasso agent id, its sidebar/display name (the name shown in the pane switcher), or a pane id — including a foreign session lasso did not create (a long-lived bot). A name that matches more than one agent/session is refused with the candidates listed, so re-target by id or pane id. Given instead of, or as well as, agent_id."`
 	Text    string `json:"text" jsonschema:"Message to send; it is typed into the agent's pane and submitted with Enter. Refuses without sending when the recipient has unsent composer input; retry after it clears or use message_agent for queued delivery."`
 }
 
@@ -1128,7 +1131,7 @@ func sendAgentTool(_ context.Context, req *mcp.CallToolRequest, in sendAgentIn) 
 type messageAgentIn struct {
 	To       []string `json:"to" jsonschema:"Recipients. Each entry is an agent title or agent id, optionally host-qualified with @ (\"clem\", \"clem@gigachad\", \"<id>@titan\"). A title must resolve to exactly one LIVE agent; ambiguous or dead matches are refused per-recipient with the candidates listed. The same text goes to every recipient."`
 	Text     string   `json:"text" jsonschema:"The message body. Delivered verbatim under an envelope header naming the sender, the message id, and (when the sender is a lasso agent) the reply address."`
-	FromPane string   `json:"from_pane,omitempty" jsonschema:"If you are a lasso agent: your own $HERDR_PANE_ID, so the envelope identifies you and recipients can reply to your id. Resolved exactly like whoami (searching every host unless from_host narrows it)."`
+	FromPane string   `json:"from_pane,omitempty" jsonschema:"If you are a lasso agent: your own $LUVUS_PANE_ID, so the envelope identifies you and recipients can reply to your id. Resolved exactly like whoami (searching every host unless from_host narrows it)."`
 	FromHost string   `json:"from_host,omitempty" jsonschema:"Host your own pane runs on, to disambiguate from_pane when the same pane id exists on several hosts."`
 	From     string   `json:"from,omitempty" jsonschema:"Free-text sender label for non-agent callers (e.g. \"user\", \"ci\"). Ignored when from_pane resolves."`
 }
@@ -1244,10 +1247,9 @@ func messageAgentTool(ctx context.Context, req *mcp.CallToolRequest, in messageA
 
 type readAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
-	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
-	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
-	Source  string `json:"source,omitempty" jsonschema:"\"recent\" (scrollback, default) or \"visible\" (current screen)."`
-	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines to return (default 100)."`
+	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or pane id."`
+	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a pane id — including a foreign session lasso did not create. Given instead of, or as well as, agent_id."`
+	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines of the pane's screen to return (default 100)."`
 }
 
 type readAgentOut struct {
@@ -1268,15 +1270,11 @@ func readAgentTool(_ context.Context, req *mcp.CallToolRequest, in readAgentIn) 
 	if err != nil {
 		return nil, readAgentOut{}, err
 	}
-	source := in.Source
-	if source == "" {
-		source = "recent"
-	}
 	lines := in.Lines
 	if lines == 0 {
 		lines = 100
 	}
-	text, err := paneReadText(b, t.PaneID, source, lines)
+	text, err := paneReadText(b, t.PaneID, lines)
 	if err != nil {
 		return nil, readAgentOut{}, err
 	}
@@ -1347,22 +1345,22 @@ type closeAgentIn struct {
 	// The HTTP endpoint behind `lasso closeme` has always accepted a pane id —
 	// resolveCloseTarget takes both — but the tool only offered agent_id, so an
 	// agent closing ITSELF had to round-trip through whoami first purely to
-	// translate its own $HERDR_PANE_ID into an id. Same resolver, same guards.
-	PaneID         string `json:"pane_id,omitempty" jsonschema:"A herdr pane id instead of an agent id — pass your own $HERDR_PANE_ID to close yourself without looking your id up via whoami first. The raw env form and the public \"w<workspace>-<n>\" form are both accepted."`
-	ClosePane      *bool  `json:"close_pane,omitempty" jsonschema:"Close the agent's herdr pane after killing the process. Defaults to true; set false to leave the pane open as a bare shell."`
+	// translate its own $LUVUS_PANE_ID into an id. Same resolver, same guards.
+	PaneID         string `json:"pane_id,omitempty" jsonschema:"A luvus pane id instead of an agent id — pass your own $LUVUS_PANE_ID to close yourself without looking your id up via whoami first. The raw env form and the public \"w<workspace>-<n>\" form are both accepted."`
+	ClosePane      *bool  `json:"close_pane,omitempty" jsonschema:"Close the agent's luvus pane after killing the process. Defaults to true; set false to leave the pane open as a bare shell."`
 	RemoveWorktree bool   `json:"remove_worktree,omitempty" jsonschema:"For a git agent, also delete its git worktree (discards uncommitted work). Defaults to false. Implies closing the pane."`
 }
 
 type closeAgentOut struct {
 	AgentKilled     bool `json:"agent_killed"`     // the agent process is confirmed gone
-	PaneClosed      bool `json:"pane_closed"`      // the herdr pane was closed
+	PaneClosed      bool `json:"pane_closed"`      // the luvus pane was closed
 	RemovedWorktree bool `json:"removed_worktree"` // the git worktree was deleted
 }
 
 func closeAgentTool(ctx context.Context, req *mcp.CallToolRequest, in closeAgentIn) (*mcp.CallToolResult, closeAgentOut, error) {
 	agentID, paneID := strings.TrimSpace(in.AgentID), strings.TrimSpace(in.PaneID)
 	if agentID == "" && paneID == "" {
-		return nil, closeAgentOut{}, fmt.Errorf("agent_id or pane_id is required (pass your own $HERDR_PANE_ID as pane_id to close yourself)")
+		return nil, closeAgentOut{}, fmt.Errorf("agent_id or pane_id is required (pass your own $LUVUS_PANE_ID as pane_id to close yourself)")
 	}
 	// Resolve the id the same way /api/agent/close does: an explicit host scopes
 	// the lookup to that host's records; without one every host's records are
@@ -1400,9 +1398,9 @@ func closeAgentTool(ctx context.Context, req *mcp.CallToolRequest, in closeAgent
 }
 
 // closeAgentRecord runs the actual shutdown for an already-resolved agent: kill
-// the agent process, then — unless closePane is false — close its herdr pane, or
+// the agent process, then — unless closePane is false — close its pane, or
 // (when removeWorktree is set for a git agent) tear down the whole worktree,
-// which also closes the pane. Shared by the close_agent MCP tool and the
+// which also closes its workspace. Shared by the close_agent MCP tool and the
 // /api/agent/close endpoint that backs `lasso closeme`.
 func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool) (closeAgentOut, error) {
 	// Pane ids are only unique per host, so a backend/host mismatch would drive
@@ -1425,17 +1423,30 @@ func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool
 		_ = b.RemoveAll(ompConfigPath(b, rec.ID))
 	}
 
-	// 2. remove_worktree (git only) tears down the worktree, which also closes
-	//    the pane — so it supersedes the close_pane choice.
+	// 2. remove_worktree (git only) tears down the worktree, which also takes
+	//    its workspace and pane with it — so it supersedes the close_pane choice.
+	//
+	// Both halves are lasso's, matching createWorktree: git removes the tree,
+	// then the workspace rooted there is closed. UHP's worktree.remove cannot do
+	// this job — it has no force, and refuses outright on a worktree with
+	// modified or untracked files ("use --force to delete it"), which is the
+	// normal state of an agent's worktree and precisely the case this option
+	// exists for. Discarding uncommitted work is the documented contract of
+	// remove_worktree, so the removal is done with git's --force rather than
+	// silently downgraded to "refuses whenever the agent actually did anything".
 	if removeWorktree && rec.Type == "git" {
-		if rec.WorkspaceID == "" {
-			return out, fmt.Errorf("agent %q has no workspace to remove", rec.ID)
+		if rec.WorkDir == "" || rec.Repo == "" {
+			return out, fmt.Errorf("agent %q has no worktree to remove", rec.ID)
 		}
-		if _, err := b.HerdrCall("worktree.remove", map[string]any{
-			"workspace_id": rec.WorkspaceID,
-			"force":        true,
-		}); err != nil {
-			return out, fmt.Errorf("worktree.remove: %w", err)
+		if _, err := b.GitOut(rec.Repo, "worktree", "remove", "--force", rec.WorkDir); err != nil {
+			return out, fmt.Errorf("git worktree remove %s: %w", rec.WorkDir, err)
+		}
+		if rec.WorkspaceID != "" {
+			if _, err := b.LuvusCall("workspace.close", map[string]any{
+				"workspace_id": rec.WorkspaceID,
+			}); err != nil && !isNotFound(err) {
+				return out, fmt.Errorf("workspace.close: %w", err)
+			}
 		}
 		out.PaneClosed, out.RemovedWorktree = true, true
 		return out, nil
@@ -1448,7 +1459,7 @@ func closeAgentRecord(b Backend, rec AgentRecord, closePane, removeWorktree bool
 	if rec.RootPane == "" {
 		return out, fmt.Errorf("agent %q has no pane to close", rec.ID)
 	}
-	if _, err := b.HerdrCall("pane.close", map[string]any{"pane_id": rec.RootPane}); err != nil {
+	if _, err := b.LuvusCall("pane.close", map[string]any{"pane": rec.RootPane}); err != nil {
 		return out, fmt.Errorf("pane.close: %w", err)
 	}
 	out.PaneClosed = true

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -16,7 +15,7 @@ import (
 // but concurrent senders race each other in the composer and a message lands
 // mid-turn. message_agent instead enqueues an addressed, sender-identified
 // message in lasso's db; the dispatcher below delivers it into the recipient's
-// pane only when herdr reports the agent idle, batching everything queued for
+// pane only when luvus reports the agent idle, batching everything queued for
 // that recipient into one submitted turn, in arrival order. Recipients are
 // addressed by agent title or id, optionally host-qualified ("clem",
 // "clem@gigachad", "<id>@titan"), resolved against live agents across hosts.
@@ -67,30 +66,24 @@ func messageEnvelope(m AgentMessage) string {
 // ---------------------------------------------------------------------------
 
 // paneLookup returns a host's live panes keyed by pane id. Callers cache per
-// batch (one pane.list per host per message_agent call / dispatch pass).
+// batch (one topology read per host per message_agent call / dispatch pass).
 type paneLookup func(host string) (map[string]pane, error)
 
-// hostPanes fetches a host's pane.list once, keyed by pane id.
+// hostPanes reads a host's panes once, keyed by pane id.
 func hostPanes(b Backend) (map[string]pane, error) {
-	res, err := b.HerdrCall("pane.list", map[string]any{})
+	panes, err := runtimePanes(b)
 	if err != nil {
 		return nil, err
 	}
-	var pl struct {
-		Panes []pane `json:"panes"`
-	}
-	if err := json.Unmarshal(res, &pl); err != nil {
-		return nil, err
-	}
-	m := make(map[string]pane, len(pl.Panes))
-	for _, p := range pl.Panes {
+	m := make(map[string]pane, len(panes))
+	for _, p := range panes {
 		m[p.PaneID] = p
 	}
 	return m, nil
 }
 
 // resolveRecipient maps a recipient spec to exactly one live agent, returning
-// its record and live herdr status. Two passes: first the whole spec as an
+// its record and live luvus status. Two passes: first the whole spec as an
 // id/title (titles may legitimately contain "@"), then split at the last "@"
 // into needle@host. A definitive problem from the first pass (ambiguity, or
 // matches that are all dead) is only surfaced if the split pass finds nothing
@@ -223,7 +216,7 @@ func addrList(recs []AgentRecord) string {
 }
 
 // resolveMessageSender turns the caller's self-identification into the envelope
-// identity: a lasso agent passes its $HERDR_PANE_ID (resolved exactly like
+// identity: a lasso agent passes its $LUVUS_PANE_ID (resolved exactly like
 // whoami, refusing cross-host pane-id collisions), anyone else passes a free-
 // text label. A from_pane that doesn't resolve is an error rather than a silent
 // fallback — a mis-attributed message is worse than a failed send.
@@ -231,7 +224,7 @@ func resolveMessageSender(ctx context.Context, cs mcpCaller, fromPane, fromHost,
 	fromPane = strings.TrimSpace(fromPane)
 	if fromPane == "" {
 		if strings.TrimSpace(from) == "" {
-			return "", "", fmt.Errorf("identify the sender: pass from_pane (your $HERDR_PANE_ID) if you are a lasso agent, or a free-text `from` label otherwise")
+			return "", "", fmt.Errorf("identify the sender: pass from_pane (your $LUVUS_PANE_ID) if you are a lasso agent, or a free-text `from` label otherwise")
 		}
 		return strings.TrimSpace(from), "", nil
 	}
@@ -337,7 +330,7 @@ func messageDispatchLoop(ctx context.Context) {
 
 // dispatchPendingMessages makes one delivery pass over the queue. Everything
 // queued for a recipient goes in a single paneSubmit — one submitted turn, in
-// arrival order — and only when herdr reports the agent idle: submitting
+// arrival order — and only when luvus reports the agent idle: submitting
 // mid-turn would interleave with the in-flight work, and a blocked agent is
 // sitting on a dialog where typed text does not belong. Hosts unreachable this
 // pass are skipped (their messages stay pending); messages whose agent is gone
@@ -399,7 +392,7 @@ func dispatchPendingMessages(backendFor func(string) (Backend, error)) {
 		rec, ok := recs[k.host][k.agentID]
 		p, live := pm[rec.RootPane]
 		// Whether an agent is there, and what it is doing, both go through
-		// paneAgentPresence: on a host where herdr cannot identify the agent, its
+		// paneAgentPresence: on a host where luvus cannot identify the agent, its
 		// own answer is "bare shell, status unknown" — which would fail a queued
 		// message outright rather than hold it until the recipient idles.
 		agent, status := paneAgentPresence(p)

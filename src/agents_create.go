@@ -18,20 +18,21 @@ import (
 )
 
 // Agent creation: a streamlined "New Agent" flow that replaces hand-typing the
-// `herdr workspace/worktree create` + `herdr pane run "claude …"` recipe in the
-// embedded terminal. Two flavors, mirroring fulcrum's git/scratch tasks:
+// `git worktree add` + `luvus workspace open` + `luvus pane run "claude …"`
+// recipe in the embedded terminal. Two flavors, mirroring fulcrum's git/scratch
+// tasks:
 //
-//   - git agent     → a git worktree off a chosen repo/base branch. We call
-//                     herdr's worktree.create, which also creates the repo's
-//                     parent workspace if absent and returns the worktree's
-//                     root pane. We then copy any configured files in, run the
-//                     repo's setup script, and launch the agent — all in that
-//                     pane's shell.
+//   - git agent     → a git worktree off a chosen repo/base branch. lasso cuts
+//                     the worktree itself (createWorktree) and then opens it as
+//                     a workspace (openWorkspaceAt), which is where the root
+//                     pane comes from. We then copy any configured files in, run
+//                     the repo's setup script, and launch the agent — all in
+//                     that pane's shell.
 //   - scratch agent → a plain workspace rooted at a fresh ~/.lasso/scratch dir,
 //                     then the scratch setup script + agent.
 //
-// Everything routes through defaultBackend() so it targets the active herdr host;
-// settings + records persist locally via config.go.
+// Every runtime call goes through the request's own Backend so it targets the
+// host the agent was asked for; settings + records persist locally via config.go.
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -358,7 +359,7 @@ type createAgentReq struct {
 	PlanMode    bool     `json:"plan_mode"`
 	Attachments []string `json:"attachments"` // filenames staged under UploadDir
 	UploadDir   string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
-	// NoFocus suppresses focusing the new agent's herdr pane. The web "New Agent"
+	// NoFocus suppresses focusing the new agent's luvus pane. The web "New Agent"
 	// flow leaves this false (an explicit "take me there"); the MCP create_agent
 	// tool sets it so spawning an agent doesn't yank a watching user away from
 	// their current pane.
@@ -431,7 +432,7 @@ func (e *createErr) Error() string { return e.err.Error() }
 // and waiting for its pane — happens afterward in bootAgent, off the response's
 // critical path, so the create_agent tool honors its "returns immediately" promise
 // even when the boot is slow. Shared by serveCreateAgent (active host) and the MCP
-// create_agent tool (any host, via hostBackend) — so every herdr/file call
+// create_agent tool (any host, via hostBackend) — so every luvus/file call
 // goes through b rather than the package-level helpers that always hit the active
 // host.
 func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
@@ -495,7 +496,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		// Resume-or-redo: a prior create of this exact branch that never reached a
 		// workspace (lasso died mid-create, or the create RPC failed) left an
 		// interrupted record — and possibly the branch + worktree on disk, since
-		// herdr may well have finished the work before the response was lost. The
+		// luvus may well have finished the work before the response was lost. The
 		// modal resends the same generated branch name on retry, so instead of
 		// suffixing -2 next to an orphan, pick the interrupted attempt back up.
 		var adoptDir string
@@ -510,7 +511,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 					branch = uniqueBranch(b, repo, branch)
 				}
 			}
-			// Branch absent → herdr never ran the create; the name is free to reuse.
+			// Branch absent → luvus never ran the create; the name is free to reuse.
 		} else {
 			branch = uniqueBranch(b, repo, branch)
 		}
@@ -532,9 +533,9 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		}
 		rec.Repo, rec.BaseBranch, rec.Branch, rec.WorkDir = repo, base, branch, workDir
 
-		// Write-ahead: persist the record BEFORE the herdr call, so a create that
-		// dies mid-flight (a lasso restart during `lasso update`, a dropped SSH
-		// forward) leaves a visible, resumable record instead of an untracked
+		// Write-ahead: persist the record BEFORE the worktree exists, so a create
+		// that dies mid-flight (a lasso restart during `lasso update`, a dropped
+		// SSH forward) leaves a visible, resumable record instead of an untracked
 		// branch + worktree the next attempt then collides with.
 		rec.BootStatus = BootCreating
 		if err := appendAgent(host, rec); err != nil {
@@ -544,34 +545,33 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		var ws, pane string
 		var err error
 		if adoptDir != "" {
-			ws, pane, err = attachWorkspaceAt(b, workDir, req.Title, !req.NoFocus)
+			ws, pane, err = openWorkspaceAt(b, workDir, req.Title, !req.NoFocus)
 		} else {
-			var res json.RawMessage
-			res, err = b.HerdrCall("worktree.create", map[string]any{
-				"cwd":    repo,
-				"branch": branch,
-				"base":   base,
-				"path":   workDir,
-				"label":  req.Title,
-				// Focus the new worktree's pane so the user lands on the agent as it
-				// boots (the New Agent flow is an explicit "take me there"); suppressed
-				// for MCP-spawned agents so they don't yank a watching user away.
-				"focus": !req.NoFocus,
-			})
-			if err == nil {
-				ws, pane = parseCreateResult(res)
+			// lasso cuts the worktree itself rather than through the runtime.
+			// UHP's worktree.create takes ONLY a branch name: it derives the
+			// repository from whichever workspace happens to be active, plants the
+			// checkout at its own ~/.luvus/worktrees/<repo>/<branch>, ignores any
+			// base revision, and answers with neither a workspace nor a pane. All
+			// four are things this flow decides — the repo the user picked, the
+			// base branch they picked, a path under lasso's own worktrees tree, and
+			// the workspace + root pane the record is built from. So the git plumbing
+			// runs on the backend directly and the result is then OPENED as a
+			// workspace, which is the same two facts luvus's worktree.create used to
+			// return in one call.
+			if err = createWorktree(b, repo, branch, base, workDir); err == nil {
+				ws, pane, err = openWorkspaceAt(b, workDir, req.Title, !req.NoFocus)
 			}
 		}
 		if err != nil {
 			// Keep the write-ahead record (as failed, still workspace-less) so the
-			// orphan is visible and a retry can adopt whatever herdr got done.
-			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("worktree.create: %v", err))
+			// orphan is visible and a retry can adopt whatever got done.
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("create worktree: %v", err))
 			// 500, not 502/503/504: those codes signal "the browser couldn't reach
 			// lasso, resubmitting the same branch is safe" (see the client's
-			// isTransientCreateError + the resume-or-redo path above). A herdr RPC
-			// that lasso DID reach and that failed is a definitive error — retrying
-			// it just loops, so keep it out of the transient set.
-			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("worktree.create: %w", err)}
+			// isTransientCreateError + the resume-or-redo path above). A git command
+			// or RPC that lasso DID reach and that failed is a definitive error —
+			// retrying it just loops, so keep it out of the transient set.
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("create worktree: %w", err)}
 		}
 		rec.WorkspaceID, rec.RootPane = ws, pane
 
@@ -592,19 +592,14 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("mkdir %s: %v", workDir, err))
 			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("mkdir %s: %w", workDir, err)}
 		}
-		res, err := b.HerdrCall("workspace.create", map[string]any{
-			"cwd":   workDir,
-			"label": req.Title,
-			"focus": !req.NoFocus, // land on the new agent's pane as it boots (web flow); suppressed for MCP
-		})
+		ws, pane, err := openWorkspaceAt(b, workDir, req.Title, !req.NoFocus)
 		if err != nil {
-			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("workspace.create: %v", err))
-			// 500, not 502: a reached-but-failed herdr call is definitive, not the
-			// "lost response, safe to resubmit" case the client retries (see the
-			// matching note in the git branch above).
-			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("workspace.create: %w", err)}
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("workspace.open: %v", err))
+			// 500, not 502: a reached-but-failed RPC is definitive, not the "lost
+			// response, safe to resubmit" case the client retries (see the matching
+			// note in the git branch above).
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("workspace.open: %w", err)}
 		}
-		ws, pane := parseCreateResult(res)
 		rec.WorkspaceID, rec.RootPane = ws, pane
 
 	default:
@@ -642,7 +637,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 	// root pane exist (the contract the create_agent tool promises). bootAgent
 	// records its own outcome onto the persisted row; b is captured so the boot
 	// always targets the host the agent was created on, even if the active host
-	// changes. A pane-less create (herdr returned no root pane) has nowhere to boot,
+	// changes. A pane-less create (luvus returned no root pane) has nowhere to boot,
 	// so there's nothing to launch.
 	if rootPane != "" {
 		go bootAgent(b, host, rec, req.UploadDir)
@@ -740,19 +735,46 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 	_ = updateAgentBootStatus(rec.ID, host, BootReady, "")
 }
 
-// parseCreateResult pulls the workspace_id and root pane_id out of a
-// worktree.create / workspace.create response.
-func parseCreateResult(res json.RawMessage) (workspaceID, rootPane string) {
-	var r struct {
-		Workspace struct {
-			WorkspaceID string `json:"workspace_id"`
-		} `json:"workspace"`
-		RootPane struct {
-			PaneID string `json:"pane_id"`
-		} `json:"root_pane"`
+// createWorktree cuts a git worktree for branch at path, off base, in repo — on
+// cur's host, through the same `git -C` channel the branch listing already uses.
+//
+// This is deliberately git rather than UHP's worktree.create, which accepts a
+// branch name and nothing else: the repository it acts on is whichever
+// workspace is active, the checkout lands in its own state directory, `base` has
+// no representation at all, and the reply carries no workspace or pane. Every
+// one of those is a decision this flow has already made.
+//
+// git creates the leaf directory but not its parents, and the path is nested
+// per repo (worktrees/<repo>/<dir>), so the parent is made first.
+func createWorktree(cur Backend, repo, branch, base, path string) error {
+	if err := cur.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	_ = json.Unmarshal(res, &r)
-	return r.Workspace.WorkspaceID, r.RootPane.PaneID
+	// GitOut already folds git's stderr into the error (see gitOutLocal), which
+	// is where "branch already exists" / "path already used by worktree" arrive.
+	if _, err := cur.GitOut(repo, "worktree", "add", "-b", branch, path, base); err != nil {
+		return err
+	}
+	return nil
+}
+
+// parseWorkspaceIndex reads the 0-based workspace position out of a
+// workspace.open reply (`{"type":"workspace","workspace":"2"}`). That index is
+// the ONLY identifier the reply carries — the stable workspace_id has to be
+// resolved from it — and it is a JSON string, matching workspace.list's own
+// stringly-typed `workspace`/`display_position`.
+func parseWorkspaceIndex(res json.RawMessage) (int, bool) {
+	var r struct {
+		Workspace json.Number `json:"workspace"`
+	}
+	if json.Unmarshal(res, &r) != nil || r.Workspace == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(r.Workspace.String())
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // branchExists reports whether branch exists in the repo on cur's host.
@@ -775,74 +797,148 @@ func uniqueBranch(cur Backend, repo, branch string) string {
 	}
 }
 
-// findWorkspaceForDir looks for a live herdr workspace already rooted at
-// workDir (worktree checkout path) and returns it with one of its panes — the
-// case where an interrupted create fully completed herdr-side before the
-// response was lost. ok is false when no workspace matches or its panes can't
-// be resolved (the caller then creates a fresh workspace at the dir).
-func findWorkspaceForDir(b Backend, workDir string) (wsID, paneID string, ok bool) {
-	res, err := b.HerdrCall("workspace.list", map[string]any{})
+// openWorkspaceAt opens or adopts dir and returns its stable workspace/pane IDs.
+// Reusing an existing workspace is intentional for interrupted agent creation
+// and history reopen; fresh bare terminals use terminal.backend.create instead.
+//
+// Three properties of the UHP call shape drive the implementation:
+//
+//   - It takes no label. Naming is a second call (workspace.rename), whose name
+//     is capped at 40 characters, so an agent title has to be trimmed to fit.
+//   - Its reply names only the workspace's 0-based POSITION, so the stable id
+//     comes from matching that position in the workspace listing. Position, not
+//     cwd: two workspaces may legitimately be rooted at one directory, and the
+//     position is the one answer that is unambiguous.
+//   - It ALWAYS focuses. There is no no-focus form, so honoring focus=false
+//     means remembering the focused pane first and putting focus back after.
+//
+// The whole sequence therefore runs under the host's mutation lock: it reads
+// focus, changes focus, and reads a position-indexed listing, none of which
+// survives another client (or another lasso create) opening a workspace
+// concurrently. openWorkspaceLocked is the same thing for a caller that already
+// holds that lock (the lock is not reentrant), and which therefore also owns
+// restoring focus.
+func openWorkspaceAt(b Backend, dir, label string, focus bool) (wsID, paneID string, err error) {
+	unlock := runtimeMutationLock(b)
+	defer unlock()
+
+	var prevFocus string
+	if !focus {
+		prevFocus = focusedPaneID(b)
+	}
+	wsID, paneID, err = openWorkspaceLocked(b, dir, label)
+	if prevFocus != "" && prevFocus != paneID {
+		// A restore that fails leaves focus on the workspace this call just
+		// opened, which is exactly what the caller asked not to happen — so it
+		// is reported rather than swallowed. It does not mask an earlier
+		// failure: that one already explains why there is nothing to return.
+		if _, ferr := b.LuvusCall("pane.focus", map[string]any{"pane": prevFocus}); ferr != nil && err == nil {
+			err = fmt.Errorf("opened %s but could not restore focus to pane %s: %w", dir, prevFocus, ferr)
+		}
+	}
+	return wsID, paneID, err
+}
+
+func openWorkspaceLocked(b Backend, dir, label string) (wsID, paneID string, err error) {
+	res, err := b.LuvusCall("workspace.open", map[string]any{"path": dir})
 	if err != nil {
-		return "", "", false
+		return "", "", err
 	}
-	var wl struct {
-		Workspaces []struct {
-			WorkspaceID string `json:"workspace_id"`
-			Worktree    *struct {
-				CheckoutPath string `json:"checkout_path"`
-			} `json:"worktree"`
-		} `json:"workspaces"`
+	idx, ok := parseWorkspaceIndex(res)
+	if !ok {
+		return "", "", fmt.Errorf("workspace.open answered without a workspace position: %s", res)
 	}
-	if json.Unmarshal(res, &wl) != nil {
-		return "", "", false
+	wss, err := runtimeWorkspaces(b)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve the opened workspace: %w", err)
 	}
-	for _, w := range wl.Workspaces {
-		if w.Worktree != nil && w.Worktree.CheckoutPath == workDir {
-			wsID = w.WorkspaceID
+	// The position must be checked against the directory before anything is
+	// done with it. The host mutex serializes only LASSO's own mutations: any
+	// other UHP client — the TUI, a second lasso, a person running `luvus
+	// workspace close` — may reorder or close a workspace between the open's
+	// index reply and this listing, at which point that index names somebody
+	// else's workspace. Renaming it, and then launching an agent into its pane,
+	// is the worst possible outcome, so a mismatch is refused outright.
+	want := filepath.Clean(dir)
+	for _, ws := range wss {
+		if ws.Number == idx {
+			if filepath.Clean(ws.Cwd) != want {
+				return "", "", fmt.Errorf("workspace.open reported position %d, which now holds %q rather than %q — the workspace order changed underneath the open", idx, ws.Cwd, dir)
+			}
+			wsID = ws.WorkspaceID
 			break
 		}
 	}
 	if wsID == "" {
-		return "", "", false
+		return "", "", fmt.Errorf("workspace.open reported position %d, which no workspace holds", idx)
 	}
-	pres, err := b.HerdrCall("pane.list", map[string]any{})
-	if err != nil {
-		return "", "", false
-	}
-	var pl struct {
-		Panes []pane `json:"panes"`
-	}
-	if json.Unmarshal(pres, &pl) != nil {
-		return "", "", false
-	}
-	for _, p := range pl.Panes {
-		if p.WorkspaceID == wsID {
-			return wsID, p.PaneID, true
+
+	if name := workspaceName(label); name != "" {
+		// Cosmetic, and deliberately not fatal: an agent whose workspace kept the
+		// directory's own name is still the agent that was asked for.
+		if _, err := b.LuvusCall("workspace.rename", map[string]any{
+			"workspace_id": wsID,
+			"name":         name,
+		}); err != nil {
+			log.Printf("workspace.rename %s to %q: %v", wsID, name, err)
 		}
 	}
-	return "", "", false
+
+	panes, err := runtimePanes(b)
+	if err != nil {
+		return wsID, "", fmt.Errorf("resolve the opened workspace's pane: %w", err)
+	}
+	for _, p := range panes {
+		if p.WorkspaceID != wsID {
+			continue
+		}
+		if paneID == "" || p.Focused {
+			paneID = p.PaneID
+		}
+	}
+	// A workspace with no pane is not a usable result: every caller here needs
+	// somewhere to launch, and returning a nil error with an empty pane would
+	// hand back a record pointing at nothing.
+	if paneID == "" {
+		return wsID, "", fmt.Errorf("workspace %s at %s holds no pane to run in", wsID, dir)
+	}
+	return wsID, paneID, nil
 }
 
-// attachWorkspaceAt reattaches a herdr workspace to a worktree dir left by an
-// interrupted create: reuse the workspace herdr may already have for the dir,
-// else create a fresh one rooted there (mirroring serveAgentReopen).
-func attachWorkspaceAt(b Backend, workDir, label string, focus bool) (wsID, paneID string, err error) {
-	if wsID, paneID, ok := findWorkspaceForDir(b, workDir); ok {
-		if focus {
-			_, _ = b.HerdrCall("workspace.focus", map[string]any{"workspace_id": wsID})
-		}
-		return wsID, paneID, nil
+// workspaceName trims a label to something workspace.rename will accept: it
+// rejects an empty name outright and caps at 40 characters. Agent titles are
+// written for a sidebar row rather than for that budget (autoTitleMaxLen alone
+// is 60), so the cap is cut back to a word boundary instead of mid-token.
+func workspaceName(label string) string {
+	label = strings.TrimSpace(label)
+	if len([]rune(label)) <= workspaceNameMaxLen {
+		return label
 	}
-	res, err := b.HerdrCall("workspace.create", map[string]any{
-		"cwd":   workDir,
-		"label": label,
-		"focus": focus,
-	})
+	runes := []rune(label)[:workspaceNameMaxLen]
+	if i := strings.LastIndex(string(runes), " "); i > 0 {
+		return strings.TrimSpace(string(runes)[:i])
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+// workspaceNameMaxLen is UHP's cap on a workspace (and tab) name; a longer one
+// is refused with invalid_request rather than truncated for us.
+const workspaceNameMaxLen = 40
+
+// focusedPaneID is the pane the runtime currently has focused, or "" when that
+// cannot be read. Used to put focus back after a workspace.open that a caller
+// asked not to be taken to.
+func focusedPaneID(b Backend) string {
+	panes, err := runtimePanes(b)
 	if err != nil {
-		return "", "", err
+		return ""
 	}
-	wsID, paneID = parseCreateResult(res)
-	return wsID, paneID, nil
+	for _, p := range panes {
+		if p.Focused {
+			return p.PaneID
+		}
+	}
+	return ""
 }
 
 // copyRepoFiles copies files matching the comma/newline-separated globs from the
@@ -1013,19 +1109,17 @@ func agentPrompt(rec AgentRecord) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// maxTypedLaunch is the largest launch command paneRun will type inline.
-// pane.send_text delivers raw bytes to the pane's PTY, and the kernel TTY
-// input queue is small (MAX_INPUT is 1024 bytes on macOS) — bytes the shell
-// hasn't drained past that are silently dropped, which unbalances the
-// prompt's quoting and leaves the remainder executing as shell fragments.
-// 512 leaves ample headroom for echo/redraw latency while the shell drains.
-const maxTypedLaunch = 512
+// maxTypedLaunch leaves headroom inside UHP's 1 MiB request frame. Larger
+// prompts are staged in files; multiline prompts are always staged because
+// pane.run submits newline-separated commands individually.
+const maxTypedLaunch = 64 << 10
 
 // needsPromptFile reports whether a launch command must deliver its prompt via
-// a staged file instead of inline on the typed command line. Two typed-delivery
-// hazards force the file path: an embedded newline (each "\n"/"\r" typed at a
-// shell is an accept-line, so every prompt line would execute as its own broken
-// command) and sheer size (see maxTypedLaunch).
+// a staged file instead of inline on the submitted command line. Two hazards
+// force the file path: an embedded newline (pane.run submits a multi-line
+// command as one command PER LINE, so every prompt line would execute as its
+// own broken command — verified against UHP 0.13.4) and sheer size (see
+// maxTypedLaunch).
 func needsPromptFile(prompt, cmd string) bool {
 	return strings.ContainsAny(prompt, "\n\r") || len(cmd) > maxTypedLaunch
 }
@@ -1059,7 +1153,7 @@ func agentPromptPath(b Backend, agentID string) string {
 // bytes eaten (e.g. "bun i" arriving as "i"). Runs on b — the backend the agent
 // was created on — so it never targets the wrong host if the active one changes.
 //
-// It returns an error when a pane write fails — the pane is gone or the herdr RPC
+// It returns an error when a pane write fails — the pane is gone or the luvus RPC
 // itself errored, i.e. the agent never got its launch command and won't come up.
 // bootAgent turns that into a BootFailed status. waitPaneReady and the trust
 // auto-accept stay best-effort (a slow shell or an absent trust dialog is normal),
@@ -1086,30 +1180,20 @@ func launchAgentInPane(b Backend, paneID, setup, agentCmd string) error {
 
 // waitPaneReady blocks until the pane's visible output stops changing (the shell
 // finished sourcing its rc and settled at a prompt) or a timeout elapses, so the
-// command we type next isn't raced by shell startup. Prompt-agnostic: it watches
-// for the screen to stabilize rather than matching any particular prompt string.
+// command we submit next isn't raced by shell startup. Prompt-agnostic: it
+// watches for the screen to stabilize rather than matching any particular prompt
+// string.
 func waitPaneReady(b Backend, paneID string) {
 	deadline := time.Now().Add(10 * time.Second)
 	var prev string
 	stable := 0
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
-		res, err := b.HerdrCall("pane.read", map[string]any{
-			"pane_id": paneID,
-			"source":  "visible",
-		})
-		if err != nil {
+		text, ok := paneVisibleText(b, paneID)
+		if !ok {
 			continue
 		}
-		var r struct {
-			Read struct {
-				Text string `json:"text"`
-			} `json:"read"`
-		}
-		if json.Unmarshal(res, &r) != nil {
-			continue
-		}
-		t := strings.TrimRight(r.Read.Text, " \t\n")
+		t := strings.TrimRight(text, " \t\n")
 		if t != "" && t == prev {
 			if stable++; stable >= 2 { // ~600ms unchanged → settled
 				return
@@ -1121,31 +1205,26 @@ func waitPaneReady(b Backend, paneID string) {
 	}
 }
 
-// paneRun sends a command line into a pane's shell (text + Enter) — the
-// pane.send_text behind `herdr pane run`. Targets a cooked-mode shell, where a
-// trailing "\n" ends the line. The bytes land on the PTY raw, so the command
-// must be short and single-line (see needsPromptFile) — embedded newlines
-// submit fragments, and anything past the kernel TTY input queue is dropped.
-// The leading "\x15" (^U — VKILL in cooked mode, unix-line-discard in
-// readline/zsh/fish, a no-op on an empty line) discards whatever is already
-// pending on the line: the pane is focused in the UI for a boot window that can
-// run 20+ seconds, and a keystroke typed into it would otherwise concatenate
-// with our command and execute as one mangled line. For submitting to an
-// interactive agent TUI use paneSubmit instead — no ^U there, since the TUIs
-// read raw and it would edit their composer rather than clear a shell line.
-// Returns the herdr RPC error so the caller (launchAgentInPane) can tell a boot
-// that never reached the pane from one that did.
+// paneRun submits one single-line shell command through UHP's queued action
+// channel. Interactive agent composers use paneSubmit's raw input instead.
+//
+// Returns the RPC error so the caller (launchAgentInPane) can tell a boot that
+// never reached the pane from one that did.
 func paneRun(b Backend, paneID, command string) error {
-	_, err := b.HerdrCall("pane.send_text", map[string]any{
-		"pane_id": paneID,
-		"text":    "\x15" + command + "\n",
+	_, err := b.LuvusCall("pane.run", map[string]any{
+		"pane":    paneID,
+		"command": command,
 	})
 	return err
 }
 
 // paneSubmit types text into an interactive agent's pane and submits it as a
-// turn. The caller supplies agentKind from herdr's agent metadata so compositor
-// reads use the matching harness geometry.
+// turn. The caller supplies agentKind from the runtime's agent metadata so
+// composer reads use the matching harness geometry.
+//
+// It goes through pane.send_input, UHP's raw-byte channel, NOT pane.run: the
+// target is a raw-mode TUI's composer, not a shell reading a command line, and
+// pane.run would submit the text as a shell action instead of pasting it.
 //
 // The text and Enter must be separate PTY writes: raw-mode TUIs treat a newline
 // appended to bracketed paste as input, not an Enter key. After the paste lands,
@@ -1157,9 +1236,9 @@ func paneSubmit(b Backend, paneID, agentKind, text string) bool {
 	if composerGuardEnabled() && paneComposerState(b, paneID, agentKind) == ComposerDraft {
 		return false
 	}
-	_, _ = b.HerdrCall("pane.send_text", map[string]any{
-		"pane_id": paneID,
-		"text":    text,
+	_, _ = b.LuvusCall("pane.send_input", map[string]any{
+		"pane": paneID,
+		"text": text,
 	})
 	// Wait for the paste to land in the composer before pressing Enter, so we
 	// don't submit an empty box. If we never see it (read failures, an unfamiliar
@@ -1173,9 +1252,9 @@ func paneSubmit(b Backend, paneID, agentKind, text string) bool {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, _ = b.HerdrCall("pane.send_text", map[string]any{
-			"pane_id": paneID,
-			"text":    "\r",
+		_, _ = b.LuvusCall("pane.send_input", map[string]any{
+			"pane": paneID,
+			"text": "\r",
 		})
 		time.Sleep(300 * time.Millisecond)
 		if paneInputEmpty(b, paneID, agentKind) || time.Now().After(deadline) {
@@ -1256,11 +1335,13 @@ func acceptTrustPrompt(b Backend, paneID string) {
 
 // sendPaneKey types raw bytes into a pane, ignoring transport errors the way
 // the rest of this dialog handling does — a missed keystroke shows up as a
-// dialog still on screen, which the caller is already polling for.
+// dialog still on screen, which the caller is already polling for. Raw bytes,
+// so pane.send_input rather than pane.run: an escape sequence is a keypress in
+// a TUI, not a shell command to submit.
 func sendPaneKey(b Backend, paneID, text string) {
-	_, _ = b.HerdrCall("pane.send_text", map[string]any{
-		"pane_id": paneID,
-		"text":    text,
+	_, _ = b.LuvusCall("pane.send_input", map[string]any{
+		"pane": paneID,
+		"text": text,
 	})
 }
 
@@ -1297,26 +1378,24 @@ func trustPromptYesHighlighted(text string) (yes bool, found bool) {
 }
 
 // paneVisibleText returns the pane's current screen (not its scrollback) as
-// text. ok is false when the pane is gone, the herdr RPC failed, or the reply
-// didn't parse — so callers that scan the screen for a dialog answer "no dialog"
-// on a read they couldn't make, rather than inventing one either way.
+// text. ok is false when the pane is gone, the RPC failed, or the reply didn't
+// parse — so callers that scan the screen for a dialog answer "no dialog" on a
+// read they couldn't make, rather than inventing one either way.
+//
+// pane.read answers with the visible screen and carries its text flat on the
+// result; it takes no source selector (UHP ignores one).
 func paneVisibleText(b Backend, paneID string) (string, bool) {
-	res, err := b.HerdrCall("pane.read", map[string]any{
-		"pane_id": paneID,
-		"source":  "visible",
-	})
+	res, err := b.LuvusCall("pane.read", map[string]any{"pane": paneID})
 	if err != nil {
 		return "", false
 	}
 	var r struct {
-		Read struct {
-			Text string `json:"text"`
-		} `json:"read"`
+		Text string `json:"text"`
 	}
 	if json.Unmarshal(res, &r) != nil {
 		return "", false
 	}
-	return r.Read.Text, true
+	return r.Text, true
 }
 
 // paneShowsTrustPrompt reports whether the pane's visible screen currently shows

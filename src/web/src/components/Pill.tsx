@@ -13,7 +13,7 @@ const toneClass: Record<Tone, string> = {
 }
 
 // A rounded status tag — the original UI's `.pill`, rebuilt on shadcn's Badge
-// so it inherits the live theme. Tones map to herdr's semantic palette. Uses a
+// so it inherits the live theme. Tones map to Luvus's semantic palette. Uses a
 // modest corner radius (rounded-md) rather than a full stadium: capsule ends
 // read as tacky once the content is wide or wraps to multiple lines (a long
 // repo path, the version strings on a narrow Settings column).

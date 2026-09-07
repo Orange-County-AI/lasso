@@ -34,7 +34,7 @@ interface XTerm {
   attachCustomKeyEventHandler?: (h: (e: KeyboardEvent) => boolean) => void
   resize?: (cols: number, rows: number) => void
   // xterm.js public IParser. ttyd 1.7.4 never registers an OSC 52 handler, so
-  // we add our own (wireOsc52) to honour herdr's clipboard copies.
+  // we add our own (wireOsc52) to honour Luvus's clipboard copies.
   parser?: {
     registerOscHandler?: (
       ident: number,
@@ -44,22 +44,22 @@ interface XTerm {
   _core?: {
     coreService?: { triggerDataEvent?: (data: string, sync?: boolean) => void }
   }
-  __herdrShiftEnter?: boolean
-  __herdrOsc52?: boolean
-  __herdrResizeGate?: boolean
+  __luvusShiftEnter?: boolean
+  __luvusOsc52?: boolean
+  __luvusResizeGate?: boolean
 }
-export type TerminalInputMode = "herdr" | "shell"
-// The herdr terminal may display a pane attached to another host even though
-// ttyd itself runs on the active host. ActiveState.cwd_host is Lasso's
-// structured answer for that focused pane's filesystem; the plain shell still
-// belongs to the active backend.
+export type TerminalInputMode = "luvus" | "shell"
+// A pane's filesystem is the one Luvus reports for it, which the plain /shell/
+// iframe does not share: that shell always belongs to the active backend, while
+// an upload pasted into the Luvus terminal must land where the focused pane is
+// actually working (ActiveState.cwd_host).
 export function terminalPasteHost(
   inputMode: TerminalInputMode,
   activeHost: string | null,
   paneFilesystemHost: string | null
 ): string | undefined {
   const host =
-    inputMode === "herdr" ? paneFilesystemHost || activeHost : activeHost
+    inputMode === "luvus" ? paneFilesystemHost || activeHost : activeHost
   return host || undefined
 }
 
@@ -67,13 +67,13 @@ interface TermWindow extends Window {
   term?: XTerm
 }
 interface WiredDoc extends Document {
-  __herdrWired?: boolean
+  __luvusWired?: boolean
   __touchScrollWired?: boolean
   __longPressRightClickWired?: boolean
   __tapReconnectWired?: boolean
 }
 interface OverlayNode extends HTMLElement {
-  __herdrReconnectWatched?: boolean
+  __luvusReconnectWatched?: boolean
 }
 
 function frameWindow(id: string): TermWindow | null {
@@ -81,14 +81,14 @@ function frameWindow(id: string): TermWindow | null {
   return (el?.contentWindow as TermWindow | null) ?? null
 }
 
-// ttyd's xterm.js collapses Shift+Enter into Enter. Herdr can decode a Kitty
+// ttyd's xterm.js collapses Shift+Enter into Enter. Luvus can decode a Kitty
 // CSI-u key event and re-encode it for the focused pane's negotiated keyboard
 // mode, which lets OMP receive a real Shift+Enter. The raw /shell/ iframe has no
-// Herdr decoder, so retain the backslash+CR line-continuation fallback there.
-const HERDR_NEWLINE_SEQ = "\x1b[13;2u"
+// Luvus decoder, so retain the backslash+CR line-continuation fallback there.
+const LUVUS_NEWLINE_SEQ = "\x1b[13;2u"
 const SHELL_NEWLINE_SEQ = "\\\r"
 function sendNewline(term: XTerm, inputMode: TerminalInputMode) {
-  const sequence = inputMode === "herdr" ? HERDR_NEWLINE_SEQ : SHELL_NEWLINE_SEQ
+  const sequence = inputMode === "luvus" ? LUVUS_NEWLINE_SEQ : SHELL_NEWLINE_SEQ
   if (typeof term.input === "function") {
     term.input(sequence)
     return
@@ -114,8 +114,8 @@ function wireShiftEnter(
     return
   }
   if (term && typeof term.attachCustomKeyEventHandler === "function") {
-    if (!term.__herdrShiftEnter) {
-      term.__herdrShiftEnter = true
+    if (!term.__luvusShiftEnter) {
+      term.__luvusShiftEnter = true
       const t = term
       term.attachCustomKeyEventHandler((e) => {
         const enterish =
@@ -146,11 +146,11 @@ function wireShiftEnter(
     setTimeout(() => wireShiftEnter(id, inputMode, tries + 1), 150)
 }
 
-// herdr copies (copy-mode, double-click token, mouse selection in a pane) by
+// Luvus copies (copy-mode, double-click token, mouse selection in a pane) by
 // emitting OSC 52 — `ESC ] 52 ; c ; <base64> BEL` — and immediately shows
 // "copied to clipboard". But ttyd 1.7.4's bundled xterm.js registers no OSC 52
 // handler, so the sequence is silently dropped and the browser clipboard is
-// never written: herdr says it copied, but nothing actually did. We register
+// never written: Luvus says it copied, but nothing actually did. We register
 // the missing handler on the same-origin xterm to close that gap.
 //
 // `data` is the OSC payload after "52;" — "<Pc>;<base64>", where Pc is the
@@ -218,8 +218,8 @@ function wireOsc52(id: string, tries: number) {
   }
   const term = win?.term
   if (term?.parser && typeof term.parser.registerOscHandler === "function") {
-    if (!term.__herdrOsc52) {
-      term.__herdrOsc52 = true
+    if (!term.__luvusOsc52) {
+      term.__luvusOsc52 = true
       const w = win as TermWindow
       term.parser.registerOscHandler(52, (data) => {
         const text = osc52Text(data)
@@ -232,11 +232,11 @@ function wireOsc52(id: string, tries: number) {
   if (tries < 20) setTimeout(() => wireOsc52(id, tries + 1), 150)
 }
 
-// The herdr server sizes the SHARED runtime to whichever client most recently
+// The Luvus server sizes the SHARED runtime to whichever client most recently
 // interacted — or merely resized: a bare client resize steals the "foreground"
 // slot. So a lasso session sitting in a background tab or unfocused window that
 // reflows its terminal (an OS window resize, a mobile viewport change, the theme
-// reconciler's refit nudge) clamps every other session's herdr view to ITS
+// reconciler's refit nudge) clamps every other session's Luvus view to ITS
 // width — the "terminal shrinks as though the sidebar opened" effect. Gate the
 // push at its chokepoint: every resize funnels through xterm's term.resize (the
 // iframe's FitAddon reacts to resize events and calls it), so wrap it and drop
@@ -245,7 +245,7 @@ function wireOsc52(id: string, tries: number) {
 // (the dropped dims may be stale by then).
 //
 // The first resize always passes, foreground or not: a session that loads in a
-// background tab must still establish its real size at connect, or its herdr
+// background tab must still establish its real size at connect, or its Luvus
 // client attaches at the pty default (80×24) and clamps everyone far worse.
 function sessionInForeground(): boolean {
   return document.visibilityState === "visible" && document.hasFocus()
@@ -260,15 +260,15 @@ function wireResizeGate(id: string, tries: number) {
   }
   const term = win?.term
   if (win && term && typeof term.resize === "function") {
-    if (term.__herdrResizeGate) return
-    term.__herdrResizeGate = true
+    if (term.__luvusResizeGate) return
+    term.__luvusResizeGate = true
     const w = win
     const orig = term.resize.bind(term)
     let sized = false
     let deferred = false
     let refits = 0
     // A measurement taken before the iframe's layout settles comes back
-    // degenerate — cols=6 was observed at connect on 2026-08-20. herdr reflows
+    // degenerate — cols=6 was observed at connect on 2026-08-20. Luvus reflows
     // every pane in the session on every resize, so that one number costs a
     // rewrap of every pane's scrollback (10 MB each by default) and clamps the
     // shared runtime to 6 columns until something resizes again. Treat it as
@@ -411,7 +411,7 @@ function wireTouchScroll(doc: WiredDoc, win: TermWindow) {
   )
 }
 
-// A stationary one-finger hold in the Herdr terminal emits the same mouse
+// A stationary one-finger hold in the Luvus terminal emits the same mouse
 // sequence as a desktop right-click. Movement cancels before touch scrolling
 // starts, and a handled hold consumes touchend so iOS cannot follow it with a
 // synthetic left-click. The dial lives outside `.xterm`, so its holds never
@@ -604,8 +604,8 @@ function wireTapToReconnect(id: string, tries: number) {
     // the .xterm element for the append and the node itself for each message.
     const watch = (overlay: OverlayNode) => {
       relabelReconnect(frameDoc, overlay)
-      if (overlay.__herdrReconnectWatched) return
-      overlay.__herdrReconnectWatched = true
+      if (overlay.__luvusReconnectWatched) return
+      overlay.__luvusReconnectWatched = true
       new ObserverCtor(() => relabelReconnect(frameDoc, overlay)).observe(
         overlay,
         { characterData: true, childList: true, subtree: true }
@@ -663,10 +663,10 @@ function wireTapToReconnect(id: string, tries: number) {
   )
 }
 
-// wireTerminalIframe: (1) for the herdr terminal, suppress the native context
-// menu so right-click only triggers herdr's handling; (2) intercept image paste
+// wireTerminalIframe: (1) for the Luvus terminal, suppress the native context
+// menu so right-click only triggers Luvus's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
-// text). Re-run on each iframe (re)load; __herdrWired guards double-attaching.
+// text). Re-run on each iframe (re)load; __luvusWired guards double-attaching.
 export function wireTerminalIframe(
   id: string,
   suppressContext: boolean,
@@ -681,8 +681,8 @@ export function wireTerminalIframe(
   } catch {
     return
   }
-  if (!doc || doc.__herdrWired) return
-  doc.__herdrWired = true
+  if (!doc || doc.__luvusWired) return
+  doc.__luvusWired = true
 
   if (win) {
     // Registered before the touch gestures so a tap that reconnects is never
@@ -806,7 +806,7 @@ export function refitTerminal(id: string) {
 
 // pasteIntoTerminal pastes text into a same-origin terminal iframe without
 // submitting, so the user can review and press Enter. Retries while xterm is
-// still loading. typeIntoShell / typeIntoHerdr are the per-frame shorthands.
+// still loading. typeIntoShell / typeIntoLuvus are the per-frame shorthands.
 export function pasteIntoTerminal(id: string, text: string, tries = 0) {
   try {
     const w = frameWindow(id)
@@ -843,13 +843,13 @@ export function pasteAndSubmitTerminal(id: string, text: string, tries = 0) {
   }
 }
 
-// typeIntoShell pastes into the out-of-herdr shell (/shell/).
+// typeIntoShell pastes into the out-of-Luvus shell (/shell/).
 export function typeIntoShell(text: string) {
   pasteIntoTerminal("shellframe", text)
 }
 
-// typeIntoHerdr pastes into the herdr terminal (/terminal/), where agents run.
-export function typeIntoHerdr(text: string) {
+// typeIntoLuvus pastes into the Luvus terminal (/terminal/), where agents run.
+export function typeIntoLuvus(text: string) {
   pasteIntoTerminal("term", text)
 }
 
@@ -940,55 +940,11 @@ export function sendKeyToTerminal(id: string, key: VirtualKey) {
   }
 }
 
-// herdr already has a pane search of its own, behind its prefix chord
-// (Ctrl-B then g — `keys.goto`). ⌘K opens THAT rather than a lasso-side palette:
-// it searches the session the terminal is actually showing, it is the picker
-// herdr's own TUI users know, and there is no second list to keep in sync.
-//
-// The trailing `/` puts the overlay straight into its search mode (its own
-// footer offers "/ search"), so ⌘K lands on a cursor ready for a query rather
-// than on a list the user has to press one more key to filter. That is the whole
-// point of binding it to the key labelled Search.
-//
-// Sent as real keydowns rather than raw bytes, for the reason in
-// sendKeyToTerminal: xterm owns the encoding, and it varies with the keyboard
-// mode herdr has turned on. They go back-to-back in one tick — the pty sees
-// 0x02, 'g', '/' in order, which is all herdr's prefix state machine needs.
-//
-// The prefix here is herdr's default. A session that remapped `keys.prefix`
-// would need its own chord; lasso has no way to read that config.
-export function openHerdrGoto(tries = 0) {
-  try {
-    const win = frameWindow("term")
-    const ta = win?.document.querySelector(
-      ".xterm-helper-textarea"
-    ) as HTMLElement | null
-    if (win && ta) {
-      // Focus first: the overlay it opens takes keystrokes from xterm, so the
-      // keyboard has to be there before the user starts typing a query.
-      win.focus()
-      win.term?.focus?.()
-      dispatchTermKey(win, ta, {
-        key: "b",
-        code: "KeyB",
-        keyCode: 66,
-        ctrlKey: true,
-      })
-      dispatchTermKey(win, ta, { key: "g", code: "KeyG", keyCode: 71 })
-      dispatchTermKey(win, ta, { key: "/", code: "Slash", keyCode: 191 })
-      return
-    }
-  } catch {
-    /* same-origin; ignore */
-  }
-  if (tries < 20) setTimeout(() => openHerdrGoto(tries + 1), 100)
-}
-
-// Hand keyboard focus to the herdr terminal (/terminal/) so the user can type
+// Hand keyboard focus to the Luvus terminal (/terminal/) so the user can type
 // into the focused pane without clicking it first. Focuses both the iframe
 // window and xterm's input, and retries while xterm is still (re)connecting —
 // mirrors pasteIntoTerminal. Used after creating/focusing an agent.
-export function focusHerdrTerminal(tries = 0) {
+export function focusLuvusTerminal(tries = 0) {
   try {
     const w = frameWindow("term")
     if (w?.term && typeof w.term.focus === "function") {
@@ -999,5 +955,5 @@ export function focusHerdrTerminal(tries = 0) {
   } catch {
     /* same-origin; ignore */
   }
-  if (tries < 20) setTimeout(() => focusHerdrTerminal(tries + 1), 100)
+  if (tries < 20) setTimeout(() => focusLuvusTerminal(tries + 1), 100)
 }

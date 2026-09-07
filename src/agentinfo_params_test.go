@@ -106,7 +106,7 @@ func TestAgentInfoValuesReachTheCaller(t *testing.T) {
 	}
 	rec := probe.Interface().(AgentRecord)
 	// A probed BootStatus is not BootFailed, so surfacedStatus passes the live
-	// herdr status through and Status stays out of this check's way.
+	// luvus status through and Status stays out of this check's way.
 	info := reflect.ValueOf(agentInfoFrom("local", rec, "idle"))
 
 	for name, p := range agentInfoParams {
@@ -155,7 +155,7 @@ func TestAgentInfoSurfacesFailedBootOverLiveStatus(t *testing.T) {
 	rec := AgentRecord{BootStatus: BootFailed, BootError: "launch agent: boom"}
 	got := agentInfoFrom("local", rec, "idle")
 	if got.Status != "failed" {
-		t.Errorf("status = %q, want failed — a failed boot must beat the live herdr status", got.Status)
+		t.Errorf("status = %q, want failed — a failed boot must beat the live luvus status", got.Status)
 	}
 	if got.BootStatus != BootFailed || got.BootError == "" {
 		t.Errorf("boot_status = %q / boot_error = %q, want the failure and its reason surfaced", got.BootStatus, got.BootError)

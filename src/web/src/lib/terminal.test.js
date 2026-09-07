@@ -5,19 +5,19 @@ import { terminalPasteHost } from "@/lib/terminal"
 
 describe("terminalPasteHost", () => {
   test("keeps local terminal and shell pastes on the active host", () => {
-    expect(terminalPasteHost("herdr", "local", "local")).toBe("local")
+    expect(terminalPasteHost("luvus", "local", "local")).toBe("local")
     expect(terminalPasteHost("shell", "local", "local")).toBe("local")
   })
 
-  test("routes a native nested attach to its pane filesystem host", () => {
-    expect(terminalPasteHost("herdr", "local", "ticket500")).toBe("ticket500")
-    // The separate shell iframe still runs outside herdr on the active backend.
+  test("routes a pane whose filesystem is elsewhere to that host", () => {
+    expect(terminalPasteHost("luvus", "local", "ticket500")).toBe("ticket500")
+    // The separate shell iframe still runs outside Luvus on the active backend.
     expect(terminalPasteHost("shell", "local", "ticket500")).toBe("local")
   })
 
   test("falls back to the active host until focused-pane metadata arrives", () => {
-    expect(terminalPasteHost("herdr", "ticket500", null)).toBe("ticket500")
-    expect(terminalPasteHost("herdr", null, null)).toBeUndefined()
+    expect(terminalPasteHost("luvus", "ticket500", null)).toBe("ticket500")
+    expect(terminalPasteHost("luvus", null, null)).toBeUndefined()
   })
 })
 

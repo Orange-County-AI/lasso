@@ -4,7 +4,7 @@
 // don't pile up history entries on every host change.
 //
 // Only state lasso OWNS belongs here, which is now just the active host.
-// herdr's focused pane does not — it is one global per herdr session, shared
+// Luvus's focused pane does not — it is one global per Luvus session, shared
 // with the TUI and every other lasso client, so a URL that named it would let a
 // browser Back re-point it for everyone (and a shared link steal focus on open).
 

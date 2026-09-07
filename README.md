@@ -12,7 +12,7 @@ Answer them from your phone.**
 <table align="center">
 <tr>
 <td align="center" valign="top">
-<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the herdr terminal in the middle, herdr's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
+<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the Luvus terminal in the middle, Luvus's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
 </td>
 <td align="center" valign="top">
 <img src="docs/screenshots/mobile-dial.png" width="170" alt="lasso on a phone: the same agent, with the radial key dial open over the terminal">
@@ -26,12 +26,12 @@ Answer them from your phone.**
 
 An agent that has been waiting forty minutes on a `y/n` you never saw is an
 agent doing nothing. lasso is a single Go binary that puts your whole fleet of
-coding agents — every SSH-reachable machine, its [herdr](https://herdr.dev)
+coding agents — every SSH-reachable machine, its [Luvus](https://luvus.dev)
 session, every pane — in a browser tab, and in a phone app that **buzzes when
 one of them needs you**. Approve the tool call from the couch. Read the diff
 on the train. Hand the agent a photo of the whiteboard from your camera roll.
 
-- **Your real terminal, anywhere.** The middle column is your actual herdr
+- **Your real terminal, anywhere.** The middle column is your actual Luvus
   session over `ttyd` — same keys, same theme, same panes. lasso adds around it,
   never in front of it.
 - **The phone is a first-class client.** Home-screen app, a radial dial for the
@@ -43,8 +43,7 @@ on the train. Hand the agent a photo of the whiteboard from your camera roll.
   and when an agent pings you on purpose with `lasso notify "safe on prod?"`.
 - **The sidebar follows the focused pane.** A live git diff, a file browser and
   editor, and an embedded browser for the dev server, all rooted on the machine
-  that pane is actually working on — even when the pane is an SSH window onto
-  another box.
+  and directory that pane reports it is working in.
 - **Agents driving agents.** An MCP server lets one agent list, read, message,
   spawn and close the others, across the fleet.
 - **Nothing to deploy.** One binary, no database, no container, no sidecar. It
@@ -68,7 +67,7 @@ HTTPS origin — see [Exposing it](#exposing-it) and [On a phone](#on-a-phone).
 
 ## The tour
 
-Everything here follows herdr's focused pane, so switching agent switches all
+Everything here follows Luvus's focused pane, so switching agent switches all
 of it at once.
 
 ### Your thumbs, on a real terminal
@@ -91,7 +90,7 @@ prod?"`. Nothing is polled at all while no device is registered. Setup is in
 ### Every machine you can SSH to
 
 The host chip in the corner lists the fleet: every alias in your ssh config
-that answers, with the herdr version it's running, collapsed into groups where
+that answers, with the Luvus version it's running, collapsed into groups where
 you have several. Picking one moves **this browser tab** to that machine —
 its terminal, its panes, its files. Another tab stays where it was, so two
 tabs sit on two machines at once.
@@ -147,34 +146,33 @@ The binary is both the server and its own control surface:
 | `lasso restart` | stop (if running) then start |
 | `lasso status` | report whether it's running, and its URL |
 | `lasso update` | update to the latest release (see [Updating](#updating)) |
-| `lasso doctor` | check herdr, the socket, the port, and the version |
+| `lasso doctor` | check luvus, the socket, the port, and the version |
 | `lasso version` | print the version |
 | `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
-`start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
+`start`/`restart`/`serve` accept the server flags (`-listen`,
 `-insecure-no-auth`, …); `lasso serve -h` lists them.
 
 ## What's in it
 
 Two resizable, collapsible columns:
 
-- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
+- **Left** — the **Luvus** terminal (a `ttyd` session in an iframe), under a
   header row with the host switcher, the ⌘K pane search (every pane on the
-  active host — including the ones herdr-mirror streams in from other machines —
-  plus past sessions to reopen) and **New Agent**.
+  active host, plus past sessions to reopen) and **New Agent**.
 - **Right** — the git **Diff** of the focused pane's repo, a **Files** browser
   that follows the active pane's directory and opens files in a
   markdown/code/image viewer, a **Browser** iframe that embeds a local
   dev-server port (`5173`) or any URL you type, a plain **Terminal** shell
-  outside herdr, and **Settings** (the lasso version and whether an update is
-  available, the herdr protocol/version with a one-click `herdr update`,
-  notifications for blocked agents, and the New-Agent defaults).
+  outside Luvus, and **Settings** (the lasso version and whether an update is
+  available, the Luvus version and the UHP major it speaks with a one-click
+  `luvus update`, notifications for blocked agents, and the New-Agent defaults).
 
-The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
-(its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
-**chrome** uses lasso's own design system and follows your system light/dark
-preference.
+The UI follows Luvus's active pane live over [UHP](https://luvus.dev/docs/uhp/),
+its Universal Harness Protocol. The **terminal** adopts the palette of whatever
+theme Luvus has active; the surrounding **chrome** uses lasso's own design system
+and follows your system light/dark preference.
 
 ## MCP: agents driving agents
 
@@ -192,7 +190,7 @@ per-host OAuth credentials and groups; see [`docs/mcp-agent-scope.md`](docs/mcp-
 
 ```bash
 mise run build      # build the frontend (src/web/dist) then the binary
-./lasso             # serves on 127.0.0.1:8090, spawns ttyd running herdr
+./lasso             # serves on 127.0.0.1:8090, spawns ttyd running luvus
 mise run dev        # Vite dev server (frontend HMR) + Go backend, on your tailnet
 mise run test       # Go tests
 ```
@@ -212,51 +210,49 @@ port that bumps if busy, so it never clashes with a production instance.
 ## Architecture
 
 One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
-(WebSocket), talks to the herdr server over its unix socket to track the focused
-pane and workspace layout, and pushes live state to the browser over SSE. It can
-drive herdr on the local box or on SSH-reachable hosts through the footer's host
-switcher, so one lasso fronts a whole fleet. Each instance spawns its own ttyds on
-unix sockets keyed by PID **and host**, so several instances can run at once
-without colliding and so a host keeps its terminal warm: switching back to a host
-you were on re-points the proxy at a ttyd that is already bound instead of
-respawning one, and one SSH connection per host serves both the terminal and
-host-addressed work.
+(WebSocket), talks to the luvus server over its unix socket — Universal Harness
+Protocol 1.0, the interface Luvus publishes for exactly this — to track the
+focused pane and the workspace/tab/pane tree, and pushes live state to the
+browser over SSE. It can drive luvus on the local box or on SSH-reachable hosts
+through the footer's host switcher, so one lasso fronts a whole fleet. Each
+instance spawns its own ttyds on unix sockets keyed by PID **and host**, so
+several instances can run at once without colliding and so a host keeps its
+terminal warm: switching back to a host you were on re-points the proxy at a
+ttyd that is already bound instead of respawning one, and one SSH connection per
+host serves both the terminal and host-addressed work.
 The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
 plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.go`.
 
 ## Theming
 
-The **terminal** adopts the theme from `~/.config/herdr/config.toml`
-(`[theme].name`) and repaints live when you change it — no restart. Leave
-`-theme auto` to follow herdr, or force one with `-theme <name>` (`lasso serve -h`
-lists the names).
+**Luvus owns the theme.** The palette comes from whichever theme the luvus
+server has active (`luvus theme list` names them, `luvus theme use <id>` picks
+one, and Luvus's own Settings does the same), and the **terminal** repaints live
+when it changes — no restart, nothing to configure here. lasso only ever reads
+it: there is no theme picker in Settings and no lasso-side override to get out
+of step with the machine you are looking at.
 
 The **chrome** around the terminal (sidebar, diff, files, settings) is lasso's
-own monochrome design system, not herdr's palette. It follows your **system
-light/dark** preference (`prefers-color-scheme`), overridable in Settings →
-Appearance (System / Light / Dark, persisted per device).
+own monochrome design system. It follows your **system light/dark** preference
+(`prefers-color-scheme`), overridable in Settings → Appearance: **Luvus** (the
+default) paints the chrome from the active Luvus palette, in the light or dark
+polarity Luvus reports for it; System / Light / Dark pin lasso's own palette.
 
-A theme change is pushed to **every reachable host**, in parallel — not just the
-one lasso is currently driving — since panes from other machines are on screen
-the whole time through herdr-mirror. Each host gets `[theme].name` in the
-config.toml its own herdr reads (resolved from that host's environment, not
-guessed from the socket's directory) and the agent CLIs' own theme files (Claude
-Code, OpenCode, Oh My Pi, ghostty), so agents render in step with herdr.
+What lasso *does* write is downstream of that: the **agent CLIs' own theme
+files** (Claude Code, OpenCode, Oh My Pi, ghostty), so an agent's TUI renders in
+step with the terminal it runs in. Those writes go to **every reachable host**,
+in parallel, and a host that was asleep when the theme changed catches up on its
+own — every completed host probe compares what lasso last wrote there against
+the live palette and pushes if they differ.
 
-**Reachable over ssh is the only requirement.** A theme write is file I/O, so a
-host running a herdr this lasso can't drive — one a release behind, or stopped —
-is written over a files-only ssh connection instead of being skipped, and only
-the "reload your config" nudge to its herdr is lost (that host repaints when its
-herdr restarts). A host that was **asleep or unreachable** when the theme changed
-catches up on its own: every completed host probe compares the theme lasso last
-wrote there against the live one and pushes if they differ, so a laptop converges
-within a refresh cycle of coming back rather than staying behind until the next
-theme change.
+**Reachable over ssh is the only requirement**, because a theme file write is
+plain file I/O: a host running a luvus this lasso cannot drive still gets its
+agent theme files. Each machine's own Luvus theme is never lasso's to set.
 
-Settings → Herdr theme switches that off: "Sync agent themes" for the agent CLIs
-everywhere, or "Sync theme to hosts" per host, which leaves an unchecked
-machine's herdr config and agent themes entirely alone (re-checking it pushes the
-current theme straight back).
+Settings → Luvus theme switches the downstream sync off: "Sync agent themes" for
+the agent CLIs everywhere, or per host, which leaves an unchecked machine's agent
+theme files entirely alone (re-checking it pushes the current palette straight
+back).
 
 ## Updating
 
@@ -270,6 +266,30 @@ current theme straight back).
   which rebuilds from source.
 
 The Settings tab surfaces "update available → vX.Y.Z" when a newer release exists.
+
+### Upgrading from a Herdr-era lasso
+
+**Version 3.0.0** drives Luvus and only Luvus — there is no Herdr compatibility
+mode, no live-session import, and no mirror-plugin support. The upgrade is a
+clean break, and it is deliberately non-destructive in both directions:
+
+- A Herdr session that is still running is left completely alone. lasso does not
+  attach it, adopt its panes, or shut it down; it simply isn't part of the fleet
+  any more. Close it yourself when you're done with it.
+- On the first start of this version, every agent record that still read as live
+  is marked closed, because the panes it named belonged to a session lasso no
+  longer speaks to. Nothing is deleted: the prompt, title and work directory stay
+  in lasso's agent history, so ⌘K with the **Active** filter off finds an old
+  session and reopens its directory as a **new Luvus pane** (the agent itself is
+  not relaunched — start it in the pane you land in).
+
+Each host needs a luvus server of its own. The host switcher offers `luvus
+update` for a host whose Luvus this lasso can't drive, and a one-click set-up
+(install + a `systemd --user` unit) for a host that has none running.
+
+Luvus groups workspaces by directory. Creating another bare terminal at an
+already-open directory creates a fresh terminal there without renaming the
+existing workspace or reusing one of its running panes.
 
 ## Exposing it
 
@@ -369,7 +389,7 @@ lasso notify "the migration drops 2 columns — safe to run on prod?"
 
 That's the `notify` MCP tool behind a CLI, so an agent with only a terminal and
 one with lasso's MCP server configured both get the same behavior: titled with
-the calling agent's name (resolved from `$HERDR_PANE_ID`), opening on its host,
+the calling agent's name (resolved from `$LUVUS_PANE_ID`), opening on its host,
 and **non-zero exit / `sent:false` when no device is registered** — so an agent
 never reports pinging you when nothing was delivered. Both arrive with no tab
 open and the screen off.
@@ -464,7 +484,7 @@ tap to open the ring and tap one:
 
 In the terminal itself, **drag to scroll** (the drag becomes wheel events, so it
 works in tmux's alternate screen and in TUIs that grab the mouse) and
-**long-press for right-click** (herdr's own menu). When the socket drops while
+**long-press for right-click** (Luvus's own menu). When the socket drops while
 the phone sleeps, the overlay reads **Tap to Reconnect** — a tap anywhere in the
 terminal brings it back.
 
@@ -500,6 +520,7 @@ resampled to 16px averages away to a smudge.
 
 ## Dogfooding
 
-To run lasso from *inside* a herdr session (e.g. building lasso with itself), its
-embedded terminal would otherwise refuse to nest. Set `allow_nested = true` under
-`[experimental]` in `~/.config/herdr/config.toml` to allow it.
+Running lasso from *inside* a Luvus pane (e.g. building lasso with itself) needs
+no configuration: Luvus has no nesting switch, and lasso's embedded terminals
+attach the local luvus server the same way whether or not the process that
+spawned them is itself in a pane.

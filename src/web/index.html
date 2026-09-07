@@ -7,20 +7,25 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>lasso</title>
-    <!-- Apply the saved appearance mode (herdr|system|light|dark) before first
+    <!-- Apply the saved appearance mode (luvus|system|light|dark) before first
          paint so there's no flash of the wrong chrome theme. Mirrors lib/mode.ts;
-         default is "herdr", which resolves to the dark class (herdr's --h-*
-         override is layered on at runtime once /api/theme lands, see
-         lib/theme.ts). The terminal palette is herdr's, set separately. -->
+         default is "luvus", whose polarity is Luvus's own verdict for the active
+         theme — remembered in "lasso-luvus-appearance" by the last /api/theme
+         answer, since Luvus ships light palettes too and this script runs before
+         any request. The --h-* override itself is layered on at runtime once
+         /api/theme lands (see lib/theme.ts); the terminal palette is Luvus's,
+         set separately. -->
     <script>
       ;(() => {
         let m, dark
         try {
-          m = localStorage.getItem("lasso-mode") || "herdr"
+          m = localStorage.getItem("lasso-mode") || "luvus"
           dark =
             m === "dark" ||
-            m === "herdr" ||
+            (m === "luvus" &&
+              localStorage.getItem("lasso-luvus-appearance") !== "light") ||
             (m !== "light" &&
+              m !== "luvus" &&
               window.matchMedia("(prefers-color-scheme: dark)").matches)
           document.documentElement.classList.add(dark ? "dark" : "light")
         } catch {

@@ -13,31 +13,40 @@ import (
 )
 
 // closeBackend wraps whoamiBackend with a host name and a record of pane.close
-// calls — one fake host's herdr for the close-path tests. pane.list reports no
-// panes, so killPaneAgent sees no agent and returns immediately.
+// calls — one fake host's runtime for the close-path tests. The pane
+// enumeration reports no panes, so killPaneAgent sees no agent and returns
+// immediately.
 type closeBackend struct {
 	*whoamiBackend
 	host   string
 	closed []string
 }
 
-func newCloseBackend(host string, resolve map[string]string) *closeBackend {
+// newCloseBackend takes the pane ids that name a live pane on this host. It
+// keeps a map argument (rather than a set) so call sites read the same as they
+// did when luvus needed a raw-to-public translation table; under UHP there is
+// one id form, so key and value are the same id.
+func newCloseBackend(host string, live map[string]string) *closeBackend {
+	set := map[string]bool{}
+	for id := range live {
+		set[id] = true
+	}
 	return &closeBackend{
-		whoamiBackend: &whoamiBackend{memBackend: newMemBackend(), resolve: resolve},
+		whoamiBackend: &whoamiBackend{memBackend: newMemBackend(), live: set},
 		host:          host,
 	}
 }
 
 func (b *closeBackend) Name() string { return b.host }
 
-func (b *closeBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+func (b *closeBackend) LuvusCall(method string, params any) (json.RawMessage, error) {
 	if method == "pane.close" {
 		p, _ := params.(map[string]any)
-		id, _ := p["pane_id"].(string)
+		id, _ := p["pane"].(string)
 		b.closed = append(b.closed, id)
 		return json.RawMessage(`{}`), nil
 	}
-	return b.whoamiBackend.HerdrCall(method, params)
+	return b.whoamiBackend.LuvusCall(method, params)
 }
 
 // stubCloseBackends points the close path's backend resolution at fakes; a
@@ -93,19 +102,19 @@ func postClose(t *testing.T, body string) *httptest.ResponseRecorder {
 func TestServeAgentClosePaneCollisionAcrossHostsFailsLoudly(t *testing.T) {
 	openTestDB(t)
 	if err := appendAgent("local", AgentRecord{ID: "loc1", Title: "local agent", Type: "git",
-		RootPane: "wR:p1", WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
+		RootPane: "9", WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := appendAgent("citadel", AgentRecord{ID: "rem1", Title: "remote agent", Type: "git",
-		RootPane: "wR:p1", WorkDir: "/w/rem1", CreatedAt: time.Now()}); err != nil {
+		RootPane: "9", WorkDir: "/w/rem1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
-	citadel := newCloseBackend("citadel", map[string]string{"wR:p1": "wR:p1"})
+	local := newCloseBackend("local", map[string]string{"9": "9"})
+	citadel := newCloseBackend("citadel", map[string]string{"9": "9"})
 	stubCloseBackends(t, map[string]Backend{"local": local, "citadel": citadel})
 	stubPeers(t, nil, nil)
 
-	rr := postClose(t, `{"pane_id":"wR:p1"}`)
+	rr := postClose(t, `{"pane_id":"9"}`)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 for a cross-host pane collision; body: %s", rr.Code, rr.Body.String())
 	}
@@ -118,23 +127,23 @@ func TestServeAgentClosePaneCollisionAcrossHostsFailsLoudly(t *testing.T) {
 // agent, through that host's backend — never the local one.
 func TestServeAgentCloseExplicitHostTargetsThatHost(t *testing.T) {
 	openTestDB(t)
-	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "wR:p1",
+	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "9",
 		WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendAgent("citadel", AgentRecord{ID: "rem1", Type: "git", RootPane: "wR:p1",
+	if err := appendAgent("citadel", AgentRecord{ID: "rem1", Type: "git", RootPane: "9",
 		WorkDir: "/w/rem1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
-	citadel := newCloseBackend("citadel", map[string]string{"wR:p1": "wR:p1"})
+	local := newCloseBackend("local", map[string]string{"9": "9"})
+	citadel := newCloseBackend("citadel", map[string]string{"9": "9"})
 	stubCloseBackends(t, map[string]Backend{"local": local, "citadel": citadel})
 
-	rr := postClose(t, `{"pane_id":"wR:p1","host":"citadel"}`)
+	rr := postClose(t, `{"pane_id":"9","host":"citadel"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	if len(citadel.closed) != 1 || citadel.closed[0] != "wR:p1" {
+	if len(citadel.closed) != 1 || citadel.closed[0] != "9" {
 		t.Errorf("citadel closed = %v, want [wR:p1]", citadel.closed)
 	}
 	if len(local.closed) != 0 {
@@ -172,23 +181,23 @@ func TestServeAgentCloseRemoteRecordUsesRemoteBackend(t *testing.T) {
 // against the local pane and work dir — and closes the LOCAL pane.
 func TestServeAgentCloseAdoptsPeerRecord(t *testing.T) {
 	openTestDB(t) // no local records at all
-	local := newCloseBackend("local", map[string]string{"p_82": "w55-1"})
+	local := newCloseBackend("local", map[string]string{"55": "55"})
 	_ = local.MkdirAll("/w/peer-agent", 0o755)
 	stubCloseBackends(t, map[string]Backend{"local": local})
 	stubPeers(t, []string{"citadel"}, func(peer, rootPane string) ([]AgentRecord, error) {
-		if peer == "citadel" && rootPane == "w55-1" {
-			return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "w55-1",
+		if peer == "citadel" && rootPane == "55" {
+			return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "55",
 				WorkspaceID: "w55", WorkDir: "/w/peer-agent"}}, nil
 		}
 		return nil, nil
 	})
 
-	rr := postClose(t, `{"pane_id":"p_82","host":"local"}`)
+	rr := postClose(t, `{"pane_id":"55","host":"local"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	if len(local.closed) != 1 || local.closed[0] != "w55-1" {
-		t.Errorf("local closed = %v, want [w55-1]", local.closed)
+	if len(local.closed) != 1 || local.closed[0] != "55" {
+		t.Errorf("local closed = %v, want [55]", local.closed)
 	}
 }
 
@@ -196,14 +205,14 @@ func TestServeAgentCloseAdoptsPeerRecord(t *testing.T) {
 // some OTHER host that happens to share the pane id — it must not be adopted.
 func TestServeAgentCloseAdoptionRejectsForeignWorkDir(t *testing.T) {
 	openTestDB(t)
-	local := newCloseBackend("local", map[string]string{"p_82": "w55-1"})
+	local := newCloseBackend("local", map[string]string{"55": "55"})
 	stubCloseBackends(t, map[string]Backend{"local": local})
 	stubPeers(t, []string{"citadel"}, func(_, _ string) ([]AgentRecord, error) {
-		return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "w55-1",
+		return []AgentRecord{{ID: "dk33", Type: "git", RootPane: "55",
 			WorkspaceID: "w55", WorkDir: "/does/not/exist/here"}}, nil
 	})
 
-	rr := postClose(t, `{"pane_id":"p_82","host":"local"}`)
+	rr := postClose(t, `{"pane_id":"55","host":"local"}`)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
 	}
@@ -215,15 +224,15 @@ func TestServeAgentCloseAdoptionRejectsForeignWorkDir(t *testing.T) {
 // Two peers both claiming the pane is unresolvable — refuse (409), close nothing.
 func TestServeAgentCloseAdoptionAmbiguousPeersFailsLoudly(t *testing.T) {
 	openTestDB(t)
-	local := newCloseBackend("local", map[string]string{"p_82": "w55-1"})
+	local := newCloseBackend("local", map[string]string{"55": "55"})
 	_ = local.MkdirAll("/w/peer-agent", 0o755)
 	stubCloseBackends(t, map[string]Backend{"local": local})
 	stubPeers(t, []string{"citadel", "minime"}, func(peer, _ string) ([]AgentRecord, error) {
-		return []AgentRecord{{ID: "agent-" + peer, Type: "git", RootPane: "w55-1",
+		return []AgentRecord{{ID: "agent-" + peer, Type: "git", RootPane: "55",
 			WorkDir: "/w/peer-agent"}}, nil
 	})
 
-	rr := postClose(t, `{"pane_id":"p_82","host":"local"}`)
+	rr := postClose(t, `{"pane_id":"55","host":"local"}`)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
 	}
@@ -232,24 +241,24 @@ func TestServeAgentCloseAdoptionAmbiguousPeersFailsLoudly(t *testing.T) {
 	}
 }
 
-// A pane the local herdr doesn't know can't be adopted — peers are never even
+// A pane the local luvus doesn't know can't be adopted — peers are never even
 // asked (there is no local pane to verify a claim against), and the request 404s.
 func TestServeAgentCloseUnknownPaneNeverAsksPeers(t *testing.T) {
 	openTestDB(t)
 	local := newCloseBackend("local", nil) // resolves nothing
 	stubCloseBackends(t, map[string]Backend{"local": local})
 	stubPeers(t, []string{"citadel"}, func(_, _ string) ([]AgentRecord, error) {
-		t.Error("peer queried for a pane the local herdr doesn't know")
+		t.Error("peer queried for a pane the local luvus doesn't know")
 		return nil, nil
 	})
 
-	rr := postClose(t, `{"pane_id":"p_99","host":"local"}`)
+	rr := postClose(t, `{"pane_id":"99","host":"local"}`)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
 	}
 }
 
-// postAgentClose must POST the calling agent's own herdr pane id — pinned to
+// postAgentClose must POST the calling agent's own luvus pane id — pinned to
 // host "local", since the pane lives on the machine closeme runs on — to
 // /api/agent/close, carrying basic auth when UI_AUTH is set. The same
 // soft-close the UI and close_agent MCP tool use.
@@ -272,14 +281,14 @@ func TestPostAgentClose(t *testing.T) {
 	defer srv.Close()
 
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	if err := postAgentClose(addr, "p_82", "alice", "secret", true); err != nil {
+	if err := postAgentClose(addr, "55", "alice", "secret", true); err != nil {
 		t.Fatalf("postAgentClose: %v", err)
 	}
 	if gotPath != "/api/agent/close" {
 		t.Errorf("path = %q, want /api/agent/close", gotPath)
 	}
-	if gotPaneID != "p_82" {
-		t.Errorf("pane_id = %q, want p_82", gotPaneID)
+	if gotPaneID != "55" {
+		t.Errorf("pane_id = %q, want 55", gotPaneID)
 	}
 	if gotHost != "local" {
 		t.Errorf("host = %q, want local (the pane lives where closeme runs)", gotHost)
@@ -343,23 +352,23 @@ func TestCloseAgentToolOmittedHostFindsRemoteAgent(t *testing.T) {
 // no-host multi-match refusal in resolveCloseTarget stays as a backstop.)
 func TestCloseAgentToolExplicitHostWithPaneCollision(t *testing.T) {
 	openTestDB(t)
-	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "wR:p1",
+	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "9",
 		WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendAgent("citadel", AgentRecord{ID: "rem1", Type: "git", RootPane: "wR:p1",
+	if err := appendAgent("citadel", AgentRecord{ID: "rem1", Type: "git", RootPane: "9",
 		WorkDir: "/w/rem1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
-	citadel := newCloseBackend("citadel", map[string]string{"wR:p1": "wR:p1"})
+	local := newCloseBackend("local", map[string]string{"9": "9"})
+	citadel := newCloseBackend("citadel", map[string]string{"9": "9"})
 	stubCloseBackends(t, map[string]Backend{"local": local, "citadel": citadel})
 
 	_, _, err := closeAgentTool(context.Background(), nil, closeAgentIn{Host: "citadel", AgentID: "rem1"})
 	if err != nil {
 		t.Fatalf("closeAgentTool: %v", err)
 	}
-	if len(citadel.closed) != 1 || citadel.closed[0] != "wR:p1" {
+	if len(citadel.closed) != 1 || citadel.closed[0] != "9" {
 		t.Errorf("citadel closed = %v, want [wR:p1]", citadel.closed)
 	}
 	if len(local.closed) != 0 {
@@ -367,24 +376,24 @@ func TestCloseAgentToolExplicitHostWithPaneCollision(t *testing.T) {
 	}
 }
 
-// An agent closing ITSELF knows only its $HERDR_PANE_ID. close_agent takes that
+// An agent closing ITSELF knows only its $LUVUS_PANE_ID. close_agent takes that
 // directly, so it no longer has to call whoami purely to translate the pane into
 // an id — the HTTP endpoint behind `lasso closeme` always could, and both now
 // run through the same resolveCloseTarget with the same cross-host guards.
 func TestCloseAgentToolByPaneID(t *testing.T) {
 	openTestDB(t)
-	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "wR:p1",
+	if err := appendAgent("local", AgentRecord{ID: "loc1", Type: "git", RootPane: "9",
 		WorkDir: "/w/loc1", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	local := newCloseBackend("local", map[string]string{"wR:p1": "wR:p1"})
+	local := newCloseBackend("local", map[string]string{"9": "9"})
 	stubCloseBackends(t, map[string]Backend{"local": local})
 
-	_, out, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "wR:p1"})
+	_, out, err := closeAgentTool(context.Background(), nil, closeAgentIn{PaneID: "9"})
 	if err != nil {
 		t.Fatalf("closeAgentTool by pane id: %v", err)
 	}
-	if !out.PaneClosed || len(local.closed) != 1 || local.closed[0] != "wR:p1" {
+	if !out.PaneClosed || len(local.closed) != 1 || local.closed[0] != "9" {
 		t.Errorf("local closed = %v (out %+v), want [wR:p1]", local.closed, out)
 	}
 }
@@ -407,7 +416,7 @@ func TestPostAgentCloseServerError(t *testing.T) {
 	defer srv.Close()
 
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	err := postAgentClose(addr, "p_82", "", "", false)
+	err := postAgentClose(addr, "55", "", "", false)
 	if err == nil {
 		t.Fatal("expected an error for a non-200 response")
 	}
