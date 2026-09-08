@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,35 @@ func TestElapsedPct(t *testing.T) {
 	}
 	if elapsedPct(reset, 0) != -1 {
 		t.Fatal("zero window should yield -1")
+	}
+}
+
+// TestTrackedUsageFetchers verifies Settings → Usage tracking reaches the
+// FETCH, not just the rendering: a provider the user unchecked contributes no
+// fetcher (so no token refresh, no upstream request), and the tracked set is
+// part of the cache key so unchecking takes effect on the next poll instead of
+// a TTL later.
+func TestTrackedUsageFetchers(t *testing.T) {
+	openTestDB(t)
+
+	fetchers, key := trackedUsageFetchers()
+	if len(fetchers) != len(usageFetchers) {
+		t.Fatalf("a fresh install tracks %d providers, want all %d", len(fetchers), len(usageFetchers))
+	}
+	allKey := key
+
+	if err := saveUIState(uiState{UsageHidden: []string{"Kimi Code"}}); err != nil {
+		t.Fatalf("saveUIState: %v", err)
+	}
+	fetchers, key = trackedUsageFetchers()
+	if len(fetchers) != len(usageFetchers)-1 {
+		t.Fatalf("untracked provider still fetched: %d fetchers", len(fetchers))
+	}
+	if strings.Contains(key, "Kimi Code") {
+		t.Fatalf("cache key still names the untracked provider: %q", key)
+	}
+	if key == allKey {
+		t.Fatal("cache key unchanged after unchecking a provider — a stale payload would keep it on screen")
 	}
 }
 

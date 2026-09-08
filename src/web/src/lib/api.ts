@@ -91,8 +91,9 @@ export interface UsagePayload {
   updatedAt: string
 }
 
-// Providers the backend knows how to meter. Kept here so the footer and its
-// Settings controls share the persisted provider names exactly.
+// Providers the backend knows how to meter. Kept here so the footer, the Usage
+// tab and the Settings controls share the persisted provider names exactly —
+// the same strings `usageFetchers` (usage.go) matches `usage_hidden` against.
 export const USAGE_PROVIDER_NAMES = [
   "Claude Code",
   "Kimi Code",
@@ -198,11 +199,13 @@ export interface UIState {
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
   files_click_navigates: boolean
-  // Provider names omitted from the bottom usage footer. Empty = show all.
+  // Providers NOT tracked: the server skips their fetch, and neither the
+  // footer nor the Usage tab lists them. Empty = track everything.
   usage_hidden: string[]
-  // Preferred provider order; providers absent here append automatically.
+  // Preferred provider order (footer left-to-right, Usage tab top-to-bottom);
+  // providers absent here append automatically.
   usage_order: string[]
-  // Use abbreviated provider names and metrics without pace bars.
+  // Footer-only: abbreviated provider names and metrics without pace bars.
   usage_compact: boolean
 }
 

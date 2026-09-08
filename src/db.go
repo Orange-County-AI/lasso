@@ -264,13 +264,18 @@ type uiState struct {
 	// it expands the folder in place. Defaulted true in getUIState so a fresh
 	// install (or an older stored blob lacking the field) navigates.
 	FilesClickNavigates bool `json:"files_click_navigates"`
-	// UsageHidden contains provider names omitted from the bottom usage footer.
-	// A deny-list keeps new providers visible by default on older installations.
+	// UsageHidden contains providers the user has turned OFF in Settings →
+	// Usage tracking. They are not merely hidden: serveUsage skips their
+	// fetchers entirely, so an unchecked provider costs no token refresh and no
+	// upstream request. A deny-list keeps new providers tracked by default on
+	// older installations.
 	UsageHidden []string `json:"usage_hidden"`
-	// UsageOrder is the preferred provider order in the bottom usage footer.
-	// Missing providers are appended client-side so upgrades expose new ones.
+	// UsageOrder is the preferred provider order — left-to-right in the footer,
+	// top-to-bottom in the Usage tab. Missing providers are appended
+	// client-side so upgrades expose new ones.
 	UsageOrder []string `json:"usage_order"`
-	// UsageCompact selects the one-line abbreviated footer layout.
+	// UsageCompact selects the one-line abbreviated footer layout. Footer-only:
+	// the Usage tab has one layout.
 	UsageCompact bool `json:"usage_compact"`
 }
 
