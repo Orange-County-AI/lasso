@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -210,5 +214,68 @@ func TestTtydRoleNilSafe(t *testing.T) {
 	}
 	if err := r.ensure("local", "sh", nil); err != nil {
 		t.Errorf("ensure on a nil role = %v, want nil", err)
+	}
+}
+
+// A ttyd's `-t theme=` is frozen at spawn, so the DOCUMENT must carry the
+// palette lasso is painting now — otherwise a terminal opened directly at
+// /terminal/<slug>/ keeps serving the theme its process started under (a light
+// canvas under dark herdr chrome, for hours). Only the document is rewritten:
+// an asset or the websocket must reach ttyd untouched, and a URL that already
+// names a theme is left alone, or the redirect would loop.
+func TestLiveTtydThemeOnDocumentOnly(t *testing.T) {
+	prev := srvHub
+	srvHub = newHub()
+	srvHub.curTheme = resolveThemeByName("nord")
+	t.Cleanup(func() { srvHub = prev })
+
+	var reached string
+	h := withLiveTtydTheme(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		reached = r.URL.RequestURI()
+	}))
+	get := func(target string) *httptest.ResponseRecorder {
+		reached = ""
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		return rec
+	}
+
+	rec := get("/terminal/local/")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("document should be redirected onto the live theme, got %d", rec.Code)
+	}
+	if reached != "" {
+		t.Errorf("document must not reach ttyd before it carries a theme (got %q)", reached)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("Location %q: %v", rec.Header().Get("Location"), err)
+	}
+	if loc.Path != "/terminal/local/" {
+		t.Errorf("redirect moved the path: %q", loc.Path)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(loc.Query().Get("theme")), &got); err != nil {
+		t.Fatalf("theme option isn't the xterm.js ITheme: %v", err)
+	}
+	if want := resolveThemeByName("nord").ui.PanelBg; got["background"] != want {
+		t.Errorf("document carries background %q, want the live theme's %q", got["background"], want)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("a redirect carrying the palette must not be cached, got %q", cc)
+	}
+
+	// The websocket and ttyd's own assets are not documents.
+	for _, path := range []string{"/terminal/local/ws", "/terminal/local/token", "/terminal/local/favicon.png"} {
+		if rec := get(path); rec.Code != http.StatusOK || reached != path {
+			t.Errorf("%s should pass through, got %d (reached %q)", path, rec.Code, reached)
+		}
+	}
+
+	// Already themed: passed through, so a browser following the redirect
+	// cannot be redirected again.
+	themed := "/terminal/local/?theme=" + url.QueryEscape(`{"background":"#000000"}`)
+	if rec := get(themed); rec.Code != http.StatusOK || reached != themed {
+		t.Errorf("a themed document should pass through, got %d (reached %q)", rec.Code, reached)
 	}
 }
