@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { DialogFooter } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
+import { moveTabToHost } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 
 const NEW_WORKSPACE = "__new_workspace__"
@@ -39,22 +39,25 @@ function Field({
 export function NewTerminalForm({
   open,
   active,
+  selectedHost,
+  creating,
+  setCreating,
   onCreated,
   onCancel,
 }: {
   open: boolean
   active: boolean
+  selectedHost: string
+  creating: boolean
+  setCreating: (creating: boolean) => void
   onCreated: () => void
   onCancel: () => void
 }) {
-  const { host } = useApp()
-  const selectedHost = host || "local"
   const queryClient = useQueryClient()
   const [command, setCommand] = React.useState("")
   const [workspace, setWorkspace] = React.useState("")
   const [workspaceName, setWorkspaceName] = React.useState("~")
   const [tabName, setTabName] = React.useState("1")
-  const [creating, setCreating] = React.useState(false)
   const commandRef = React.useRef<HTMLInputElement>(null)
   const selectionTouchedRef = React.useRef(false)
   const tabNameTouchedRef = React.useRef(false)
@@ -76,12 +79,16 @@ export function NewTerminalForm({
     if (!open) return
     selectionTouchedRef.current = false
     tabNameTouchedRef.current = false
-    setCommand("")
     setWorkspace("")
     setWorkspaceName("~")
     setTabName("1")
-    setCreating(false)
   }, [open])
+
+  React.useEffect(() => {
+    if (!open) return
+    setCommand("")
+    setCreating(false)
+  }, [open, setCreating])
 
   React.useEffect(() => {
     if (!open || !configQuery.data || !workspacesQuery.data) return
@@ -141,6 +148,16 @@ export function NewTerminalForm({
       queryClient.invalidateQueries({
         queryKey: qk.workspaces(selectedHost),
       })
+      try {
+        await moveTabToHost(selectedHost)
+        if (result.tab_id) {
+          await api.focus(result.workspace_id, result.tab_id)
+        }
+      } catch (error) {
+        toast.warning("Terminal created, but navigation failed", {
+          description: (error as Error).message,
+        })
+      }
       onCreated()
     } catch (error) {
       toast.error(`Failed to create terminal: ${(error as Error).message}`)
@@ -155,7 +172,7 @@ export function NewTerminalForm({
 
   return (
     <form
-      className="flex min-h-0 flex-1 flex-col gap-4"
+      className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
       onSubmit={(event) => {
         event.preventDefault()
         void create()
@@ -167,7 +184,7 @@ export function NewTerminalForm({
         }
       }}
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
         <Field
           label="Command (optional)"
           htmlFor="terminal-command"
