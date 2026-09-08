@@ -221,6 +221,7 @@ export function NewDialog({
   variant?: "button" | "floating" | "header"
 }) {
   const [showAdvanced, setShowAdvanced] = React.useState(false)
+  const [terminalCreating, setTerminalCreating] = React.useState(false)
   const [placeholderIdx, setPlaceholderIdx] = React.useState(0)
   const queryClient = useQueryClient()
   // Set when the dialog closes because a pane was just created, so the close
@@ -589,13 +590,6 @@ export function NewDialog({
       // host, rewriting their paths in the prompt we submit, so the agent on that
       // host can actually read them. No-op when they're already there.
       const finalPrompt = await rehomePastedImages(prompt, selectedHost)
-      // Land the user on the new agent by moving THIS TAB to the picked host —
-      // its herdr terminal then points at it, and other tabs are untouched.
-      // Deferred to here (not on dropdown change) so previewing another host's
-      // repos while editing doesn't yank the terminal onto it.
-      if (selectedHost !== (activeHost ?? "local")) {
-        await moveTabToHost(selectedHost)
-      }
       let uploadDir: string | undefined
       let attachments: string[] | undefined
       if (files.length > 0) {
@@ -631,12 +625,21 @@ export function NewDialog({
       }
       return createAgentRetrying(payload)
     },
-    onSuccess: (rec) => {
+    onSuccess: async (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      // No api.focus here: the creation RPC itself already asked herdr to
-      // focus the new workspace (web creates default no_focus:false), and a
-      // bare workspace_id has no tab to focus anyway — /api/focus requires both
-      // ids, so this call always 400'd and was swallowed.
+      try {
+        await moveTabToHost(selectedHost)
+        const { panes } = await api.panes()
+        const pane = panes?.find((p) => p.pane_id === rec.root_pane)
+        if (!pane?.workspace_id || !pane.tab_id) {
+          throw new Error("The created pane is not available in Herdr")
+        }
+        await api.focus(pane.workspace_id, pane.tab_id)
+      } catch (error) {
+        toast.warning("Agent created, but navigation failed", {
+          description: (error as Error).message,
+        })
+      }
       createdRef.current = true
       onOpenChange(false)
       reset()
@@ -778,6 +781,62 @@ export function NewDialog({
               </Button>
             </DialogClose>
           </DialogHeader>
+          <Field label="Host" htmlFor="agent-host">
+            <select
+              id="agent-host"
+              className={fieldClass}
+              value={selectedHost}
+              disabled={createMutation.isPending || terminalCreating}
+              onChange={(e) => setSelectedHost(e.target.value)}
+            >
+              {hostGroups.map((g) => {
+                // Flat "<host> · <user>" for a single-account box; inside an
+                // optgroup the family/host is the group label, so options lead
+                // with the account name — the alias follows in parens unless
+                // it's just the group name plus that account.
+                const text = (
+                  o: {
+                    alias: string
+                    label: string
+                    user: string
+                    disabled: boolean
+                  },
+                  inGroup: boolean
+                ) => {
+                  const name = inGroup ? o.label : o.alias
+                  const extra = inGroup
+                    ? o.alias !== o.label && !o.alias.endsWith(`-${o.label}`)
+                      ? ` (${o.alias})`
+                      : ""
+                    : o.user
+                      ? ` · ${o.user}`
+                      : ""
+                  return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
+                }
+                if (g.opts.length === 1) {
+                  const o = g.opts[0]
+                  return (
+                    <option key={o.value} value={o.value} disabled={o.disabled}>
+                      {text(o, false)}
+                    </option>
+                  )
+                }
+                return (
+                  <optgroup key={g.box} label={g.box}>
+                    {g.opts.map((o) => (
+                      <option
+                        key={o.value}
+                        value={o.value}
+                        disabled={o.disabled}
+                      >
+                        {text(o, true)}
+                      </option>
+                    ))}
+                  </optgroup>
+                )
+              })}
+            </select>
+          </Field>
           <TabsContent
             value="agent"
             forceMount
@@ -865,67 +924,6 @@ export function NewDialog({
                       </div>
                     )}
                   </div>
-                </Field>
-
-                <Field label="Host" htmlFor="agent-host">
-                  <select
-                    id="agent-host"
-                    className={fieldClass}
-                    value={selectedHost}
-                    onChange={(e) => setSelectedHost(e.target.value)}
-                  >
-                    {hostGroups.map((g) => {
-                      // Flat "<host> · <user>" for a single-account box; inside an
-                      // optgroup the family/host is the group label, so options lead
-                      // with the account name — the alias follows in parens unless
-                      // it's just the group name plus that account.
-                      const text = (
-                        o: {
-                          alias: string
-                          label: string
-                          user: string
-                          disabled: boolean
-                        },
-                        inGroup: boolean
-                      ) => {
-                        const name = inGroup ? o.label : o.alias
-                        const extra = inGroup
-                          ? o.alias !== o.label &&
-                            !o.alias.endsWith(`-${o.label}`)
-                            ? ` (${o.alias})`
-                            : ""
-                          : o.user
-                            ? ` · ${o.user}`
-                            : ""
-                        return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
-                      }
-                      if (g.opts.length === 1) {
-                        const o = g.opts[0]
-                        return (
-                          <option
-                            key={o.value}
-                            value={o.value}
-                            disabled={o.disabled}
-                          >
-                            {text(o, false)}
-                          </option>
-                        )
-                      }
-                      return (
-                        <optgroup key={g.box} label={g.box}>
-                          {g.opts.map((o) => (
-                            <option
-                              key={o.value}
-                              value={o.value}
-                              disabled={o.disabled}
-                            >
-                              {text(o, true)}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )
-                    })}
-                  </select>
                 </Field>
 
                 {type === "git" && (
@@ -1177,8 +1175,12 @@ export function NewDialog({
             className="flex min-h-0 flex-col data-[state=inactive]:hidden"
           >
             <NewTerminalForm
+              key={selectedHost}
               open={open}
               active={tab === "terminal"}
+              selectedHost={selectedHost}
+              creating={terminalCreating}
+              setCreating={setTerminalCreating}
               onCancel={() => onOpenChange(false)}
               onCreated={() => {
                 createdRef.current = true
