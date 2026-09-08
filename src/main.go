@@ -227,9 +227,9 @@ func runServer() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/terminal/", proxy)
+	mux.Handle("/terminal/", withLiveTtydTheme(proxy))
 	if *spawnTtyd {
-		mux.Handle("/shell/", ttydProxy(func() *ttydRole { return terminals.shell }))
+		mux.Handle("/shell/", withLiveTtydTheme(ttydProxy(func() *ttydRole { return terminals.shell })))
 	}
 	mux.HandleFunc("/api/active", func(w http.ResponseWriter, r *http.Request) {
 		a, err := hub.snapshot(requestHost(r))
@@ -510,6 +510,61 @@ const ttydDialWait = 3 * time.Second
 // The two halves of a reverse proxy cannot otherwise talk, and picking the
 // instance now depends on the request rather than on a process-wide pointer.
 type ttydSlugKey struct{}
+
+// withLiveTtydTheme serves the terminal DOCUMENT with the palette lasso is
+// painting RIGHT NOW, by appending it as a ttyd client option in the query.
+//
+// `-t theme=` (startTtyd) is read once, from argv, when a ttyd is spawned — so
+// it is a SNAPSHOT, and every theme change after that spawn leaves the process
+// serving the palette of whenever it started. That instance then survives the
+// change: nothing retires a resident ttyd on a re-theme (and nothing should —
+// killing it drops an open terminal's websocket, and its /shell/ child with
+// it), so a dark-themed lasso kept handing out a light canvas until the host
+// was switched away from or the instance idled out. Observed on titan: three
+// terminals still serving rose-pine-DAWN hours after herdr moved to rose-pine,
+// with herdr's own chrome painting dark over a cream background.
+//
+// The app's own page hid this — lib/theme.ts reaches into the same-origin
+// iframe and re-pins window.term.options.theme on every /api/theme, so the
+// staleness only ever showed where nothing repaints from outside: a terminal
+// opened DIRECTLY at /terminal/<slug>/ (a dedicated browser window on that
+// URL), which is served by ttyd's own document and no lasso page.
+//
+// ttyd's frontend merges its options as {…built-ins, …server-sent, …URL query},
+// so the query wins over the spawn-time value, is re-applied on every
+// reconnect, and needs no client of ours. It is also what the inner programs
+// see: xterm.js answers herdr's OSC 11 background query from the merged theme,
+// which is how omp and opencode infer light vs dark inside a pane.
+//
+// Only the document is touched — assets, /token and the websocket pass through
+// untouched — and a query that already names a theme is left alone, so a
+// hand-tuned URL wins and the redirect cannot loop.
+func withLiveTtydTheme(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ttydDocRequest(r) || r.URL.Query().Has("theme") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		q := r.URL.Query()
+		q.Set("theme", liveTheme().xtermJSON())
+		u := *r.URL
+		u.RawQuery = q.Encode()
+		// The palette rides in the Location, so a cached redirect would pin the
+		// theme it was issued under — exactly the staleness this removes.
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, u.RequestURI(), http.StatusFound)
+	})
+}
+
+// ttydDocRequest reports whether r asks for a terminal's HTML document (the one
+// response whose client options we can still influence) rather than an asset,
+// the token endpoint or the websocket.
+func ttydDocRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return strings.HasSuffix(r.URL.Path, "/") || strings.HasSuffix(r.URL.Path, "/index.html")
+}
 
 // ttydProxy reverse-proxies /<role>/<slug>/… to THAT host's ttyd over its
 // private unix socket. The host in the outbound URL is a placeholder — the
