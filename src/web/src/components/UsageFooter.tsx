@@ -14,6 +14,7 @@ import {
 } from "@/lib/api"
 import { qk } from "@/lib/query"
 import { useUIState } from "@/lib/ui-state"
+import { pace } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 
 // UsageFooter — a slim status bar pinned to the bottom of the app that surfaces
@@ -119,16 +120,17 @@ function resetText(limit: UsageLimit): string {
 // Human read-out of pace for the tooltip: compares usage against how far through
 // the period we are and, when over pace, projects where usage lands at reset.
 function paceText(limit: UsageLimit): string {
-  const e = limit.elapsedPct
-  if (e < 0) return ""
-  if (limit.percent > e + 1 && e > 0) {
-    const projected = Math.round((limit.percent / e) * 100)
+  const { elapsed, ahead, projected } = pace(limit)
+  if (elapsed < 0) return ""
+  if (ahead) {
     return (
-      `Ahead of pace — ${limit.percent}% used at ${e}% through the period` +
-      (projected > 100 ? ` (on track for ~${projected}% by reset)` : "")
+      `Ahead of pace — ${limit.percent}% used at ${elapsed}% through the period` +
+      (projected != null && projected > 100
+        ? ` (on track for ~${projected}% by reset)`
+        : "")
     )
   }
-  return `${e}% through the period — on pace`
+  return `${elapsed}% through the period — on pace`
 }
 
 // PaceBar — usage fill with a time notch; the stretch of fill past the notch is
@@ -286,10 +288,7 @@ function ProviderGroups({
     <Fragment key={provider.name}>
       {index > 0 ? (
         compact ? (
-          <span
-            className="mx-2 flex-none text-muted-foreground/60"
-            aria-hidden
-          >
+          <span className="mx-2 flex-none text-muted-foreground/60" aria-hidden>
             ·
           </span>
         ) : (

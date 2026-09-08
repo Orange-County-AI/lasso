@@ -138,10 +138,19 @@ frame a private one). lasso detects both cases and offers to open in a new tab.
 
 The footer tracks each provider's rate-limit window — 5-hour and weekly — so
 you can see a budget running out before an agent stops mid-task. Providers you
-have no credentials for stay hidden; the rest you can order and hide in
-Settings.
+have no credentials for stay hidden automatically; the rest you order and
+switch on/off under **Settings → Usage tracking**. Switching one off stops the
+polling too, so a provider you don't use costs no requests.
 
 <img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
+
+The **Usage** tab in the sidebar is the same numbers in full: every window per
+provider with its own bar, a notch at the share of the window that has already
+elapsed, and — when usage is running ahead of that clock — where it lands at
+reset. So "16%, ahead of pace, ~160% at reset" tells you a weekly budget is
+going to run out on Thursday while the footer still reads a comfortable 16%.
+
+<img src="docs/screenshots/usage-tab.png" alt="the Usage sidebar tab: per-provider quota windows with pace notches, projected landings, and reset countdowns" width="460">
 
 ## Using the CLI
 
@@ -174,9 +183,11 @@ Two resizable, collapsible columns:
   that follows the active pane's directory and opens files in a
   markdown/code/image viewer, a **Browser** iframe that embeds a local
   dev-server port (`5173`) or any URL you type, a plain **Terminal** shell
-  outside herdr, and **Settings** (the lasso version and whether an update is
-  available, the herdr protocol/version with a one-click `herdr update`,
-  notifications for blocked agents, and the New-Agent defaults).
+  outside herdr, a **Usage** tab with every provider quota window in full
+  (bars, pace, reset countdowns — the footer's detail view), and **Settings**
+  (the lasso version and whether an update is available, the herdr
+  protocol/version with a one-click `herdr update`, notifications for blocked
+  agents, and the New-Agent defaults).
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding

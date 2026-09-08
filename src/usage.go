@@ -1,8 +1,10 @@
 package main
 
-// Usage limits footer — surfaces subscription usage limits for Claude Code,
-// Kimi Code, Codex, and the Z.ai GLM Coding Plan, so a lasso user can see how
-// much of their short / weekly quotas they've burned without leaving the app.
+// Usage tracking — surfaces subscription usage limits for Claude Code, Kimi
+// Code, Codex, and the Z.ai GLM Coding Plan (the bottom footer's glance and the
+// Usage sidebar tab's detail both read this), so a lasso user can see how much
+// of their short / weekly quotas they've burned without leaving the app.
+// Providers unchecked in Settings → Usage tracking are not fetched at all.
 //
 // This reads credentials from provider CLI files or environment variables and
 // calls the upstream usage endpoints those providers' own tools use. Tokens
@@ -71,9 +73,12 @@ var usageHTTP = &http.Client{Timeout: 12 * time.Second}
 
 // usageCache memoizes the assembled payload for a short TTL. clui polls upstream
 // every 60s; here several tabs may poll independently, so we collapse them.
+// `tracked` is the provider set the entry was built for: unchecking a provider
+// in Settings must drop it from the next poll, not a TTL later.
 var usageCache struct {
 	mu      sync.Mutex
 	at      time.Time
+	tracked string
 	payload usagePayload
 }
 
@@ -164,10 +169,52 @@ func saveUsageStoreLocked() {
 	_ = os.WriteFile(path, data, 0o644)
 }
 
+// usageFetchers is every provider lasso can meter, keyed by the name its
+// fetcher reports — the same string the Settings checkboxes persist into
+// uiState.UsageHidden, so "don't track Kimi" is resolvable here rather than
+// only in the browser.
+var usageFetchers = []struct {
+	name  string
+	fetch func(context.Context) usageProvider
+}{
+	{"Claude Code", fetchClaudeUsage},
+	{"Kimi Code", fetchKimiUsage},
+	{"Codex", fetchCodexUsage},
+	{"Z.ai", fetchZaiUsage},
+}
+
+// trackedUsageFetchers drops the providers turned off in Settings → Usage
+// tracking, and returns the tracked set as a cache key. Unchecking a provider
+// therefore stops the token refresh and the upstream request too, not just the
+// rendering of the result — that is what a user asking not to track Kimi is
+// asking for. An unreadable ui_state tracks everything, which is the state a
+// fresh install is in.
+func trackedUsageFetchers() ([]func(context.Context) usageProvider, string) {
+	hidden := map[string]bool{}
+	if us, err := getUIState(); err == nil {
+		for _, name := range us.UsageHidden {
+			hidden[name] = true
+		}
+	}
+	fetchers := make([]func(context.Context) usageProvider, 0, len(usageFetchers))
+	names := make([]string, 0, len(usageFetchers))
+	for _, f := range usageFetchers {
+		if hidden[f.name] {
+			continue
+		}
+		fetchers = append(fetchers, f.fetch)
+		names = append(names, f.name)
+	}
+	return fetchers, strings.Join(names, "\x00")
+}
+
 func serveUsage(w http.ResponseWriter, r *http.Request) {
+	fetchers, tracked := trackedUsageFetchers()
+
 	usageCache.mu.Lock()
 	defer usageCache.mu.Unlock()
-	if time.Since(usageCache.at) < usageCacheTTL && usageCache.payload.UpdatedAt != "" {
+	if time.Since(usageCache.at) < usageCacheTTL && usageCache.payload.UpdatedAt != "" &&
+		usageCache.tracked == tracked {
 		writeJSON(w, usageCache.payload)
 		return
 	}
@@ -177,12 +224,6 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	fetchers := []func(context.Context) usageProvider{
-		fetchClaudeUsage,
-		fetchKimiUsage,
-		fetchCodexUsage,
-		fetchZaiUsage,
-	}
 	results := make([]usageProvider, len(fetchers))
 	var wg sync.WaitGroup
 	for i, f := range fetchers {
@@ -219,6 +260,7 @@ func serveUsage(w http.ResponseWriter, r *http.Request) {
 	usageLastGood.mu.Unlock()
 
 	usageCache.at = time.Now()
+	usageCache.tracked = tracked
 	usageCache.payload = payload
 	writeJSON(w, payload)
 }

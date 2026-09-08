@@ -245,7 +245,7 @@ export function SettingsTab({
         <HerdrThemeSelect active={active} />
         <AutoTitleToggle active={active} />
         <NotificationsSettings active={active} />
-        <UsageFooterSettings />
+        <UsageTrackingSettings />
         <div className="mb-4 flex flex-col gap-1">
           <label className={labelClass} htmlFor="settings-host">
             Configuring host
@@ -691,9 +691,10 @@ const USAGE_LAYOUTS = [
   { compact: true, label: "Compact" },
 ] as const
 
-// The footer is global app chrome, so layout, visibility, and left-to-right
-// order belong with the other server-level settings above the host picker.
-function UsageFooterSettings() {
+// Usage tracking is global app chrome — it decides which providers lasso polls
+// at all, and drives both the footer and the Usage tab — so it belongs with the
+// other server-level settings above the host picker.
+function UsageTrackingSettings() {
   const ui = useUIState()
   const hidden = ui.usage_hidden ?? []
   const order = completeUsageProviderOrder(ui.usage_order)
@@ -715,9 +716,9 @@ function UsageFooterSettings() {
 
   return (
     <div className="mb-4 flex flex-col gap-1">
-      <span className={labelClass}>Usage footer</span>
+      <span className={labelClass}>Usage tracking</span>
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground">Layout</span>
+        <span className="text-[11px] text-muted-foreground">Footer layout</span>
         <div className="inline-flex w-fit gap-0.5 rounded-lg border border-border p-0.5">
           {USAGE_LAYOUTS.map((layout) => (
             <button
@@ -792,10 +793,12 @@ function UsageFooterSettings() {
         })}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Check providers to show them; arrows set their left-to-right order.
-        Compact shortens provider names and removes pace bars—hover a metric for
-        its full label, reset, and pace. Providers without credentials stay
-        hidden automatically.
+        Checked providers are tracked: lasso polls their quota endpoints and
+        shows them in the footer and the Usage tab. Unchecking one stops the
+        requests too, so a provider you don't care about costs nothing. Arrows
+        set the order. Compact shortens provider names and removes the footer's
+        pace bars—hover a metric for its full label, reset, and pace. Providers
+        without credentials stay hidden automatically.
       </p>
     </div>
   )
