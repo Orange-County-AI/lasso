@@ -32,13 +32,11 @@ func callVersion(t *testing.T) versionInfo {
 	return vi
 }
 
-// TestVersionCompatibleExactMatch: a herdr speaking exactly the protocol this
-// build targets is compatible. This also pins lassoHerdrProtocol to the current
-// target — if the constant drifts off the herdr release we ship against, the
-// matching arm here changes and the test fails.
+// The released Herdr protocol must be accepted, independently of the target
+// constant, so forgetting to update the target fails this check.
 func TestVersionCompatibleExactMatch(t *testing.T) {
 	stubPinger(t, func() (string, int, error) {
-		return "0.8.2", lassoHerdrProtocol, nil
+		return "0.9.0", 22, nil
 	})
 	vi := callVersion(t)
 	if !vi.Compatible {
@@ -47,7 +45,7 @@ func TestVersionCompatibleExactMatch(t *testing.T) {
 	if vi.LassoProtocol != lassoHerdrProtocol || vi.HerdrProtocol != lassoHerdrProtocol {
 		t.Errorf("protocols = lasso %d / herdr %d", vi.LassoProtocol, vi.HerdrProtocol)
 	}
-	if vi.HerdrVersion != "0.8.2" {
+	if vi.HerdrVersion != "0.9.0" {
 		t.Errorf("herdr_version = %q", vi.HerdrVersion)
 	}
 	if vi.Err != "" {

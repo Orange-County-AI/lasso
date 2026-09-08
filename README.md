@@ -66,6 +66,13 @@ open http://127.0.0.1:8090
 Run `lasso doctor` if anything looks off. To reach it from a phone you want an
 HTTPS origin — see [Exposing it](#exposing-it) and [On a phone](#on-a-phone).
 
+Lasso 2.13 targets **Herdr v0.9.0 (protocol 22)**. Upgrade Herdr on the host
+and its remote machines together; Settings reports incompatible versions.
+Herdr's native SSH machine list is separate from Lasso's host selector:
+`herdr machine add <ssh-alias> --label <name>` prepares and saves a machine.
+Upgrading an older Herdr server can end its running pane processes; checkpoint
+active work before approving a restart.
+
 ## The tour
 
 Everything here follows herdr's focused pane, so switching agent switches all
