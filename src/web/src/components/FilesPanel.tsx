@@ -1,5 +1,6 @@
 import * as React from "react"
 import { DiffTab } from "@/components/DiffTab"
+import { ErrorBoundary } from "@/components/ErrorBoundary"
 import {
   type FileChange,
   FilesTab,
@@ -7,12 +8,15 @@ import {
 } from "@/components/FilesTab"
 import { useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import { lazyWithReload } from "@/lib/lazy"
 import { usePaneFocusPending } from "@/lib/pane-focus"
 import { cn } from "@/lib/utils"
 
 // The file viewer pulls in CodeMirror + react-markdown; load it only on first
-// file open so the initial page stays light.
-const FileViewer = React.lazy(() =>
+// file open so the initial page stays light. lazyWithReload rather than
+// React.lazy because that chunk's name changes with every build, and a tab
+// open across a self-update asks for one the running binary no longer has.
+const FileViewer = lazyWithReload(() =>
   import("@/components/FileViewer").then((m) => ({ default: m.FileViewer }))
 )
 
@@ -195,16 +199,51 @@ export function FilesPanel() {
         </div>
 
         {viewer && (
-          <React.Suspense fallback={null}>
-            <FileViewer
-              key={pane}
-              path={viewer.path}
-              host={viewer.host}
-              initialDraft={initialDraft}
-              onDraftChange={saveDraft}
-              onClose={() => setViewer(null)}
-            />
-          </React.Suspense>
+          // Keyed on the pane so browsing elsewhere clears a failure rather
+          // than carrying it to the next file.
+          <ErrorBoundary
+            key={pane}
+            label="file viewer"
+            fallback={(_err, retry) => (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background text-muted-foreground text-xs">
+                <div>the file viewer failed to load.</div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    onClick={() => window.location.reload()}
+                  >
+                    reload lasso
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    onClick={retry}
+                  >
+                    try again
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    onClick={() => setViewer(null)}
+                  >
+                    close
+                  </button>
+                </div>
+              </div>
+            )}
+          >
+            <React.Suspense fallback={null}>
+              <FileViewer
+                key={pane}
+                path={viewer.path}
+                host={viewer.host}
+                initialDraft={initialDraft}
+                onDraftChange={saveDraft}
+                onClose={() => setViewer(null)}
+              />
+            </React.Suspense>
+          </ErrorBoundary>
         )}
 
         {focusing && (
