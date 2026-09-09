@@ -207,9 +207,6 @@ export interface UIState {
   usage_order: string[]
   // Footer-only: abbreviated provider names and metrics without pace bars.
   usage_compact: boolean
-  // Hides the bottom usage bar only. Providers stay tracked and the Usage tab
-  // still lists them — this is presentation, not `usage_hidden`'s deny-list.
-  usage_footer_hidden: boolean
 }
 
 // What a POST /api/ui-state write sends beyond the preferences themselves: who
