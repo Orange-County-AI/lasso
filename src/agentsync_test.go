@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -221,10 +222,44 @@ func TestSyncClaudeTheme(t *testing.T) {
 	if got.Overrides["background"] != dark.ui.PanelBg || got.Overrides["text"] != dark.ui.Text {
 		t.Errorf("overrides missing core tokens: %v", got.Overrides)
 	}
-	for _, tok := range []string{"diffAdded", "diffRemoved", "diffAddedDimmed", "diffRemovedDimmed", "planMode", "warning"} {
+	for _, tok := range []string{
+		"diffAdded", "diffRemoved", "diffAddedWord", "diffRemovedWord",
+		"diffAddedDimmed", "diffRemovedDimmed", "planMode", "warning",
+	} {
 		if got.Overrides[tok] == "" {
 			t.Errorf("missing override %q", tok)
 		}
+	}
+	// The diff tokens are backgrounds, and the line a change sits in must stay
+	// quieter than the changed span inside it — the inversion that made a whole
+	// screen of diff glow. Neither may be the raw palette color.
+	for _, c := range []struct{ line, word, accent string }{
+		{"diffAdded", "diffAddedWord", dark.ui.Green},
+		{"diffRemoved", "diffRemovedWord", dark.ui.Red},
+	} {
+		line, word := got.Overrides[c.line], got.Overrides[c.word]
+		if line == c.accent || word == c.accent {
+			t.Errorf("%s/%s = %q/%q, want blends of %q", c.line, c.word, line, word, c.accent)
+		}
+		if luminance(line) >= luminance(word) {
+			t.Errorf("%s (%q) is not dimmer than %s (%q)", c.line, line, c.word, word)
+		}
+		// Chroma is what makes a band visible against whatever is behind the
+		// terminal, and it is what a blend toward the background destroys for
+		// an accent whose hue opposes it (a red on a navy panel turns brown and
+		// vanishes into a warm wallpaper). Both bands must keep the accent's.
+		accentSat, lineSat := saturationOf(c.accent), saturationOf(line)
+		if lineSat < accentSat*0.8 {
+			t.Errorf("%s (%q) sat %.2f washed out from accent %q sat %.2f",
+				c.line, line, lineSat, c.accent, accentSat)
+		}
+	}
+	// Both accents must land at the same perceived strength: a red and a green
+	// at equal HSL lightness are not equally present (0.2126 vs 0.7152 of
+	// luminance), which is what left one band readable and the other not.
+	if d := math.Abs(luminance(got.Overrides["diffAdded"]) - luminance(got.Overrides["diffRemoved"])); d > 0.02 {
+		t.Errorf("added/removed lines differ in luminance by %.3f: %q vs %q",
+			d, got.Overrides["diffAdded"], got.Overrides["diffRemoved"])
 	}
 
 	light := resolveThemeByName("catppuccin-latte")
@@ -851,4 +886,10 @@ func TestSyncThemeEverywhereConcurrent(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("local theme %s was not written: %v", path, err)
 	}
+}
+
+func saturationOf(hex string) float64 {
+	r, g, b, _ := hexRGB(hex)
+	_, s, _ := rgbHSL(r, g, b)
+	return s
 }

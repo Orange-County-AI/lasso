@@ -205,7 +205,7 @@ export function FilesPanel() {
             key={pane}
             label="file viewer"
             fallback={(_err, retry) => (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background text-muted-foreground text-xs">
+              <div className="vsurface absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background text-muted-foreground text-xs">
                 <div>the file viewer failed to load.</div>
                 <div className="flex gap-2">
                   <button

@@ -286,8 +286,8 @@ export function FileViewer({
   }, [dirty])
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col bg-background">
-      <header className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-card px-3 py-1">
+    <div className="vsurface absolute inset-0 z-10 flex flex-col bg-background">
+      <header className="vsurface-header flex flex-shrink-0 items-center gap-2 border-border border-b bg-card px-3 py-1">
         <span
           className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground"
           title={path}
