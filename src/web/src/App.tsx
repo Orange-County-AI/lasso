@@ -555,12 +555,10 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
-        {/* The host menu, anchored at the bottom-right of the workspace: just
-          above the footer's Host button on desktop, and still a positioned box
-          on a phone, where the footer is display:none and the terminal's input
-          dial issues the same command. One controlled instance serves both. */}
+        {/* Match the footer's left-hand Host control on desktop; keep the
+          mobile input dial's host menu anchored at the terminal's right edge. */}
         <HostSwitcher
-          className="absolute right-8 bottom-1 z-40"
+          className="absolute right-8 bottom-1 z-40 md:right-auto md:left-2"
           open={hostMenuOpen}
           onOpenChange={setHostMenuOpen}
         />
@@ -591,6 +589,37 @@ function Shell() {
         keep the whole viewport for the terminal — the input dial beside xterm's
         textarea carries the same commands there. */}
       <footer className="hidden flex-none items-center gap-2 border-border border-t bg-card px-2 py-1 md:flex">
+        <div className="flex flex-none items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Switch host"
+            aria-label="Switch host"
+            aria-haspopup="menu"
+            aria-expanded={hostMenuOpen}
+            onPointerDownCapture={() => {
+              hostOpenAtPointerDown.current = hostMenuOpen
+            }}
+            onPointerCancel={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onKeyDownCapture={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onClick={toggleHostMenu}
+          >
+            <Server />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Keyboard shortcuts (⌘/)"
+            aria-label="Keyboard shortcuts"
+            onClick={() => setShortcutsOpen(true)}
+          >
+            <Keyboard />
+          </Button>
+        </div>
         <UsageFooter />
         <div className="ml-auto flex flex-none items-center gap-1">
           <Button
@@ -622,35 +651,6 @@ function Shell() {
                 textClassName="text-[11px]"
               />
             )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Switch host"
-            aria-label="Switch host"
-            aria-haspopup="menu"
-            aria-expanded={hostMenuOpen}
-            onPointerDownCapture={() => {
-              hostOpenAtPointerDown.current = hostMenuOpen
-            }}
-            onPointerCancel={() => {
-              hostOpenAtPointerDown.current = null
-            }}
-            onKeyDownCapture={() => {
-              hostOpenAtPointerDown.current = null
-            }}
-            onClick={toggleHostMenu}
-          >
-            <Server />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Keyboard shortcuts (⌘/)"
-            aria-label="Keyboard shortcuts"
-            onClick={() => setShortcutsOpen(true)}
-          >
-            <Keyboard />
           </Button>
         </div>
       </footer>

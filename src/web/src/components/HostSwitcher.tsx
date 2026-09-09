@@ -490,8 +490,9 @@ export function HostSwitcher({
           className="pointer-events-none size-px overflow-hidden p-0 opacity-0"
         />
         <DropdownMenuContent
-          align="end"
+          align="start"
           side="top"
+          collisionPadding={8}
           className="min-w-56"
           // The anchor above is not a real control, so returning focus to it on
           // close would park the keyboard on an invisible element. Hand it back
