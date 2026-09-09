@@ -254,11 +254,16 @@ Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
 Retro 82 also carries a **wallpaper**, which no other theme does: one of the 27
-stills from upstream's own set, bundled into the binary — nothing is fetched at
-runtime — and worn by the terminal, plus the window around it while Appearance
+stills from upstream's own set, bundled into the binary — no external image
+requests at runtime — and worn by the terminal, plus the window while Appearance
 is **Herdr**. Pick one in Settings → **Wallpaper**, under the theme selector;
 the choice is saved in that browser only, so two devices can wear different
 backdrops, and the credits are in `src/web/public/wallpapers/retro-82/NOTICE.txt`.
+
+The terminal uses ttyd's bundled **Canvas renderer**: its WebGL renderer paints
+opaque default-background rectangles behind dim text, which breaks transparency.
+Retro 82's sidebar selection backgrounds are transparent too; the active row
+keeps its accent and bold label instead of a solid strip across the wallpaper.
 
 Retro 82 is lasso's own, not one of herdr's eighteen built-in names — and herdr
 rejects a name it doesn't know outright (`herdr config check` errors and the TUI

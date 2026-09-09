@@ -552,6 +552,15 @@ func withLiveTtydTheme(next http.Handler) http.Handler {
 			return
 		}
 		q := r.URL.Query()
+		// ttyd 1.7.4's WebGL renderer forces alpha=1 for default-background
+		// cells carrying style flags (e.g. DIM), leaving opaque boxes on a
+		// transparent wallpaper. Its bundled canvas renderer handles those
+		// cells correctly. Choose it at document load for every theme so a
+		// later switch to Retro 82 needs no terminal reconnect; explicit
+		// renderer choices in hand-authored URLs still win.
+		if !q.Has("rendererType") {
+			q.Set("rendererType", "canvas")
+		}
 		q.Set("theme", liveTheme().xtermJSON())
 		u := *r.URL
 		u.RawQuery = q.Encode()

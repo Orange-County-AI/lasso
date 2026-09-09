@@ -806,16 +806,14 @@ func themeSpecFor(name string) herdrThemeSpec {
 // leak from the base — leaving it unset is also what keeps the terminal
 // background showing through herdr's sidebar.
 //
-// active_row_bg/selection_bg have no lasso token: they are the two row
-// backgrounds herdr keeps per theme, and its built-ins set them to that theme's
-// own surface_dim/surface0 (catppuccin, vesper), so they are derived the same
-// way here. Leaving them to the base would paint the base's rows into the
-// palette, which is exactly the leak the override block exists to prevent.
+// Active and selected rows retain their accent/bold foreground cues but use
+// the terminal's default background. An opaque fill would cut a dark strip
+// through Retro 82's wallpaper; Reset lets that background show through.
 func (d themeDef) customTokens() []themeToken {
 	p := d.ui
 	return []themeToken{
 		{"accent", p.Accent}, {"panel_bg", p.PanelBg},
-		{"active_row_bg", p.SurfaceDim}, {"selection_bg", p.Surface0},
+		{"active_row_bg", "reset"}, {"selection_bg", "reset"},
 		{"surface0", p.Surface0}, {"surface1", p.Surface1}, {"surface_dim", p.SurfaceDim},
 		{"overlay0", p.Overlay0}, {"overlay1", p.Overlay1},
 		{"text", p.Text}, {"subtext0", p.Subtext0},
