@@ -216,8 +216,8 @@ export function applyTermFont(tries = 0) {
 // the whole background-image stack as custom properties on <html>, and both
 // the chrome (index.css) and each ttyd document read them from there.
 //
-// The theme it all keys off is the one THIS BROWSER wears — herdr's resolved
-// theme, or the browser-local palette when one is chosen (see
+// The theme it all keys off is the one this browser RESOLVED — herdr's own
+// theme, or the palette named for the scheme in force (see
 // lib/mode.ts:localPaletteName) — never the raw configured name, so herdr's
 // alternate spellings and a [theme.custom]-tweaked palette land on the same
 // entry.
@@ -246,9 +246,9 @@ let lastPalette: ThemePayload | null = null
 let lastXtermTheme: Record<string, unknown> | null = null
 
 // The theme name the backdrop is chosen for: /api/theme's RESOLVED name, or the
-// browser-local palette's. Exported because the Settings gallery has to show
-// the backgrounds of the theme actually on screen, which under a local palette
-// is not the one herdr is configured with.
+// palette named for the scheme in force. Exported because the Settings gallery
+// has to show the backgrounds of the theme actually on screen, which under a
+// named palette is not the one herdr is configured with.
 let effectiveTheme = ""
 export function effectiveThemeName(): string {
   return effectiveTheme
@@ -487,8 +487,8 @@ export function applyTermAtmosphere(tries = 0) {
 }
 
 // chromeFollowsPalette reports whether the surrounding UI is painted from a
-// herdr/Omarchy palette at all — "herdr" appearance mode, or a browser-local
-// palette chosen for the current scheme. It gates both the --h-* override and
+// herdr/Omarchy palette at all — "herdr" appearance mode, or a palette named
+// for the current scheme. It gates both the --h-* override and
 // the chrome's half of the backdrop: the Nothing light/dark canvases are flat
 // monochrome by design, and a photograph behind them is not that design.
 function chromeFollowsPalette(): boolean {
@@ -677,7 +677,7 @@ export function startTermThemeReconciler() {
 // (`:root:root`) rather than a plain `:root`: index.css declares the light
 // tokens on `:root.light`, which outranks a single `:root` no matter where it
 // sits in the cascade. Under the old herdr-only behavior that never showed —
-// "herdr" mode resolves to the dark class — but a browser-local LIGHT palette
+// "herdr" mode resolves to the dark class — but a LIGHT palette
 // would have been silently ignored.
 const HERDR_CHROME_STYLE_ID = "lasso-herdr-chrome"
 
@@ -794,7 +794,7 @@ function applyPaletteScheme(css: string) {
 // module state. Nothing serializes the callers — an SSE theme_rev bump, a
 // Settings pick, an install and the OS-scheme watcher all fire independently —
 // and two /api/theme requests settle in whatever order the network gives them,
-// so without this the SLOWER response wins: choosing a browser-local palette
+// so without this the SLOWER response wins: naming a palette
 // while a herdr-theme fetch was in flight repainted the tab back to herdr's
 // theme a moment later, with nothing the user did to explain it and no way back
 // until the next bump. The ticket is checked after every await.
@@ -809,11 +809,17 @@ let themeGen = 0
 // so the whole UI matches the terminal, light/dark class included.
 //
 // WHICH palette is the one question this answers. By default it is herdr's own
-// resolved theme, shared by every tab and every host. But a browser may name a
-// preferred theme per light/dark scheme, and then it resolves THAT one through
-// /api/theme?name= — a read: nothing is written to herdr's config.toml, so no
-// other tab, host or agent follows, and an OS that flips at dusk re-themes this
-// window instead of oscillating the fleet twice a day.
+// resolved theme, shared with the TUI and every host. But lasso may name a
+// palette per light/dark scheme (stored in ui_state, so every browser on this
+// lasso agrees), and then it resolves THAT one through /api/theme?name= — a
+// read: nothing is written to herdr's config.toml, so no host or agent CLI
+// follows, and an OS that flips at dusk re-themes the browsers instead of
+// oscillating the fleet twice a day.
+//
+// It is also the repaint every APPEARANCE change lands on, wherever it was
+// made: AppProvider hangs it off lib/mode.ts:subscribeAppearance, so a mode or
+// palette picked in another browser arrives as a ui_state_rev bump and repaints
+// here with no reload and no remount.
 //
 // A theme may additionally carry a backdrop (see the atmosphere section above).
 // The terminal wears it whenever the effective theme has one; the chrome only

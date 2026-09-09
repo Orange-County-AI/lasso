@@ -200,8 +200,17 @@ export interface AtmospherePref {
   shading?: boolean
 }
 
-// Persisted, global browser UI preferences (SQLite-backed): sidebar layout, the
-// Files tab's click behavior, footer preferences and the per-theme backdrop.
+// What the chrome is painted from. "herdr" tracks herdr's own theme (the
+// default), "system" follows the DEVICE's OS scheme, and "light"/"dark" pin
+// one. Server-owned like the rest of UIState, so the choice — and the palette
+// each scheme wears — is this lasso's, not one browser's; "system" is the only
+// one whose ANSWER is per device, since the OS scheme is an observation rather
+// than a preference.
+export type AppearanceMode = "herdr" | "system" | "light" | "dark"
+
+// Persisted, global UI preferences (SQLite-backed): sidebar layout, the Files
+// tab's click behavior, footer preferences, the appearance mode and its
+// palettes, and the per-theme backdrop.
 // The client reads the whole object and writes patches, so navigating away and
 // back — or opening lasso elsewhere — restores the same view.
 export interface UIState {
@@ -228,6 +237,16 @@ export interface UIState {
   // Pictures handed to lasso by URL or upload, newest first. Shared by every
   // theme AND every browser; written through the remember/forget ops below.
   custom_backgrounds: string[]
+  // What the chrome is painted from (see AppearanceMode). Never send "" — the
+  // server answers 400 and drops the whole patch.
+  appearance_mode: AppearanceMode
+  // The theme lasso wears for each scheme, resolved through GET
+  // /api/theme?name= — a read, so naming one re-themes every lasso tab without
+  // writing herdr's config.toml or re-theming the fleet's TUIs and agents.
+  // "" (the default) means the flat Nothing chrome and herdr's own palette in
+  // the terminals. Only the scheme in force applies; the other is remembered.
+  palette_light: string
+  palette_dark: string
 }
 
 // A partial write to /api/ui-state: the preference fields to merge, plus the

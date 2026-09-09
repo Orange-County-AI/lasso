@@ -297,6 +297,20 @@ type uiState struct {
 	// than as a list, so a stale tab cannot resurrect a picture another one just
 	// forgot.
 	CustomBackgrounds []string `json:"custom_backgrounds"`
+	// AppearanceMode is which scheme the chrome wears: "herdr" (follow the
+	// shared herdr palette, the default and the historical behavior), "system"
+	// (follow the device's OS scheme), or a pinned "light"/"dark". Server-owned
+	// like every other preference here — the OS scheme itself stays a device
+	// observation and is never persisted, only the CHOICE to follow it is.
+	AppearanceMode string `json:"appearance_mode"`
+	// PaletteLight / PaletteDark name the theme this lasso wears in each
+	// scheme outside "herdr" mode, resolved read-only through
+	// GET /api/theme?name= so naming one writes nothing to herdr's config and
+	// re-themes no other host. "" — the default, and what every existing
+	// install reads as — means the flat Nothing chrome and herdr's shared
+	// palette in the terminals, i.e. the behavior before this existed.
+	PaletteLight string `json:"palette_light"`
+	PaletteDark  string `json:"palette_dark"`
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored
@@ -322,6 +336,46 @@ const atmosphereNoBackground = "none"
 // human curates, not a store: past a couple of dozen the picker is the problem.
 const maxCustomBackgrounds = 24
 
+// The appearance modes a browser may name. "herdr" is the default and the
+// historical behavior (the chrome follows the shared herdr palette); "system"
+// defers to the device's OS scheme; "light"/"dark" pin one.
+const (
+	appearanceModeHerdr  = "herdr"
+	appearanceModeSystem = "system"
+	appearanceModeLight  = "light"
+	appearanceModeDark   = "dark"
+)
+
+// appearanceModes is the accepted set, in the order a client error lists them.
+var appearanceModes = []string{
+	appearanceModeHerdr,
+	appearanceModeSystem,
+	appearanceModeLight,
+	appearanceModeDark,
+}
+
+// validAppearanceMode reports whether m is one a caller may send. Deliberately
+// exact: an unrecognized (or empty) mode from a client is a bug in that client,
+// and quietly coercing it would persist a preference nobody chose.
+func validAppearanceMode(m string) bool {
+	for _, v := range appearanceModes {
+		if m == v {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeAppearanceMode repairs what is already IN the db — a blob written
+// before this field existed, or one hand-edited — so every read answers a mode
+// the frontend can switch on. Writes are validated instead (see serveUIState).
+func normalizeAppearanceMode(m string) string {
+	if validAppearanceMode(m) {
+		return m
+	}
+	return appearanceModeHerdr
+}
+
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
 // expanded — when nothing is stored yet, except FilesClickNavigates which
 // defaults true).
@@ -332,6 +386,7 @@ func getUIState() (uiState, error) {
 		UsageOrder:          []string{},
 		ThemeAtmosphere:     map[string]atmospherePref{},
 		CustomBackgrounds:   []string{},
+		AppearanceMode:      appearanceModeHerdr,
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -354,6 +409,7 @@ func getUIState() (uiState, error) {
 	if us.CustomBackgrounds == nil {
 		us.CustomBackgrounds = []string{}
 	}
+	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
 	return us, nil
 }
 

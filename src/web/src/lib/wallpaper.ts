@@ -12,12 +12,12 @@
 // touches herdr's config.toml — this is lasso's own UI state, not the shared
 // theme, so nothing is mirrored to another host or to an agent CLI.
 //
-// The choice is stored PER THEME name — the one the BROWSER resolved, so a
-// tab wearing a browser-local palette dresses that palette rather than herdr's
-// — which means switching back and forth restores the backdrop each theme had
-// rather than dragging one image across all of them. Two browsers wearing two
-// different themes therefore still differ on screen while agreeing on the
-// state; two browsers on the SAME theme match.
+// The choice is stored PER THEME name — the one the BROWSER resolved, so a tab
+// wearing the palette named for its scheme dresses that palette rather than
+// herdr's — which means switching back and forth restores the backdrop each
+// theme had rather than dragging one image across all of them. Two browsers
+// resolving two different themes (one on the OS's light scheme, one on dark)
+// therefore still differ on screen while agreeing on the state.
 //
 // Only explicit choices are stored: an absent entry is this module's default
 // (below), never a value written back. That is what keeps a tab whose fetch is
