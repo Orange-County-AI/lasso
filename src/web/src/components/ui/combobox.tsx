@@ -124,7 +124,12 @@ export function Combobox({
           keeps the content inside the dialog subtree (scroll works) while Radix
           Popper's default `position: fixed` strategy still escapes the form's
           overflow clipping, so the dropdown isn't trapped inside the scroll
-          area. (Combobox is only used inside this dialog.) */}
+          area. (Combobox is only used inside this dialog.)
+
+          The one box that CAN still clip it is the dialog panel itself: its
+          centering translate makes it the containing block for these fixed
+          popovers, so `overflow-hidden` there cuts the list off at the dialog's
+          edge. NewDialog leaves that off on purpose — don't add it back. */}
       <Popover.Content
         align="start"
         sideOffset={4}
