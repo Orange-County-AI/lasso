@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -263,8 +264,8 @@ accent = "cyan"
 	if string(got) != want {
 		t.Fatalf("replace result:\n%s\nwant:\n%s", got, want)
 	}
-	if name, custom, _ := parseThemeConfig(cfg); name != "rose-pine" || custom["accent"] != "#ff0000" {
-		t.Fatalf("round-trip parse: name=%q custom=%v", name, custom)
+	if c := parseThemeConfig(cfg); c.Name != "rose-pine" || c.Custom["accent"] != "#ff0000" {
+		t.Fatalf("round-trip parse: name=%q custom=%v", c.Name, c.Custom)
 	}
 
 	// [theme] section without a name key: inserted right after the header, not
@@ -309,8 +310,372 @@ func TestWriteHerdrThemeNameVia(t *testing.T) {
 	if err := writeHerdrThemeNameVia(b, cfg, "gruvbox"); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	name, custom, _ := parseThemeConfig(cfg)
-	if name != "gruvbox" || custom["accent"] != "#ff0000" {
-		t.Fatalf("round-trip: name=%q custom=%v", name, custom)
+	c := parseThemeConfig(cfg)
+	if c.Name != "gruvbox" || c.Custom["accent"] != "#ff0000" {
+		t.Fatalf("round-trip: name=%q custom=%v", c.Name, c.Custom)
+	}
+}
+
+// herdrThemeNames is herdr 0.9's closed set of theme names (src/config/theme.rs
+// THEME_NAMES). Anything else in [theme].name is a `herdr config check` error
+// and silently falls its TUI back to catppuccin.
+var herdrThemeNames = map[string]bool{
+	"catppuccin": true, "catppuccin-latte": true, "terminal": true,
+	"tokyo-night": true, "tokyo-night-day": true, "dracula": true, "nord": true,
+	"gruvbox": true, "gruvbox-light": true, "one-dark": true, "one-light": true,
+	"solarized": true, "solarized-light": true, "kanagawa": true,
+	"kanagawa-lotus": true, "rose-pine": true, "rose-pine-dawn": true, "vesper": true,
+}
+
+// Whatever lasso writes into [theme].name must be a name herdr accepts: a theme
+// it doesn't know costs the machine its palette AND a clean config check. A
+// lasso-only theme has to declare a base; every other key has to BE a herdr name.
+func TestThemeSpecBaseIsAlwaysAHerdrName(t *testing.T) {
+	for name, def := range themes {
+		spec := themeSpecFor(name)
+		if !herdrThemeNames[spec.base] {
+			t.Errorf("theme %q writes [theme].name = %q, which herdr rejects", name, spec.base)
+		}
+		if def.herdrBase == "" {
+			if spec.lasso != "" || len(spec.tokens) > 0 {
+				t.Errorf("built-in %q should be written as a bare name, got marker %q / %d tokens", name, spec.lasso, len(spec.tokens))
+			}
+			continue
+		}
+		if spec.lasso != name {
+			t.Errorf("lasso-only theme %q wrote marker %q", name, spec.lasso)
+		}
+		if len(spec.tokens) == 0 {
+			t.Errorf("lasso-only theme %q wrote no override block, so herdr would paint %q", name, def.herdrBase)
+		}
+	}
+}
+
+// herdrEnv is the process environment with herdr's config pointed at dir —
+// HERDR_CONFIG_PATH removed rather than emptied, since herdr reads it as a path
+// whenever it is set at all.
+func herdrEnv(dir string) []string {
+	env := []string{"XDG_CONFIG_HOME=" + dir}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); k != "XDG_CONFIG_HOME" && k != "HERDR_CONFIG_PATH" {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// The acceptance test for the representation: a theme lasso synthesizes must
+// leave `herdr config check` clean on the real binary. Only the synthesized
+// ones are worth the process — every other key is a herdr name verbatim, which
+// TestThemeSpecBaseIsAlwaysAHerdrName already pins without shelling out.
+func TestHerdrConfigCheckAcceptsSynthesizedThemes(t *testing.T) {
+	bin, err := exec.LookPath("herdr")
+	if err != nil {
+		t.Skip("herdr not installed")
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "herdr", "config.toml")
+	check := func(label string) {
+		t.Helper()
+		cmd := exec.Command(bin, "config", "check")
+		cmd.Env = herdrEnv(dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil || strings.Contains(string(out), "unknown theme") {
+			body, _ := os.ReadFile(cfg)
+			t.Errorf("%s: herdr config check: %v\n%s\nconfig:\n%s", label, err, out, body)
+		}
+	}
+	for name, def := range themes {
+		if def.herdrBase == "" {
+			continue
+		}
+		os.Remove(cfg)
+		if err := setHerdrThemeName(cfg, name); err != nil {
+			t.Fatalf("%s: write: %v", name, err)
+		}
+		check(name)
+
+		// The generated block becomes a super-table AFTER an existing
+		// [theme.custom.dark] sub-table, which is the one shape where "valid
+		// TOML" is not obvious — and only herdr's own parser can settle it.
+		os.Remove(cfg)
+		os.MkdirAll(filepath.Dir(cfg), 0o755)
+		os.WriteFile(cfg, []byte("[theme.custom.dark]\nred = \"#ff0000\"\n\n[theme]\nname = \"nord\"\n"), 0o644)
+		if err := setHerdrThemeName(cfg, name); err != nil {
+			t.Fatalf("%s: write under sub-table: %v", name, err)
+		}
+		body, _ := os.ReadFile(cfg)
+		if !strings.Contains(string(body), "[theme.custom.dark]") || !strings.Contains(string(body), "red = \"#ff0000\"") {
+			t.Errorf("%s: user sub-table lost:\n%s", name, body)
+		}
+		check(name + " under [theme.custom.dark]")
+
+		// And switching away from that shape leaves it parseable and clean.
+		if err := setHerdrThemeName(cfg, "nord"); err != nil {
+			t.Fatalf("%s: switch away: %v", name, err)
+		}
+		if body, _ := os.ReadFile(cfg); strings.Contains(string(body), lassoThemeTag) {
+			t.Errorf("%s: generated data survived beside a sub-table:\n%s", name, body)
+		}
+		check("switched away from " + name)
+	}
+}
+
+// The full life of a lasso-only theme in someone else's config file: selected,
+// re-selected, then switched away from. What must survive is everything the
+// human wrote; what must not is anything lasso generated.
+func TestRetro82RoundTripAndSwitchAway(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	const orig = `onboarding = false
+
+[theme]
+name = "nord"
+
+[theme.custom]
+accent = "#ff0000"
+
+[keys]
+prefix = "ctrl-a"
+`
+	os.WriteFile(cfg, []byte(orig), 0o644)
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	after, _ := os.ReadFile(cfg)
+
+	// herdr sees a name it accepts; lasso still sees Retro 82.
+	c := parseThemeConfig(cfg)
+	if c.Name != "vesper" {
+		t.Errorf("[theme].name = %q, want the herdr base vesper", c.Name)
+	}
+	if c.lassoTheme() != "retro-82" {
+		t.Errorf("identity marker resolved to %q, want retro-82", c.lassoTheme())
+	}
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	rt := loadHerdrTheme("auto")
+	if rt.Resolved != "retro-82" {
+		t.Fatalf("resolved %q, want retro-82", rt.Resolved)
+	}
+
+	// The user's accent is theirs: not overwritten, not duplicated (which would
+	// be invalid TOML), and still the color lasso paints.
+	if got := strings.Count(string(after), "accent ="); got != 1 {
+		t.Errorf("accent written %d times:\n%s", got, after)
+	}
+	if c.Custom["accent"] != "#ff0000" || rt.ui.Accent != "#ff0000" {
+		t.Errorf("user accent lost: config %q, resolved %q", c.Custom["accent"], rt.ui.Accent)
+	}
+	// Every other token reproduces the palette, so herdr paints Retro 82 rather
+	// than the base showing through.
+	for _, tok := range themes["retro-82"].customTokens() {
+		if tok.key == "accent" {
+			continue
+		}
+		if c.Generated[tok.key] != tok.hex {
+			t.Errorf("token %s = %q, want %q", tok.key, c.Generated[tok.key], tok.hex)
+		}
+	}
+	if !strings.Contains(string(after), "[keys]") || !strings.Contains(string(after), "onboarding = false") {
+		t.Errorf("unrelated config lost:\n%s", after)
+	}
+
+	// Re-selecting the same theme must be a no-op, or every write would stack
+	// another copy of the block.
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("re-select: %v", err)
+	}
+	if again, _ := os.ReadFile(cfg); string(again) != string(after) {
+		t.Errorf("re-selecting changed the file:\n%s\nwant:\n%s", again, after)
+	}
+
+	// Switching away takes the generated block with it — a leftover would paint
+	// the next theme in Retro 82's colors.
+	if err := setHerdrThemeName(cfg, "nord"); err != nil {
+		t.Fatalf("switch away: %v", err)
+	}
+	back, _ := os.ReadFile(cfg)
+	if strings.Contains(string(back), lassoThemeTag) {
+		t.Errorf("generated data survived the switch:\n%s", back)
+	}
+	c = parseThemeConfig(cfg)
+	if c.Name != "nord" || len(c.Generated) != 0 || c.Custom["accent"] != "#ff0000" {
+		t.Errorf("after switch: name=%q generated=%v custom=%v", c.Name, c.Generated, c.Custom)
+	}
+	if rt := loadHerdrTheme("auto"); rt.Resolved != "nord" || rt.ui.PanelBg != themes["nord"].ui.PanelBg {
+		t.Errorf("after switch resolved %q panel_bg %q", rt.Resolved, rt.ui.PanelBg)
+	}
+	if !strings.Contains(string(back), "[keys]") {
+		t.Errorf("unrelated config lost on switch away:\n%s", back)
+	}
+}
+
+// herdr's own Settings UI writes [theme].name. When it moves off our base, the
+// generated block is leftovers: lasso must paint what herdr paints (the new
+// base), not keep claiming its own identity, and must clear the leftovers.
+func TestStaleThemeMarkerIsIgnoredAndCleaned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	body, _ := os.ReadFile(cfg)
+	moved := strings.Replace(string(body), `name = "vesper"`, `name = "nord"`, 1)
+	os.WriteFile(cfg, []byte(moved), 0o644)
+
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	rt := loadHerdrTheme("auto")
+	if rt.Resolved != "nord" {
+		t.Fatalf("resolved %q, want nord — the marker no longer applies", rt.Resolved)
+	}
+	if rt.ui.PanelBg != themes["nord"].ui.PanelBg || rt.Customized {
+		t.Errorf("stale generated tokens leaked: panel_bg %q customized %v", rt.ui.PanelBg, rt.Customized)
+	}
+
+	changed, err := migrateHerdrThemeConfig(cfg)
+	if err != nil || !changed {
+		t.Fatalf("migrate: changed=%v err=%v", changed, err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), lassoThemeTag) {
+		t.Errorf("leftovers survived migration:\n%s", got)
+	}
+	if c := parseThemeConfig(cfg); c.Name != "nord" || len(c.Generated) != 0 {
+		t.Errorf("cleanup changed the human's selection: name=%q generated=%v", c.Name, c.Generated)
+	}
+
+	// Same again with a name lasso does NOT recognize. The block is still
+	// lasso's litter and herdr still applies it, but the name belongs to whoever
+	// typed it — cleaning up must not overwrite it with a theme of our choosing.
+	os.WriteFile(cfg, []byte(strings.Replace(moved, `name = "nord"`, `name = "moonfly"`, 1)), 0o644)
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || !changed {
+		t.Fatalf("migrate unknown name: changed=%v err=%v", changed, err)
+	}
+	got, _ = os.ReadFile(cfg)
+	if strings.Contains(string(got), lassoThemeTag) {
+		t.Errorf("leftovers survived under an unknown name:\n%s", got)
+	}
+	if c := parseThemeConfig(cfg); c.Name != "moonfly" {
+		t.Errorf("[theme].name = %q, want the human's moonfly untouched:\n%s", c.Name, got)
+	}
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || changed {
+		t.Errorf("second pass rewrote a clean file: changed=%v err=%v", changed, err)
+	}
+}
+
+// The cleanup may not hang off "the theme changed". Select Retro 82 while on
+// nord, then hand-edit its base straight back to nord: the resolved theme is
+// nord before and after, so a poller comparing palettes sees nothing to do —
+// while herdr is left applying Retro 82's colors over nord indefinitely.
+func TestRefreshThemeClearsStrandedOverridesWithoutAThemeChange(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	os.WriteFile(cfg, []byte("[theme]\nname = \"nord\"\n"), 0o644)
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	before := loadHerdrTheme("auto")
+
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	body, _ := os.ReadFile(cfg)
+	os.WriteFile(cfg, []byte(strings.Replace(string(body), `name = "vesper"`, `name = "nord"`, 1)), 0o644)
+
+	rt, stranded := loadHerdrThemeConfig("auto")
+	if rt != before {
+		t.Fatalf("resolved theme moved (%v -> %v); this test no longer covers the same-resolved case", before.Resolved, rt.Resolved)
+	}
+	if !stranded {
+		t.Fatal("stranded overrides not reported, so nothing would ever clear them")
+	}
+
+	// The hub already holds that same theme, so its change check short-circuits
+	// — the cleanup has to run anyway.
+	h := &hub{curTheme: before}
+	h.refreshTheme()
+	if h.themeRev != 0 {
+		t.Errorf("themeRev bumped to %d without a theme change", h.themeRev)
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), lassoThemeTag) {
+		t.Errorf("stranded overrides survived the poll:\n%s", got)
+	}
+	if c := parseThemeConfig(cfg); c.Name != "nord" || len(c.Generated) != 0 {
+		t.Errorf("after cleanup: name=%q generated=%v", c.Name, c.Generated)
+	}
+	if _, stranded := loadHerdrThemeConfig("auto"); stranded {
+		t.Error("still reported as stranded after the cleanup: the poll would rewrite on every tick")
+	}
+}
+
+// A machine that picked Retro 82 under an older build has a name herdr rejects
+// and no way to fix itself: the migration is what repairs it at boot, without
+// the human having to select some other theme and come back.
+func TestMigrateLegacyRetro82Name(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	os.WriteFile(cfg, []byte("onboarding = false\n\n[theme]\nname = \"retro-82\"\n"), 0o644)
+
+	changed, err := migrateHerdrThemeConfig(cfg)
+	if err != nil || !changed {
+		t.Fatalf("migrate: changed=%v err=%v", changed, err)
+	}
+	c := parseThemeConfig(cfg)
+	if c.Name != "vesper" || c.lassoTheme() != "retro-82" {
+		t.Fatalf("migrated to name=%q marker=%q", c.Name, c.Marker)
+	}
+	if got, _ := os.ReadFile(cfg); !strings.Contains(string(got), "onboarding = false") {
+		t.Errorf("unrelated config lost:\n%s", got)
+	}
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	if rt := loadHerdrTheme("auto"); rt.Resolved != "retro-82" {
+		t.Errorf("migrated config resolves to %q, want retro-82", rt.Resolved)
+	}
+
+	// Idempotent: a second boot must not rewrite (nor re-notify herdr).
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || changed {
+		t.Errorf("second migrate: changed=%v err=%v", changed, err)
+	}
+}
+
+// The migration may only touch a config it has something to fix. A file naming
+// a plain built-in is herdr's business alone — reformatting it (and dropping the
+// human's comments) at every boot would be the worse bug.
+func TestMigrateLeavesOrdinaryConfigAlone(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	const orig = "[theme]\nname   = \"nord\"  # my favourite\n"
+	os.WriteFile(cfg, []byte(orig), 0o644)
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || changed {
+		t.Fatalf("migrate: changed=%v err=%v", changed, err)
+	}
+	if got, _ := os.ReadFile(cfg); string(got) != orig {
+		t.Errorf("config rewritten:\n%s", got)
+	}
+	if changed, err := migrateHerdrThemeConfig(filepath.Join(dir, "absent.toml")); err != nil || changed {
+		t.Errorf("missing config: changed=%v err=%v", changed, err)
+	}
+}
+
+// A remote host gets the same representation over the Backend interface — a
+// theme name only lasso knows must never reach another machine's config.toml.
+func TestWriteHerdrThemeNameViaSynthesizes(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "sub", "config.toml")
+	b := &localBackend{}
+	if err := writeHerdrThemeNameVia(b, cfg, "retro-82"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	c := parseThemeConfig(cfg)
+	if c.Name != "vesper" || c.lassoTheme() != "retro-82" {
+		t.Fatalf("remote config: name=%q marker=%q", c.Name, c.Marker)
+	}
+	if c.Generated["panel_bg"] != themes["retro-82"].ui.PanelBg {
+		t.Errorf("panel_bg = %q, want %q", c.Generated["panel_bg"], themes["retro-82"].ui.PanelBg)
+	}
+	if err := writeHerdrThemeNameVia(b, cfg, "gruvbox"); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if got, _ := os.ReadFile(cfg); strings.Contains(string(got), lassoThemeTag) {
+		t.Errorf("generated data survived on the remote:\n%s", got)
 	}
 }

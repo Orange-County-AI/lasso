@@ -253,6 +253,20 @@ Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
 Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
+Retro 82 is lasso's own, not one of herdr's eighteen built-in names — and herdr
+rejects a name it doesn't know outright (`herdr config check` errors and the TUI
+falls back to catppuccin). So lasso writes it the way herdr supports: `[theme]
+name = "vesper"` plus a `[theme.custom]` block that reproduces the palette, each
+generated line tagged with a `# lasso-theme` comment. The tag is what makes it
+reversible — switching to another theme deletes exactly those lines and leaves
+every override you typed, and a token you set yourself is never overwritten.
+A config still naming `retro-82` from an older lasso is rewritten into that form
+at startup, so no machine is stuck on a rejected name — and if you re-theme in
+herdr itself (which writes `[theme].name` and knows nothing about the block),
+the stranded lines are cleared the moment lasso notices, since herdr would
+otherwise keep painting your new theme in the old one's colors. Your own
+`[theme].name` is left exactly as you wrote it, even a name lasso doesn't know.
+
 The **chrome** around the terminal (sidebar, diff, files, settings) is lasso's
 own monochrome design system, not herdr's palette. It follows your **system
 light/dark** preference (`prefers-color-scheme`), overridable in Settings →
@@ -260,10 +274,12 @@ Appearance (System / Light / Dark, persisted per device).
 
 A theme change is pushed to **every reachable host**, in parallel — not just the
 one lasso is currently driving — since panes from other machines are on screen
-the whole time through herdr-mirror. Each host gets `[theme].name` in the
-config.toml its own herdr reads (resolved from that host's environment, not
-guessed from the socket's directory) and the agent CLIs' own theme files (Claude
-Code, OpenCode, Oh My Pi, ghostty), so agents render in step with herdr.
+the whole time through herdr-mirror. Each host gets the same `[theme]` section
+in the config.toml its own herdr reads (resolved from that host's environment,
+not guessed from the socket's directory) — including the generated block for a
+lasso-only theme, so no remote `herdr config check` sees a name it rejects — and
+the agent CLIs' own theme files (Claude Code, OpenCode, Oh My Pi, ghostty), so
+agents render in step with herdr.
 
 **Reachable over ssh is the only requirement.** A theme write is file I/O, so a
 host running a herdr this lasso can't drive — one a release behind, or stopped —

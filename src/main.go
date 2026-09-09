@@ -164,6 +164,12 @@ func runServer() {
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
 	}
 
+	// Bring the local config.toml up to the form herdr 0.9 accepts before
+	// reading it: a theme lasso picked under an older build is written as a name
+	// herdr rejects, which costs that machine both its palette and a clean
+	// `herdr config check` until something rewrites it (see
+	// migrateHerdrThemeConfig).
+	tidyHerdrThemeConfig("rewrote the theme into herdr's supported form")
 	theme = loadHerdrTheme(*themeName)
 	if theme.Customized {
 		log.Printf("theme:    %q -> %s (+custom overrides)", theme.Name, theme.Resolved)
@@ -2347,7 +2353,18 @@ func (h *hub) run(ctx context.Context) {
 // parse) so an edit to [theme].name is picked up live, bumping themeRev and
 // pushing it to every tab when it moves.
 func (h *hub) refreshTheme() {
-	rt := loadHerdrTheme(*themeName) // outside the lock: it does I/O
+	rt, stranded := loadHerdrThemeConfig(*themeName) // outside the lock: it does I/O
+	// An edit made outside lasso — herdr's own theme popup, a hand edit — may
+	// have STRANDED the override block lasso generated for the theme it
+	// replaced, and herdr goes on applying that block over the new theme. This
+	// is handled BEFORE (and independently of) the change check, because the
+	// litter is invisible in the resolved palette: selecting Retro 82 and then
+	// hand-editing its base back to the theme you were on resolves to the same
+	// value twice, so a cleanup gated on a change would never run. The read
+	// above already answered it, so a config holding none costs nothing.
+	if stranded {
+		tidyHerdrThemeConfig("cleared theme overrides stranded by an outside re-theme")
+	}
 	h.mu.Lock()
 	if rt == h.curTheme {
 		h.mu.Unlock()

@@ -195,16 +195,118 @@ export function applyTermFont(tries = 0) {
   if (pending && tries < 20) setTimeout(() => applyTermFont(tries + 1), 250)
 }
 
+// ---------------------------------------------------------------------------
+// Retro 82 atmosphere
+// ---------------------------------------------------------------------------
+
+// The one palette that comes with a wallpaper. index.css authors it as CSS
+// gradients (concentric teal rings around a faint warm core over the palette's
+// navy) rather than an image, so it costs the embedded bundle nothing and
+// rescales to any pane. Compared against /api/theme's RESOLVED name, so herdr's
+// alternate spellings — and a retro-82 with [theme.custom] tweaks — all get it.
+const ATMOSPHERE_THEME = "retro-82"
+const TERM_ATMOSPHERE_STYLE_ID = "herdr-term-atmosphere"
+
+// Whether the resolved herdr theme is the one with a wallpaper. Every consumer
+// reads it (applyTermTheme pins xterm's allowTransparency off it, the
+// reconciler re-pins after a ttyd reconnect), so it lives beside the cached
+// palette instead of being threaded through each call.
+let atmosphereOn = false
+
+// The xterm background pinned under the atmosphere: fully transparent, so a
+// cell no program has colored paints nothing and the CSS backdrop below reaches
+// the screen. Only the DEFAULT background can be made transparent this way — a
+// cell carrying its own SGR background (herdr's own chrome, a selected row in a
+// TUI) is opaque by definition and stays that way.
+//
+// It is still spelled as the palette's navy, and that is what makes the
+// wallpaper visible inside herdr's PANES rather than only at its edges. xterm
+// answers a program's OSC 11 background query from this color with the alpha
+// dropped (rgb:00/17/2e), herdr records that as the host terminal's background,
+// and its pane renderer then emits no explicit background for a cell whose
+// default matches the host's (src/pane/terminal.rs:ghostty_default_bg returns
+// None → Color::Reset) — i.e. the pane's own default cells stay xterm's default
+// background, which is the transparent one. A different RGB here would make
+// herdr paint every pane cell explicitly and the backdrop would never show. The
+// same reply is how omp and opencode infer light-vs-dark, so it must stay dark.
+const ATMOSPHERE_TERM_BG = "#00172e00"
+
+// termAtmosphereCSS builds the stylesheet injected into a ttyd document: the
+// wallpaper on <html>, the scrim on <body>, and everything ttyd and xterm paint
+// between them and the glyphs turned transparent so the backdrop reaches the
+// screen. The declarations are read from the parent document's own custom
+// properties (index.css) — one definition, two documents, same as the
+// @font-face applyTermFont mirrors across the same boundary.
+//
+// The scrim is the wash xterm no longer paints (see ATMOSPHERE_TERM_BG). Doing
+// it in CSS rather than as a translucent xterm background keeps the tint
+// identical under all three of ttyd's renderers, instead of depending on how
+// each composites a half-transparent theme color. `.xterm-viewport` needs the
+// !important: xterm writes the theme background onto it as an inline style on
+// every theme change, and an author !important is what outranks that.
+function termAtmosphereCSS(): string {
+  const cs = getComputedStyle(document.documentElement)
+  const v = (name: string) => cs.getPropertyValue(name).trim()
+  return [
+    `html{background-color:${v("--r82-base")}!important;`,
+    `background-image:${v("--r82-wallpaper")}!important;`,
+    "background-attachment:fixed!important;background-repeat:no-repeat!important;",
+    "background-size:cover!important}",
+    `body{background:${v("--r82-scrim")}!important}`,
+    "#terminal-container,.terminal,.xterm,.xterm-screen,.xterm-viewport",
+    "{background-color:transparent!important}",
+  ].join("")
+}
+
+// applyTermAtmosphere injects — or, off the atmosphere theme, removes — the
+// wallpaper stylesheet in every terminal iframe. Mirrors applyTermFont: the
+// <style> goes in as soon as the document exists, and we retry while an iframe
+// is still (re)connecting so a frame that arrives late still gets it. Removal
+// is what restores every other theme: the ttyd document is otherwise untouched.
+export function applyTermAtmosphere(tries = 0) {
+  let pending = false
+  for (const el of termFrames()) {
+    try {
+      const doc = el.contentDocument
+      if (!doc?.head) {
+        pending = true
+        continue
+      }
+      const have = doc.getElementById(TERM_ATMOSPHERE_STYLE_ID)
+      if (!atmosphereOn) {
+        have?.remove()
+        continue
+      }
+      if (have) continue
+      const style = doc.createElement("style")
+      style.id = TERM_ATMOSPHERE_STYLE_ID
+      style.textContent = termAtmosphereCSS()
+      doc.head.appendChild(style)
+    } catch {
+      /* same-origin: never let the backdrop break the terminal */
+    }
+  }
+  // Only the injecting direction is worth retrying: a document that has not
+  // loaded yet cannot be holding a stylesheet to remove.
+  if (atmosphereOn && pending && tries < 20)
+    setTimeout(() => applyTermAtmosphere(tries + 1), 250)
+}
+
 let lastXtermTheme: Record<string, unknown> | null = null
 
-// applyTermTheme sets xterm.js's theme on every terminal iframe. ttyd 1.7.4
+// applyTermTheme pins every terminal iframe to the CACHED palette. ttyd 1.7.4
 // exposes the Terminal as window.term and the iframes are same-origin (proxied
 // under /terminal/ and /shell/), so the parent can reach in. A terminal may not
 // be ready when a theme arrives (iframe still loading), so retry a few times.
-export function applyTermTheme(
-  theme: Record<string, unknown> | null,
-  tries = 0
-) {
+//
+// It deliberately takes no theme argument, and each retry re-reads the module
+// cache: a snapshot captured before a `setTimeout` outlives the palette it came
+// from. Switching Retro 82 → Nord while an iframe is still connecting would
+// otherwise land the queued retro palette — its background transparent — under
+// the Nord atmosphereOn=false pin a quarter second later, i.e. a terminal of
+// blank tiles until the next reconcile.
+export function applyTermTheme(tries = 0) {
+  const theme = lastXtermTheme
   if (!theme) return
   let pending = false
   for (const el of termFrames()) {
@@ -213,6 +315,14 @@ export function applyTermTheme(
         term?: { options?: Record<string, unknown> }
       }
       if (w?.term?.options) {
+        // allowTransparency has to be true for the glyph atlas to leave a
+        // default-bg cell transparent (xterm bakes the background behind each
+        // glyph into the atlas otherwise, and every cell becomes an opaque
+        // tile). xterm rebuilds the atlas when either option changes, and
+        // writing an unchanged boolean is a no-op in its option setter, so
+        // pinning it here — the one place boot, re-theme and the post-reconnect
+        // reconcile all funnel through — costs nothing off the atmosphere theme.
+        w.term.options.allowTransparency = atmosphereOn
         w.term.options.theme = theme
         continue
       }
@@ -222,11 +332,7 @@ export function applyTermTheme(
     pending = true
   }
   if (pending && tries < 20)
-    setTimeout(() => applyTermTheme(theme, tries + 1), 250)
-}
-
-export function lastTerminalTheme() {
-  return lastXtermTheme
+    setTimeout(() => applyTermTheme(tries + 1), 250)
 }
 
 // reconcileTermTheme re-pins any terminal whose live xterm theme has drifted
@@ -238,11 +344,16 @@ export function lastTerminalTheme() {
 // the next herdr theme change or a full page reload, while the React/CSS side
 // (whose --h-* vars live on the parent document and persist) stays correctly
 // themed — the half-light/half-dark desync. We compare the live background
-// against the cached one and only write when they differ, so xterm rebuilds its
-// glyph atlas on a real drift, never every tick.
+// against the cached one, and allowTransparency against the flag it is pinned
+// from, and only write on a real drift so xterm rebuilds its glyph atlas when
+// something actually moved rather than every tick. Both are compared because
+// either alone can drift: ttyd's reconnect re-applies its own theme (and the
+// `?theme=` query), while the boolean survives a reconnect but not a terminal
+// this tab has never pinned — and a transparent background under an atlas built
+// for opaque cells is a terminal of blank tiles.
 function reconcileTermTheme() {
   if (!lastXtermTheme) return
-  const want = (lastXtermTheme as { background?: unknown }).background
+  const want = lastXtermTheme.background
   for (const el of termFrames()) {
     try {
       const w = el.contentWindow as unknown as {
@@ -250,9 +361,13 @@ function reconcileTermTheme() {
       }
       const opts = w?.term?.options
       if (!opts) continue
-      const live = (opts.theme as { background?: unknown } | undefined)
-        ?.background
-      if (live === want) continue
+      const liveTheme = opts.theme
+      const live =
+        liveTheme && typeof liveTheme === "object" && "background" in liveTheme
+          ? liveTheme.background
+          : undefined
+      if (live === want && opts.allowTransparency === atmosphereOn) continue
+      opts.allowTransparency = atmosphereOn
       opts.theme = lastXtermTheme
     } catch {
       /* same-origin: never let a reconcile break the terminal */
@@ -326,6 +441,12 @@ function clearHerdrChrome() {
 // design system by default (its --h-* vars come from index.css and follow the
 // light/dark mode) — EXCEPT in "herdr" appearance mode, where we also repaint the
 // chrome from herdr's palette so the whole UI matches the terminal.
+//
+// Retro 82 additionally carries a wallpaper (see the atmosphere section above).
+// The terminal wears it whenever herdr resolves to that palette; the chrome only
+// while it is following herdr, since the Nothing light/dark canvases are flat by
+// design. Both halves are re-derived on every call, so switching theme or
+// appearance mode puts every other theme back exactly as it was.
 export async function refreshTheme() {
   let t: ThemePayload
   try {
@@ -333,9 +454,17 @@ export async function refreshTheme() {
   } catch {
     return
   }
-  lastXtermTheme = t.xterm
-  applyTermTheme(t.xterm, 0)
+  atmosphereOn = t.resolved === ATMOSPHERE_THEME
+  lastXtermTheme = atmosphereOn
+    ? { ...t.xterm, background: ATMOSPHERE_TERM_BG }
+    : t.xterm
+  applyTermTheme(0)
+  applyTermAtmosphere(0)
   applyTermFont(0)
-  if (getMode() === "herdr") applyHerdrChrome(t.css)
+  const herdrChrome = getMode() === "herdr"
+  if (herdrChrome) applyHerdrChrome(t.css)
   else clearHerdrChrome()
+  if (atmosphereOn && herdrChrome)
+    document.documentElement.setAttribute("data-atmosphere", ATMOSPHERE_THEME)
+  else document.documentElement.removeAttribute("data-atmosphere")
 }

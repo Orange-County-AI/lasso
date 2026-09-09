@@ -25,8 +25,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -50,6 +52,16 @@ type ansiPalette struct {
 type themeDef struct {
 	ui   uiPalette
 	ansi ansiPalette
+	// herdrBase names the herdr built-in this theme is EXPRESSED as in
+	// config.toml. Empty means the key is itself a name herdr accepts.
+	//
+	// herdr 0.9 has a closed set of theme names (src/config/theme.rs
+	// THEME_NAMES): an unknown [theme].name is a `herdr config check` error and
+	// silently falls the TUI back to catppuccin. Its supported extension point
+	// is [theme.custom] — per-token overrides on top of a built-in — so a theme
+	// only lasso knows is written as base + a generated override block that
+	// reproduces it (see themeSpecFor).
+	herdrBase string
 }
 
 const defaultTheme = "retro-82"
@@ -71,6 +83,11 @@ var themes = map[string]themeDef{
 			BrightBlack: "#57898a", BrightRed: "#f97751", BrightGreen: "#35a2a7", BrightYellow: "#ed9563",
 			BrightBlue: "#fbb986", BrightMagenta: "#65a5a1", BrightCyan: "#a3ccc6", BrightWhite: "#f6dcac",
 		},
+		// Not a herdr built-in: written as vesper + a generated [theme.custom]
+		// block. vesper is the closest base (dark, warm peach accent) and, since
+		// every token that differs is overridden, only shows through in herdr's
+		// own Settings list.
+		herdrBase: "vesper",
 	},
 	"catppuccin": {
 		ui: uiPalette{
@@ -440,11 +457,43 @@ func herdrConfigIn(configPath, xdgConfigHome, home string) string {
 // is used directly; otherwise the name (and overrides) come from config.toml.
 // Falls back to Retro 82 on anything unreadable/unknown.
 func loadHerdrTheme(forceName string) resolvedTheme {
+	rt, _ := loadHerdrThemeConfig(forceName)
+	return rt
+}
+
+// loadHerdrThemeConfig resolves the theme AND reports, from the SAME read,
+// whether the config holds lasso-generated overrides the resolution no longer
+// claims — a block stranded by a re-theme done outside lasso, which herdr goes
+// on applying on top of whatever theme is now selected.
+//
+// The two answers come together because the poller needs both and neither is
+// worth a second read per tick: strandedness is not visible in the resolved
+// palette (lasso ignores the block), so a poller watching only for a CHANGE
+// never notices it — and the theme routinely resolves to the same value before
+// and after such an edit (select Retro 82, then hand-edit its base back to the
+// theme you were on: nord, then nord).
+//
+// A pinned -theme reads no config at all, so it reports nothing to clean; that
+// machine's litter is collected at the next startup instead.
+func loadHerdrThemeConfig(forceName string) (resolvedTheme, bool) {
 	name, custom, legacyAccent := "", map[string]string{}, ""
+	stranded := false
 	if forceName != "" && forceName != "auto" {
 		name = forceName
 	} else {
-		name, custom, legacyAccent = parseThemeConfig(herdrConfigPath())
+		cfg := parseThemeConfig(herdrConfigPath())
+		name, custom, legacyAccent = cfg.Name, cfg.Custom, cfg.LegacyAccent
+		// A lasso-only theme is spelled in the file as its herdr base plus a
+		// generated override block; the identity marker is what says which
+		// lasso theme that is. Its generated tokens are deliberately NOT
+		// applied as overrides: they only restate the palette this key already
+		// resolves to, and counting them would report every such theme as
+		// "+custom overrides".
+		if k := cfg.lassoTheme(); k != "" {
+			name = k
+		} else {
+			stranded = len(cfg.Generated) > 0
+		}
 	}
 
 	rawName := name
@@ -476,7 +525,7 @@ func loadHerdrTheme(forceName string) resolvedTheme {
 			rt.Customized = true
 		}
 	}
-	return rt
+	return rt, stranded
 }
 
 // applyToken overwrites a single UI token by its config name.
@@ -594,29 +643,114 @@ func rgba(hex string, alpha int) string {
 }
 
 // ---------------------------------------------------------------------------
-// minimal config.toml reader (only what we need: [theme].name,
-// [theme.custom].*, legacy [ui].accent) — avoids a TOML dependency.
+// herdr's config.toml: a minimal reader (only what we need — [theme].name, the
+// identity marker beside it, [theme.custom].*, legacy [ui].accent — so there is
+// no TOML dependency) and the writer that expresses a lasso theme in it.
 // ---------------------------------------------------------------------------
 
-// parseThemeConfig returns (theme name, [theme.custom] token map, legacy
-// [ui].accent). Missing/unreadable config yields zero values.
-func parseThemeConfig(path string) (name string, custom map[string]string, legacyAccent string) {
-	custom = map[string]string{}
+// lassoThemeTag marks every line lasso GENERATED in herdr's config.toml, as a
+// trailing TOML comment (herdr ignores it; `herdr config check` never sees it).
+// It is what makes the block removable: switching away deletes exactly the
+// lines carrying the tag and leaves every key the human typed — including one
+// on a token lasso also generates, which is never overwritten and never
+// duplicated (a duplicate key would make the file invalid TOML).
+const lassoThemeTag = "lasso-theme"
+
+// themeMarkerLine is the identity comment written beside [theme].name. It says
+// which lasso theme the generated block stands for, since [theme].name itself
+// can only hold a name herdr accepts.
+func themeMarkerLine(key string) string {
+	return "# " + lassoThemeTag + " = " + strconv.Quote(key)
+}
+
+// lineComment splits a config line at the first '#' outside of quotes.
+func lineComment(line string) (code, comment string, ok bool) {
+	code = stripComment(line)
+	if len(code) == len(line) {
+		return line, "", false
+	}
+	return code, strings.TrimSpace(line[len(code)+1:]), true
+}
+
+// generatedLine reports whether lasso wrote this line — a token, or the
+// [theme.custom] header it had to create.
+func generatedLine(line string) bool {
+	code, comment, ok := lineComment(line)
+	return ok && comment == lassoThemeTag && strings.TrimSpace(code) != ""
+}
+
+// markerTheme returns the lasso theme key an identity-marker comment names, or
+// "" for any other line.
+func markerTheme(line string) string {
+	code, comment, ok := lineComment(line)
+	if !ok || strings.TrimSpace(code) != "" {
+		return ""
+	}
+	k, v, found := strings.Cut(comment, "=")
+	if !found || strings.TrimSpace(k) != lassoThemeTag {
+		return ""
+	}
+	return normalizeThemeName(unquote(strings.TrimSpace(v)))
+}
+
+// tomlSection returns the table name of a "[...]" header line (code must be
+// comment-stripped and trimmed).
+func tomlSection(code string) (string, bool) {
+	if strings.HasPrefix(code, "[") && strings.HasSuffix(code, "]") {
+		return strings.TrimSpace(code[1 : len(code)-1]), true
+	}
+	return "", false
+}
+
+// herdrThemeConfig is everything lasso reads out of one herdr config.toml.
+type herdrThemeConfig struct {
+	Name         string            // [theme].name, verbatim
+	Marker       string            // lasso theme named by the identity marker ("" if none)
+	Custom       map[string]string // [theme.custom] tokens the USER wrote
+	Generated    map[string]string // [theme.custom] tokens lasso generated
+	LegacyAccent string            // legacy [ui].accent
+}
+
+// lassoTheme returns the lasso-only theme this file's generated block stands
+// for, or "" when there is no marker or it no longer applies.
+//
+// The marker is honored only while [theme].name still holds that theme's base:
+// herdr's own Settings UI writes [theme].name, so a base that has moved means
+// the human picked another palette there and the generated block is leftovers —
+// which lasso must neither claim as its identity nor paint from.
+func (c herdrThemeConfig) lassoTheme() string {
+	def, ok := themes[c.Marker]
+	if !ok || def.herdrBase == "" || normalizeThemeName(c.Name) != def.herdrBase {
+		return ""
+	}
+	return c.Marker
+}
+
+// parseThemeConfig reads one config.toml. Missing/unreadable yields zero values.
+func parseThemeConfig(path string) herdrThemeConfig {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", custom, ""
+		return herdrThemeConfig{Custom: map[string]string{}, Generated: map[string]string{}}
 	}
+	return parseThemeConfigText(string(data))
+}
+
+func parseThemeConfigText(text string) herdrThemeConfig {
+	cfg := herdrThemeConfig{Custom: map[string]string{}, Generated: map[string]string{}}
 	section := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(stripComment(line))
-		if line == "" {
+	for _, line := range strings.Split(text, "\n") {
+		code := strings.TrimSpace(stripComment(line))
+		if code == "" {
+			if k := markerTheme(line); k != "" && cfg.Marker == "" {
+				cfg.Marker = k
+			}
 			continue
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
+		if s, ok := tomlSection(code); ok {
+			section = s
 			continue
 		}
-		key, val, found := strings.Cut(line, "=")
+		key, val, found := strings.Cut(code, "=")
 		if !found {
 			continue
 		}
@@ -625,68 +759,214 @@ func parseThemeConfig(path string) (name string, custom map[string]string, legac
 		switch section {
 		case "theme":
 			if key == "name" {
-				name = val
+				cfg.Name = val
 			}
 		case "theme.custom":
-			custom[key] = val
+			if generatedLine(line) {
+				cfg.Generated[key] = val
+			} else {
+				cfg.Custom[key] = val
+			}
 		case "ui":
 			if key == "accent" {
-				legacyAccent = val
+				cfg.LegacyAccent = val
 			}
 		}
 	}
-	return name, custom, legacyAccent
+	return cfg
 }
 
-// rewriteThemeConfigTOML returns config.toml content with [theme].name set to
-// name, preserving everything else (herdr owns this config; lasso only touches
-// the one key). prev is the existing file content ("" if it doesn't exist yet,
-// in which case a [theme] section is created).
+// themeToken is one generated [theme.custom] entry.
+type themeToken struct{ key, hex string }
+
+// herdrThemeSpec is how one lasso theme is spelled in herdr's config.toml.
+type herdrThemeSpec struct {
+	base   string       // value for [theme].name — a name herdr accepts
+	lasso  string       // identity marker; "" when the base IS the theme
+	tokens []themeToken // generated [theme.custom] block; empty for a built-in
+}
+
+// themeSpecFor maps a theme name onto what config.toml must say for it: a name
+// herdr knows is written alone, a lasso-only theme becomes its base plus the
+// override block that reproduces it. A name lasso doesn't recognize is passed
+// through verbatim — inventing a palette for it would hide the typo herdr is
+// about to report.
+func themeSpecFor(name string) herdrThemeSpec {
+	key := normalizeThemeName(name)
+	def, ok := themes[key]
+	if !ok || def.herdrBase == "" {
+		return herdrThemeSpec{base: name}
+	}
+	return herdrThemeSpec{base: def.herdrBase, lasso: key, tokens: def.customTokens()}
+}
+
+// customTokens is the [theme.custom] block that reproduces this palette on top
+// of herdrBase: every token in herdr's Palette (src/app/state.rs) except
+// sidebar_bg, which is Color::Reset in all eighteen built-ins and so cannot
+// leak from the base — leaving it unset is also what keeps the terminal
+// background showing through herdr's sidebar.
+//
+// active_row_bg/selection_bg have no lasso token: they are the two row
+// backgrounds herdr keeps per theme, and its built-ins set them to that theme's
+// own surface_dim/surface0 (catppuccin, vesper), so they are derived the same
+// way here. Leaving them to the base would paint the base's rows into the
+// palette, which is exactly the leak the override block exists to prevent.
+func (d themeDef) customTokens() []themeToken {
+	p := d.ui
+	return []themeToken{
+		{"accent", p.Accent}, {"panel_bg", p.PanelBg},
+		{"active_row_bg", p.SurfaceDim}, {"selection_bg", p.Surface0},
+		{"surface0", p.Surface0}, {"surface1", p.Surface1}, {"surface_dim", p.SurfaceDim},
+		{"overlay0", p.Overlay0}, {"overlay1", p.Overlay1},
+		{"text", p.Text}, {"subtext0", p.Subtext0},
+		{"mauve", p.Mauve}, {"green", p.Green}, {"yellow", p.Yellow}, {"red", p.Red},
+		{"blue", p.Blue}, {"teal", p.Teal}, {"peach", p.Peach},
+	}
+}
+
+// rewriteThemeConfigTOML returns config.toml content selecting theme name and
+// preserving everything else — herdr owns this config; lasso touches only
+// [theme].name and the lines it generated itself. prev is the existing content
+// ("" if the file doesn't exist yet, in which case the sections are created).
+//
+// For a lasso-only theme that is base + marker + generated [theme.custom]; for
+// every other theme it is the name alone, with any previously generated block
+// removed — switching away has to leave nothing of the old palette behind, or
+// the next theme would be painted in the last one's colors.
 func rewriteThemeConfigTOML(prev, name string) string {
-	entry := fmt.Sprintf("name = %q", name)
+	spec := themeSpecFor(name)
+	entry := fmt.Sprintf("name = %q", spec.base)
+	// An empty name selects nothing: leave [theme].name exactly as the human
+	// wrote it and only drop what lasso generated (see migrateHerdrThemeConfig,
+	// which uses this to clear a block stranded by a re-theme done in herdr).
+	keepName := spec.base == ""
+
+	// Pass 1: which [theme.custom] keys are the human's? Those are never
+	// overwritten (an explicit override outranks a generated one, in herdr as in
+	// lasso) and never duplicated.
+	userKeys := map[string]bool{}
+	genHeader := false
+	section := ""
+	for _, line := range strings.Split(prev, "\n") {
+		code := strings.TrimSpace(stripComment(line))
+		if s, ok := tomlSection(code); ok {
+			section = s
+			if s == "theme.custom" && generatedLine(line) {
+				genHeader = true
+			}
+			continue
+		}
+		if section != "theme.custom" || code == "" || generatedLine(line) {
+			continue
+		}
+		if k, _, ok := strings.Cut(code, "="); ok {
+			userKeys[strings.TrimSpace(k)] = true
+		}
+	}
+	// A header lasso created is generated data too — but only while nothing of
+	// the human's lives under it.
+	dropHeader := genHeader && len(userKeys) == 0 && len(spec.tokens) == 0
+
+	var tokens []string
+	for _, t := range spec.tokens {
+		if userKeys[t.key] {
+			continue
+		}
+		tokens = append(tokens, fmt.Sprintf("%s = %q # %s", t.key, t.hex, lassoThemeTag))
+	}
+
+	// Pass 2: rebuild, dropping every line lasso generated last time.
 	var out []string
-	replaced := false
+	nameAt, customAt, themeAt := -1, -1, -1
+	section = ""
 	if prev != "" {
-		section := ""
-		themeAt := -1 // insertion point just after a bare [theme] header
 		for _, line := range strings.Split(prev, "\n") {
-			t := strings.TrimSpace(stripComment(line))
-			if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
-				section = strings.TrimSpace(t[1 : len(t)-1])
+			if markerTheme(line) != "" {
+				continue // re-issued below if the new theme still needs one
+			}
+			code := strings.TrimSpace(stripComment(line))
+			if s, ok := tomlSection(code); ok {
+				section = s
+				if s == "theme.custom" && dropHeader {
+					continue
+				}
 				out = append(out, line)
-				if section == "theme" {
+				switch s {
+				case "theme":
 					themeAt = len(out)
+				case "theme.custom":
+					customAt = len(out)
 				}
 				continue
 			}
-			if section == "theme" {
-				if key, _, found := strings.Cut(t, "="); found && strings.TrimSpace(key) == "name" {
+			if section == "theme" && !keepName {
+				if key, _, found := strings.Cut(code, "="); found && strings.TrimSpace(key) == "name" {
 					// Replace the first name key; drop any (invalid) duplicates so
 					// the value we wrote is unambiguously the one in effect.
-					if !replaced {
+					if nameAt < 0 {
 						out = append(out, entry)
-						replaced = true
+						nameAt = len(out) - 1
 					}
 					continue
 				}
 			}
+			if section == "theme.custom" && generatedLine(line) {
+				continue
+			}
 			out = append(out, line)
 		}
-		if !replaced && themeAt >= 0 {
-			out = append(out[:themeAt], append([]string{entry}, out[themeAt:]...)...)
-			replaced = true
-		}
 	}
-	if !replaced {
-		// No [theme] section (or no file at all): append/create one.
-		for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
-			out = out[:len(out)-1]
-		}
+
+	// Splice the marker (and the name entry, when [theme] had none) in beside
+	// the name, and the generated block in under [theme.custom]. Highest index
+	// first, so the lower one stays valid.
+	var head []string
+	if nameAt < 0 && themeAt >= 0 && !keepName {
+		head = append(head, entry)
+	}
+	if spec.lasso != "" {
+		head = append(head, themeMarkerLine(spec.lasso))
+	}
+	splices := map[int][]string{}
+	switch {
+	case len(head) == 0:
+	case nameAt >= 0:
+		splices[nameAt+1] = head
+	case themeAt >= 0:
+		splices[themeAt] = head
+	}
+	if customAt >= 0 && len(tokens) > 0 {
+		splices[customAt] = append(splices[customAt], tokens...)
+	}
+	for _, at := range sortedDesc(splices) {
+		rows := append([]string{}, splices[at]...)
+		out = append(out[:at], append(rows, out[at:]...)...)
+	}
+
+	// No [theme] section (or no file at all): append/create one.
+	if nameAt < 0 && themeAt < 0 && !keepName {
+		out = trimTrailingBlank(out)
 		if len(out) > 0 {
 			out = append(out, "")
 		}
 		out = append(out, "[theme]", entry)
+		if spec.lasso != "" {
+			out = append(out, themeMarkerLine(spec.lasso))
+		}
 	}
+	// No [theme.custom] to extend: the generated block becomes its own table at
+	// the end of the file, where a new table is always valid TOML — including
+	// after a [theme.custom.light]/[theme.custom.dark] sub-table, which is why
+	// it is not spliced in beside [theme].
+	if customAt < 0 && len(tokens) > 0 {
+		out = trimTrailingBlank(out)
+		if len(out) > 0 {
+			out = append(out, "")
+		}
+		out = append(out, "[theme.custom] # "+lassoThemeTag)
+		out = append(out, tokens...)
+	}
+
 	content := strings.Join(out, "\n")
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
@@ -694,9 +974,25 @@ func rewriteThemeConfigTOML(prev, name string) string {
 	return content
 }
 
-// setHerdrThemeName rewrites [theme].name in the LOCAL herdr config.toml.
-// Creates the file/section when missing. The write is atomic (temp file +
-// rename) so neither herdr nor our own poller ever reads a torn file.
+// sortedDesc returns the keys of m, largest first (at most two here).
+func sortedDesc(m map[int][]string) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+	return keys
+}
+
+func trimTrailingBlank(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// setHerdrThemeName selects theme name in the LOCAL herdr config.toml, creating
+// the file/section when missing.
 func setHerdrThemeName(path, name string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -706,7 +1002,13 @@ func setHerdrThemeName(path, name string) error {
 	if err == nil {
 		prev = string(data)
 	}
-	content := rewriteThemeConfigTOML(prev, name)
+	return writeHerdrConfig(path, rewriteThemeConfigTOML(prev, name))
+}
+
+// writeHerdrConfig replaces the local config.toml atomically (temp file +
+// rename) so neither herdr nor our own poller ever reads a torn file, keeping
+// the file's mode.
+func writeHerdrConfig(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -721,12 +1023,87 @@ func setHerdrThemeName(path, name string) error {
 	return os.Rename(tmp, path)
 }
 
-// writeHerdrThemeNameVia rewrites [theme].name in the herdr config at cfgPath on
+// migrateHerdrThemeConfig brings the LOCAL config.toml up to the representation
+// this build writes, reporting whether it changed anything.
+//
+// It exists because the selection outlives the representation. lasso used to
+// write `[theme] name = "retro-82"` — a name herdr 0.9 rejects outright, so
+// every machine that ever picked it now fails `herdr config check` and paints
+// its TUI catppuccin, and nothing would ever repair it on its own: lasso writes
+// config.toml only when a human picks a theme, so the fix would mean selecting
+// some other theme and coming back. It collects the other direction too: a
+// re-theme done in herdr itself (its theme popup writes [theme].name) strands
+// the override block lasso generated for the old theme, and herdr KEEPS
+// APPLYING it — the new theme painted in the old one's colors — so the stranded
+// block goes, while [theme].name stays exactly as that human left it, even when
+// it is a name lasso doesn't know.
+//
+// Deliberately narrow: it rewrites only a config that either needs synthesizing
+// or still holds generated lines. A file naming a plain built-in is never
+// touched, so lasso does not reformat (or strip the comments from) a config it
+// has no business rewriting.
+func migrateHerdrThemeConfig(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	prev := string(data)
+	cfg := parseThemeConfigText(prev)
+	key := cfg.lassoTheme()
+	if key == "" {
+		if n := normalizeThemeName(cfg.Name); themes[n].herdrBase != "" {
+			key = n // a lasso-only theme still spelled the old, rejected way
+		} else if len(cfg.Generated) == 0 {
+			return false, nil // nothing of lasso's in here to fix
+		}
+		// Otherwise: a generated block stranded under a name that is now the
+		// human's business (one lasso doesn't know, or none at all). An empty
+		// key leaves [theme].name exactly as written and drops only the block.
+	}
+	content := rewriteThemeConfigTOML(prev, key)
+	if content == prev {
+		return false, nil
+	}
+	return true, writeHerdrConfig(path, content)
+}
+
+// tidyHerdrThemeConfig runs the migration against the local config and, when it
+// changed the file, nudges the running herdr to re-read it — a herdr that has
+// just been painting a stranded override block only drops it on a reload. why
+// labels the log line. Best-effort in both halves: a herdr that isn't running
+// picks the file up when it starts, and the reload is off this goroutine so
+// neither boot nor the theme poll waits on a socket nobody is listening on.
+func tidyHerdrThemeConfig(why string) {
+	path := herdrConfigPath()
+	changed, err := migrateHerdrThemeConfig(path)
+	if err != nil {
+		log.Printf("theme:    %s in %s failed: %v", why, path, err)
+		return
+	}
+	if !changed {
+		return
+	}
+	log.Printf("theme:    %s in %s", why, path)
+	go func() {
+		if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
+			log.Printf("theme:    herdr reload-config after %s: %v", why, err)
+		}
+	}()
+}
+
+// writeHerdrThemeNameVia selects theme name in the herdr config at cfgPath on
 // backend b — the local machine (os) or a remote host (over SFTP). Unlike
 // setHerdrThemeName it writes in place rather than via temp+rename: SFTP's
 // rename-over-an-existing-file isn't portable, and no reader observes a torn
 // remote file (the remote herdr only reads its config on reload, which we
 // trigger after this returns, and lasso's own poller reads the LOCAL config).
+//
+// It goes through the same rewrite as the local write, so a lasso-only theme
+// reaches a remote herdr as base + generated block rather than as a name that
+// machine's `herdr config check` would reject.
 func writeHerdrThemeNameVia(b Backend, cfgPath, name string) error {
 	data, err := b.ReadFile(cfgPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

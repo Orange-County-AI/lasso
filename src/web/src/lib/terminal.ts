@@ -1,10 +1,10 @@
 import { api } from "@/lib/api"
 import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
+  applyTermAtmosphere,
   applyTermFit,
   applyTermFont,
   applyTermTheme,
-  lastTerminalTheme,
   startTermThemeReconciler,
 } from "@/lib/theme"
 
@@ -773,9 +773,10 @@ export function bootTermFrame(
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
   const onLoad = () => {
-    applyTermTheme(lastTerminalTheme(), 0)
+    applyTermTheme(0)
     applyTermFont(0)
     applyTermFit(0)
+    applyTermAtmosphere(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
     mountTerminalInputDial(id, pasteHost)
   }
@@ -786,6 +787,7 @@ export function bootTermFrame(
   startTermThemeReconciler()
   applyTermFont(0) // in case it already loaded
   applyTermFit(0) // in case it already loaded
+  applyTermAtmosphere(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
   mountTerminalInputDial(id, pasteHost) // in case it already loaded
   return () => el.removeEventListener("load", onLoad)
