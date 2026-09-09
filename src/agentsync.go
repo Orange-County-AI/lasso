@@ -928,11 +928,24 @@ func claudeOverrides(p uiPalette) map[string]string {
 	put(p.Accent, "permission", "ide", "promptBorder", "bashBorder")
 	put(p.Mauve, "planMode", "thinking", "merged")
 	put(p.Teal, "remember")
-	put(p.Green, "success", "autoAccept", "diffAdded")
-	put(p.Red, "error", "diffRemoved")
+	put(p.Green, "success", "autoAccept")
+	put(p.Red, "error")
 	put(p.Yellow, "warning")
 
-	// Dimmed diff variants: blend the accent toward the background.
+	// The six diff tokens are BACKGROUNDS, not text colors, and they come in
+	// three strengths: Claude fills a changed line with diffAdded/diffRemoved,
+	// the changed span inside that line with diffAddedWord/diffRemovedWord, and
+	// swaps in the Dimmed pair when a diff is drawn inactive. Its own dark
+	// theme spaces them accordingly (a #225c2b line under a #38a660 word) and
+	// its ansi theme maps them green / greenBright.
+	//
+	// Handing the palette's full-strength green and red to the LINE inverted
+	// that. Every changed line became a lit slab — and because the word pair
+	// was left unset it fell through to the base theme's, so the highlighted
+	// span read DARKER than the line holding it. On a saturated palette
+	// (retro-82's #f85525) a screen of diff glows, which is unpleasant at
+	// night. So the line is the accent taken most of the way to the panel
+	// background, and the accent itself is kept for the word.
 	bg := p.PanelBg
 	if bg == "" {
 		if luminance(p.Text) > 0.5 {
@@ -941,12 +954,20 @@ func claudeOverrides(p uiPalette) map[string]string {
 			bg = "#ffffff"
 		}
 	}
-	if p.Green != "" {
-		m["diffAddedDimmed"] = blendHex(p.Green, bg, 0.6)
+	// Dimmed desaturates the line toward the palette's muted tone rather than
+	// darkening it further, which is the move the built-ins make: on a dark
+	// canvas a grayer band at the same luminance reads as the quieter one,
+	// while a darker one would just vanish into the background.
+	diff := func(c, line, word, dimmed string) {
+		if c == "" {
+			return // let Claude's base show through, as put() does
+		}
+		m[line] = blendHex(c, bg, 0.62)
+		m[word] = blendHex(c, bg, 0.2)
+		m[dimmed] = blendHex(m[line], p.Overlay0, 0.35)
 	}
-	if p.Red != "" {
-		m["diffRemovedDimmed"] = blendHex(p.Red, bg, 0.6)
-	}
+	diff(p.Green, "diffAdded", "diffAddedWord", "diffAddedDimmed")
+	diff(p.Red, "diffRemoved", "diffRemovedWord", "diffRemovedDimmed")
 	return m
 }
 
