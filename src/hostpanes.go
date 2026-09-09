@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -371,10 +372,11 @@ func hostAllowed(host string) bool {
 // the same critical section.
 var uiStateMu sync.Mutex
 
-// uiStateWriter is the half of a POST body that is about the CLIENT rather than
-// about the preferences. It rides along in the same JSON object (the fields are
-// ignored by the merge into uiState, which has no matching tags) so a patch is
-// still one round trip.
+// uiStateWriter is the half of a POST body that is NOT a plain preference
+// merge: who is writing, and the two collections whose merge the generic decode
+// cannot express. It rides along in the same JSON object (the fields it shares
+// with uiState are re-derived after the decode) so a patch is still one round
+// trip.
 type uiStateWriter struct {
 	// ClientID identifies the browser TAB, not the browser or the user — two
 	// tabs on one machine are two clients that can disagree about the sidebar.
@@ -385,6 +387,26 @@ type uiStateWriter struct {
 	// the one thing the server cannot infer: a panel group reports a drag and a
 	// remount identically.
 	UserIntent bool `json:"user_intent"`
+	// ThemeAtmosphere is the per-theme backdrop patch. Decoded here as well as
+	// into uiState because unmarshalling into a map REPLACES each named entry
+	// with a fresh value: a patch setting only the scrim would silently drop
+	// that theme's picture and its shading. The pointers say which fields the
+	// caller actually set (see mergeThemeAtmosphere).
+	ThemeAtmosphere map[string]atmospherePatch `json:"theme_atmosphere"`
+	// RememberBackground / ForgetBackground are OPS on the shared gallery of
+	// hand-given pictures, not state. A client sending the whole list would
+	// resurrect a picture another browser just forgot (and drop one it just
+	// added) out of a copy it fetched minutes ago; one URL and a verb cannot.
+	RememberBackground string `json:"remember_background"`
+	ForgetBackground   string `json:"forget_background"`
+}
+
+// atmospherePatch is one theme's backdrop as a CALLER sends it: every field
+// optional, so a tab changing the dimming says nothing about the picture.
+type atmospherePatch struct {
+	Background *string  `json:"background"`
+	Scrim      *float64 `json:"scrim"`
+	Shading    *bool    `json:"shading"`
 }
 
 // uiStateResp is the saved state plus what the caller needs to know about its
@@ -430,6 +452,14 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		us := stored
+		// The two collections are rebuilt below rather than decoded: a map's
+		// named entries are REPLACED wholesale by the decoder, and the gallery
+		// is written by op. Detaching them first also keeps the decode from
+		// writing through the map `stored` still points at — a shared backing
+		// store would make the no-op check below compare the merge against
+		// itself and skip the save.
+		us.ThemeAtmosphere = nil
+		us.CustomBackgrounds = nil
 		if err := json.Unmarshal(body, &us); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -440,6 +470,8 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if us.UsageOrder == nil {
 			us.UsageOrder = []string{}
 		}
+		us.ThemeAtmosphere = mergeThemeAtmosphere(stored.ThemeAtmosphere, who.ThemeAtmosphere)
+		us.CustomBackgrounds = mergeCustomBackgrounds(stored.CustomBackgrounds, who.RememberBackground, who.ForgetBackground)
 
 		// The sidebar layout is the one field group several clients write
 		// unprompted, so it is arbitrated rather than merged (see uilock.go).
@@ -484,6 +516,61 @@ func uiStateEqual(a, b uiState) bool {
 	x, err1 := json.Marshal(a)
 	y, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(x) == string(y)
+}
+
+// mergeThemeAtmosphere folds a caller's backdrop patch onto the stored map,
+// entry by entry and field by field. Two levels of merge, for two different
+// races: two browsers dressing two THEMES at the same instant (the entry
+// level), and one of them nudging the dimming slider while the other picks a
+// picture for the same theme (the field level). Neither may take the other's
+// choice with it.
+//
+// A patch naming no theme is dropped: a Settings click made before /api/theme
+// resolved has no theme to belong to, and storing it under "" would both lose
+// the pick and leave an entry nothing ever reads.
+func mergeThemeAtmosphere(stored map[string]atmospherePref, patch map[string]atmospherePatch) map[string]atmospherePref {
+	out := make(map[string]atmospherePref, len(stored)+len(patch))
+	maps.Copy(out, stored)
+	for theme, p := range patch {
+		if theme == "" {
+			continue
+		}
+		cur := out[theme]
+		if p.Background != nil {
+			cur.Background = *p.Background
+		}
+		if p.Scrim != nil {
+			v := min(1, max(0, *p.Scrim))
+			cur.Scrim = &v
+		}
+		if p.Shading != nil {
+			v := *p.Shading
+			cur.Shading = &v
+		}
+		out[theme] = cur
+	}
+	return out
+}
+
+// mergeCustomBackgrounds applies one gallery op to the stored list: newest
+// first, deduped, capped. Remembering a picture already in the list moves it to
+// the front rather than duplicating it, which is also what makes re-adding a
+// URL by hand idempotent.
+func mergeCustomBackgrounds(stored []string, remember, forget string) []string {
+	out := make([]string, 0, len(stored)+1)
+	if remember != "" {
+		out = append(out, remember)
+	}
+	for _, u := range stored {
+		if u == "" || u == remember || u == forget {
+			continue
+		}
+		out = append(out, u)
+	}
+	if len(out) > maxCustomBackgrounds {
+		out = out[:maxCustomBackgrounds]
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

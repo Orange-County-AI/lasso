@@ -201,10 +201,11 @@
  * (vendored as WebP under web/public/wallpapers/retro-82 — provenance in that
  * directory's NOTICE.txt — and served from the embedded bundle, so it never
  * reaches the network), one that came with an installed Omarchy theme, or one
- * this browser was handed by URL or upload. It may also be nothing but the
- * optional palette-derived shading. All of that is a per-browser, per-theme
- * choice (the gallery in Settings, persisted by lib/wallpaper.ts), so none of
- * it can be authored here: lib/theme.ts:applyAtmosphere pins the canvas color
+ * handed to lasso by URL or upload. It may also be nothing but the optional
+ * palette-derived shading. All of that is a per-theme choice held by the SERVER
+ * (the gallery in Settings, persisted through ui_state by lib/wallpaper.ts and
+ * followed by every browser on this lasso), so none of it can be authored here:
+ * lib/theme.ts:applyAtmosphere pins the canvas color
  * as --atmo-base and the whole background-image stack — scrim over shading over
  * image — as --atmo-layers on <html>, and both halves read them from there.
  *

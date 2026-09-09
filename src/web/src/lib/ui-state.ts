@@ -1,14 +1,21 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { api, type UIState, type UIStateResponse } from "@/lib/api"
+import {
+  type AtmospherePref,
+  api,
+  type UIState,
+  type UIStatePatch,
+  type UIStateResponse,
+} from "@/lib/api"
 import { qk, queryClient } from "@/lib/query"
 
 // Persisted, SQLite-backed UI preferences (sidebar layout, the Files tab's
-// click behavior, and usage-footer settings). One shared React Query cache is
-// the source of truth in this tab; the server merges partial patches (so
-// concurrent tabs can't clobber fields they didn't touch) and bumps
-// ui_state_rev over SSE on every save, so every open tab converges on the same
-// state (see syncUIState).
+// click behavior, usage-footer settings, and the per-theme backdrop). One
+// shared React Query cache is the source of truth in this tab; the server
+// merges partial patches (so concurrent tabs can't clobber fields they didn't
+// touch) and bumps ui_state_rev over SSE on every save, so every open tab —
+// and every other browser on this lasso — converges on the same state (see
+// syncUIState).
 //
 // The sidebar layout is the exception to "merge and converge": every tab
 // re-persists it from its own panel group without anyone asking, so one stale
@@ -24,7 +31,14 @@ const DEFAULTS: UIState = {
   usage_hidden: [],
   usage_order: [],
   usage_compact: false,
+  theme_atmosphere: {},
+  custom_backgrounds: [],
 }
+
+// The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic
+// copy needs it — the server trims what it stores either way — but a list that
+// grows past the cap for one round trip and then snaps back is a flicker.
+const MAX_CUSTOM_BACKGROUNDS = 24
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).
 // Kept fresh across tabs by syncUIState (SSE-driven), not by polling.
@@ -41,6 +55,23 @@ export function useUIState(): UIState {
 // — for non-component code and merges.
 export function uiStateNow(): UIState {
   return queryClient.getQueryData<UIState>(qk.uiState) ?? DEFAULTS
+}
+
+// uiStateSettled says whether the server's copy has ARRIVED — or failed to.
+// The atmosphere needs the distinction that uiStateNow's defaults erase: a
+// theme with no stored entry wears lasso's default backdrop, so painting that
+// default while the fetch is still in flight would drop a photograph on a
+// browser whose owner turned it off, then take it away again a beat later.
+// lib/wallpaper.ts therefore paints nothing until this is true (see
+// atmosphereKnown), and the subscription repaints when it flips.
+//
+// A FAILED fetch settles too: an unreachable /api/ui-state must degrade to the
+// documented defaults, not to a terminal that never gets its palette pinned.
+// The query is mounted for the app's life (Shell's useUIState), so a state
+// exists from the first render — `undefined` here is only the instant before.
+export function uiStateSettled(): boolean {
+  const state = queryClient.getQueryState<UIState>(qk.uiState)
+  return !!state && state.status !== "pending"
 }
 
 // How long after a local write we hold off applying an SSE-triggered refetch.
@@ -111,8 +142,95 @@ export function releaseLayoutBackoff() {
 
 const LAYOUT_KEYS = ["sidebar_collapsed", "sidebar_pct"] as const
 
-function touchesLayout(patch: Partial<UIState>): boolean {
+function touchesLayout(patch: UIStatePatch): boolean {
   return LAYOUT_KEYS.some((k) => k in patch)
+}
+
+// mergePatch folds one patch onto another, and mergeLocal folds a patch onto
+// the cached state. Both mirror the server's merge (mergeThemeAtmosphere /
+// mergeCustomBackgrounds in hostpanes.go), because the optimistic copy has to
+// agree with the answer coming back: a shallow spread would replace the whole
+// per-theme map with the one entry being written, blanking every other theme's
+// backdrop until the next fetch.
+function mergeAtmosphereInto(
+  base: Record<string, AtmospherePref> | undefined,
+  patch: Record<string, AtmospherePref>
+): Record<string, AtmospherePref> {
+  const out = { ...base }
+  for (const [theme, pref] of Object.entries(patch))
+    out[theme] = { ...out[theme], ...pref }
+  return out
+}
+
+function mergePatch(a: UIStatePatch, b: UIStatePatch): UIStatePatch {
+  const out: UIStatePatch = { ...a, ...b }
+  if (a.theme_atmosphere && b.theme_atmosphere)
+    out.theme_atmosphere = mergeAtmosphereInto(
+      a.theme_atmosphere,
+      b.theme_atmosphere
+    )
+  return out
+}
+
+function mergeLocal(cached: UIState, patch: UIStatePatch): UIState {
+  const {
+    theme_atmosphere: atmosphere,
+    remember_background: remember,
+    forget_background: forget,
+    ...fields
+  } = patch
+  const out: UIState = { ...cached, ...fields }
+  if (atmosphere)
+    out.theme_atmosphere = mergeAtmosphereInto(
+      cached.theme_atmosphere,
+      atmosphere
+    )
+  if (remember || forget) {
+    // Newest first, deduped, capped — the same three rules the server applies,
+    // so re-adding a picture moves it to the front instead of doubling it.
+    const rest = (cached.custom_backgrounds ?? []).filter(
+      (u) => u !== remember && u !== forget
+    )
+    out.custom_backgrounds = (remember ? [remember, ...rest] : rest).slice(
+      0,
+      MAX_CUSTOM_BACKGROUNDS
+    )
+  }
+  return out
+}
+
+// A pending write held back by `coalesceMs`. One slot, because the only caller
+// that coalesces is the dimming slider and successive ticks describe the same
+// field; a differently-shaped patch arriving meanwhile is merged in rather than
+// dropped or reordered.
+let pending: UIStatePatch | null = null
+let pendingIntent = true
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushPending() {
+  pendingTimer = null
+  const body = pending
+  pending = null
+  const intent = pendingIntent
+  pendingIntent = true
+  if (body) sendPatch(body, intent)
+}
+
+function sendPatch(body: UIStatePatch, intent: boolean) {
+  lastPatchAt = Date.now()
+  void api
+    .saveUIState({ ...body, client_id: clientID(), user_intent: intent })
+    .then((res) => {
+      // Refused: another client owns the sidebar layout. Adopt what the server
+      // actually holds instead of sitting on the optimistic value — the apply
+      // effect in App.tsx puts the panel back where the owner has it. No toast:
+      // a human's change always wins the claim, so the only writes that can be
+      // refused are ones nobody asked for.
+      deniedAt = res.layout_denied ? Date.now() : 0
+      if (res.layout_denied)
+        queryClient.setQueryData(qk.uiState, stripMeta(res))
+    })
+    .catch(() => {})
 }
 
 // patchUIState applies a partial update optimistically to the cache and sends
@@ -126,7 +244,19 @@ function touchesLayout(patch: Partial<UIState>): boolean {
 // an intentional change takes ownership, an unattended echo is refused while
 // another client owns it. Everything else in UIState only ever changes because
 // someone clicked it, so those calls pass intent too.
-export function patchUIState(patch: Partial<UIState>, intent = true) {
+//
+// `coalesceMs` holds the network write back that long while the optimistic
+// cache update (and therefore the repaint) still happens on the spot. The
+// dimming slider fires on every pixel of a drag, and each save broadcasts a
+// ui_state_rev bump to every open tab — a save per tick would turn one drag
+// into a fleet-wide refetch storm. The timer is not restarted by a follow-up
+// tick, so a long drag still lands a write every coalesceMs rather than only
+// on release.
+export function patchUIState(
+  patch: UIStatePatch,
+  intent = true,
+  coalesceMs = 0
+) {
   let body = patch
   if (
     !intent &&
@@ -142,20 +272,14 @@ export function patchUIState(patch: Partial<UIState>, intent = true) {
   }
   lastPatchAt = Date.now()
   const cached = queryClient.getQueryData<UIState>(qk.uiState)
-  if (cached) queryClient.setQueryData(qk.uiState, { ...cached, ...body })
-  void api
-    .saveUIState({ ...body, client_id: clientID(), user_intent: intent })
-    .then((res) => {
-      // Refused: another client owns the sidebar layout. Adopt what the server
-      // actually holds instead of sitting on the optimistic value — the apply
-      // effect in App.tsx puts the panel back where the owner has it. No toast:
-      // a human's change always wins the claim, so the only writes that can be
-      // refused are ones nobody asked for.
-      deniedAt = res.layout_denied ? Date.now() : 0
-      if (res.layout_denied)
-        queryClient.setQueryData(qk.uiState, stripMeta(res))
-    })
-    .catch(() => {})
+  if (cached) queryClient.setQueryData(qk.uiState, mergeLocal(cached, body))
+  if (coalesceMs > 0) {
+    pending = pending ? mergePatch(pending, body) : body
+    pendingIntent = pendingIntent && intent
+    if (!pendingTimer) pendingTimer = setTimeout(flushPending, coalesceMs)
+    return
+  }
+  sendPatch(body, intent)
 }
 
 // stripMeta drops the response-only fields so nothing but preferences reaches

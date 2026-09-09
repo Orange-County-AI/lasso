@@ -249,9 +249,9 @@ func getSetting(key string) (string, error) {
 }
 
 // uiState is the browser's persisted, global (host-agnostic) UI preferences:
-// right-sidebar layout and usage-footer preferences. It's kept server-side (one
-// JSON blob in settings) rather than in localStorage so the UI looks the same
-// across browsers/devices reaching the same lasso.
+// right-sidebar layout, usage-footer preferences and the per-theme backdrop.
+// It's kept server-side (one JSON blob in settings) rather than in localStorage
+// so the UI looks the same across browsers/devices reaching the same lasso.
 type uiState struct {
 	SidebarCollapsed bool `json:"sidebar_collapsed"`
 	// SidebarPct is the right sidebar's open width as a percentage of the panel
@@ -277,7 +277,50 @@ type uiState struct {
 	// UsageCompact selects the one-line abbreviated footer layout. Footer-only:
 	// the Usage tab has one layout.
 	UsageCompact bool `json:"usage_compact"`
+	// ThemeAtmosphere is the backdrop each theme wears, keyed by the theme name
+	// the BROWSER resolved (herdr's shared theme, or a browser-local palette —
+	// so herdr's alternate spellings collapse onto one entry). Server-owned so a
+	// still picked on a phone paints on the desktop, and merged per theme AND
+	// per field on the way in (see serveUIState): two tabs dressing two themes
+	// at the same instant must not drop each other's entry.
+	//
+	// Only EXPLICIT choices are stored. An absent entry — or an absent field
+	// within one — means the frontend's default (shading on, 70% dimming,
+	// retro-82's own still and nothing for every other theme), which is what
+	// keeps a tab that is still loading from writing a default back over a
+	// choice it has not seen yet.
+	ThemeAtmosphere map[string]atmospherePref `json:"theme_atmosphere"`
+	// CustomBackgrounds are the pictures a human handed lasso by URL or upload,
+	// newest first and capped at maxCustomBackgrounds. Shared by every theme
+	// (a photo you like is not a property of a palette) and, now that it lives
+	// here, by every browser. Written through the remember/forget OPS rather
+	// than as a list, so a stale tab cannot resurrect a picture another one just
+	// forgot.
+	CustomBackgrounds []string `json:"custom_backgrounds"`
 }
+
+// atmospherePref is one theme's backdrop. Every field is optional in the stored
+// blob: the pointers distinguish "this theme has no opinion" (use the
+// frontend's default) from a deliberate 0 / false, which is the whole reason a
+// patch can leave one field alone while setting another.
+type atmospherePref struct {
+	// Background is the image URL to paint, or atmosphereNoBackground for an
+	// explicitly flat theme. "" means no opinion — the theme's own default.
+	Background string `json:"background,omitempty"`
+	// Scrim is the wash between the picture and the glyphs, 0..1.
+	Scrim *float64 `json:"scrim,omitempty"`
+	// Shading toggles the palette-derived washes that give an imageless theme
+	// some depth.
+	Shading *bool `json:"shading,omitempty"`
+}
+
+// atmosphereNoBackground is the stored Background meaning "paint no image",
+// distinct from an absent entry, which means the theme's own default.
+const atmosphereNoBackground = "none"
+
+// maxCustomBackgrounds caps the hand-given gallery. It is a list of URLs a
+// human curates, not a store: past a couple of dozen the picker is the problem.
+const maxCustomBackgrounds = 24
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
 // expanded — when nothing is stored yet, except FilesClickNavigates which
@@ -287,6 +330,8 @@ func getUIState() (uiState, error) {
 		FilesClickNavigates: true,
 		UsageHidden:         []string{},
 		UsageOrder:          []string{},
+		ThemeAtmosphere:     map[string]atmospherePref{},
+		CustomBackgrounds:   []string{},
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -303,11 +348,18 @@ func getUIState() (uiState, error) {
 	if us.UsageOrder == nil {
 		us.UsageOrder = []string{}
 	}
+	if us.ThemeAtmosphere == nil {
+		us.ThemeAtmosphere = map[string]atmospherePref{}
+	}
+	if us.CustomBackgrounds == nil {
+		us.CustomBackgrounds = []string{}
+	}
 	return us, nil
 }
 
-// saveUIState overwrites the persisted UI prefs with us (the client sends the
-// whole object, so this is a plain replace).
+// saveUIState overwrites the persisted UI prefs with us (serveUIState has
+// already merged the caller's patch onto the stored state, so this is a plain
+// replace).
 func saveUIState(us uiState) error {
 	b, err := json.Marshal(us)
 	if err != nil {

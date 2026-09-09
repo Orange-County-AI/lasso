@@ -55,12 +55,7 @@ import {
 } from "@/lib/push"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
-import {
-  applyAtmosphere,
-  primeThemeCatalog,
-  refreshTheme,
-  shippedPairs,
-} from "@/lib/theme"
+import { primeThemeCatalog, refreshTheme, shippedPairs } from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 import {
@@ -744,13 +739,15 @@ function HerdrThemeSelect({
 // readable over a photograph, and the palette-derived shading that gives a flat
 // theme some depth with no image at all.
 //
-// Every choice here is per browser AND per theme (localStorage — see
-// lib/wallpaper.ts): nothing is written to herdr's config, nothing is mirrored
-// to another host, and switching palette back and forth restores the backdrop
-// each one had. A pick repaints on the spot — applyAtmosphere pins what the
-// chrome paints from and rewrites the injected stylesheet inside every
-// already-loaded terminal iframe, so neither half waits for a remount or a
-// theme tick.
+// Every choice here is per THEME and lives on the server (ui_state — see
+// lib/wallpaper.ts): nothing is written to herdr's config and nothing is
+// mirrored to another host, but every browser reaching this lasso follows,
+// and switching palette back and forth restores the backdrop each one had. A
+// pick repaints on the spot without a remount or a theme tick, here and in
+// every other open tab: the write lands in the shared prefs cache, and
+// lib/wallpaper.ts's subscription drives applyAtmosphere off it — which pins
+// what the chrome paints from and rewrites the injected stylesheet inside
+// every already-loaded terminal iframe.
 function ThemeBackgrounds({
   theme,
   shipped,
@@ -767,11 +764,12 @@ function ThemeBackgrounds({
   // machine whose /api/file will serve it back, and a bare undefined is that
   // host's own default.
   const host = useApp().host ?? undefined
-  // The persisted choices are read on every render rather than mirrored into
-  // component state: lib/wallpaper.ts is the single source of truth for both
-  // the gallery and the selection, and a copy here is how the two drift apart.
-  // A write therefore needs nothing but a re-render, which is all `bump` is.
-  const [, bump] = React.useReducer((n: number) => n + 1, 0)
+  // Subscribing to the persisted prefs is what re-renders this pane when a
+  // choice changes — here or in another browser. The values themselves are
+  // read back through lib/wallpaper.ts on every render rather than mirrored
+  // into component state: it is the single source of truth for both the
+  // gallery and the selection, and a copy here is how the two drift apart.
+  useUIState()
   const [url, setUrl] = React.useState("")
   const [uploading, setUploading] = React.useState(false)
   const fileRef = React.useRef<HTMLInputElement>(null)
@@ -787,8 +785,6 @@ function ThemeBackgrounds({
       return
     }
     setThemeBackground(theme, pick)
-    bump()
-    applyAtmosphere()
   }
   const add = (pick: string) => {
     rememberBackground(pick)
@@ -899,8 +895,10 @@ function ThemeBackgrounds({
                 title="Forget this picture"
                 onClick={() => {
                   forgetBackground(w.url)
+                  // A theme still pointing at it re-resolves to its default on
+                  // the next render; making that explicit for the theme on
+                  // screen keeps the tile selection honest.
                   if (w.url === current) choose(NO_BACKGROUND)
-                  else bump()
                 }}
                 className="absolute top-1.5 right-1.5 rounded-sm bg-popover/90 p-0.5 text-muted-foreground hover:text-foreground"
               >
@@ -955,32 +953,30 @@ function ThemeBackgrounds({
       </div>
       <p className="text-[11px] text-muted-foreground">
         {theme ? `Backdrop for ${theme}.` : "Backdrop for the current theme."}{" "}
-        Saved in this browser only, per theme.
+        Saved on this lasso, per theme — every browser follows.
         {chromeToo
           ? " The terminals and this window both wear it."
           : " The terminals wear it; pick a palette above for this window to as well."}
       </p>
-      <AtmosphereControls hasImage={current !== ""} onChange={bump} />
+      <AtmosphereControls theme={theme} hasImage={current !== ""} />
     </div>
   )
 }
 
 // AtmosphereControls is the pair of knobs a backdrop needs: how much wash sits
 // between an image and the glyphs, and whether a theme with no image gets a
-// little light. Both are per browser and apply to every theme — they are
-// properties of this screen, not of a palette — and both repaint live through
-// applyAtmosphere.
+// little light. Both are per theme, both live on the server beside the picture,
+// and both repaint live: the write lands in the shared prefs cache, which
+// re-renders this pane and drives applyAtmosphere for the document.
 function AtmosphereControls({
+  theme,
   hasImage,
-  onChange,
 }: {
+  theme: string
   hasImage: boolean
-  // The gallery owns the re-read counter (the selection and these values are
-  // read from the same store), so a change here has to tell it.
-  onChange: () => void
 }) {
-  const [shade, setShade] = React.useState(() => getShading())
-  const [scrim, setScrimState] = React.useState(() => getScrim())
+  const shade = getShading(theme)
+  const scrim = getScrim(theme)
   return (
     <div className="mt-1 flex flex-col gap-2">
       <label
@@ -990,13 +986,8 @@ function AtmosphereControls({
         <Checkbox
           id="settings-atmo-shade"
           checked={shade}
-          onCheckedChange={(c) => {
-            const on = c === true
-            setShade(on)
-            setShading(on)
-            applyAtmosphere()
-            onChange()
-          }}
+          disabled={!theme}
+          onCheckedChange={(c) => setShading(theme, c === true)}
         />
         Palette shading — two faint washes of the theme's own colors across the
         canvas
@@ -1019,27 +1010,18 @@ function AtmosphereControls({
             max={100}
             step={1}
             value={Math.round(scrim * 100)}
-            disabled={!hasImage}
+            disabled={!theme || !hasImage}
             className="w-56 min-w-0 accent-primary disabled:opacity-50"
-            onChange={(e) => {
-              const v = Number(e.target.value) / 100
-              setScrimState(v)
-              setScrim(v)
-              applyAtmosphere()
-            }}
+            onChange={(e) => setScrim(theme, Number(e.target.value) / 100)}
           />
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="shrink-0"
-            disabled={scrim === DEFAULT_SCRIM}
+            disabled={!theme || scrim === DEFAULT_SCRIM}
             title={`Reset image dimming to ${Math.round(DEFAULT_SCRIM * 100)}%`}
-            onClick={() => {
-              setScrimState(DEFAULT_SCRIM)
-              setScrim(DEFAULT_SCRIM)
-              applyAtmosphere()
-            }}
+            onClick={() => setScrim(theme, DEFAULT_SCRIM)}
           >
             Reset to default
           </Button>

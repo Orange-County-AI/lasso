@@ -264,17 +264,27 @@ Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
 Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
-Retro 82 also carries a **wallpaper**, which no other theme does: one of the 27
-stills from upstream's own set, bundled into the binary — no external image
-requests at runtime — and worn by the terminal, plus the window while Appearance
-is **Herdr**. Pick one in Settings → **Wallpaper**, under the theme selector;
-the choice is saved in that browser only, so two devices can wear different
-backdrops, and the credits are in `src/web/public/wallpapers/retro-82/NOTICE.txt`.
+Every theme can carry a **background image**. Retro 82 defaults to one of 27
+stills bundled from upstream's set — no external image requests at runtime.
+Settings → **Themes → Background** offers bundled images, installed themes'
+images, and custom URLs or uploads. Background selection, **palette shading**,
+and **image dimming** are saved **per theme on the server** (lasso's own
+`ui_state`, not `config.toml`): every browser reaching the same lasso wears the
+same backdrop, and a pick in one repaints the others within a beat, with no
+reload. Switching palette restores each theme's own choices. A theme nobody has
+dressed yet defaults to shading on and 70% dimming — Retro 82 additionally to
+its Dusk Guardian still, every other theme to no image. Resetting dimming
+affects only the displayed theme. Choices made before this moved server-side
+stayed in the browser that made them and are not imported: pick the backdrop
+once more and every device follows.
+Credits are in `src/web/public/wallpapers/retro-82/NOTICE.txt`.
 
 The terminal uses ttyd's bundled **Canvas renderer**: its WebGL renderer paints
 opaque default-background rectangles behind dim text, which breaks transparency.
 Retro 82's sidebar selection backgrounds are transparent too; the active row
 keeps its accent and bold label instead of a solid strip across the wallpaper.
+Sidebar labels use a brighter cream text tier so herdr's additional dimming
+does not compound the palette's previously subdued teal.
 
 Retro 82 is lasso's own, not one of herdr's eighteen built-in names — and herdr
 rejects a name it doesn't know outright (`herdr config check` errors and the TUI

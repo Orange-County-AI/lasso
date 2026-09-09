@@ -5,8 +5,9 @@ import { type ActiveState, api } from "@/lib/api"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
 import { applyMode, watchSystemMode } from "@/lib/mode"
 import { invalidateHostScoped } from "@/lib/query"
-import { refreshTheme } from "@/lib/theme"
+import { applyAtmosphere, refreshTheme } from "@/lib/theme"
 import { syncUIState } from "@/lib/ui-state"
+import { subscribeAtmosphere } from "@/lib/wallpaper"
 
 // App-wide state derived from herdr, kept live over the /api/events SSE stream.
 // Components read activeCwd/activePaneID/panesRev reactively and run their own
@@ -183,6 +184,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     applyMode()
     watchSystemMode(refreshTheme)
   }, [])
+
+  // Repaint the backdrop whenever the persisted per-theme choice changes: the
+  // first fetch landing, a pick made in this tab, or one made in another
+  // browser and delivered by the ui_state_rev bump above. applyAtmosphere is
+  // the chokepoint that reaches both the chrome and every already-loaded
+  // terminal iframe, so nothing here has to remount.
+  React.useEffect(() => subscribeAtmosphere(applyAtmosphere), [])
 
   // Re-pin the terminals to herdr's theme whenever its theme revision moves
   // (including the priming value, so a reload always converges). The chrome is

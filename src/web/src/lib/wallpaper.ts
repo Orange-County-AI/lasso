@@ -3,11 +3,26 @@
 // glyphs readable over a photograph, and the palette-derived shading that gives
 // a themed canvas some depth with no image at all.
 //
-// All of it is per BROWSER (localStorage, like lib/mode.ts): no backend, no
-// config.toml, nothing mirrored to another host — two tabs on two machines may
-// wear different backdrops under the same theme. The choice is stored PER THEME
-// name, so switching palette back and forth restores the backdrop each one had
-// rather than dragging one image across all of them.
+// All of it is SERVER-owned. The picks live in lasso's own db as two fields of
+// ui_state (theme_atmosphere, custom_backgrounds), reached through the same
+// React Query cache, patch-merge and ui_state_rev SSE bump as the sidebar
+// layout and the usage footer (lib/ui-state.ts). So a still picked on a phone
+// paints on the desktop within a beat and with no reload, and a browser that
+// has never been told anything wears what the last human chose. Nothing here
+// touches herdr's config.toml — this is lasso's own UI state, not the shared
+// theme, so nothing is mirrored to another host or to an agent CLI.
+//
+// The choice is stored PER THEME name — the one the BROWSER resolved, so a
+// tab wearing a browser-local palette dresses that palette rather than herdr's
+// — which means switching back and forth restores the backdrop each theme had
+// rather than dragging one image across all of them. Two browsers wearing two
+// different themes therefore still differ on screen while agreeing on the
+// state; two browsers on the SAME theme match.
+//
+// Only explicit choices are stored: an absent entry is this module's default
+// (below), never a value written back. That is what keeps a tab whose fetch is
+// still in flight from persisting a default over a choice it hasn't seen yet —
+// and why nothing paints until the fetch settles (see atmosphereKnown).
 //
 // Three sources feed the gallery for a theme:
 //   1. what lasso bundles (retro-82's 27 vendored stills, served from the
@@ -15,11 +30,15 @@
 //   2. what the theme itself shipped (an installed Omarchy theme clones its own
 //      backgrounds; the server hands back root-relative URLs — see
 //      ThemeCatalogEntry.backgrounds),
-//   3. what this browser was given by hand: a URL, or a file uploaded to the
-//      host through /api/paste-file and read back through /api/file.
+//   3. what a human handed lasso by hand: a URL, or a file uploaded to the
+//      host through /api/paste-file and read back through /api/file. Kept
+//      server-side too, so the picture is offerable from every browser.
 // They are additive and deduped by URL, since a theme can plausibly be both
 // bundled and installed.
+import type { AtmospherePref } from "@/lib/api"
+import { qk, queryClient } from "@/lib/query"
 import bundledRetro82 from "@/lib/retro82-wallpapers.json"
+import { patchUIState, uiStateNow, uiStateSettled } from "@/lib/ui-state"
 
 // One picture the gallery can offer. `thumbnail` is a smaller copy where one
 // exists (the bundled set ships 320px thumbs) and the image itself otherwise.
@@ -51,19 +70,6 @@ const BUNDLED_DEFAULT: Record<string, string> = {
   "retro-82": "/wallpapers/retro-82/04-dusk-guardian.webp",
 }
 
-// Per-theme choice: theme name → image URL, or NO_BACKGROUND for "flat".
-const BG_KEY = "lasso-theme-backgrounds"
-// The pictures this browser was given by hand, newest first. Shared across
-// themes on purpose: a photo you like is a property of your screen, not of a
-// palette, so it stays offerable after a theme switch.
-const CUSTOM_KEY = "lasso-theme-custom-backgrounds"
-const SCRIM_KEY = "lasso-theme-scrim"
-const SHADE_KEY = "lasso-theme-shading"
-// The pre-catalog key, which held a bundled still's ID rather than a URL. Read
-// once and migrated (see readChoices) so an existing browser keeps the backdrop
-// it was already wearing.
-const LEGACY_RETRO82_KEY = "lasso-retro82-wallpaper"
-
 // The stored value meaning "paint no image" — distinct from an absent entry,
 // which means "this theme's default" (a still for retro-82, nothing elsewhere).
 export const NO_BACKGROUND = "none"
@@ -72,47 +78,56 @@ export const NO_BACKGROUND = "none"
 // in the bundled set rather than the darkest: one value serves all 27, and dim
 // is a better failure than unreadable. It is the default the transparency
 // slider starts at and the reset button restores; saved preferences are kept.
-export const DEFAULT_SCRIM = 0.70
+export const DEFAULT_SCRIM = 0.7
 
-function readChoices(): Record<string, string> {
-  let out: Record<string, string> = {}
-  try {
-    const raw = localStorage.getItem(BG_KEY)
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw)
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-        out = parsed as Record<string, string>
-    }
-  } catch {
-    /* a hand-edited or truncated value is not worth failing a repaint over */
-  }
-  // Migrate the one pre-catalog choice: a still ID under its own key. Resolved
-  // through the bundled manifest rather than trusted, and written into the map
-  // so it survives as a URL like every other pick.
-  if (!out["retro-82"]) {
-    const legacy = localStorage.getItem(LEGACY_RETRO82_KEY)
-    const still = legacy
-      ? bundledRetro82.find((w) => w.id === legacy)
-      : undefined
-    if (still) {
-      out["retro-82"] = still.image
-      localStorage.setItem(BG_KEY, JSON.stringify(out))
-      localStorage.removeItem(LEGACY_RETRO82_KEY)
-    }
-  }
-  return out
+// How long a run of dimming-slider writes is coalesced into one save. The
+// slider fires per pixel of a drag and every save bumps ui_state_rev at every
+// open tab, so the repaint stays immediate (the optimistic cache write) while
+// the network write lands a few times a second.
+const SCRIM_COALESCE_MS = 250
+
+// uiStateSettled says the server's copy has arrived (or failed to). Until it
+// has, this module reports NO backdrop rather than its defaults: painting the
+// default still and then removing it a beat later — because this lasso's owner
+// turned it off — is a photograph flashing on screen, while starting flat and
+// fading the picture in is not.
+//
+// The per-theme choices are read from the React Query entry on every call
+// rather than mirrored here: lib/ui-state.ts holds the single copy in this tab,
+// and a mirror is how the painter and the gallery drift apart.
+function preferences(): Record<string, AtmospherePref> {
+  return uiStateNow().theme_atmosphere ?? {}
 }
 
-function readList(key: string): string[] {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((v): v is string => typeof v === "string" && !!v)
-  } catch {
-    return []
-  }
+// subscribeAtmosphere fires when the SERVER's copy of the backdrop changes —
+// this tab writing one, another browser's write arriving over ui_state_rev, or
+// the first fetch landing. Both the document painter (app-store) and the open
+// gallery hang off it.
+//
+// It compares only the atmosphere slice: the same cache entry carries the
+// sidebar width, which a drag rewrites dozens of times a second, and
+// applyAtmosphere reaches into every terminal iframe.
+export function subscribeAtmosphere(onChange: () => void): () => void {
+  let last = atmosphereSignature()
+  return queryClient.getQueryCache().subscribe((event) => {
+    if (event.query.queryKey[0] !== qk.uiState[0]) return
+    const now = atmosphereSignature()
+    if (now === last) return
+    last = now
+    onChange()
+  })
+}
+
+// The slice of ui_state a repaint depends on: whether it has arrived, the
+// per-theme choices, and the gallery (which decides whether a stored URL still
+// resolves).
+function atmosphereSignature(): string {
+  const ui = uiStateNow()
+  return JSON.stringify([
+    uiStateSettled(),
+    ui.theme_atmosphere ?? {},
+    ui.custom_backgrounds ?? [],
+  ])
 }
 
 // prettyName turns a background's URL into something a human can pick from:
@@ -153,7 +168,7 @@ export interface ShippedBackground {
 }
 
 // themeBackgrounds is the gallery for one theme: what lasso bundles for it, or
-// what the theme itself shipped, plus this browser's own pictures.
+// what the theme itself shipped, plus every hand-given picture on this lasso.
 //
 // The two shipped sources are exclusive, not additive: where lasso bundles a
 // set (retro-82) it wins outright, because the upstream set is the same
@@ -180,20 +195,24 @@ export function themeBackgrounds(
         label: prettyName(s.url),
         thumbnail: s.thumb || s.url,
       })
-  for (const url of readList(CUSTOM_KEY))
+  for (const url of uiStateNow().custom_backgrounds ?? [])
     push({ url, label: prettyName(url), thumbnail: url, custom: true })
   return out
 }
 
 // backgroundFor resolves what to actually paint for a theme: "" for none.
 // An unknown stored URL — a still dropped by a later vendoring, a theme whose
-// images are gone, a custom picture this browser has since forgotten — resolves
-// to the theme's default instead of pointing the backdrop at a 404.
+// images are gone, a custom picture since forgotten — resolves to the theme's
+// default instead of pointing the backdrop at a 404.
+//
+// Nothing is painted until the server's copy has settled: see the note above
+// preferences() for why a default flashing in and out is the worse failure.
 export function backgroundFor(
   theme: string,
   shipped: readonly ShippedBackground[] = []
 ): string {
-  const stored = readChoices()[theme]
+  if (!uiStateSettled()) return ""
+  const stored = preferences()[theme]?.background
   if (stored === NO_BACKGROUND) return ""
   const gallery = themeBackgrounds(theme, shipped)
   if (stored && gallery.some((g) => g.url === stored)) return stored
@@ -201,59 +220,67 @@ export function backgroundFor(
   return gallery.some((g) => g.url === fallback) ? fallback : ""
 }
 
-// setThemeBackground persists one theme's pick (NO_BACKGROUND for flat).
-// Repainting is lib/theme.ts's job (applyAtmosphere), which is where both the
-// chrome and the already-loaded terminal iframes pick the new URL up.
+// setThemeBackground persists one theme's pick (NO_BACKGROUND for flat) for
+// every browser on this lasso. Repainting is lib/theme.ts's job
+// (applyAtmosphere): this tab through subscribeAtmosphere's optimistic cache
+// update, every other tab when the ui_state_rev bump lands.
 export function setThemeBackground(theme: string, url: string) {
-  const choices = readChoices()
-  choices[theme] = url
-  localStorage.setItem(BG_KEY, JSON.stringify(choices))
+  patchAtmosphere(theme, { background: url })
 }
 
 // rememberBackground adds a hand-given picture to the gallery (newest first,
-// deduped) so it stays pickable — including under another theme — instead of
-// being a value only the current selection remembers.
+// deduped) so it stays pickable — under another theme, and from another
+// browser — instead of being a value only the current selection remembers.
+// Sent as an op rather than a list: see UIStatePatch.
 export function rememberBackground(url: string) {
-  const list = readList(CUSTOM_KEY).filter((u) => u !== url)
-  list.unshift(url)
-  localStorage.setItem(CUSTOM_KEY, JSON.stringify(list.slice(0, 24)))
+  if (url) patchUIState({ remember_background: url })
 }
 
-// forgetBackground drops a hand-given picture from the gallery. Any theme still
-// pointing at it falls back to its default on the next resolve, so no entry has
-// to be swept out of the per-theme map here.
+// forgetBackground drops a hand-given picture from the gallery, everywhere. Any
+// theme still pointing at it falls back to its default on the next resolve, so
+// no entry has to be swept out of the per-theme map here.
 export function forgetBackground(url: string) {
-  localStorage.setItem(
-    CUSTOM_KEY,
-    JSON.stringify(readList(CUSTOM_KEY).filter((u) => u !== url))
+  if (url) patchUIState({ forget_background: url })
+}
+
+// patchAtmosphere writes ONE field of one theme's entry. The patch shape is
+// what keeps the merge honest end to end: the server folds it in per theme and
+// per field (mergeThemeAtmosphere), so a browser dressing rose-pine cannot drop
+// what another one just picked for retro-82, nor its own theme's other knobs.
+function patchAtmosphere(theme: string, pref: AtmospherePref, coalesceMs = 0) {
+  // A pick made before /api/theme resolved has no theme to belong to. The
+  // server drops an empty key too; refusing here keeps the optimistic copy from
+  // showing a choice that will never come back.
+  if (!theme) return
+  patchUIState({ theme_atmosphere: { [theme]: pref } }, true, coalesceMs)
+}
+
+// The wash's alpha, 0 (raw image) to 1 (opaque canvas), per theme. No settled
+// gate: it is only read when backgroundFor has already resolved an image.
+export function getScrim(theme: string): number {
+  const raw = preferences()[theme]?.scrim
+  return typeof raw === "number" && Number.isFinite(raw)
+    ? Math.min(1, Math.max(0, raw))
+    : DEFAULT_SCRIM
+}
+
+export function setScrim(theme: string, value: number) {
+  if (!Number.isFinite(value)) return
+  patchAtmosphere(
+    theme,
+    { scrim: Math.min(1, Math.max(0, value)) },
+    SCRIM_COALESCE_MS
   )
 }
 
-// getScrim is the wash's alpha, 0 (raw image) to 1 (opaque canvas).
-export function getScrim(): number {
-  const raw = Number.parseFloat(localStorage.getItem(SCRIM_KEY) ?? "")
-  if (!Number.isFinite(raw)) return DEFAULT_SCRIM
-  return Math.min(1, Math.max(0, raw))
+// Palette-derived shading defaults on; an explicit false belongs to this theme.
+// Off while the server's copy is in flight, for the same reason as the image:
+// two washes appearing and vanishing is a flicker nobody asked for.
+export function getShading(theme: string): boolean {
+  if (!uiStateSettled()) return false
+  return preferences()[theme]?.shading !== false
 }
 
-export function setScrim(v: number) {
-  localStorage.setItem(SCRIM_KEY, String(Math.min(1, Math.max(0, v))))
-}
-
-// Palette-derived shading: two very low-alpha washes of the theme's own accent
-// colors across the canvas, so a theme with no image reads as lit rather than
-// painted. ON unless this browser has turned it OFF: it is what a themed canvas
-// is meant to look like, and a knob whose default is the duller of the two
-// renderings is a knob nobody finds. Only an explicit "0" is off — an ABSENT
-// entry is a browser that has never touched it, not a browser that declined.
-export function getShading(): boolean {
-  return localStorage.getItem(SHADE_KEY) !== "0"
-}
-
-// Both directions are written, and "off" is written as "0" rather than by
-// removing the key: with the default now on, an absent entry means "never
-// asked", so deleting it would silently re-enable the shading the user just
-// turned off on the next read.
-export function setShading(on: boolean) {
-  localStorage.setItem(SHADE_KEY, on ? "1" : "0")
+export function setShading(theme: string, on: boolean) {
+  patchAtmosphere(theme, { shading: on })
 }
