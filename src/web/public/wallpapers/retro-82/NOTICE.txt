@@ -1,0 +1,213 @@
+Retro 82 wallpapers — vendored third-party assets
+================================================================
+
+UPSTREAM SOURCE
+---------------
+Project : omarchy-retro-82-theme by OldJobobo
+Repo    : https://github.com/OldJobobo/omarchy-retro-82-theme
+Branch  : master
+Commit  : b73914de6cd24af3c05f3c8213a877cf3d48917e
+          (authored 2026-08-25T18:46:49Z, "Tune terminal opacity and blur")
+Tree    : https://github.com/OldJobobo/omarchy-retro-82-theme/tree/b73914de6cd24af3c05f3c8213a877cf3d48917e/backgrounds
+Raw     : https://raw.githubusercontent.com/OldJobobo/omarchy-retro-82-theme/b73914de6cd24af3c05f3c8213a877cf3d48917e/backgrounds/<file>
+Fetched : 2026-09-09, from the pinned commit above (not from master).
+
+WHAT WAS TAKEN
+--------------
+All 27 STILL wallpapers from backgrounds/ at that commit. The two animated
+wallpapers in the same directory (27-chromatic-drift.mp4, 28-electric-frame.mp4)
+are deliberately NOT vendored — hence the id sequence runs 01..26 then 29.
+Nothing else from the upstream repo is vendored here.
+
+TRANSFORMATIONS APPLIED
+-----------------------
+Every file below was re-encoded; no unmodified original is retained in this
+repository. Tool: ImageMagick 7.1.2-27 (libwebp 1.6.0).
+
+  Full image  <id>.webp
+    magick <src> -auto-orient -strip -resize '1920x1920>' \
+           -define webp:method=6 -quality 82 <id>.webp
+  Thumbnail   thumbs/<id>.webp
+    magick <src> -auto-orient -strip -resize '320x320>' \
+           -define webp:method=6 -quality 75 thumbs/<id>.webp
+
+  - Longest edge clamped to 1920 px (full) / 320 px (thumbnail); the trailing
+    '>' means shrink-only, so nothing is ever upscaled. Aspect ratio preserved.
+  - Lossy WebP, quality 82 / 75, encoder method 6.
+  - '-strip' removes all metadata (EXIF/ICC/XMP), so any authorship or
+    copyright metadata that upstream's files still carried does NOT survive
+    into these copies. The attribution below is the record of it.
+  - Several upstream files were themselves AI-upscaled before we got them
+    (the '_LE_upscale_*' suffixes); those suffixes are dropped from our ids.
+  - 01-omarchy-sigil had a fully-opaque alpha channel upstream (min alpha = 1);
+    it is dropped in the WebP, which is visually lossless.
+
+FILE MAPPING (upstream original -> vendored output)
+--------------------------------------------------
+01-omarchy-sigil  "Omarchy Sigil"
+    from  backgrounds/01-omarchy-sigil.png  (6000x4000)
+    ->    01-omarchy-sigil.webp  (1920x1280, 25452 B)
+    ->    thumbs/01-omarchy-sigil.webp  (320x213, 3478 B)
+02-retro-sf  "Retro SF"
+    from  backgrounds/02-retro-sf.png  (3776x1248)
+    ->    02-retro-sf.webp  (1920x635, 108718 B)
+    ->    thumbs/02-retro-sf.webp  (320x106, 2844 B)
+03-abstract-lines  "Abstract Lines"
+    from  backgrounds/03-abstract-lines.jpg  (6144x3456)
+    ->    03-abstract-lines.webp  (1920x1080, 451790 B)
+    ->    thumbs/03-abstract-lines.webp  (320x180, 23706 B)
+04-dusk-guardian  "Dusk Guardian"
+    from  backgrounds/04-dusk-guardian.jpg  (5616x3744)
+    ->    04-dusk-guardian.webp  (1920x1280, 87920 B)
+    ->    thumbs/04-dusk-guardian.webp  (320x213, 3264 B)
+05-gateway  "Gateway"
+    from  backgrounds/05-gateway_LE_upscale_digiart.jpg  (6144x3456)
+    ->    05-gateway.webp  (1920x1080, 69112 B)
+    ->    thumbs/05-gateway.webp  (320x180, 3246 B)
+06-livingroom-1982  "Living Room 1982"
+    from  backgrounds/06-livingroom-1982_LE_upscale_gentle.jpg  (6022x3455)
+    ->    06-livingroom-1982.webp  (1920x1102, 81588 B)
+    ->    thumbs/06-livingroom-1982.webp  (320x184, 6368 B)
+07-zen-boat  "Zen Boat"
+    from  backgrounds/07-zen-boat_LE_upscale_digiart.jpg  (10456x3455)
+    ->    07-zen-boat.webp  (1920x634, 87708 B)
+    ->    thumbs/07-zen-boat.webp  (320x106, 2672 B)
+08-walkman  "Walkman"
+    from  backgrounds/08-walkman_LE_upscale_gentle.jpg  (5184x3456)
+    ->    08-walkman.webp  (1920x1280, 82944 B)
+    ->    thumbs/08-walkman.webp  (320x213, 4674 B)
+09-pirate-bay  "Pirate Bay"
+    from  backgrounds/09-pirate-bay_LE_upscale_prime.jpg  (7381x3455)
+    ->    09-pirate-bay.webp  (1920x899, 139882 B)
+    ->    thumbs/09-pirate-bay.webp  (320x150, 6164 B)
+10-abstract-pyramids  "Abstract Pyramids"
+    from  backgrounds/10-abstract-pyramids_LE_upscale_prime.jpg  (6908x3456)
+    ->    10-abstract-pyramids.webp  (1920x961, 214556 B)
+    ->    thumbs/10-abstract-pyramids.webp  (320x160, 7524 B)
+11-retro-spective  "Retro-spective"
+    from  backgrounds/11-retro-spective.jpg  (6000x4000)
+    ->    11-retro-spective.webp  (1920x1280, 420302 B)
+    ->    thumbs/11-retro-spective.webp  (320x213, 15680 B)
+12-in-the-groove  "In the Groove"
+    from  backgrounds/12-in-the-groove.jpg  (5184x3456)
+    ->    12-in-the-groove.webp  (1920x1280, 117692 B)
+    ->    thumbs/12-in-the-groove.webp  (320x213, 5196 B)
+13-the-journey  "The Journey"
+    from  backgrounds/13-the-journey.jpg  (6144x3456)
+    ->    13-the-journey.webp  (1920x1080, 27044 B)
+    ->    thumbs/13-the-journey.webp  (320x180, 1786 B)
+14-cassette  "Cassette"
+    from  backgrounds/14-cassette.jpg  (6720x4480)
+    ->    14-cassette.webp  (1920x1280, 43856 B)
+    ->    thumbs/14-cassette.webp  (320x213, 3244 B)
+15-abstraction-layer  "Abstraction Layer"
+    from  backgrounds/15-abstraction-layer.jpg  (3600x2400)
+    ->    15-abstraction-layer.webp  (1920x1280, 269066 B)
+    ->    thumbs/15-abstraction-layer.webp  (320x213, 11094 B)
+16-ember-stallion  "Ember Stallion"
+    from  backgrounds/16-ember-stallion.jpg  (6000x4000)
+    ->    16-ember-stallion.webp  (1920x1280, 464070 B)
+    ->    thumbs/16-ember-stallion.webp  (320x213, 11754 B)
+17-neon-harbor  "Neon Harbor"
+    from  backgrounds/17-neon-harbor.jpg  (5185x3455)
+    ->    17-neon-harbor.webp  (1920x1279, 127938 B)
+    ->    thumbs/17-neon-harbor.webp  (320x213, 4656 B)
+18-last-signal  "Last Signal"
+    from  backgrounds/18-last-signal.jpg  (6144x3456)
+    ->    18-last-signal.webp  (1920x1080, 58618 B)
+    ->    thumbs/18-last-signal.webp  (320x180, 2674 B)
+19-orange-orbit  "Orange Orbit"
+    from  backgrounds/19-orange-orbit.jpg  (6144x3456)
+    ->    19-orange-orbit.webp  (1920x1080, 31884 B)
+    ->    thumbs/19-orange-orbit.webp  (320x180, 1742 B)
+20-summer-passage  "Summer Passage"
+    from  backgrounds/20-summer-passage.jpg  (4032x2687)
+    ->    20-summer-passage.webp  (1920x1280, 536264 B)
+    ->    thumbs/20-summer-passage.webp  (320x213, 11140 B)
+21-berry-static  "Berry Static"
+    from  backgrounds/21-berry-static.jpg  (3872x2592)
+    ->    21-berry-static.webp  (1920x1285, 222978 B)
+    ->    thumbs/21-berry-static.webp  (320x214, 16538 B)
+22-palm-echoes  "Palm Echoes"
+    from  backgrounds/22-palm-echoes.jpg  (6144x3456)
+    ->    22-palm-echoes.webp  (1920x1080, 351308 B)
+    ->    thumbs/22-palm-echoes.webp  (320x180, 7054 B)
+23-beetle-parade  "Beetle Parade"
+    from  backgrounds/23-beetle-parade.jpg  (7380x3455)
+    ->    23-beetle-parade.webp  (1920x899, 255540 B)
+    ->    thumbs/23-beetle-parade.webp  (320x150, 11486 B)
+24-mustang-muse  "Mustang Muse"
+    from  backgrounds/24-mustang-muse.jpg  (6122x4081)
+    ->    24-mustang-muse.webp  (1920x1280, 173686 B)
+    ->    thumbs/24-mustang-muse.webp  (320x213, 9262 B)
+25-amber-veil  "Amber Veil"
+    from  backgrounds/25-amber-veil.jpg  (6989x5387)
+    ->    25-amber-veil.webp  (1920x1480, 16554 B)
+    ->    thumbs/25-amber-veil.webp  (320x247, 850 B)
+26-typed-memory  "Typed Memory"
+    from  backgrounds/26-typed-memory.jpg  (5193x3455)
+    ->    26-typed-memory.webp  (1920x1277, 146118 B)
+    ->    thumbs/26-typed-memory.webp  (320x213, 10104 B)
+29-velvet-dunes  "Velvet Dunes"
+    from  backgrounds/29-velvet-dunes.jpg  (5120x2880)
+    ->    29-velvet-dunes.webp  (1920x1080, 140086 B)
+    ->    thumbs/29-velvet-dunes.webp  (320x180, 5118 B)
+
+ATTRIBUTION (as recorded in the upstream README at the pinned commit)
+--------------------------------------------------------------------
+Theme, and the wallpapers not listed individually below, by OldJobobo
+(https://github.com/OldJobobo). Palette inspiration and feedback by
+@niraletter (https://github.com/niraletter). Support: https://ko-fi.com/oldjobobo
+
+Upstream lists third-party sources for these wallpapers only:
+
+  16-ember-stallion
+      photo by Alexander Kovalev (https://unsplash.com/@alkomosh) on Unsplash — https://unsplash.com/photos/_5l07A3TiNw
+  17-neon-harbor
+      photo by Alexey Turenkov (https://unsplash.com/@2renkov) on Unsplash — https://unsplash.com/photos/zyEY2H0BTDo
+  18-last-signal
+      UNIDENTIFIED — upstream states the creator and original source were not embedded in the downloaded file
+  19-orange-orbit
+      shared by Javalonte (https://wallhaven.cc/user/Javalonte) on Wallhaven — https://wallhaven.cc/w/4lv7ky; upstream notes no original source was listed
+  20-summer-passage
+      photo by Ionut Roman (https://unsplash.com/@rroman429) on Unsplash — https://unsplash.com/photos/6rOmFM0HllA
+  21-berry-static
+      photo by Moon Moons (https://unsplash.com/@moonmoons_days) on Unsplash — https://unsplash.com/photos/oQANRt7fpps
+  22-palm-echoes
+      sourced from WallpapersDen — https://wallpapersden.com/palm-trees-branches-wallpaper/2560x1440/; upstream notes no creator was listed
+  23-beetle-parade
+      photo by Claudio Ruiz (https://www.pexels.com/@clausthor/) on Pexels — https://www.pexels.com/photo/parked-classic-volkswagen-beetle-cars-5085636/
+  24-mustang-muse
+      photo by Dante Muñoz (https://www.pexels.com/@dantemunozphoto/) on Pexels — https://www.pexels.com/photo/a-woman-in-a-dress-and-high-heels-standing-next-to-a-classic-car-16259519/
+  25-amber-veil
+      photo by Engin Akyurt (https://www.pexels.com/@enginakyurt/) on Pexels — https://www.pexels.com/photo/orange-and-yellow-color-illustration-7415261/
+  26-typed-memory
+      photo by Min An (https://www.pexels.com/@minan1398/) on Pexels — https://www.pexels.com/photo/close-up-photo-of-vintage-typewriter-1425146/
+  29-velvet-dunes
+      artwork by Xebelion (https://linktr.ee/xebelion), shared on Wallhaven — https://wallhaven.cc/w/m3mggm
+
+LICENSING / REDISTRIBUTION STATUS — READ THIS
+---------------------------------------------
+The upstream repository carries NO license file and GitHub reports no license
+for it (`license: null` via the GitHub API at the pinned commit). No copyright
+notice, license grant, or redistribution permission accompanies the wallpapers
+upstream, and none was obtained for this vendoring.
+
+Furthermore, upstream's own attribution list is INCOMPLETE: it covers only the
+wallpapers noted above. For 01-15 no source is stated at all, 18-last-signal is
+explicitly recorded upstream as having unidentified authorship, and 19/22 name a
+re-poster rather than a creator. The individual images plainly originate from
+several different creators and stock/wallpaper sites under terms we have not
+seen and cannot verify.
+
+Therefore: nothing here should be read as a claim that these images may be
+redistributed, that their licenses are compatible with this project's, or that
+permission was granted. They are vendored on a best-effort attribution basis
+for local UI use. If a rights holder objects, or before this is shipped anywhere
+that redistribution matters, the affected file should be removed or replaced.
+
+MANIFEST
+--------
+src/web/src/lib/retro82-wallpapers.json lists every vendored wallpaper as
+{id, label, image, thumbnail}, with root-relative URLs into this directory.
+

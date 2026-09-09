@@ -297,7 +297,7 @@ export function FileViewer({
         </span>
         {saveError && (
           <span
-            className="whitespace-nowrap rounded-full border border-warn px-1.5 py-px text-[13px] text-warn"
+            className="whitespace-nowrap rounded-md border border-warn px-1.5 py-px text-[13px] text-warn"
             title={saveError}
           >
             save failed
@@ -412,7 +412,12 @@ const MD_SCHEMA = {
   attributes: {
     ...defaultSchema.attributes,
     // Sizing and alignment are the whole reason a README reaches for HTML.
-    img: [...(defaultSchema.attributes?.img ?? []), "width", "height", "loading"],
+    img: [
+      ...(defaultSchema.attributes?.img ?? []),
+      "width",
+      "height",
+      "loading",
+    ],
     div: [...(defaultSchema.attributes?.div ?? []), "align"],
     p: [...(defaultSchema.attributes?.p ?? []), "align"],
     h1: [...(defaultSchema.attributes?.h1 ?? []), "align"],
@@ -458,33 +463,33 @@ function resolveMarkdownSrc(
 // background would frame the diagram).
 function mdComponents(path: string, host: string | null) {
   return {
-  pre({ node, children, ...rest }) {
-    const code = node?.children?.[0]
-    if (code?.type === "element" && code.tagName === "code") {
-      const cls = code.properties?.className
-      const langs = Array.isArray(cls) ? cls.map(String) : []
-      if (langs.includes("language-mermaid"))
-        return <MermaidDiagram chart={hastText(code.children)} />
-    }
-    return <pre {...rest}>{children}</pre>
-  },
-  // Covers both ![](x) and a raw <img> from rehype-raw: react-markdown routes
-  // the reconstructed HTML through this same components map.
-  img({ node, src, alt, ...rest }) {
-    return (
-      <img
-        {...rest}
-        // An <img> in a README often carries no alt; empty marks it decorative
-        // rather than leaving assistive tech to read out the file name.
-        alt={alt ?? ""}
-        src={resolveMarkdownSrc(
-          typeof src === "string" ? src : undefined,
-          path,
-          host
-        )}
-      />
-    )
-  },
+    pre({ node, children, ...rest }) {
+      const code = node?.children?.[0]
+      if (code?.type === "element" && code.tagName === "code") {
+        const cls = code.properties?.className
+        const langs = Array.isArray(cls) ? cls.map(String) : []
+        if (langs.includes("language-mermaid"))
+          return <MermaidDiagram chart={hastText(code.children)} />
+      }
+      return <pre {...rest}>{children}</pre>
+    },
+    // Covers both ![](x) and a raw <img> from rehype-raw: react-markdown routes
+    // the reconstructed HTML through this same components map.
+    img({ node, src, alt, ...rest }) {
+      return (
+        <img
+          {...rest}
+          // An <img> in a README often carries no alt; empty marks it decorative
+          // rather than leaving assistive tech to read out the file name.
+          alt={alt ?? ""}
+          src={resolveMarkdownSrc(
+            typeof src === "string" ? src : undefined,
+            path,
+            host
+          )}
+        />
+      )
+    },
   } satisfies Components
 }
 

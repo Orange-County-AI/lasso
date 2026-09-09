@@ -142,7 +142,7 @@ function PaceBar({ percent, elapsed }: { percent: number; elapsed: number }) {
   const onPace = e >= 0 ? Math.min(p, e) : p
   const over = e >= 0 ? Math.max(0, p - e) : 0
   return (
-    <span className="relative inline-block h-[7px] w-9 shrink-0 overflow-hidden rounded-[2px] bg-border align-middle">
+    <span className="relative inline-block h-[7px] w-9 shrink-0 overflow-hidden rounded-sm bg-border align-middle">
       <span
         className="absolute inset-y-0 left-0 bg-foreground/70"
         style={{ width: `${onPace}%` }}

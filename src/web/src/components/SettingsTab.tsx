@@ -31,9 +31,14 @@ import {
 } from "@/lib/push"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
-import { refreshTheme } from "@/lib/theme"
+import { ATMOSPHERE_THEME, applyWallpaper, refreshTheme } from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
+import {
+  getWallpaper,
+  RETRO82_WALLPAPERS,
+  setWallpaperId,
+} from "@/lib/wallpaper"
 
 // Native textarea/select styled to match the shadcn <Input>.
 const fieldClass =
@@ -394,8 +399,77 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
         {t?.forced &&
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
       </p>
+      {value === ATMOSPHERE_THEME && <Retro82Wallpaper />}
       <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
       <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
+    </div>
+  )
+}
+
+// Retro82Wallpaper is the backdrop gallery. Retro 82 is the one theme that
+// carries a wallpaper, and which of the vendored stills it wears is a
+// per-browser choice (localStorage, like Appearance — see lib/wallpaper.ts),
+// so this is deliberately NOT one of herdr's config settings and is not
+// mirrored to any host. It renders only while herdr resolves to that theme:
+// under any other palette it would be a control with no effect.
+//
+// A pick repaints on the spot — applyWallpaper pins the URL the chrome paints
+// from and rewrites the injected stylesheet inside every already-loaded
+// terminal iframe, so neither half waits for a remount or a theme tick.
+function Retro82Wallpaper() {
+  const [id, setId] = React.useState(() => getWallpaper().id)
+  // The chrome only wears the wallpaper in Herdr appearance mode (the Nothing
+  // canvases are flat by design), so say so rather than let the gallery look
+  // broken when the terminal is the only half showing it.
+  const chromeToo = getMode() === "herdr"
+  return (
+    <div className="mt-1 mb-3 flex flex-col gap-1.5">
+      <span className={labelClass}>Wallpaper</span>
+      <div className="grid max-h-64 @lg:grid-cols-6 @sm:grid-cols-4 grid-cols-3 gap-1.5 overflow-y-auto rounded-lg border border-border p-1.5">
+        {RETRO82_WALLPAPERS.map((w) => (
+          <button
+            key={w.id}
+            type="button"
+            aria-pressed={w.id === id}
+            onClick={() => {
+              setWallpaperId(w.id)
+              setId(w.id)
+              applyWallpaper()
+            }}
+            className={cn(
+              "flex flex-col gap-1 rounded-md border p-1 text-left outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+              w.id === id
+                ? "border-primary bg-secondary"
+                : "border-transparent hover:border-border"
+            )}
+          >
+            {/* Decorative: the visible caption is the button's name, so an
+                alt text here would just read it out twice. object-cover
+                because the stills range from 16:9 to ultrawide. */}
+            <img
+              src={w.thumbnail}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className="aspect-video w-full rounded-sm object-cover"
+            />
+            <span
+              className={cn(
+                "truncate text-[11px]",
+                w.id === id ? "text-foreground" : "text-muted-foreground"
+              )}
+            >
+              {w.label}
+            </span>
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Retro 82's backdrop, bundled with lasso. Saved in this browser only.
+        {chromeToo
+          ? " The terminals and this window both wear it."
+          : " The terminals wear it; switch Appearance to Herdr for this window to as well."}
+      </p>
     </div>
   )
 }

@@ -63,10 +63,14 @@
   --color-warn: var(--h-warn);
   --color-bad: var(--h-bad);
   --color-dir: var(--h-dir);
+  --radius-xs: calc(var(--radius) * 0.4);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 
   /* Nothing is flat: no elevation shadows — surfaces separate by border + a
    * panel/hover brightness step, never by drop shadow or blur. The shadow-elev-*
@@ -77,6 +81,23 @@
   --shadow-elev-pop: none;
   --shadow-elev-modal: none;
   --shadow-well: none;
+}
+
+/* Register the base radius with Tailwind too: bare `rounded` otherwise falls
+ * back to a fixed 0.25rem instead of sharing the component radius scale. */
+@theme {
+  --radius: 0rem;
+}
+
+/* The creator floats above the workspace without fading its text or controls.
+ * Keep the tint local: menus opened inside the form retain solid surfaces. */
+[data-slot="dialog-content"][data-surface="creator"] {
+  background-color: color-mix(in srgb, var(--popover) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, var(--primary) 55%, var(--border));
+  box-shadow:
+    0 16px 48px rgb(0 0 0 / 28%),
+    inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent);
 }
 
 /*
@@ -114,8 +135,6 @@
   --h-warn: #d4a843; /* Nothing warning — pending/degraded */
   --h-bad: #d71921; /* Nothing accent red — destructive/error ONLY */
   --h-link: #5b9bf6; /* interactive blue — links & code keywords only */
-
-  --radius: 0.25rem; /* technical 4px — instrument, not pill */
 
   /* shadcn tokens → --h-* palette */
   --background: var(--h-bg);
@@ -178,56 +197,33 @@
 /* ===========================================================================
  * Retro 82 atmosphere — the wallpaper treatment.
  *
- * Retro 82 is the only theme with a wallpaper: an authored CSS backdrop (no
- * image asset, so it costs nothing to embed and rescales to any pane) of
- * concentric teal rings around a faint warm core, over the palette's own
- * #00172e navy. Colors are the upstream retro-82 tokens
- * (https://github.com/OldJobobo/omarchy-retro-82-theme): amber #faa968, teal
- * #8cbfb8, the #3f8f8a/#57898a mid-teals, on #00172e.
+ * Retro 82 is the only theme with a wallpaper, and it is a real image: one of
+ * the 27 stills from upstream's own set, vendored as WebP under
+ * web/public/wallpapers/retro-82 (provenance in that directory's NOTICE.txt)
+ * and served from the embedded bundle, so the backdrop never reaches the
+ * network. WHICH still is a per-browser choice — the gallery in Settings,
+ * persisted by lib/wallpaper.ts — so the URL cannot be authored here:
+ * lib/theme.ts:applyWallpaper pins it as --r82-wallpaper on <html>, and both
+ * halves below read it from there. Palette tokens are the upstream retro-82
+ * ones (https://github.com/OldJobobo/omarchy-retro-82-theme): amber #faa968,
+ * teal #8cbfb8, on #00172e.
  *
- * The variables are declared UNCONDITIONALLY, on purpose: lib/theme.ts mirrors
- * them into each ttyd iframe's document (a parent stylesheet does not cross
- * that boundary — same reason applyTermFont re-declares the @font-face there),
- * and the terminal wears the wallpaper whenever herdr resolves to retro-82,
- * independently of whether the CHROME is following herdr's palette. The rules
- * below are the chrome half and are gated on the attribute lib/theme.ts sets.
- * Sizes are in vmax so the same declaration reads as one large backdrop in the
- * app window and in a terminal pane a third of its width.
+ * The base and the scrim are declared UNCONDITIONALLY, on purpose: lib/theme.ts
+ * mirrors them into each ttyd iframe's document (a parent stylesheet does not
+ * cross that boundary — same reason applyTermFont re-declares the @font-face
+ * there), and the terminal wears the wallpaper whenever herdr resolves to
+ * retro-82, independently of whether the CHROME is following herdr's palette.
+ * The rules below are the chrome half and are gated on the attribute
+ * lib/theme.ts sets.
  */
 :root {
   --r82-base: #00172e;
-  --r82-wallpaper:
-    radial-gradient(
-      34vmax 34vmax at 60% 40%,
-      rgba(250, 169, 104, 0.13),
-      rgba(250, 169, 104, 0.05) 46%,
-      transparent 74%
-    ),
-    repeating-radial-gradient(
-      circle at 60% 40%,
-      rgba(140, 191, 184, 0.09) 0 1.5px,
-      transparent 1.5px 52px
-    ),
-    radial-gradient(
-      62vmax 62vmax at 60% 40%,
-      rgba(63, 143, 138, 0.26),
-      transparent 70%
-    ),
-    radial-gradient(
-      50vmax 50vmax at 8% 94%,
-      rgba(87, 137, 138, 0.2),
-      transparent 74%
-    ),
-    radial-gradient(
-      120vmax 92vmax at 50% 50%,
-      transparent 44%,
-      rgba(0, 8, 20, 0.55) 100%
-    );
   /* The wash that sits BETWEEN the wallpaper and the content, so glyphs never
-     have to fight the brightest part of the backdrop. Deliberately a
-     background-color with alpha, never `opacity`: opacity would fade the text
-     with it. */
-  --r82-scrim: rgba(0, 23, 46, 0.34);
+     have to fight a photograph. Sized for the brightest still in the set (neon
+     signage, a sunlit dune) rather than the darkest, since one value serves all
+     27 and unreadable is worse than dim. Deliberately a background-color with
+     alpha, never `opacity`: opacity would fade the text with it. */
+  --r82-scrim: rgba(0, 23, 46, 0.62);
 }
 
 /* Set as data-atmosphere="retro-82" on <html> by lib/theme.ts, and only while
@@ -237,9 +233,13 @@
  * exactly as it was. */
 :root[data-atmosphere="retro-82"] body {
   background-color: var(--r82-base);
-  background-image: var(--r82-wallpaper);
+  /* Two layers in one element: the scrim as a flat gradient ON TOP of the
+     still, so the chrome reads over the same washed backdrop the terminal
+     document gets from its own <body> rule. */
+  background-image:
+    linear-gradient(var(--r82-scrim), var(--r82-scrim)), var(--r82-wallpaper);
   /* Fixed, so the backdrop belongs to the window rather than scrolling with a
-     panel, and cover so the rings stay circular at any aspect ratio. */
+     panel, and cover so the still fills any aspect ratio without repeating. */
   background-attachment: fixed;
   background-repeat: no-repeat;
   background-size: cover;
@@ -599,13 +599,13 @@
   font-size: 0.88em;
   background: var(--h-panel);
   border: 1px solid var(--h-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.1em 0.35em;
 }
 .md-body pre {
   background: var(--h-panel);
   border: 1px solid var(--h-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 12px 14px;
   overflow: auto;
   margin: 0.8em 0;
@@ -732,7 +732,7 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 2px 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   border: 1px solid currentColor;
 }
 .dfhead .dfbadge-added {

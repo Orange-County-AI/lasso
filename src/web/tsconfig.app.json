@@ -13,6 +13,9 @@
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
+    /* The vendored Retro 82 wallpaper manifest is imported as a module
+       (src/web/src/lib/wallpaper.ts); Vite bundles JSON imports natively. */
+    "resolveJsonModule": true,
     "jsx": "react-jsx",
 
     /* Linting */

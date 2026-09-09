@@ -702,7 +702,7 @@ export function NewDialog({
           <button
             type="button"
             onClick={() => onTabChange("agent")}
-            className="flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+            className="flex items-center gap-1 rounded-md border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
             title="create an agent or terminal (⌘O / ⌘I)"
           >
             <Plus className="size-3" />
@@ -721,6 +721,7 @@ export function NewDialog({
         )}
       </DialogTrigger>
       <DialogContent
+        data-surface="creator"
         className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
         showCloseButton={false}
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.

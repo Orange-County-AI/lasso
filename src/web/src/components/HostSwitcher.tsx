@@ -510,7 +510,7 @@ export function HostSwitcher({
             isNav
               ? // Inline nav affordance: borderless, matching the tab strip.
                 "flex shrink-0 items-center gap-1 self-center rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-              : "flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
+              : "flex items-center gap-1 rounded-md border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
             // Tint when remote so it reads as an active "you are elsewhere" badge.
             isRemote &&
               (isNav ? "text-foreground" : "border-primary/40 text-foreground"),
