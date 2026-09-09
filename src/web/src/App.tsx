@@ -472,7 +472,10 @@ function Shell() {
                 )}
               </div>
             </div>
-            <div className="relative flex min-h-0 flex-1 flex-col">
+            {/* term-shell is the hook the Retro 82 atmosphere draws its
+                amber/teal hairline on (index.css); inert under every other
+                theme. */}
+            <div className="term-shell relative flex min-h-0 flex-1 flex-col">
               <TerminalFrame
                 id="term"
                 base="/terminal"
