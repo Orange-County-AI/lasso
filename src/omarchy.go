@@ -112,9 +112,9 @@ type omarchyTheme struct {
 }
 
 var (
-	omarchyMu       sync.RWMutex
-	omarchyByName   = map[string]omarchyTheme{}
-	omarchyNames    []string // display order: official first, then installed
+	omarchyMu     sync.RWMutex
+	omarchyByName = map[string]omarchyTheme{}
+	omarchyNames  []string // display order: official first, then installed
 	// omarchyOfficial is every vendored official name, INCLUDING the ones a
 	// built-in shadows: where a theme came from is a property of Omarchy's set,
 	// not of which map ends up holding the palette.
@@ -812,6 +812,26 @@ func fillOmarchyDefaults(c map[string]string) bool {
 	return c["accent"] != ""
 }
 
+// Herdr uses the secondary and overlay tokens for sidebar labels, not merely
+// decorative terminal gray. Keep readable palette values unchanged; move a
+// failing foreground toward whichever endpoint contrasts most with the canvas.
+func legibleThemeText(color, bg string) string {
+	if contrastRatio(color, bg) >= 4.5 {
+		return color
+	}
+	pole := "#000000"
+	if contrastRatio("#ffffff", bg) > contrastRatio(pole, bg) {
+		pole = "#ffffff"
+	}
+	for step := 1; step <= 100; step++ {
+		candidate := mixHex(color, pole, float64(step)/100)
+		if contrastRatio(candidate, bg) >= 4.5 {
+			return candidate
+		}
+	}
+	return pole
+}
+
 // themeDef maps an Omarchy palette onto lasso's two palettes.
 //
 // The ANSI half is Omarchy's own mapping, verbatim from its alacritty/ghostty
@@ -834,6 +854,7 @@ func fillOmarchyDefaults(c map[string]string) bool {
 // themes — last-horizon, solitude — dim it deliberately. Ordering by contrast
 // is the same answer as the naming wherever the naming is right (verified
 // across all 22 vendored palettes) and a legible one where it isn't.
+
 func (p omarchyPalette) themeDef() themeDef {
 	base := omarchyDarkBase
 	if p.light {
@@ -849,6 +870,8 @@ func (p omarchyPalette) themeDef() themeDef {
 		// label would render at full text weight.
 		subtext = mixHex(text, bg, 0.3)
 	}
+	text = legibleThemeText(text, bg)
+	subtext = legibleThemeText(subtext, bg)
 	return themeDef{
 		ui: uiPalette{
 			Accent:     p.at("accent"),
@@ -856,8 +879,8 @@ func (p omarchyPalette) themeDef() themeDef {
 			Surface0:   p.at("lighter_background"),
 			Surface1:   p.at("muted"),
 			SurfaceDim: p.at("dark_background"),
-			Overlay0:   p.at("dark_foreground"),
-			Overlay1:   mixHex(p.at("dark_foreground"), p.at("foreground"), 0.25),
+			Overlay0:   legibleThemeText(p.at("dark_foreground"), bg),
+			Overlay1:   legibleThemeText(mixHex(p.at("dark_foreground"), p.at("foreground"), 0.25), bg),
 			Text:       text,
 			Subtext0:   subtext,
 			Mauve:      p.at("magenta"),

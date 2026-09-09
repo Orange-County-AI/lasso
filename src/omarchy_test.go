@@ -12,6 +12,29 @@ import (
 	"testing"
 )
 
+func TestOmarchySidebarTextContrast(t *testing.T) {
+	p := omarchyPalette{light: true, c: map[string]string{
+		"background": "#f8f9fa", "foreground": "#5c6166",
+		"bright_foreground": "#d1d1d1", "dark_foreground": "#8a9199",
+		"muted": "#686868",
+	}}
+	def := p.themeDef()
+	for _, token := range def.customTokens() {
+		switch token.key {
+		case "text", "subtext0", "overlay0", "overlay1":
+			if ratio := contrastRatio(token.hex, p.at("background")); ratio < 4.5 {
+				t.Errorf("%s contrast = %.2f, want at least 4.5", token.key, ratio)
+			}
+		}
+	}
+	if def.ansi.BrightWhite != p.at("bright_foreground") {
+		t.Fatal("sidebar repair must not change the terminal ANSI palette")
+	}
+	if def.ui.Text != p.at("foreground") {
+		t.Fatal("already readable primary text must remain unchanged")
+	}
+}
+
 func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	reloadOmarchyThemes()
