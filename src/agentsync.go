@@ -404,7 +404,7 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 // herdr owns any [theme.custom]).
 func resolveThemeByName(name string) resolvedTheme {
 	key := normalizeThemeName(name)
-	def, ok := themes[key]
+	def, ok := lookupThemeDef(key)
 	if !ok {
 		key, def = defaultTheme, themes[defaultTheme]
 	}

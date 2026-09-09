@@ -292,8 +292,9 @@ export interface VersionInfo {
   err?: string
 }
 
-// One selectable built-in theme (the server's canonical list, in display
-// order: dark schemes first, then light variants).
+// One selectable theme in /api/theme's list (the server's canonical order:
+// dark schemes first, then light variants). The richer per-theme metadata —
+// where it came from, its backgrounds, its swatches — is the catalog below.
 export interface ThemeOption {
   name: string
   label: string
@@ -319,12 +320,45 @@ export interface ThemePayload {
   theme_sync_off: string[]
 }
 
+// One entry of the full theme catalog (GET /api/omarchy-themes). Every
+// selectable theme is in it, not just the Omarchy ones: lasso's own built-ins
+// come back as source:"builtin", the bundled Omarchy palettes as "official",
+// and anything cloned from a community repo as "installed" — the only kind
+// that can be removed again. `name` is the same canonical key /api/theme-set
+// and /api/theme?name= take, so the catalog can drive every theme control.
+export interface ThemeCatalogEntry {
+  name: string
+  label: string
+  light: boolean
+  source: "builtin" | "official" | "installed"
+  installed: boolean
+  // Root-relative URLs of the backgrounds that shipped with the theme, served
+  // by lasso itself ("/omarchy/bg/<theme>/<file>"). Root-relative so the same
+  // string resolves from a ttyd document at /terminal/<slug>/ too. A machine's
+  // own copy of a file shadows the vendored one, so this is what THIS box has.
+  backgrounds: string[]
+  // The 320px previews, SAME LENGTH and SAME ORDER as `backgrounds`, so the
+  // picker grid indexes them positionally. A thumb URL names the original file
+  // even though its bytes are WebP. Absent on an older server, where the
+  // full-size URL stands in.
+  thumbs?: string[]
+  // Hexes for the swatch, so the picker can show what a theme looks like
+  // without resolving each one through /api/theme?name=.
+  accent: string
+  background: string
+  // The git origin a theme was cloned from — only present for an installed one.
+  url?: string
+}
+
 // httpError builds a concise Error from a non-OK response. lasso/herdr return
 // short text or JSON errors, but a proxy in front of the app (e.g. the Cloudflare
 // tunnel exposing lasso.knowsuchagency.ai) answers with a full HTML error page
 // when the origin is down or briefly unreachable — during a host switch, a
 // redeploy, etc. Dumping that raw HTML into the UI (the Diff tab, toasts) is just
-// noise, so collapse HTML bodies (and empty ones) to the status line.
+// noise, so collapse HTML bodies (and empty ones) to the status line. A JSON
+// error object is unwrapped to its message — the theme-install endpoint answers
+// {"error":"…"}, and a toast reading `{"error":"…"}` is a worse message than the
+// sentence inside it.
 // ApiError carries the HTTP status alongside the message so callers can tell a
 // gateway-style transient failure (502/503/504 — e.g. lasso restarting under
 // `lasso update`) from a real rejection, and retry only the former.
@@ -347,10 +381,27 @@ async function httpError(r: Response): Promise<Error> {
       r.status
     )
   }
+  const msg = jsonErrorMessage(r, body) ?? body
   return new ApiError(
-    body.length > 300 ? `${body.slice(0, 300)}…` : body,
+    msg.length > 300 ? `${msg.slice(0, 300)}…` : msg,
     r.status
   )
+}
+
+// jsonErrorMessage pulls the human sentence out of a JSON error body, or
+// returns null when the body isn't one — a plain-text 400 (which most of the
+// API answers with) is already the message.
+function jsonErrorMessage(r: Response, body: string): string | null {
+  if (!(r.headers.get("content-type") || "").includes("json")) return null
+  try {
+    const v = JSON.parse(body) as { error?: unknown; message?: unknown }
+    for (const k of ["error", "message"] as const) {
+      if (typeof v[k] === "string" && v[k]) return v[k] as string
+    }
+  } catch {
+    /* not JSON after all: fall back to the raw body */
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -546,7 +597,26 @@ let hostAttach: {
 
 export const api = {
   active: () => getJSON<ActiveState>("/api/active"),
-  theme: () => getJSON<ThemePayload>("/api/theme"),
+  // The live theme, or — with `name` — that theme RESOLVED without switching
+  // anything: same payload, no config write, no fleet-wide re-theme. That is
+  // what lets a browser wear a palette of its own (the preferred light/dark
+  // themes in Settings) while herdr and every other tab keep theirs.
+  theme: (name?: string) =>
+    getJSON<ThemePayload>(
+      name ? `/api/theme?name=${encodeURIComponent(name)}` : "/api/theme"
+    ),
+  // Every selectable theme with its metadata: source, swatches, and the
+  // backgrounds it shipped with (see ThemeCatalogEntry).
+  themeCatalog: () =>
+    getJSON<{ themes: ThemeCatalogEntry[] }>("/api/omarchy-themes"),
+  // Clone and install a community Omarchy theme from its git URL. Slow (a
+  // clone), and answers with the whole catalog so the caller can render the new
+  // entry without a second round trip.
+  installTheme: (url: string) =>
+    postJSON<{ installed: string; themes: ThemeCatalogEntry[] }>(
+      "/api/omarchy-themes",
+      { url }
+    ),
   // Writes [theme].name in herdr's config.toml (the shared source of truth) —
   // herdr reloads it and lasso follows via the theme_rev SSE bump.
   setTheme: (name: string) =>

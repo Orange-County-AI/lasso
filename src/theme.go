@@ -501,7 +501,7 @@ func loadHerdrThemeConfig(forceName string) (resolvedTheme, bool) {
 		name = defaultTheme
 	}
 	key := normalizeThemeName(name)
-	def, ok := themes[key]
+	def, ok := lookupThemeDef(key)
 	if !ok {
 		key, def = defaultTheme, themes[defaultTheme]
 	}
@@ -719,7 +719,7 @@ type herdrThemeConfig struct {
 // the human picked another palette there and the generated block is leftovers —
 // which lasso must neither claim as its identity nor paint from.
 func (c herdrThemeConfig) lassoTheme() string {
-	def, ok := themes[c.Marker]
+	def, ok := lookupThemeDef(c.Marker)
 	if !ok || def.herdrBase == "" || normalizeThemeName(c.Name) != def.herdrBase {
 		return ""
 	}
@@ -793,7 +793,7 @@ type herdrThemeSpec struct {
 // about to report.
 func themeSpecFor(name string) herdrThemeSpec {
 	key := normalizeThemeName(name)
-	def, ok := themes[key]
+	def, ok := lookupThemeDef(key)
 	if !ok || def.herdrBase == "" {
 		return herdrThemeSpec{base: name}
 	}
@@ -1052,7 +1052,8 @@ func migrateHerdrThemeConfig(path string) (bool, error) {
 	cfg := parseThemeConfigText(prev)
 	key := cfg.lassoTheme()
 	if key == "" {
-		if n := normalizeThemeName(cfg.Name); themes[n].herdrBase != "" {
+		n := normalizeThemeName(cfg.Name)
+		if def, ok := lookupThemeDef(n); ok && def.herdrBase != "" {
 			key = n // a lasso-only theme still spelled the old, rejected way
 		} else if len(cfg.Generated) == 0 {
 			return false, nil // nothing of lasso's in here to fix
