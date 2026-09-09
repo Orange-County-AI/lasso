@@ -156,6 +156,31 @@ type CreatorDraft = {
 
 const DRAFT_KEY = "lasso-creator-draft"
 
+// The host the picker was last left on, in THIS browser. Its per-host draft
+// cannot carry it (the drafts are keyed BY host), and `creator_last_host` is the
+// wrong thing: that records where a create actually RAN, so a host someone
+// picked and then closed the form on was forgotten and the next open jumped
+// back. Browser-local for the same reason the rest of the draft is — which
+// machine you are lining work up on is a property of the screen you are at, not
+// a preference to push to every device mid-edit.
+const HOST_KEY = "lasso-creator-host"
+
+function readDraftHost(): string {
+  try {
+    return localStorage.getItem(HOST_KEY) || ""
+  } catch {
+    return ""
+  }
+}
+
+function saveDraftHost(host: string) {
+  try {
+    localStorage.setItem(HOST_KEY, host)
+  } catch {
+    // Private mode / blocked site data: the creator just stops remembering.
+  }
+}
+
 function readDrafts(): Record<string, Partial<CreatorDraft>> {
   try {
     const raw = localStorage.getItem(DRAFT_KEY)
@@ -453,8 +478,9 @@ export function NewDialog({
   }, [branchesQuery.data])
 
   // Which host the form targets on open: the host pinned in Settings, else the
-  // one the last create actually ran on, else the tab's own host (the historical
-  // behavior, and what a lasso nobody has configured still does). Seeded on open
+  // one this browser last picked in the dropdown, else the one the last create
+  // actually ran on, else the tab's own host (the historical behavior, and what
+  // a lasso nobody has configured still does). Seeded on open
   // without waiting for the host probe — that probe can take seconds, and
   // watching the picker jump afterwards is worse than correcting a stale pin
   // once it answers (see below).
@@ -469,7 +495,11 @@ export function NewDialog({
     hostChecked.current = false
     const ui = uiStateNow()
     setSelectedHost(
-      ui.creator_default_host || ui.creator_last_host || activeHost || "local"
+      ui.creator_default_host ||
+        readDraftHost() ||
+        ui.creator_last_host ||
+        activeHost ||
+        "local"
     )
   }, [open])
 
@@ -484,7 +514,12 @@ export function NewDialog({
     hostChecked.current = true
     if (selectedHost === "local") return
     const h = remoteHosts.find((r) => r.alias === selectedHost)
-    if (!h || !hostUsable(h)) setSelectedHost(activeHost || "local")
+    if (!h || !hostUsable(h)) {
+      setSelectedHost(activeHost || "local")
+      // Drop the remembered pick too, or it would lose this same fight on every
+      // open for as long as that machine stays away.
+      if (readDraftHost() === selectedHost) saveDraftHost("")
+    }
   }, [open, hostsQuery.isSuccess, remoteHosts, selectedHost, activeHost])
 
   // Seed the form once per host per open (not on every data change, so it never
@@ -821,6 +856,10 @@ export function NewDialog({
       onChange={(e) => {
         hostTouched.current = true
         setSelectedHost(e.target.value)
+        // Only a hand-pick is remembered, never the seeded default: writing the
+        // seed back would pin whatever the fallback chain happened to answer on
+        // a form nobody touched.
+        saveDraftHost(e.target.value)
       }}
     >
       {hostGroups.map((g) => {
@@ -882,7 +921,15 @@ export function NewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-surface="creator"
-        className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
+        // No `overflow-hidden` here, deliberately. DialogContent is centered
+        // with a translate, and a transform makes it the containing block for
+        // its `position: fixed` descendants — which is what the comboboxes'
+        // popovers are. So its overflow clipped their lists at the dialog's
+        // bottom edge (a repo list cut off mid-row, unscrollable past it). The
+        // inner scroll areas below still clip and scroll their own content, and
+        // they can't clip a popover: a fixed box is only clipped by boxes in its
+        // containing-block chain, which skips them.
+        className="flex max-h-[85dvh] flex-col sm:max-w-md"
         showCloseButton={false}
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.
         aria-describedby={undefined}
