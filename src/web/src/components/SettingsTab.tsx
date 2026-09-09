@@ -960,27 +960,32 @@ function ThemeBackgrounds({
           ? " The terminals and this window both wear it."
           : " The terminals wear it; pick a palette above for this window to as well."}
       </p>
-      <AtmosphereControls hasImage={current !== ""} onChange={bump} />
+      <AtmosphereControls
+        theme={theme}
+        hasImage={current !== ""}
+        onChange={bump}
+      />
     </div>
   )
 }
 
 // AtmosphereControls is the pair of knobs a backdrop needs: how much wash sits
 // between an image and the glyphs, and whether a theme with no image gets a
-// little light. Both are per browser and apply to every theme — they are
-// properties of this screen, not of a palette — and both repaint live through
+// little light. Both are per browser and per theme, and repaint live through
 // applyAtmosphere.
 function AtmosphereControls({
+  theme,
   hasImage,
   onChange,
 }: {
+  theme: string
   hasImage: boolean
   // The gallery owns the re-read counter (the selection and these values are
   // read from the same store), so a change here has to tell it.
   onChange: () => void
 }) {
-  const [shade, setShade] = React.useState(() => getShading())
-  const [scrim, setScrimState] = React.useState(() => getScrim())
+  const shade = getShading(theme)
+  const scrim = getScrim(theme)
   return (
     <div className="mt-1 flex flex-col gap-2">
       <label
@@ -990,10 +995,10 @@ function AtmosphereControls({
         <Checkbox
           id="settings-atmo-shade"
           checked={shade}
+          disabled={!theme}
           onCheckedChange={(c) => {
             const on = c === true
-            setShade(on)
-            setShading(on)
+            setShading(theme, on)
             applyAtmosphere()
             onChange()
           }}
@@ -1019,12 +1024,12 @@ function AtmosphereControls({
             max={100}
             step={1}
             value={Math.round(scrim * 100)}
-            disabled={!hasImage}
+            disabled={!theme || !hasImage}
             className="w-56 min-w-0 accent-primary disabled:opacity-50"
             onChange={(e) => {
               const v = Number(e.target.value) / 100
-              setScrimState(v)
-              setScrim(v)
+              setScrim(theme, v)
+              onChange()
               applyAtmosphere()
             }}
           />
@@ -1033,11 +1038,11 @@ function AtmosphereControls({
             variant="outline"
             size="sm"
             className="shrink-0"
-            disabled={scrim === DEFAULT_SCRIM}
+            disabled={!theme || scrim === DEFAULT_SCRIM}
             title={`Reset image dimming to ${Math.round(DEFAULT_SCRIM * 100)}%`}
             onClick={() => {
-              setScrimState(DEFAULT_SCRIM)
-              setScrim(DEFAULT_SCRIM)
+              setScrim(theme, DEFAULT_SCRIM)
+              onChange()
               applyAtmosphere()
             }}
           >

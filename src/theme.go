@@ -73,7 +73,9 @@ var themes = map[string]themeDef{
 	"retro-82": {
 		ui: uiPalette{
 			Accent: "#faa968", PanelBg: "#00172e", Surface0: "#001123", Surface1: "#57898a",
-			SurfaceDim: "#000c17", Overlay0: "#57898a", Overlay1: "#65a5a1", Text: "#f6dcac",
+			// Herdr also dims overlay0 text (agent metadata); use a light text
+			// tier here, not the ANSI bright-black used for subtle borders.
+			SurfaceDim: "#000c17", Overlay0: "#f6dcac", Overlay1: "#65a5a1", Text: "#f6dcac",
 			Subtext0: "#8cbfb8", Mauve: "#3f8f8a", Green: "#028391", Yellow: "#e97b3c",
 			Red: "#f85525", Blue: "#faa968", Teal: "#8cbfb8", Peach: "#ed9563",
 		},

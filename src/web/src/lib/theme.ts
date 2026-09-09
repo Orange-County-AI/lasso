@@ -516,7 +516,7 @@ function chromeFollowsPalette(): boolean {
 export function applyAtmosphere() {
   if (!lastPalette) return
   const image = backgroundFor(effectiveTheme, shippedBackgrounds())
-  const shade = getShading() ? shadeLayers() : []
+  const shade = getShading(effectiveTheme) ? shadeLayers() : []
   const base = atmosphereBase()
   // Outermost first, as CSS paints them: the scrim washes the image AND the
   // shading below it, so a photograph is never read through less wash than the
@@ -524,7 +524,7 @@ export function applyAtmosphere() {
   // already at the edge of visible — so the scrim is left out entirely.
   const layers: string[] = []
   if (image) {
-    const scrim = hexRGBA(base, getScrim())
+    const scrim = hexRGBA(base, getScrim(effectiveTheme))
     if (scrim) layers.push(`linear-gradient(${scrim}, ${scrim})`)
   }
   layers.push(...shade)

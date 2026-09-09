@@ -59,6 +59,7 @@ const BG_KEY = "lasso-theme-backgrounds"
 const CUSTOM_KEY = "lasso-theme-custom-backgrounds"
 const SCRIM_KEY = "lasso-theme-scrim"
 const SHADE_KEY = "lasso-theme-shading"
+const ATMOSPHERE_KEY = "lasso-theme-atmosphere"
 // The pre-catalog key, which held a bundled still's ID rather than a URL. Read
 // once and migrated (see readChoices) so an existing browser keeps the backdrop
 // it was already wearing.
@@ -72,7 +73,7 @@ export const NO_BACKGROUND = "none"
 // in the bundled set rather than the darkest: one value serves all 27, and dim
 // is a better failure than unreadable. It is the default the transparency
 // slider starts at and the reset button restores; saved preferences are kept.
-export const DEFAULT_SCRIM = 0.70
+export const DEFAULT_SCRIM = 0.7
 
 function readChoices(): Record<string, string> {
   let out: Record<string, string> = {}
@@ -229,31 +230,67 @@ export function forgetBackground(url: string) {
   )
 }
 
-// getScrim is the wash's alpha, 0 (raw image) to 1 (opaque canvas).
-export function getScrim(): number {
-  const raw = Number.parseFloat(localStorage.getItem(SCRIM_KEY) ?? "")
-  if (!Number.isFinite(raw)) return DEFAULT_SCRIM
-  return Math.min(1, Math.max(0, raw))
+type AtmospherePreference = { scrim?: number; shading?: boolean }
+
+function atmospherePreferences(
+  theme: string
+): Record<string, AtmospherePreference> {
+  let preferences: Record<string, AtmospherePreference> = {}
+  try {
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(ATMOSPHERE_KEY) ?? "{}"
+    )
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      preferences = parsed as Record<string, AtmospherePreference>
+  } catch {
+    /* A damaged preference must not prevent painting the theme. */
+  }
+  // Assign the former screen-wide settings to the first resolved theme only.
+  // Other palettes start fresh; a later switch must not inherit this choice.
+  if (theme) {
+    const scrim = localStorage.getItem(SCRIM_KEY)
+    const shading = localStorage.getItem(SHADE_KEY)
+    if (scrim !== null || shading !== null) {
+      preferences[theme] ??= {
+        ...(scrim !== null && Number.isFinite(Number.parseFloat(scrim))
+          ? { scrim: Math.min(1, Math.max(0, Number.parseFloat(scrim))) }
+          : {}),
+        ...(shading !== null ? { shading: shading !== "0" } : {}),
+      }
+      localStorage.setItem(ATMOSPHERE_KEY, JSON.stringify(preferences))
+      localStorage.removeItem(SCRIM_KEY)
+      localStorage.removeItem(SHADE_KEY)
+    }
+  }
+  return preferences
 }
 
-export function setScrim(v: number) {
-  localStorage.setItem(SCRIM_KEY, String(Math.min(1, Math.max(0, v))))
+// The wash's alpha, 0 (raw image) to 1 (opaque canvas), per theme.
+export function getScrim(theme: string): number {
+  const raw = atmospherePreferences(theme)[theme]?.scrim
+  return typeof raw === "number" && Number.isFinite(raw)
+    ? Math.min(1, Math.max(0, raw))
+    : DEFAULT_SCRIM
 }
 
-// Palette-derived shading: two very low-alpha washes of the theme's own accent
-// colors across the canvas, so a theme with no image reads as lit rather than
-// painted. ON unless this browser has turned it OFF: it is what a themed canvas
-// is meant to look like, and a knob whose default is the duller of the two
-// renderings is a knob nobody finds. Only an explicit "0" is off — an ABSENT
-// entry is a browser that has never touched it, not a browser that declined.
-export function getShading(): boolean {
-  return localStorage.getItem(SHADE_KEY) !== "0"
+export function setScrim(theme: string, value: number) {
+  if (!theme || !Number.isFinite(value)) return
+  const preferences = atmospherePreferences(theme)
+  preferences[theme] = {
+    ...preferences[theme],
+    scrim: Math.min(1, Math.max(0, value)),
+  }
+  localStorage.setItem(ATMOSPHERE_KEY, JSON.stringify(preferences))
 }
 
-// Both directions are written, and "off" is written as "0" rather than by
-// removing the key: with the default now on, an absent entry means "never
-// asked", so deleting it would silently re-enable the shading the user just
-// turned off on the next read.
-export function setShading(on: boolean) {
-  localStorage.setItem(SHADE_KEY, on ? "1" : "0")
+// Palette-derived shading defaults on; an explicit false belongs to this theme.
+export function getShading(theme: string): boolean {
+  return atmospherePreferences(theme)[theme]?.shading !== false
+}
+
+export function setShading(theme: string, on: boolean) {
+  if (!theme) return
+  const preferences = atmospherePreferences(theme)
+  preferences[theme] = { ...preferences[theme], shading: on }
+  localStorage.setItem(ATMOSPHERE_KEY, JSON.stringify(preferences))
 }
