@@ -1111,51 +1111,52 @@ export function NewDialog({
                   </div>
                 )}
 
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="AI agent" htmlFor="agent-agent">
+                    <select
+                      id="agent-agent"
+                      className={fieldClass}
+                      value={agent}
+                      onChange={(e) => {
+                        setAgent(e.target.value)
+                        // Model names and effort levels are both harness-specific
+                        // (claude's "opus"/"max" mean nothing to codex), so a
+                        // switch clears them back to "pass no flag" rather than
+                        // carrying over a value the new CLI can't take.
+                        setModel("")
+                        setEffort("")
+                      }}
+                    >
+                      {harnesses.map((h) => (
+                        <option key={h.id} value={h.id}>
+                          {h.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Model" htmlFor="agent-model">
+                    {/* Free text + suggestions: model names churn faster than
+                      releases, so the list is a hint, not a constraint. The
+                      editable combobox always shows every suggestion on open
+                      (unlike a native datalist, which hides them once the
+                      field holds a complete value). */}
+                    <EditableCombobox
+                      id="agent-model"
+                      value={model}
+                      onValueChange={setModel}
+                      suggestions={harness.model_suggestions ?? []}
+                      placeholder="default"
+                      // Blank means "pass no --model flag", so the list needs a
+                      // row that returns to it after a model has been picked.
+                      emptyOption="default"
+                    />
+                  </Field>
+                </div>
+
                 {/* The toggle lives in the footer beside the host picker; the
                 fields it reveals stay here, inside the scrolling body. */}
                 {showAdvanced && (
                   <div className="flex flex-col gap-3 border-border border-l pl-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <Field label="AI agent" htmlFor="agent-agent">
-                        <select
-                          id="agent-agent"
-                          className={fieldClass}
-                          value={agent}
-                          onChange={(e) => {
-                            setAgent(e.target.value)
-                            // Model names and effort levels are both harness-specific
-                            // (claude's "opus"/"max" mean nothing to codex), so a
-                            // switch clears them back to "pass no flag" rather than
-                            // carrying over a value the new CLI can't take.
-                            setModel("")
-                            setEffort("")
-                          }}
-                        >
-                          {harnesses.map((h) => (
-                            <option key={h.id} value={h.id}>
-                              {h.label}
-                            </option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label="Model" htmlFor="agent-model">
-                        {/* Free text + suggestions: model names churn faster than
-                        releases, so the list is a hint, not a constraint. The
-                        editable combobox always shows every suggestion on open
-                        (unlike a native datalist, which hides them once the
-                        field holds a complete value). */}
-                        <EditableCombobox
-                          id="agent-model"
-                          value={model}
-                          onValueChange={setModel}
-                          suggestions={harness.model_suggestions ?? []}
-                          placeholder="default"
-                          // Blank means "pass no --model flag", so the list needs a
-                          // row that returns to it after a model has been picked.
-                          emptyOption="default"
-                        />
-                      </Field>
-                    </div>
                     {/* Only harnesses whose CLI takes an effort knob list levels
                     (claude, codex); elsewhere the select is hidden rather than
                     offering a setting that goes nowhere. */}
