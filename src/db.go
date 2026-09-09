@@ -311,6 +311,18 @@ type uiState struct {
 	// palette in the terminals, i.e. the behavior before this existed.
 	PaletteLight string `json:"palette_light"`
 	PaletteDark  string `json:"palette_dark"`
+	// CreatorDefaultHost is the host the New dialog opens on — both tabs, agent
+	// and terminal. "" (the default) means "follow CreatorLastHost", and failing
+	// that the tab's own host, which is the historical behavior. Server-owned
+	// like every other preference here: which machine you create on is a choice
+	// about this lasso, not about the browser you happen to be holding.
+	CreatorDefaultHost string `json:"creator_default_host"`
+	// CreatorLastHost is the host the last create actually targeted (agent or
+	// terminal), so reopening the dialog lands where the previous one did
+	// instead of on whatever host the tab is viewing. An explicit
+	// CreatorDefaultHost outranks it, the same way default_agent outranks
+	// last_agent.
+	CreatorLastHost string `json:"creator_last_host"`
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored

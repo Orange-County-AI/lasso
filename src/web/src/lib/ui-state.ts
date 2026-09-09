@@ -42,6 +42,10 @@ const DEFAULTS: UIState = {
   appearance_mode: "herdr",
   palette_light: "",
   palette_dark: "",
+  // "" = no pinned creator host and nothing created yet: the New dialog opens
+  // on the tab's own host, which is what it always did.
+  creator_default_host: "",
+  creator_last_host: "",
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic
