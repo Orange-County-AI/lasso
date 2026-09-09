@@ -3,8 +3,13 @@ import {
   Files,
   Gauge,
   Globe,
+  Keyboard,
   type LucideIcon,
   NotebookPen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  Server,
   Settings,
   SquareTerminal,
 } from "lucide-react"
@@ -22,6 +27,7 @@ import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import { UsageFooter } from "@/components/UsageFooter"
 import { UsageTab } from "@/components/UsageTab"
+import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -33,7 +39,6 @@ import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
-import { mountDesktopNavigationDial } from "@/lib/mobile-input-dial"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
@@ -44,7 +49,7 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
-import { openHerdrGoto } from "@/lib/terminal"
+import { focusHerdrTerminal, openHerdrGoto } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -178,7 +183,7 @@ function Shell() {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const [hostMenuOpen, setHostMenuOpen] = React.useState(false)
   // Keep the Files tab's git badge live even while another sidebar tab is
-  // selected. The floating navigation replaces the old header indicator.
+  // selected — the footer shows the same badge while the sidebar is collapsed.
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
   const gitReady = diff.data?.isRepo === true
@@ -271,33 +276,54 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // Desktop navigation floats in this document; the mobile input dial stays
-  // beside xterm's textarea to preserve the iOS keyboard. Both share commands.
-  React.useEffect(mountDesktopNavigationDial, [])
+  // Footer navigation. New always opens on the agent tab — the terminal tab is
+  // ⌘I's business — and the mobile dial's "new" command shares this.
+  const openNew = React.useCallback(() => {
+    setNewTab("agent")
+    setNewOpen(true)
+  }, [])
+
+  // Collapsing the sidebar hands the screen back to the terminal, so hand it
+  // the keyboard too rather than leaving focus parked on the footer button.
+  // Expanding leaves focus where it is — the user is looking at what they just
+  // opened, and stealing it would type their next keystroke into herdr.
+  const toggleSidebarFromFooter = React.useCallback(() => {
+    const wasOpen = rightPanel.current?.isCollapsed() === false
+    toggleSidebar()
+    if (wasOpen) focusHerdrTerminal()
+  }, [toggleSidebar])
+
+  // The footer button is separate from the menu's mobile-capable anchor.
+  // Capture its pointer-down state before Radix's outside-click dismissal, so
+  // that same click toggles closed rather than reopening the menu.
+  const hostOpenAtPointerDown = React.useRef<boolean | null>(null)
+  const openHostMenu = React.useCallback(() => setHostMenuOpen(true), [])
+  const toggleHostMenu = React.useCallback(() => {
+    const wasOpen = hostOpenAtPointerDown.current
+    hostOpenAtPointerDown.current = null
+    setHostMenuOpen((current) => !(wasOpen ?? current))
+  }, [])
 
   React.useEffect(() => {
     const onMobileCommand = (event: Event) => {
       const command = (event as CustomEvent<MobileCommand>).detail
       if (command === "new") {
-        setNewTab("agent")
-        setNewOpen(true)
+        openNew()
       } else if (command === "sidebar") {
         toggleSidebar()
       } else if (command === "host") {
-        setHostMenuOpen(true)
+        openHostMenu()
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
         // chord a software keyboard can't type, and openHerdrGoto hands the
         // keyboard to xterm so the query can be typed straight into it.
         openHerdrGoto()
-      } else if (command === "keybindings") {
-        setShortcutsOpen(true)
       }
     }
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
     return () =>
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
-  }, [toggleSidebar])
+  }, [toggleSidebar, openNew, openHostMenu])
 
   // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
@@ -404,11 +430,6 @@ function Shell() {
                 suppressContext
                 inputMode="herdr"
                 hidden={false}
-              />
-              <HostSwitcher
-                className="absolute right-6 bottom-24 z-40"
-                open={hostMenuOpen}
-                onOpenChange={setHostMenuOpen}
               />
             </div>
           </ResizablePanel>
@@ -534,6 +555,15 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
+        {/* The host menu, anchored at the bottom-right of the workspace: just
+          above the footer's Host button on desktop, and still a positioned box
+          on a phone, where the footer is display:none and the terminal's input
+          dial issues the same command. One controlled instance serves both. */}
+        <HostSwitcher
+          className="absolute right-8 bottom-1 z-40"
+          open={hostMenuOpen}
+          onOpenChange={setHostMenuOpen}
+        />
         <NewDialog
           open={newOpen}
           onOpenChange={setNewOpen}
@@ -553,7 +583,77 @@ function Shell() {
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
-      <UsageFooter />
+      {/* The app's only chrome. There is no header and no floating navigation,
+        so this footer is always present at desktop widths and has no visibility
+        toggle: it is the only pointer route to New, the sidebar, the host menu
+        and the shortcuts reference. Usage metrics scroll inside their own track
+        so a long provider list can never push the controls offscreen. Phones
+        keep the whole viewport for the terminal — the input dial beside xterm's
+        textarea carries the same commands there. */}
+      <footer className="hidden flex-none items-center gap-2 border-border border-t bg-card px-2 py-1 md:flex">
+        <UsageFooter />
+        <div className="ml-auto flex flex-none items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            title="New agent or terminal (⌘O / ⌘I)"
+            onClick={openNew}
+          >
+            <Plus />
+            New
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={!collapsed}
+            title="Toggle sidebar (⌘\)"
+            onClick={toggleSidebarFromFooter}
+          >
+            {collapsed ? <PanelRightOpen /> : <PanelRightClose />}
+            Sidebar
+            {/* With the sidebar closed its Files tab's badge is offscreen, so
+              the working tree's state shows here instead — the same round
+              indicator the retired header carried. */}
+            {collapsed && (
+              <GitStatusBadge
+                dirty={diffDirty}
+                ready={gitReady}
+                className="ml-0.5"
+                textClassName="text-[11px]"
+              />
+            )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Switch host"
+            aria-label="Switch host"
+            aria-haspopup="menu"
+            aria-expanded={hostMenuOpen}
+            onPointerDownCapture={() => {
+              hostOpenAtPointerDown.current = hostMenuOpen
+            }}
+            onPointerCancel={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onKeyDownCapture={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onClick={toggleHostMenu}
+          >
+            <Server />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Keyboard shortcuts (⌘/)"
+            aria-label="Keyboard shortcuts"
+            onClick={() => setShortcutsOpen(true)}
+          >
+            <Keyboard />
+          </Button>
+        </div>
+      </footer>
     </div>
   )
 }

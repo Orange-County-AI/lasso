@@ -17,10 +17,12 @@ import { useUIState } from "@/lib/ui-state"
 import { pace } from "@/lib/usage"
 import { cn } from "@/lib/utils"
 
-// UsageFooter — a slim status bar pinned to the bottom of the app that surfaces
-// subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai).
+// UsageFooter — the usage read-out that fills the left of the app's footer,
+// surfacing subscription limits (Claude Code / Kimi Code / Codex / Z.ai).
 // Deliberately text-only and one line tall: the goal is to keep the user aware
-// of their quotas without spending screen real estate.
+// of their quotas without spending screen real estate. It is CONTENT, not the
+// footer element — the footer itself is always present (it carries the
+// navigation), so this renders nothing at all when there is nothing to report.
 //
 // Standard mode renders `LABEL [pace-bar] nn%`: the fill shows usage, with a
 // time notch that exposes whether consumption is ahead of the clock. Compact
@@ -333,24 +335,22 @@ export function UsageFooter() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      {/* The footer is the scroll viewport; the inner row is `w-max` so it sizes
-          to its content — `mx-auto` then centers it when it fits and collapses
-          the margins (letting it scroll left/right) when it's wider than the
-          screen. `no-scrollbar` keeps the slim bar from growing a scrollbar.
-          The footer stays out of the mobile terminal viewport entirely; the
-          saved compact preference only changes its desktop presentation. */}
-      <footer className="no-scrollbar hidden flex-none overflow-x-auto border-border border-t bg-card md:block">
+      {/* This is the scroll viewport; the inner row is `w-max` so it sizes to
+          its content — `mx-auto` then centers it in whatever the footer's
+          controls leave over, and collapses (letting it scroll left/right) when
+          the metrics are wider than that. Scrolling here is what keeps a long
+          provider list from pushing the navigation offscreen. `no-scrollbar`
+          keeps the slim bar from growing a scrollbar. */}
+      <div className="no-scrollbar min-w-0 flex-1 overflow-x-auto">
         <div
           className={cn(
-            "mx-auto flex w-max items-center py-1 font-label text-[11px] uppercase",
-            compact
-              ? "px-3 tracking-wide"
-              : "hidden px-4 tracking-wider md:flex"
+            "mx-auto flex w-max items-center font-label text-[11px] uppercase",
+            compact ? "px-2 tracking-wide" : "px-3 tracking-wider"
           )}
         >
           <ProviderGroups providers={providers} compact={compact} />
         </div>
-      </footer>
+      </div>
     </TooltipProvider>
   )
 }

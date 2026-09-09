@@ -993,29 +993,20 @@ export function openHerdrGoto(tries = 0) {
   if (tries < 20) setTimeout(() => openHerdrGoto(tries + 1), 100)
 }
 
-// Focus a terminal iframe's window and its xterm input, once and synchronously:
-// no retry, no reconnect. Reports whether it took. The navigation dial's focus
-// restore must not retry — by the time a retry landed the human has usually
-// clicked something else, and a late focus() would steal it.
-export function focusTerminalFrame(id: string): boolean {
-  try {
-    const w = frameWindow(id)
-    if (w?.term && typeof w.term.focus === "function") {
-      w.focus()
-      w.term.focus()
-      return true
-    }
-  } catch {
-    /* same-origin; ignore */
-  }
-  return false
-}
-
 // Hand keyboard focus to the herdr terminal (/terminal/) so the user can type
 // into the focused pane without clicking it first. Focuses both the iframe
 // window and xterm's input, and retries while xterm is still (re)connecting —
 // mirrors pasteIntoTerminal. Used after creating/focusing an agent.
 export function focusHerdrTerminal(tries = 0) {
-  if (focusTerminalFrame("term")) return
+  try {
+    const w = frameWindow("term")
+    if (w?.term && typeof w.term.focus === "function") {
+      w.focus()
+      w.term.focus()
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
   if (tries < 20) setTimeout(() => focusHerdrTerminal(tries + 1), 100)
 }

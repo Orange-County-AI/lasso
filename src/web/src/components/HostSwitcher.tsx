@@ -26,6 +26,7 @@ import { api, type HostInfo, type HostsPayload } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, type HostGroup, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
@@ -101,9 +102,11 @@ function upgradable(h: HostInfo, localVersion: string | undefined): boolean {
   return usable(h) && versionOlder(h.version, localVersion)
 }
 
-// HostSwitcher is the controlled host menu opened by the floating navigation
-// dial. Its invisible anchor keeps Radix positioning in the parent document
-// while mobile commands originate inside a terminal iframe.
+// HostSwitcher is the controlled host menu, opened by the desktop footer's Host
+// control and by the mobile input dial's host command. Its invisible anchor
+// keeps Radix positioning in the parent document: the mobile command originates
+// inside a terminal iframe, and the footer's button is display:none on a phone,
+// so neither can be the menu's own trigger.
 export function HostSwitcher({
   className,
   open,
@@ -486,7 +489,18 @@ export function HostSwitcher({
           disabled={switching}
           className="pointer-events-none size-px overflow-hidden p-0 opacity-0"
         />
-        <DropdownMenuContent align="end" side="top" className="min-w-56">
+        <DropdownMenuContent
+          align="end"
+          side="top"
+          className="min-w-56"
+          // The anchor above is not a real control, so returning focus to it on
+          // close would park the keyboard on an invisible element. Hand it back
+          // to the terminal instead, as every other dismissal here does.
+          onCloseAutoFocus={(e) => {
+            e.preventDefault()
+            focusHerdrTerminal()
+          }}
+        >
           <DropdownMenuLabel className="flex items-center justify-between">
             <span>Host</span>
             <button
