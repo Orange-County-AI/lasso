@@ -411,8 +411,14 @@ type resolvedTheme struct {
 	Name       string // the name as found in config (for logging)
 	Resolved   string // canonical key we resolved to
 	Customized bool   // whether any [theme.custom]/legacy accent override applied
-	ui         uiPalette
-	ansi       ansiPalette
+	// Foreign marks a palette assembled from a STANDING selection this build
+	// has no theme for — Resolved is then the herdr base, not what is
+	// selected. Painting it is right (the generated block reproduces the
+	// theme); writing it anywhere is not, since every write spells a theme by
+	// name and this build only has the base's (see syncThemeToHost).
+	Foreign bool
+	ui      uiPalette
+	ansi    ansiPalette
 }
 
 // normalizeThemeName mirrors herdr's from_name normalization.
@@ -477,6 +483,8 @@ func loadHerdrTheme(forceName string) resolvedTheme {
 // machine's litter is collected at the next startup instead.
 func loadHerdrThemeConfig(forceName string) (resolvedTheme, bool) {
 	name, custom, legacyAccent := "", map[string]string{}, ""
+	var generated map[string]string // set only when this build cannot resolve the selection
+	selected := ""
 	stranded := false
 	if forceName != "" && forceName != "auto" {
 		name = forceName
@@ -485,14 +493,24 @@ func loadHerdrThemeConfig(forceName string) (resolvedTheme, bool) {
 		name, custom, legacyAccent = cfg.Name, cfg.Custom, cfg.LegacyAccent
 		// A lasso-only theme is spelled in the file as its herdr base plus a
 		// generated override block; the identity marker is what says which
-		// lasso theme that is. Its generated tokens are deliberately NOT
-		// applied as overrides: they only restate the palette this key already
-		// resolves to, and counting them would report every such theme as
-		// "+custom overrides".
-		if k := cfg.lassoTheme(); k != "" {
-			name = k
-		} else {
+		// lasso theme that is.
+		switch k := cfg.lassoTheme(); {
+		case k == "":
 			stranded = len(cfg.Generated) > 0
+		case themeResolvable(k):
+			// Its generated tokens are deliberately NOT applied as overrides:
+			// they only restate the palette this key already resolves to, and
+			// counting them would report every such theme as "+custom
+			// overrides".
+			name = k
+		default:
+			// The marker still stands, but THIS build has no palette for that
+			// key — a theme a newer lasso selected, or an install since
+			// removed. The generated block IS that palette, so paint from it
+			// rather than dropping to the bare base, and report nothing
+			// stranded: a build that cannot resolve a selection has no
+			// business deleting it (see lassoTokenTag).
+			selected, generated = k, cfg.Generated
 		}
 	}
 
@@ -509,6 +527,22 @@ func loadHerdrThemeConfig(forceName string) (resolvedTheme, bool) {
 	rt := resolvedTheme{Name: rawName, Resolved: key, ui: def.ui, ansi: def.ansi}
 	if rt.Name == "" {
 		rt.Name = "(default " + defaultTheme + ")"
+	}
+	if selected != "" {
+		// The selection is that theme whether or not this build can paint it
+		// from a palette of its own.
+		rt.Name, rt.Foreign = selected, true
+	}
+
+	// A generated block only reaches here when this build cannot resolve the
+	// theme it stands for; then it is that theme's palette. The human's own
+	// [theme.custom] keys are applied after it, so an explicit override still
+	// wins — the same precedence herdr itself applies.
+	for tok, raw := range generated {
+		if hex, ok := parseColor(raw); ok {
+			rt.applyToken(tok, hex)
+			rt.Customized = true
+		}
 	}
 
 	// [theme.custom] per-token overrides, then legacy [ui].accent (only if
@@ -648,19 +682,49 @@ func rgba(hex string, alpha int) string {
 // no TOML dependency) and the writer that expresses a lasso theme in it.
 // ---------------------------------------------------------------------------
 
-// lassoThemeTag marks every line lasso GENERATED in herdr's config.toml, as a
-// trailing TOML comment (herdr ignores it; `herdr config check` never sees it).
-// It is what makes the block removable: switching away deletes exactly the
-// lines carrying the tag and leaves every key the human typed — including one
-// on a token lasso also generates, which is never overwritten and never
-// duplicated (a duplicate key would make the file invalid TOML).
+// lassoThemeTag is the name of lasso's identity marker in herdr's config.toml,
+// written as a trailing TOML comment (herdr ignores it; `herdr config check`
+// never sees it), and the tag lasso 3.0.2 and earlier put on their generated
+// token lines as well. It is still read as a token tag — a config those builds
+// wrote has to migrate — but no longer written as one: see lassoTokenTag.
+//
+// A tag is what makes the block removable: switching away deletes exactly the
+// lines carrying one and leaves every key the human typed — including one on a
+// token lasso also generates, which is never overwritten and never duplicated
+// (a duplicate key would make the file invalid TOML).
 const lassoThemeTag = "lasso-theme"
 
-// themeMarkerLine is the identity comment written beside [theme].name. It says
-// which lasso theme the generated block stands for, since [theme].name itself
-// can only hold a name herdr accepts.
-func themeMarkerLine(key string) string {
-	return "# " + lassoThemeTag + " = " + strconv.Quote(key)
+// lassoTokenTag marks every [theme.custom] LINE lasso generated, and is
+// deliberately NOT lassoThemeTag: that tag carries the right to delete the
+// line, and a build that cannot resolve the identity marker beside
+// [theme].name must not exercise it.
+//
+// lasso 3.0.2 and earlier claim every `# lasso-theme` line as their own litter
+// and, on the theme poll, strip the block of any theme they do not know —
+// leaving [theme].name holding the bare herdr base. One config.toml is
+// routinely read by two lassos (a released binary and a dev build on the same
+// box), so an Omarchy selection reverted to Vesper (dark) or Catppuccin Latte
+// (light) within a tick, all by itself, and the reverted theme was then synced
+// to every host. Under a tag they don't know, an older build reads the block as
+// the human's own overrides: it paints the intended palette and rewrites
+// nothing.
+const lassoTokenTag = lassoThemeTag + "-token"
+
+// lassoBaseTag records, beside the identity marker, the herdr base the
+// generated block was written on top of. It is what lets ANY build decide
+// whether the block still stands — [theme].name moving off that base is a
+// re-theme done outside lasso — without resolving the theme the marker names.
+// Resolvability is a property of the build; the selection is the human's.
+const lassoBaseTag = lassoThemeTag + "-base"
+
+// themeMarkerLines are the identity comments written beside [theme].name: which
+// lasso theme the generated block stands for (since [theme].name itself can
+// only hold a name herdr accepts), and the base it sits on.
+func themeMarkerLines(key, base string) []string {
+	return []string{
+		"# " + lassoThemeTag + " = " + strconv.Quote(key),
+		"# " + lassoBaseTag + " = " + strconv.Quote(base),
+	}
 }
 
 // lineComment splits a config line at the first '#' outside of quotes.
@@ -673,24 +737,52 @@ func lineComment(line string) (code, comment string, ok bool) {
 }
 
 // generatedLine reports whether lasso wrote this line — a token, or the
-// [theme.custom] header it had to create.
+// [theme.custom] header it had to create. The legacy tag still counts: a config
+// an older lasso wrote has to migrate to the current form rather than have a
+// second block accumulate beside it.
 func generatedLine(line string) bool {
 	code, comment, ok := lineComment(line)
-	return ok && comment == lassoThemeTag && strings.TrimSpace(code) != ""
+	if !ok || strings.TrimSpace(code) == "" {
+		return false
+	}
+	return comment == lassoTokenTag || comment == lassoThemeTag
+}
+
+// markerField parses a comment-only line of the form `# <tag> = "<value>"`.
+func markerField(line string) (tag, value string, ok bool) {
+	code, comment, has := lineComment(line)
+	if !has || strings.TrimSpace(code) != "" {
+		return "", "", false
+	}
+	k, v, found := strings.Cut(comment, "=")
+	if !found {
+		return "", "", false
+	}
+	return strings.TrimSpace(k), unquote(strings.TrimSpace(v)), true
+}
+
+// markerLine reports whether the line is one of lasso's identity comments. Both
+// are re-issued by the rewrite, so both have to be dropped on the way through.
+func markerLine(line string) bool {
+	tag, _, ok := markerField(line)
+	return ok && (tag == lassoThemeTag || tag == lassoBaseTag)
 }
 
 // markerTheme returns the lasso theme key an identity-marker comment names, or
 // "" for any other line.
 func markerTheme(line string) string {
-	code, comment, ok := lineComment(line)
-	if !ok || strings.TrimSpace(code) != "" {
-		return ""
+	if tag, v, ok := markerField(line); ok && tag == lassoThemeTag {
+		return normalizeThemeName(v)
 	}
-	k, v, found := strings.Cut(comment, "=")
-	if !found || strings.TrimSpace(k) != lassoThemeTag {
-		return ""
+	return ""
+}
+
+// markerBase returns the herdr base an identity-marker comment records.
+func markerBase(line string) string {
+	if tag, v, ok := markerField(line); ok && tag == lassoBaseTag {
+		return normalizeThemeName(v)
 	}
-	return normalizeThemeName(unquote(strings.TrimSpace(v)))
+	return ""
 }
 
 // tomlSection returns the table name of a "[...]" header line (code must be
@@ -706,21 +798,42 @@ func tomlSection(code string) (string, bool) {
 type herdrThemeConfig struct {
 	Name         string            // [theme].name, verbatim
 	Marker       string            // lasso theme named by the identity marker ("" if none)
+	MarkerBase   string            // herdr base that marker's block was written on ("" if not recorded)
 	Custom       map[string]string // [theme.custom] tokens the USER wrote
 	Generated    map[string]string // [theme.custom] tokens lasso generated
 	LegacyAccent string            // legacy [ui].accent
 }
 
-// lassoTheme returns the lasso-only theme this file's generated block stands
-// for, or "" when there is no marker or it no longer applies.
+// markerHolds reports whether the generated block still stands for the theme
+// its marker names.
 //
-// The marker is honored only while [theme].name still holds that theme's base:
-// herdr's own Settings UI writes [theme].name, so a base that has moved means
-// the human picked another palette there and the generated block is leftovers —
-// which lasso must neither claim as its identity nor paint from.
+// The test is [theme].name against the base the block was written on: herdr's
+// own Settings UI writes [theme].name, so a base that has moved means the human
+// picked another palette there and the block is leftovers. The base comes off
+// the file (lassoBaseTag) precisely so the answer does not depend on this build
+// knowing the theme — the destructive case is a build that does not.
+func (c herdrThemeConfig) markerHolds() bool {
+	if c.Marker == "" {
+		return false
+	}
+	if c.MarkerBase != "" {
+		return normalizeThemeName(c.Name) == c.MarkerBase
+	}
+	// A legacy marker records no base. If the theme resolves here, its own base
+	// answers; if it does not, there is nothing to prove the block stranded
+	// with, and the honest answer is to leave another build's selection alone.
+	if def, ok := lookupThemeDef(c.Marker); ok {
+		return def.herdrBase != "" && normalizeThemeName(c.Name) == def.herdrBase
+	}
+	return true
+}
+
+// lassoTheme returns the lasso-only theme this file's generated block stands
+// for, or "" when there is no marker or it no longer applies. A key this build
+// cannot resolve is still returned: which theme is selected and which palettes
+// this binary happens to carry are two different questions.
 func (c herdrThemeConfig) lassoTheme() string {
-	def, ok := lookupThemeDef(c.Marker)
-	if !ok || def.herdrBase == "" || normalizeThemeName(c.Name) != def.herdrBase {
+	if !c.markerHolds() {
 		return ""
 	}
 	return c.Marker
@@ -743,6 +856,9 @@ func parseThemeConfigText(text string) herdrThemeConfig {
 		if code == "" {
 			if k := markerTheme(line); k != "" && cfg.Marker == "" {
 				cfg.Marker = k
+			}
+			if b := markerBase(line); b != "" && cfg.MarkerBase == "" {
+				cfg.MarkerBase = b
 			}
 			continue
 		}
@@ -870,7 +986,7 @@ func rewriteThemeConfigTOML(prev, name string) string {
 		if userKeys[t.key] {
 			continue
 		}
-		tokens = append(tokens, fmt.Sprintf("%s = %q # %s", t.key, t.hex, lassoThemeTag))
+		tokens = append(tokens, fmt.Sprintf("%s = %q # %s", t.key, t.hex, lassoTokenTag))
 	}
 
 	// Pass 2: rebuild, dropping every line lasso generated last time.
@@ -879,7 +995,7 @@ func rewriteThemeConfigTOML(prev, name string) string {
 	section = ""
 	if prev != "" {
 		for _, line := range strings.Split(prev, "\n") {
-			if markerTheme(line) != "" {
+			if markerLine(line) {
 				continue // re-issued below if the new theme still needs one
 			}
 			code := strings.TrimSpace(stripComment(line))
@@ -923,7 +1039,7 @@ func rewriteThemeConfigTOML(prev, name string) string {
 		head = append(head, entry)
 	}
 	if spec.lasso != "" {
-		head = append(head, themeMarkerLine(spec.lasso))
+		head = append(head, themeMarkerLines(spec.lasso, spec.base)...)
 	}
 	splices := map[int][]string{}
 	switch {
@@ -949,7 +1065,7 @@ func rewriteThemeConfigTOML(prev, name string) string {
 		}
 		out = append(out, "[theme]", entry)
 		if spec.lasso != "" {
-			out = append(out, themeMarkerLine(spec.lasso))
+			out = append(out, themeMarkerLines(spec.lasso, spec.base)...)
 		}
 	}
 	// No [theme.custom] to extend: the generated block becomes its own table at
@@ -961,7 +1077,7 @@ func rewriteThemeConfigTOML(prev, name string) string {
 		if len(out) > 0 {
 			out = append(out, "")
 		}
-		out = append(out, "[theme.custom] # "+lassoThemeTag)
+		out = append(out, "[theme.custom] # "+lassoTokenTag)
 		out = append(out, tokens...)
 	}
 
@@ -1039,7 +1155,8 @@ func writeHerdrConfig(path, content string) error {
 // Deliberately narrow: it rewrites only a config that either needs synthesizing
 // or still holds generated lines. A file naming a plain built-in is never
 // touched, so lasso does not reformat (or strip the comments from) a config it
-// has no business rewriting.
+// has no business rewriting — and neither is a standing block whose theme this
+// build has no palette for, which belongs to whichever lasso wrote it.
 func migrateHerdrThemeConfig(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1051,7 +1168,14 @@ func migrateHerdrThemeConfig(path string) (bool, error) {
 	prev := string(data)
 	cfg := parseThemeConfigText(prev)
 	key := cfg.lassoTheme()
-	if key == "" {
+	if key != "" {
+		if !themeResolvable(key) {
+			// A standing selection this build cannot resolve: not ours to
+			// re-spell, and rewriting it would delete another lasso's theme
+			// (see lassoTokenTag).
+			return false, nil
+		}
+	} else {
 		n := normalizeThemeName(cfg.Name)
 		if def, ok := lookupThemeDef(n); ok && def.herdrBase != "" {
 			key = n // a lasso-only theme still spelled the old, rejected way

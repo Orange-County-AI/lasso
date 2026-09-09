@@ -115,6 +115,10 @@ var (
 	omarchyMu       sync.RWMutex
 	omarchyByName   = map[string]omarchyTheme{}
 	omarchyNames    []string // display order: official first, then installed
+	// omarchyOfficial is every vendored official name, INCLUDING the ones a
+	// built-in shadows: where a theme came from is a property of Omarchy's set,
+	// not of which map ends up holding the palette.
+	omarchyOfficial = map[string]bool{}
 	omarchyLoadOnce sync.Once
 )
 
@@ -129,6 +133,7 @@ func omarchyLoaded() {
 // after an install.
 func reloadOmarchyThemes() {
 	byName := map[string]omarchyTheme{}
+	vendored := map[string]bool{}
 	var official, installed []string
 
 	urls := installedThemeURLs()
@@ -163,6 +168,10 @@ func reloadOmarchyThemes() {
 			continue
 		}
 		name := normalizeThemeName(e.Name())
+		// Recorded even when a built-in shadows it below: this is the set of
+		// names Omarchy itself ships, which is what says where a theme came
+		// from (see themeCatalog).
+		vendored[name] = true
 		add(name, omarchyTheme{
 			Name:   name,
 			Label:  omarchyLabel(name),
@@ -193,7 +202,7 @@ func reloadOmarchyThemes() {
 	sort.Strings(installed)
 
 	omarchyMu.Lock()
-	omarchyByName, omarchyNames = byName, append(official, installed...)
+	omarchyByName, omarchyNames, omarchyOfficial = byName, append(official, installed...), vendored
 	omarchyMu.Unlock()
 }
 
@@ -211,6 +220,15 @@ func lookupThemeDef(key string) (themeDef, bool) {
 	defer omarchyMu.RUnlock()
 	t, ok := omarchyByName[key]
 	return t.def, ok
+}
+
+// themeResolvable reports whether this build has a palette for a canonical key
+// — the question that decides what lasso may REWRITE, never what it may keep:
+// a selection whose theme only a newer binary (or an install since removed)
+// knows is still that human's selection (see lassoTokenTag in theme.go).
+func themeResolvable(key string) bool {
+	_, ok := lookupThemeDef(key)
+	return ok
 }
 
 // logOmarchyThemes resolves the registry and says what it found, once, at boot.
@@ -262,7 +280,7 @@ type themeCatalogEntry struct {
 	Name       string `json:"name"`
 	Label      string `json:"label"`
 	Light      bool   `json:"light"`
-	Source     string `json:"source"` // builtin | official | installed
+	Source     string `json:"source"` // builtin | official | installed (see builtinSource)
 	Installed  bool   `json:"installed"`
 	URL        string `json:"url,omitempty"`
 	Accent     string `json:"accent"`
@@ -280,17 +298,17 @@ type themeCatalogEntry struct {
 
 func themeCatalog() []themeCatalogEntry {
 	omarchyLoaded()
+	omarchyMu.RLock()
+	defer omarchyMu.RUnlock()
 	out := make([]themeCatalogEntry, 0, len(themeOptions)+8)
 	for _, o := range themeOptions {
 		def := themes[o.Name]
 		out = append(out, themeCatalogEntry{
-			Name: o.Name, Label: o.Label, Light: o.Light, Source: "builtin",
+			Name: o.Name, Label: o.Label, Light: o.Light, Source: builtinSource(o.Name, def),
 			Accent: def.ui.Accent, Background: def.ui.PanelBg,
 			Backgrounds: omarchyBackgroundURLs(o.Name), Thumbs: omarchyThumbURLs(o.Name),
 		})
 	}
-	omarchyMu.RLock()
-	defer omarchyMu.RUnlock()
 	for _, n := range omarchyNames {
 		t := omarchyByName[n]
 		out = append(out, themeCatalogEntry{
@@ -301,6 +319,26 @@ func themeCatalog() []themeCatalogEntry {
 		})
 	}
 	return out
+}
+
+// builtinSource is where one of lasso's own nineteen palettes came from, which
+// is not the same question as which map holds it.
+//
+// herdr's closed set of theme names is the evidence: a key herdr accepts on
+// [theme].name (herdrBase == "") is a palette herdr ships, and stays "builtin"
+// even when Omarchy vendors a theme of the same name (catppuccin, nord,
+// gruvbox, …) — the palette lasso, herdr and every agent actually paint is
+// herdr's, so calling it Omarchy's would be wrong in the one direction that
+// matters. A key herdr REJECTS exists here only because Omarchy has it, so a
+// name vendored under assets/omarchy/themes is reported as the official
+// Omarchy theme it is. Retro 82 is the only one today.
+//
+// Callers hold omarchyMu.
+func builtinSource(name string, def themeDef) string {
+	if def.herdrBase != "" && omarchyOfficial[name] {
+		return "official"
+	}
+	return "builtin"
 }
 
 // ---------------------------------------------------------------------------

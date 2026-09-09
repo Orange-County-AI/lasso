@@ -27,24 +27,36 @@ export function getMode(): Mode {
 }
 
 // resolvedMode collapses "system" to the concrete light/dark the OS reports.
-// "herdr" resolves to "dark": herdr's palettes are dark-canvas, and the dark
-// class keeps the `dark:` tailwind variants behaving as they do in dark mode
-// (the herdr --h-* override is layered on top by applyHerdrChrome).
+// "herdr" resolves to "dark" as its STARTING point only: it is what the class
+// is before the palette has resolved, and herdr's own theme may well be a light
+// one now that it is anything a user installed — see applyScheme, which
+// refreshTheme calls with the palette's own lightness once it knows it.
 export function resolvedMode(m: Mode = getMode()): "light" | "dark" {
   if (m === "dark" || m === "light") return m
   if (m === "herdr") return "dark"
   return mql().matches ? "dark" : "light"
 }
 
-// applyMode sets the html dark/light class. It's the single chokepoint every
-// appearance change funnels through — setMode, the on-mount call, and the
-// watchSystemMode OS-change handler all land here. The herdr-mode --h-* override
-// is applied separately (refreshTheme, which has /api/theme's palette to hand).
-export function applyMode(m: Mode = getMode()) {
-  const r = resolvedMode(m)
+// applyScheme pins the html light/dark class — the class every --h-* token
+// block (index.css) and every `dark:` tailwind variant cascades from.
+export function applyScheme(scheme: "light" | "dark") {
   const el = document.documentElement
-  el.classList.toggle("dark", r === "dark")
-  el.classList.toggle("light", r === "light")
+  el.classList.toggle("dark", scheme === "dark")
+  el.classList.toggle("light", scheme === "light")
+}
+
+// applyMode sets the class from the appearance mode. It's the chokepoint every
+// appearance change funnels through — setMode, the on-mount call, and the
+// watchSystemMode OS-change handler all land here.
+//
+// It is not the LAST word, though: while the chrome follows a herdr/Omarchy
+// palette the class has to match that palette's canvas rather than the mode's
+// nominal scheme, so refreshTheme re-derives it (it has /api/theme's palette to
+// hand, and applies the --h-* override in the same pass). A light theme under
+// the dark class left every `dark:` variant in the chrome painting for a canvas
+// it no longer had.
+export function applyMode(m: Mode = getMode()) {
+  applyScheme(resolvedMode(m))
 }
 
 // setMode persists the choice and applies the class immediately. The caller is

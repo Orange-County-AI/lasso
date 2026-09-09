@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import {
   ChevronDown,
   ChevronUp,
@@ -29,7 +34,6 @@ import {
   api,
   completeUsageProviderOrder,
   type ThemeCatalogEntry,
-  type ThemeOption,
   type ThemePayload,
 } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
@@ -53,7 +57,7 @@ import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
 import {
   applyAtmosphere,
-  invalidateThemeCatalog,
+  primeThemeCatalog,
   refreshTheme,
   shippedPairs,
 } from "@/lib/theme"
@@ -388,6 +392,14 @@ function ThemesSettings({ active }: { active: boolean }) {
     queryKey: qk.theme(themeRev),
     queryFn: () => api.theme(),
     enabled: active,
+    // theme_rev is part of the KEY, so every bump — a config edit anywhere in
+    // the fleet, this pane's own save — starts a new query whose data is
+    // undefined until it lands. Without carrying the last one over, the pane
+    // blanked for a round trip on each: the Herdr select lost its value (a
+    // <select> with no matching option shows its FIRST one, i.e. whatever
+    // theme heads the list), and `effective` fell to "" — which is the theme
+    // name a backdrop clicked in that window would have been persisted under.
+    placeholderData: keepPreviousData,
   })
   const catalogQuery = useQuery({
     queryKey: qk.themeCatalog,
@@ -400,7 +412,16 @@ function ThemesSettings({ active }: { active: boolean }) {
     dark: getPalettePref("dark"),
   }))
   const t = themeQuery.data
-  const catalog = catalogQuery.data?.themes ?? []
+  const catalogThemes = catalogQuery.data?.themes
+  const catalog = catalogThemes ?? []
+  // lib/theme.ts resolves a backdrop against the catalog too (which backgrounds
+  // a theme shipped with), and it fetches its own copy. Hand it this one the
+  // moment it lands — including the list an install writes straight into the
+  // cache — so the gallery and what actually gets painted are the same list,
+  // rather than two independently-failing fetches of it.
+  React.useEffect(() => {
+    if (catalogThemes) primeThemeCatalog(catalogThemes)
+  }, [catalogThemes])
   // The theme on screen: the palette this browser resolves for itself, or
   // herdr's when it follows the fleet. Mirrors lib/theme.ts's own resolution —
   // it has to, or the gallery would offer another theme's backgrounds.
@@ -446,11 +467,11 @@ function ThemesSettings({ active }: { active: boolean }) {
         <PalettePrefs
           mode={mode}
           prefs={prefs}
-          themes={t?.themes ?? []}
+          themes={catalog}
           onChoose={choosePalette}
         />
       )}
-      <HerdrThemeSelect theme={t} pinned={!!localPalette} />
+      <HerdrThemeSelect theme={t} themes={catalog} pinned={!!localPalette} />
       <ThemeBackgrounds
         theme={effective}
         shipped={shipped}
@@ -534,7 +555,7 @@ function PalettePrefs({
 }: {
   mode: Mode
   prefs: { light: string; dark: string }
-  themes: ThemeOption[]
+  themes: ThemeCatalogEntry[]
   onChoose: (scheme: "light" | "dark", name: string) => void
 }) {
   const schemes: ("light" | "dark")[] =
@@ -559,13 +580,18 @@ function PalettePrefs({
               onChange={(e) => onChoose(s, e.target.value)}
             >
               <option value="">Nothing (flat {s})</option>
-              {themes
-                .filter((o) => o.light === (s === "light"))
-                .map((o) => (
-                  <option key={o.name} value={o.name}>
-                    {o.label}
-                  </option>
-                ))}
+              {/* A pref the catalog does not carry still has to be the
+                  selected option: while the catalog is loading — or after a
+                  request that failed — there would otherwise be no option
+                  matching the value, and a <select> then displays its first,
+                  i.e. this control read as "Nothing" while the browser was
+                  wearing a palette. Its own name is the only label available. */}
+              {prefs[s] && !themes.some((o) => o.name === prefs[s]) && (
+                <option value={prefs[s]}>{prefs[s]}</option>
+              )}
+              <ThemePickerOptions
+                themes={themes.filter((o) => o.light === (s === "light"))}
+              />
             </select>
           </div>
         ))}
@@ -579,6 +605,50 @@ function PalettePrefs({
   )
 }
 
+// ThemePickerOptions is the <option> half of every theme dropdown here, grouped
+// by where a theme came from and then by its lightness — with a catalog that
+// now runs to dozens of names, "Omarchy · Light" is the only thing that makes
+// one findable.
+//
+// The grouping is the server's own provenance (`source`), never a name: a
+// built-in whose key herdr itself accepts is reported "builtin" because the
+// palette actually painted is herdr's, one that herdr rejects and lasso vendors
+// from Omarchy is "official", and a clone is "installed". retro-82 used to be
+// special-cased to "official" here, which is exactly the kind of second
+// convention that goes stale the moment the catalog gains a row.
+function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
+  return (
+    <>
+      {(["builtin", "official", "installed"] as const).flatMap((source) =>
+        [false, true].map((light) => {
+          const options = themes.filter(
+            (theme) => theme.source === source && theme.light === light
+          )
+          if (!options.length) return null
+          const label =
+            source === "builtin"
+              ? "Herdr"
+              : source === "official"
+                ? "Omarchy"
+                : "Omarchy · Installed"
+          return (
+            <optgroup
+              key={`${source}-${light}`}
+              label={`${label} · ${light ? "Light" : "Dark"}`}
+            >
+              {options.map((theme) => (
+                <option key={theme.name} value={theme.name}>
+                  {theme.label}
+                </option>
+              ))}
+            </optgroup>
+          )
+        })
+      )}
+    </>
+  )
+}
+
 // HerdrThemeSelect picks the herdr theme itself — the SHARED one. Saving writes
 // [theme].name in herdr's config.toml, the source of truth both already track:
 // the herdr TUI reloads it, and lasso repaints the terminals (and, in Herdr
@@ -589,20 +659,33 @@ function PalettePrefs({
 // palettes, and anything installed from a URL, in one canonical order.
 function HerdrThemeSelect({
   theme,
+  themes,
   pinned,
 }: {
   theme: ThemePayload | undefined
+  themes: ThemeCatalogEntry[]
   // True when this browser has a palette of its own, so the shared theme is not
   // what is on screen here — worth saying, or the select reads as broken.
   pinned: boolean
 }) {
   const t = theme
   // Optimistic selection so the dropdown doesn't snap back while the config
-  // write → theme_rev bump round-trips; cleared once the server agrees (or the
-  // write fails).
+  // write → theme_rev bump → refetch round-trips.
   const [pending, setPending] = React.useState<string | null>(null)
+  // The payload that was on screen when the write went out. The optimistic
+  // value is dropped as soon as the server answers with a DIFFERENT one:
+  // react-query hands back the same object while nothing has changed
+  // (structural sharing), and keepPreviousData makes the placeholder for the
+  // new theme_rev that same object too, so an identity change is exactly "the
+  // server has re-announced the theme".
+  //
+  // Deliberately not "hold it until the names agree": a pick that something
+  // else overwrote — an older lasso sharing this config.toml, a hand edit,
+  // herdr refusing it — would then be displayed indefinitely as though it had
+  // taken, and a picker that hides a revert is worse than one that shows it.
+  const wroteOn = React.useRef<ThemePayload | undefined>(undefined)
   React.useEffect(() => {
-    if (pending && t?.resolved === pending) setPending(null)
+    if (pending && t && t !== wroteOn.current) setPending(null)
   }, [pending, t])
   const setMutation = useMutation({
     mutationFn: (name: string) => api.setTheme(name),
@@ -612,14 +695,6 @@ function HerdrThemeSelect({
     },
   })
   const value = pending ?? t?.resolved ?? ""
-  const group = (light: boolean) =>
-    (t?.themes ?? [])
-      .filter((o) => o.light === light)
-      .map((o) => (
-        <option key={o.name} value={o.name}>
-          {o.label}
-        </option>
-      ))
   return (
     <div className="mb-4 flex flex-col gap-1">
       <label className={labelClass} htmlFor="settings-herdr-theme">
@@ -631,15 +706,22 @@ function HerdrThemeSelect({
         value={value}
         disabled={!t}
         onChange={(e) => {
+          wroteOn.current = t
           setPending(e.target.value)
           setMutation.mutate(e.target.value)
         }}
       >
-        {!t?.themes.some((o) => o.name === value) && (
+        {/* Checked against the list actually RENDERED — the catalog — not
+            against /api/theme's own themes: a value the catalog does not carry
+            (still loading, or a request that failed) then had no matching
+            option at all, and a <select> falls back to displaying its FIRST
+            one, which is the top of the Herdr group. That is the whole of
+            "my Omarchy theme reverted to a herdr one" as seen in this
+            control. */}
+        {!themes.some((o) => o.name === value) && (
           <option value={value}>{value || "…"}</option>
         )}
-        <optgroup label="Dark">{group(false)}</optgroup>
-        <optgroup label="Light">{group(true)}</optgroup>
+        <ThemePickerOptions themes={themes} />
       </select>
       <p className="text-[11px] text-muted-foreground">
         Sets herdr's own theme in its config.toml; herdr and the terminals
@@ -695,6 +777,14 @@ function ThemeBackgrounds({
   const gallery = themeBackgrounds(theme, shipped)
   const current = backgroundFor(theme, shipped)
   const choose = (pick: string) => {
+    // The choice is stored PER THEME, so it needs a theme to store it under.
+    // While /api/theme is still in flight — a first paint, a failed request —
+    // there is none, and writing the pick under "" both loses it and leaves an
+    // entry no theme will ever read.
+    if (!theme) {
+      toast.error("Waiting for the theme — try again in a moment")
+      return
+    }
     setThemeBackground(theme, pick)
     bump()
     applyAtmosphere()
@@ -961,14 +1051,14 @@ function ThemeInstall({
   const queryClient = useQueryClient()
   const [url, setUrl] = React.useState("")
   // The install answers with the whole catalog, so the cache is written from
-  // the response rather than invalidated into a second round trip — and the
-  // module-level cache lib/theme.ts resolves backgrounds from is dropped, then
-  // the palette re-resolved: an install can change what the CURRENT theme has
-  // to offer, since a name already selected can arrive with images.
+  // the response rather than invalidated into a second round trip. That write
+  // is also what re-primes the module-level catalog lib/theme.ts resolves
+  // backgrounds from (ThemesSettings watches the same query), so the palette
+  // only has to be re-resolved: an install can change what the CURRENT theme
+  // has to offer, since a name already selected can arrive with images.
   const settle = (list: ThemeCatalogEntry[]) => {
     queryClient.setQueryData(qk.themeCatalog, { themes: list })
     queryClient.invalidateQueries({ queryKey: ["theme"] })
-    invalidateThemeCatalog()
     refreshTheme()
   }
   const install = useMutation({

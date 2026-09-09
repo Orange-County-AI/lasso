@@ -241,13 +241,19 @@ export function setScrim(v: number) {
 }
 
 // Palette-derived shading: two very low-alpha washes of the theme's own accent
-// colors across the canvas, so a flat theme reads as lit rather than painted.
-// Off by default — it is a taste knob, and every install so far has been flat.
+// colors across the canvas, so a theme with no image reads as lit rather than
+// painted. ON unless this browser has turned it OFF: it is what a themed canvas
+// is meant to look like, and a knob whose default is the duller of the two
+// renderings is a knob nobody finds. Only an explicit "0" is off — an ABSENT
+// entry is a browser that has never touched it, not a browser that declined.
 export function getShading(): boolean {
-  return localStorage.getItem(SHADE_KEY) === "1"
+  return localStorage.getItem(SHADE_KEY) !== "0"
 }
 
+// Both directions are written, and "off" is written as "0" rather than by
+// removing the key: with the default now on, an absent entry means "never
+// asked", so deleting it would silently re-enable the shading the user just
+// turned off on the next read.
 export function setShading(on: boolean) {
-  if (on) localStorage.setItem(SHADE_KEY, "1")
-  else localStorage.removeItem(SHADE_KEY)
+  localStorage.setItem(SHADE_KEY, on ? "1" : "0")
 }

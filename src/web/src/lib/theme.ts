@@ -1,6 +1,6 @@
 import { api, type ThemeCatalogEntry, type ThemePayload } from "@/lib/api"
-import { ensureContrast } from "@/lib/contrast"
-import { getMode, localPaletteName } from "@/lib/mode"
+import { ensureContrast, isLightSurface } from "@/lib/contrast"
+import { applyMode, applyScheme, getMode, localPaletteName } from "@/lib/mode"
 import {
   backgroundFor,
   getScrim,
@@ -255,34 +255,59 @@ export function effectiveThemeName(): string {
 }
 
 // The theme catalog, for the backgrounds a theme shipped with. Cached for the
-// page's life — it only changes when a theme is installed or removed, and both
-// go through invalidateThemeCatalog — and a FAILURE is cached as an empty list
-// for the same reason: a server that doesn't serve it (an older build) must not
-// be asked again on every re-theme. In-flight requests are shared so a boot
-// that re-themes twice makes one call.
+// page's life ONCE IT ARRIVES — it only changes when a theme is installed, and
+// that response is primed straight in (primeThemeCatalog). In-flight requests
+// are shared so a boot that re-themes twice makes one call.
+//
+// A FAILURE is deliberately not cached. It used to be stored as an empty list,
+// which is truthy — so `if (catalog)` short-circuited and refreshTheme's
+// `if (!catalog)` never asked again: one transient miss (a server restart, a
+// blip on the tailnet, a request cancelled by a reload) emptied the shipped
+// half of every gallery for the page's life, and an installed theme's chosen
+// backdrop then resolved to nothing at all — a window that went flat with no
+// route back but a reload. Retrying costs one GET per re-theme, and a server
+// that does not serve the endpoint answers it in a millisecond.
 let catalog: ThemeCatalogEntry[] | null = null
 let catalogFetch: Promise<ThemeCatalogEntry[]> | null = null
+// Bumped whenever the cache is written from OUTSIDE (primeThemeCatalog), so a
+// response that was already in flight is still returned to its own caller but
+// never cached over the newer list — it may predate an install, and caching it
+// would pin the stale one for the page's life (see above: nothing asks twice
+// once it is cached).
+let catalogGen = 0
 
 async function loadCatalog(): Promise<ThemeCatalogEntry[]> {
   if (catalog) return catalog
   if (!catalogFetch) {
+    const gen = catalogGen
     catalogFetch = api
       .themeCatalog()
-      .then((c) => c.themes ?? [])
-      .catch(() => [])
-      .then((themes) => {
-        catalog = themes
-        catalogFetch = null
+      .then((c) => {
+        const themes = c.themes ?? []
+        if (gen === catalogGen) catalog = themes
         return themes
+      })
+      .catch(() => [])
+      .finally(() => {
+        catalogFetch = null
       })
   }
   return catalogFetch
 }
 
-// invalidateThemeCatalog drops the cache after an install or an uninstall, so
-// the next resolve sees the new theme's backgrounds.
-export function invalidateThemeCatalog() {
-  catalog = null
+// primeThemeCatalog hands this module a catalog somebody else already has — the
+// Settings pane's own query, which is also what installs write their response
+// into — so the picker and the backdrop resolution cannot disagree about which
+// backgrounds a theme owns. They could: the two copies are fetched separately,
+// and one failed GET here against a query that succeeded there offered stills
+// in the gallery that resolved to nothing when clicked, backgroundFor dropping
+// any URL its own gallery does not contain. It repaints for the same reason
+// refreshTheme's second pass does — backgrounds arriving can change what the
+// theme on screen resolves to.
+export function primeThemeCatalog(themes: ThemeCatalogEntry[]) {
+  catalog = themes
+  catalogGen++
+  applyAtmosphere()
 }
 
 // The backgrounds the effective theme shipped with, as url/thumb pairs (the
@@ -329,14 +354,29 @@ function atmosphereBase(): string {
   return paletteColor("background") || "#000000"
 }
 
-// shadeLayers is the optional palette-derived shading: two very low-alpha
-// washes of the theme's own accent colors, one from the top-left and one from
-// the bottom-right, over the flat canvas. It is what gives a theme with no
-// image some depth — the alphas are deliberately at the edge of visible, since
-// the point is a lit canvas, not a gradient someone has to read text off.
+// shadeLayers is the palette-derived shading: two very low-alpha washes of the
+// theme's own accent colors, one from the top-left and one from the
+// bottom-right, over the flat canvas. It is what gives a theme with no image
+// some depth — the alphas are deliberately at the edge of visible, since the
+// point is a lit canvas, not a gradient someone has to read text off.
+//
+// Which is why a LIGHT canvas gets roughly half of them: on a dark canvas the
+// wash ADDS luminance and reads as light falling on the surface, while on a
+// light one the same alpha of a saturated ANSI color subtracts luminance and
+// adds hue — the identical value that is barely there on black reads as a blue
+// stain on paper. Halving keeps the same visual weight in both directions,
+// which is what "at the edge of visible" has to mean now that a theme is
+// anything a user installed.
 function shadeLayers(): string[] {
-  const a = hexRGBA(paletteColor("blue") || paletteColor("cyan"), 0.16)
-  const b = hexRGBA(paletteColor("magenta") || paletteColor("green"), 0.12)
+  const pale = isLightSurface(atmosphereBase()) === true
+  const a = hexRGBA(
+    paletteColor("blue") || paletteColor("cyan"),
+    pale ? 0.08 : 0.16
+  )
+  const b = hexRGBA(
+    paletteColor("magenta") || paletteColor("green"),
+    pale ? 0.06 : 0.12
+  )
   const out: string[] = []
   if (a)
     out.push(`radial-gradient(120% 90% at 8% 0%, ${a} 0%, transparent 60%)`)
@@ -718,22 +758,52 @@ function clearHerdrChrome() {
   document.getElementById(HERDR_CHROME_STYLE_ID)?.remove()
 }
 
+// chromeCanvas is the palette's own canvas color, read out of the declaration
+// block /api/theme serves. That is what the light/dark class has to agree with
+// (see applyPaletteScheme), and --bg is the one token index.css paints the page
+// itself from.
+function chromeCanvas(css: string): string {
+  return /(?:^|;)\s*--bg:\s*([^;]+)/.exec(css)?.[1].trim() ?? ""
+}
+
+// applyPaletteScheme pins the light/dark class from the PALETTE while the
+// chrome follows one, because the appearance mode cannot answer it there:
+// "herdr" mode resolves to the dark class by definition, and herdr's own theme
+// is now anything a user installed — a light one then landed light --h-* tokens
+// under `.dark`, where index.css's dark declarations lose to the override but
+// every `dark:` tailwind variant in the chrome (inputs, overlays, muted fills)
+// keeps painting for a dark canvas that is no longer there. A canvas we cannot
+// measure leaves the mode's own class alone rather than guessing at one.
+function applyPaletteScheme(css: string) {
+  const light = isLightSurface(chromeCanvas(css))
+  if (light === null) applyMode()
+  else applyScheme(light ? "light" : "dark")
+}
+
+// Every refreshTheme takes a ticket, and only the newest one may write the
+// module state. Nothing serializes the callers — an SSE theme_rev bump, a
+// Settings pick, an install and the OS-scheme watcher all fire independently —
+// and two /api/theme requests settle in whatever order the network gives them,
+// so without this the SLOWER response wins: choosing a browser-local palette
+// while a herdr-theme fetch was in flight repainted the tab back to herdr's
+// theme a moment later, with nothing the user did to explain it and no way back
+// until the next bump. The ticket is checked after every await.
+let themeGen = 0
+
 // refreshTheme resolves the palette this browser should wear and applies it.
 // The terminals always track it: it sets the xterm.js palette inside the
 // same-origin ttyd iframes (no reconnect) and pins the terminal font. The
 // surrounding chrome is the Nothing design system by default (its --h-* vars
 // come from index.css and follow the light/dark mode) — except while a palette
 // is in force (see chromeFollowsPalette), where the chrome is repainted from it
-// so the whole UI matches the terminal.
+// so the whole UI matches the terminal, light/dark class included.
 //
 // WHICH palette is the one question this answers. By default it is herdr's own
 // resolved theme, shared by every tab and every host. But a browser may name a
 // preferred theme per light/dark scheme, and then it resolves THAT one through
 // /api/theme?name= — a read: nothing is written to herdr's config.toml, so no
 // other tab, host or agent follows, and an OS that flips at dusk re-themes this
-// window instead of oscillating the fleet twice a day. A preview that fails
-// (an uninstalled theme, an older server) falls back to herdr's, so a stale
-// preference degrades to the shared look rather than to no theme at all.
+// window instead of oscillating the fleet twice a day.
 //
 // A theme may additionally carry a backdrop (see the atmosphere section above).
 // The terminal wears it whenever the effective theme has one; the chrome only
@@ -741,25 +811,53 @@ function clearHerdrChrome() {
 // flat by design. Everything is re-derived on every call, so switching theme,
 // backdrop or appearance mode puts the rest back exactly as it was.
 export async function refreshTheme() {
+  const gen = ++themeGen
   const local = localPaletteName()
   let t: ThemePayload | null = null
-  if (local) t = await api.theme(local).catch(() => null)
-  if (!t) t = await api.theme().catch(() => null)
+  if (local) {
+    t = await api.theme(local).catch(() => null)
+    if (gen !== themeGen) return
+    // A local palette that did not resolve must NOT drag the tab onto herdr's
+    // shared theme while we are already wearing a palette. That fallback exists
+    // for a stale preference (a theme uninstalled, an older server), where the
+    // shared look beats no theme at all — but the same failure is far more often
+    // a blip, and repainting the whole window in a theme the user did not choose
+    // is indistinguishable from the revert bug it caused: one dropped request
+    // and the tab wore herdr's theme for the rest of the session. Re-derive from
+    // the palette already cached instead (the appearance mode may have moved
+    // even though the palette did not) and let the next refresh try the fetch
+    // again. Only a browser that has nothing yet takes the shared theme.
+    if (!t) t = lastPalette
+  }
+  if (!t) {
+    t = await api.theme().catch(() => null)
+    if (gen !== themeGen) return
+  }
   if (!t) return
   lastPalette = t
   effectiveTheme = t.resolved
+  // The class before the tokens: both halves of the chrome cascade from it, and
+  // the atmosphere's translucent surfaces are color-mixed out of the tokens it
+  // selects.
+  if (chromeFollowsPalette()) {
+    applyPaletteScheme(t.css)
+    applyHerdrChrome(t.css)
+  } else {
+    applyMode()
+    clearHerdrChrome()
+  }
   applyAtmosphere()
   applyTermFont(0)
-  if (chromeFollowsPalette()) applyHerdrChrome(t.css)
-  else clearHerdrChrome()
   // The catalog only matters for the backgrounds a theme SHIPPED with, so the
   // repaint above never waits on it: the bundled and hand-given halves are
   // already resolved, and a first load (or a fresh install) gets a second pass
   // once the list lands. Cached after that, so a re-theme costs nothing.
   if (!catalog) {
     const themes = await loadCatalog()
-    // The theme may have changed while that was in flight; only the pass whose
-    // theme is still current may repaint.
-    if (themes.length && effectiveTheme === t.resolved) applyAtmosphere()
+    // Only the newest pass may repaint: comparing the theme NAME instead let a
+    // stale pass through whenever the name matched again (a switch away and
+    // back, or two refreshes for the same theme), and a repaint from a
+    // superseded pass is the same lost pick as above.
+    if (themes.length && gen === themeGen) applyAtmosphere()
   }
 }

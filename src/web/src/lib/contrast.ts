@@ -68,6 +68,20 @@ export function contrastRatio(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
 }
 
+// isLightSurface reports whether a canvas is light — i.e. whether the chrome
+// has to run in its LIGHT scheme over it. The threshold is ensureContrast's
+// own (luminance > 0.45, the point where it starts walking foregrounds toward
+// black instead of white), so "this palette is light" here and "darken text on
+// it" there can never disagree.
+//
+// null for a color we cannot measure — a palette is free to spell its canvas in
+// a way parseHex does not take, and the caller then has to keep whatever scheme
+// it was already in rather than guess one.
+export function isLightSurface(color: string): boolean | null {
+  const c = parseHex(color)
+  return c ? luminance(c) > 0.45 : null
+}
+
 function mix(color: RGB, toward: RGB, amount: number): RGB {
   return {
     r: color.r + (toward.r - color.r) * amount,
