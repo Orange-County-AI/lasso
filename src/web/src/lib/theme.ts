@@ -210,11 +210,11 @@ export function applyTermFont(tries = 0) {
 // 27 stills lasso bundles for retro-82 (served from the embedded build, so it
 // never reaches the network), one that came with an installed Omarchy theme
 // (served by lasso from its clone), or one this browser was handed by URL or
-// upload. WHICH — and whether a theme wears one at all — is a per-browser,
-// per-theme choice (lib/wallpaper.ts, the Settings gallery), so none of it can
-// be authored in CSS: applyAtmosphere pins the base color and the whole
-// background-image stack as custom properties on <html>, and both the chrome
-// (index.css) and each ttyd document read them from there.
+// upload. WHICH — and whether a theme wears one at all — is a per-theme choice
+// held by the SERVER (lib/wallpaper.ts over ui_state, the Settings gallery), so
+// none of it can be authored in CSS: applyAtmosphere pins the base color and
+// the whole background-image stack as custom properties on <html>, and both
+// the chrome (index.css) and each ttyd document read them from there.
 //
 // The theme it all keys off is the one THIS BROWSER wears — herdr's resolved
 // theme, or the browser-local palette when one is chosen (see
@@ -500,19 +500,23 @@ function chromeFollowsPalette(): boolean {
 // for the chrome and termAtmosphereCSS mirrors them into each ttyd document —
 // re-derives whether the terminal has to be transparent, and pushes both out.
 // refreshTheme calls it (so a reload, a re-theme and an appearance change all
-// land here) and so does every Settings control that can change a backdrop,
-// which is what makes a pick repaint the chrome and an already-loaded terminal
-// iframe at once instead of waiting for a remount.
+// land here) and so does lib/wallpaper.ts's subscription to the persisted
+// prefs, which is what makes a pick repaint the chrome and an already-loaded
+// terminal iframe at once — in the tab that made it AND in every other browser
+// on this lasso, as soon as the ui_state_rev bump reaches it.
 //
 // The properties are pinned unconditionally, flat themes included: they cost
 // two custom properties nothing else reads, and it means the backdrop is
 // already correct at the instant data-atmosphere goes back on.
 //
-// Before the first palette has resolved there is nothing to derive a canvas
-// color from, so it does nothing at all: a Settings pick made while /api/theme
-// is still in flight (or failing) has already been persisted, and painting a
-// black canvas and an imageless stack in the meantime would be a flash of a
-// theme nobody chose. refreshTheme repaints when the palette lands.
+// It has two asynchronous inputs and waits on both, differently. Before the
+// first palette has resolved there is nothing to derive a canvas color from, so
+// it does nothing at all: painting a black canvas and an imageless stack would
+// be a flash of a theme nobody chose, and refreshTheme repaints when the
+// palette lands. Before the persisted backdrop has arrived it paints the theme
+// FLAT (lib/wallpaper.ts reports no image and no shading until then), so a
+// browser whose owner turned the backdrop off never sees the default
+// photograph appear and vanish.
 export function applyAtmosphere() {
   if (!lastPalette) return
   const image = backgroundFor(effectiveTheme, shippedBackgrounds())

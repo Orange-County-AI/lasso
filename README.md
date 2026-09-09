@@ -268,10 +268,15 @@ Every theme can carry a **background image**. Retro 82 defaults to one of 27
 stills bundled from upstream's set — no external image requests at runtime.
 Settings → **Themes → Background** offers bundled images, installed themes'
 images, and custom URLs or uploads. Background selection, **palette shading**,
-and **image dimming** are saved per theme in this browser; switching back
-restores each theme's choices. New themes default to shading on and 70% dimming.
-The former global shading/dimming values migrate to the first displayed theme
-only. Resetting dimming affects only the displayed theme.
+and **image dimming** are saved **per theme on the server** (lasso's own
+`ui_state`, not `config.toml`): every browser reaching the same lasso wears the
+same backdrop, and a pick in one repaints the others within a beat, with no
+reload. Switching palette restores each theme's own choices. A theme nobody has
+dressed yet defaults to shading on and 70% dimming — Retro 82 additionally to
+its Dusk Guardian still, every other theme to no image. Resetting dimming
+affects only the displayed theme. Choices made before this moved server-side
+stayed in the browser that made them and are not imported: pick the backdrop
+once more and every device follows.
 Credits are in `src/web/public/wallpapers/retro-82/NOTICE.txt`.
 
 The terminal uses ttyd's bundled **Canvas renderer**: its WebGL renderer paints

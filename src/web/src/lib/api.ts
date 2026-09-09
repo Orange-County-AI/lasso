@@ -187,10 +187,23 @@ export interface PanesPayload {
   errors?: Record<string, string>
 }
 
+// One theme's backdrop as the server stores it. Every field is optional:
+// an absent one means the frontend's default for that theme (see
+// lib/wallpaper.ts), which is what lets a patch set the dimming without
+// saying anything about the picture.
+export interface AtmospherePref {
+  // Image URL to paint, or NO_BACKGROUND for an explicitly flat theme.
+  background?: string
+  // The wash between the picture and the glyphs, 0..1.
+  scrim?: number
+  // The palette-derived washes that give an imageless theme some depth.
+  shading?: boolean
+}
+
 // Persisted, global browser UI preferences (SQLite-backed): sidebar layout, the
-// Files tab's click behavior, and footer preferences. The client reads the whole
-// object and writes patches, so navigating away and back — or opening lasso
-// elsewhere — restores the same view.
+// Files tab's click behavior, footer preferences and the per-theme backdrop.
+// The client reads the whole object and writes patches, so navigating away and
+// back — or opening lasso elsewhere — restores the same view.
 export interface UIState {
   sidebar_collapsed: boolean
   // The sidebar's open width (% of the panel group). Synced because the
@@ -207,12 +220,29 @@ export interface UIState {
   usage_order: string[]
   // Footer-only: abbreviated provider names and metrics without pace bars.
   usage_compact: boolean
+  // The backdrop each theme wears, keyed by the theme name the browser
+  // resolved. Server-owned (not localStorage) so a still picked in one browser
+  // paints in every other one on the same lasso, and merged per theme and per
+  // field on the way in so two tabs dressing two themes don't collide.
+  theme_atmosphere: Record<string, AtmospherePref>
+  // Pictures handed to lasso by URL or upload, newest first. Shared by every
+  // theme AND every browser; written through the remember/forget ops below.
+  custom_backgrounds: string[]
+}
+
+// A partial write to /api/ui-state: the preference fields to merge, plus the
+// two gallery OPS. The ops are verbs rather than a list because a client
+// sending the whole gallery out of a copy it fetched minutes ago would
+// resurrect a picture another browser just forgot.
+export interface UIStatePatch extends Partial<UIState> {
+  remember_background?: string
+  forget_background?: string
 }
 
 // What a POST /api/ui-state write sends beyond the preferences themselves: who
 // is writing, and whether a human was behind it. Both feed the server's
 // sidebar-layout claim (see uilock.go / lib/ui-state's patchUIState).
-export interface UIStateWrite extends Partial<UIState> {
+export interface UIStateWrite extends UIStatePatch {
   client_id: string
   user_intent: boolean
 }
