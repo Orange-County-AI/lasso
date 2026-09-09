@@ -26,7 +26,7 @@ const KEY = "lasso-retro82-wallpaper"
 // trusted: a default naming something that was not vendored would leave the
 // atmosphere with no image at all, so the first entry is the floor.
 const DEFAULT_WALLPAPER =
-  RETRO82_WALLPAPERS.find((w) => w.id === "02-retro-sf") ??
+  RETRO82_WALLPAPERS.find((w) => w.id === "04-dusk-guardian") ??
   RETRO82_WALLPAPERS[0]
 
 // getWallpaper resolves the stored choice. An unknown id — a still dropped by a
