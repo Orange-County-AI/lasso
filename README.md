@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/lasso-wordmark.png" alt="lasso" width="460">
+<img src="docs/brand/lasso-wordmark.png" alt="lasso — Retro 82 terminal monogram" width="460">
 
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**

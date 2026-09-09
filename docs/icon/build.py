@@ -1,9 +1,9 @@
 #!/usr/bin/env -S uv run --with pillow --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow", "fonttools", "brotli"]
+# dependencies = ["pillow"]
 # ///
-"""Render src/web/public's icon set, and docs/brand, from one vector mark.
+"""Render the app icon set and the selected Retro 82 README wordmark.
 
 The mark is a lasso seen at an angle: a loop flattened into perspective, the
 honda (the small fixed eye a real lasso's running end feeds through) on its low
@@ -11,9 +11,10 @@ edge, and the rope trailing off to the right. It is drawn as NEON — a saturate
 bloom under a near-white core — because the icon's job is to hold its own on a
 home screen beside Moshi and SSHHIP, not to match the app's monochrome chrome.
 
-Everything ships from `mark()`, so the silhouette is defined once:
+The app icons ship from `mark()`. The README wordmark preserves the selected
+terminal-monogram artwork in docs/brand/retro82-terminal-monogram-concept.png.
 
-    docs/icon/lasso.svg     the master, and what the README embeds
+    docs/icon/lasso.svg     the app-icon master
     src/web/public/lasso.svg  the SVG favicon modern browsers prefer
     lasso-icon.png    1024   manifest / store art
     favicon-192.png    192
@@ -35,14 +36,14 @@ glow). cairosvg does not; resvg does, and mise pins it — see mise.toml.
     ./docs/icon/build.py
 """
 
+import base64
+from io import BytesIO
 import math
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from fontTools.pens.svgPathPen import SVGPathPen
-from fontTools.ttLib import TTFont
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
@@ -133,67 +134,27 @@ def mark(px=512, plate=True):
 </g></g></svg>'''
 
 
-FONT = PUBLIC / "fonts" / "JetBrainsMonoNerdFontMono-Regular.woff2"
-
-
-def text_path(s, size, x, y):
-    """The word as OUTLINES, not a <text> element.
-
-    A <text> node renders as whatever font the rasterizer happens to resolve —
-    resvg finds no `ui-monospace` at all and drops the glyphs, and GitHub would
-    substitute its own. Outlining the string against the font the app already
-    ships is what makes the wordmark render identically everywhere.
-    """
-    font = TTFont(FONT)
-    glyphs, cmap = font.getGlyphSet(), font.getBestCmap()
-    upem = font["head"].unitsPerEm
-    scale = size / upem
-    out, pen_x = [], 0.0
-    for ch in s:
-        name = cmap[ord(ch)]
-        pen = SVGPathPen(glyphs)
-        glyphs[name].draw(pen)
-        d = pen.getCommands()
-        if d:
-            # y flips: font space is up-positive, SVG user space is down-positive
-            out.append(f'<path transform="translate({x + pen_x * scale:.2f} {y}) '
-                       f'scale({scale:.5f} {-scale:.5f})" d="{d}"/>')
-        pen_x += glyphs[name].width
-    return "".join(out)
-
-
 def wordmark():
-    """Horizontal lockup: the mark, then the name. For the README header."""
-    word = text_path("lasso", 142, 330, 192)
-    core_w, near_w, far_w, far_o = _tier(512)
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 280" width="880" height="280" role="img" aria-label="lasso">
-<defs>
-<radialGradient id="amb" cx="26%" cy="50%" r="60%">
-<stop offset="0%" stop-color="{AMB}" stop-opacity=".26"/><stop offset="100%" stop-color="{AMB}" stop-opacity="0"/>
-</radialGradient>
-<filter id="far" x="-70%" y="-70%" width="240%" height="240%"><feGaussianBlur stdDeviation="24"/></filter>
-<filter id="near" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="6"/></filter>
-<filter id="tfar" x="-40%" y="-70%" width="180%" height="240%"><feGaussianBlur stdDeviation="13"/></filter>
-<mask id="over" maskUnits="userSpaceOnUse" x="-200" y="-200" width="1400" height="800">
-<rect x="-200" y="-200" width="1400" height="800" fill="#fff"/>
-<g transform="translate(24 8) scale(0.52)"><path d="{TAIL}" fill="none" stroke="#000" stroke-width="34" stroke-linecap="round"/></g>
-</mask>
-</defs>
-<rect width="880" height="280" fill="#000"/>
-<ellipse cx="250" cy="140" rx="430" ry="220" fill="url(#amb)"/>
-<g transform="translate(24 8) scale(0.52)" fill="none" stroke-linecap="round" stroke-linejoin="round">
-<g mask="url(#over)">
-<g filter="url(#far)" stroke="{HUE}" opacity="{far_o}" stroke-width="{far_w}"><path d="{LOOP}"/></g>
-<g filter="url(#near)" stroke="{HUE}" opacity=".95" stroke-width="{near_w}"><path d="{LOOP}"/></g>
-<g stroke="{CORE}" stroke-width="{core_w}"><path d="{LOOP}"/></g>
-</g>
-<g filter="url(#far)" stroke="{HUE}" opacity="{far_o}" stroke-width="{far_w}"><path d="{HONDA}"/><path d="{TAIL}"/></g>
-<g filter="url(#near)" stroke="{HUE}" opacity=".95" stroke-width="{near_w}"><path d="{HONDA}"/><path d="{TAIL}"/></g>
-<g stroke="{CORE}" stroke-width="{core_w}"><path d="{HONDA}"/><path d="{TAIL}"/></g>
-</g>
-<g fill="{HUE}" opacity=".85" filter="url(#tfar)">{word}</g>
-<g fill="{CORE}">{word}</g>
-</svg>'''
+    """Return SVG and PNG versions of the approved Retro 82 hero lockup.
+
+    Keep the selected artwork and typography intact: crop the surrounding navy
+    canvas with 32px padding around the mark, rather than redraw or upscale it.
+    The SVG embeds the same pixels so it remains self-contained.
+    """
+    with Image.open(BRAND / "retro82-terminal-monogram-concept.png") as source:
+        artwork = source.crop((160, 216, 871, 533))
+    buffer = BytesIO()
+    artwork.save(buffer, format="PNG", optimize=True)
+    png_data = buffer.getvalue()
+    encoded = base64.b64encode(png_data).decode("ascii")
+    width, height = artwork.size
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'width="{width}" height="{height}" role="img" aria-label="lasso">'
+        f'<image width="{width}" height="{height}" '
+        f'href="data:image/png;base64,{encoded}"/></svg>'
+    )
+    return svg, png_data
 
 
 # --- rasterizing ------------------------------------------------------------
@@ -236,7 +197,9 @@ def main():
     BRAND.mkdir(parents=True, exist_ok=True)
     (HERE / "lasso.svg").write_text(mark(512))
     (PUBLIC / "lasso.svg").write_text(mark(512))
-    (BRAND / "lasso-wordmark.svg").write_text(wordmark())
+    wordmark_svg, wordmark_png = wordmark()
+    (BRAND / "lasso-wordmark.svg").write_text(wordmark_svg)
+    (BRAND / "lasso-wordmark.png").write_bytes(wordmark_png)
 
     for name, px in (("lasso-icon.png", 1024), ("favicon-192.png", 192),
                      ("apple-touch-icon.png", 180), ("favicon-32.png", 32),
@@ -256,12 +219,6 @@ def main():
                        sizes=[(48, 48), (32, 32), (16, 16)],
                        append_images=frames[1:])
 
-    with tempfile.NamedTemporaryFile("w", suffix=".svg", delete=False) as f:
-        f.write(wordmark())
-        wm = f.name
-    subprocess.run(["resvg", "--width", "1760", wm,
-                    str(BRAND / "lasso-wordmark.png")], check=True)
-    Path(wm).unlink(missing_ok=True)
 
     for p in sorted(PUBLIC.glob("*.png")) + sorted(BRAND.glob("*.png")):
         print(f"  {p.relative_to(ROOT)}  {Image.open(p).size}")
