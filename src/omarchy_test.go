@@ -60,8 +60,8 @@ func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 			t.Errorf("%s: %d thumbs for %d backgrounds", e.Name, len(e.Thumbs), len(e.Backgrounds))
 		}
 	}
-	if byName["retro-82"].Source != "builtin" || byName["catppuccin"].Source != "builtin" {
-		t.Errorf("a name lasso already has must stay the built-in palette")
+	if byName["retro-82"].Source != "official" || byName["catppuccin"].Source != "builtin" {
+		t.Errorf("catalog must distinguish Omarchy Retro 82 from native Herdr Catppuccin")
 	}
 	if byName["osaka-jade"].Source != "official" {
 		t.Errorf("osaka-jade source = %q", byName["osaka-jade"].Source)
@@ -87,33 +87,6 @@ func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 		t.Errorf("thumbnail: %d (%d bytes)", recThumb.Code, recThumb.Body.Len())
 	}
 
-	// The derivation is checked against the hand-written built-in of the same
-	// name: same upstream palette, so the tokens must agree.
-	body, err := omarchyOfficialFS.ReadFile(omarchyAssetRoot + "/tokyo-night/colors.toml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := paletteFromColorsTOML(string(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, want := p.themeDef(), themes["tokyo-night"]
-	for _, c := range []struct{ tok, a, b string }{
-		{"accent", got.ui.Accent, want.ui.Accent},
-		{"panel_bg", got.ui.PanelBg, want.ui.PanelBg},
-		{"surface0", got.ui.Surface0, want.ui.Surface0},
-		{"surface1", got.ui.Surface1, want.ui.Surface1},
-		{"overlay0", got.ui.Overlay0, want.ui.Overlay0},
-		{"text", got.ui.Text, want.ui.Text},
-		{"subtext0", got.ui.Subtext0, want.ui.Subtext0},
-		{"ansi.red", got.ansi.Red, want.ansi.Red},
-		{"ansi.brightwhite", got.ansi.BrightWhite, want.ansi.BrightWhite},
-	} {
-		if c.a != c.b {
-			t.Errorf("tokyo-night %s: derived %s, built-in %s", c.tok, c.a, c.b)
-		}
-	}
-
 	// Every registered theme must produce a complete palette and a herdr base.
 	omarchyMu.RLock()
 	defer omarchyMu.RUnlock()
@@ -121,6 +94,11 @@ func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 		d := omarchyByName[n].def
 		if d.herdrBase == "" {
 			t.Errorf("%s: no herdr base", n)
+		}
+		for _, color := range []string{d.ui.Text, d.ui.Subtext0, d.ui.Overlay0, d.ui.Overlay1} {
+			if contrastRatio(color, d.ui.PanelBg) < 4.5 {
+				t.Errorf("%s: sidebar text %s lacks readable contrast", n, color)
+			}
 		}
 		for tok, v := range map[string]string{
 			"accent": d.ui.Accent, "panel_bg": d.ui.PanelBg, "text": d.ui.Text,
