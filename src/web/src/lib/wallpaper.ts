@@ -71,8 +71,8 @@ export const NO_BACKGROUND = "none"
 // The wash between a photograph and the content. Sized for the brightest still
 // in the bundled set rather than the darkest: one value serves all 27, and dim
 // is a better failure than unreadable. It is the default the transparency
-// slider starts at, and the value every existing install has been running.
-export const DEFAULT_SCRIM = 0.62
+// slider starts at and the reset button restores; saved preferences are kept.
+export const DEFAULT_SCRIM = 0.70
 
 function readChoices(): Record<string, string> {
   let out: Record<string, string> = {}

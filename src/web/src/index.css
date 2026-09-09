@@ -217,7 +217,7 @@
  * the attribute lib/theme.ts sets.
  *
  * The scrim inside the stack is the wash that sits BETWEEN an image and the
- * content, so glyphs never have to fight a photograph. Its default (62% of the
+ * content, so glyphs never have to fight a photograph. Its default (70% of the
  * theme's own background color) is sized for the brightest of the bundled
  * stills rather than the darkest, since one value serves all 27 and unreadable
  * is worse than dim; the Settings slider moves it. Deliberately a color with

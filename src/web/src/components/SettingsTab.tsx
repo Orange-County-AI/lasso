@@ -65,6 +65,7 @@ import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 import {
   backgroundFor,
+  DEFAULT_SCRIM,
   forgetBackground,
   getScrim,
   getShading,
@@ -1010,25 +1011,42 @@ function AtmosphereControls({
             {Math.round(scrim * 100)}%
           </span>
         </label>
-        <input
-          id="settings-atmo-scrim"
-          type="range"
-          min={0}
-          max={100}
-          step={1}
-          value={Math.round(scrim * 100)}
-          disabled={!hasImage}
-          className="w-56 max-w-full accent-primary disabled:opacity-50"
-          onChange={(e) => {
-            const v = Number(e.target.value) / 100
-            setScrimState(v)
-            setScrim(v)
-            applyAtmosphere()
-          }}
-        />
+        <div className="flex items-center gap-2">
+          <input
+            id="settings-atmo-scrim"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(scrim * 100)}
+            disabled={!hasImage}
+            className="w-56 min-w-0 accent-primary disabled:opacity-50"
+            onChange={(e) => {
+              const v = Number(e.target.value) / 100
+              setScrimState(v)
+              setScrim(v)
+              applyAtmosphere()
+            }}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={scrim === DEFAULT_SCRIM}
+            title={`Reset image dimming to ${Math.round(DEFAULT_SCRIM * 100)}%`}
+            onClick={() => {
+              setScrimState(DEFAULT_SCRIM)
+              setScrim(DEFAULT_SCRIM)
+              applyAtmosphere()
+            }}
+          >
+            Reset to default
+          </Button>
+        </div>
         <p className="text-[11px] text-muted-foreground">
           {hasImage
-            ? "How much of the theme's canvas color washes over the picture. 62% is sized for the brightest of the bundled stills — dim is a better failure than unreadable."
+            ? `How much of the theme's canvas color washes over the picture. The default is ${Math.round(DEFAULT_SCRIM * 100)}%.`
             : "Applies once a background image is picked."}
         </p>
       </div>
