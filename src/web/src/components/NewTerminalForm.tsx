@@ -44,6 +44,7 @@ export function NewTerminalForm({
   setCreating,
   onCreated,
   onCancel,
+  hostSelect,
 }: {
   open: boolean
   active: boolean
@@ -52,6 +53,8 @@ export function NewTerminalForm({
   setCreating: (creating: boolean) => void
   onCreated: () => void
   onCancel: () => void
+  // The shared host picker, owned by NewDialog and rendered in this footer.
+  hostSelect: React.ReactNode
 }) {
   const queryClient = useQueryClient()
   const [command, setCommand] = React.useState("")
@@ -267,6 +270,7 @@ export function NewTerminalForm({
       </div>
 
       <DialogFooter className="mt-auto border-t-0 bg-transparent pt-0">
+        {hostSelect}
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
