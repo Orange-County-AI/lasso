@@ -253,6 +253,13 @@ Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
 Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
+Retro 82 also carries a **wallpaper**, which no other theme does: one of the 27
+stills from upstream's own set, bundled into the binary — nothing is fetched at
+runtime — and worn by the terminal, plus the window around it while Appearance
+is **Herdr**. Pick one in Settings → **Wallpaper**, under the theme selector;
+the choice is saved in that browser only, so two devices can wear different
+backdrops, and the credits are in `src/web/public/wallpapers/retro-82/NOTICE.txt`.
+
 Retro 82 is lasso's own, not one of herdr's eighteen built-in names — and herdr
 rejects a name it doesn't know outright (`herdr config check` errors and the TUI
 falls back to catppuccin). So lasso writes it the way herdr supports: `[theme]

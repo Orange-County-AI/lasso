@@ -721,6 +721,7 @@ export function NewDialog({
         )}
       </DialogTrigger>
       <DialogContent
+        data-surface="creator"
         className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
         showCloseButton={false}
         // No DialogDescription — opt out so Radix doesn't warn about a missing one.

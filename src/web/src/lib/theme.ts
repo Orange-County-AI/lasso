@@ -1,5 +1,6 @@
 import { api, type ThemePayload } from "@/lib/api"
 import { getMode } from "@/lib/mode"
+import { getWallpaper } from "@/lib/wallpaper"
 
 // The terminal iframes whose xterm.js theme we keep in sync with herdr's: the
 // left herdr terminal and the right shell.
@@ -199,13 +200,19 @@ export function applyTermFont(tries = 0) {
 // Retro 82 atmosphere
 // ---------------------------------------------------------------------------
 
-// The one palette that comes with a wallpaper. index.css authors it as CSS
-// gradients (concentric teal rings around a faint warm core over the palette's
-// navy) rather than an image, so it costs the embedded bundle nothing and
-// rescales to any pane. Compared against /api/theme's RESOLVED name, so herdr's
-// alternate spellings — and a retro-82 with [theme.custom] tweaks — all get it.
-const ATMOSPHERE_THEME = "retro-82"
+// The one palette that comes with a wallpaper. The backdrop is one of the
+// stills vendored under web/public/wallpapers/retro-82 — served from the
+// embedded bundle, never fetched from anywhere — and which one is a per-browser
+// choice (lib/wallpaper.ts, the Settings gallery). index.css authors only the
+// navy base and the scrim, since the image URL is a runtime value. Compared
+// against /api/theme's RESOLVED name, so herdr's alternate spellings — and a
+// retro-82 with [theme.custom] tweaks — all get it.
+export const ATMOSPHERE_THEME = "retro-82"
 const TERM_ATMOSPHERE_STYLE_ID = "herdr-term-atmosphere"
+// The custom property both documents paint the backdrop from (see index.css).
+// Written from the selected still rather than declared in CSS, which cannot
+// know which one was picked.
+const ATMOSPHERE_IMAGE_VAR = "--r82-wallpaper"
 
 // Whether the resolved herdr theme is the one with a wallpaper. Every consumer
 // reads it (applyTermTheme pins xterm's allowTransparency off it, the
@@ -235,8 +242,11 @@ const ATMOSPHERE_TERM_BG = "#00172e00"
 // wallpaper on <html>, the scrim on <body>, and everything ttyd and xterm paint
 // between them and the glyphs turned transparent so the backdrop reaches the
 // screen. The declarations are read from the parent document's own custom
-// properties (index.css) — one definition, two documents, same as the
-// @font-face applyTermFont mirrors across the same boundary.
+// properties — the base and scrim from index.css, the image URL from the pin
+// applyWallpaper writes — so there is one definition across two documents, same
+// as the @font-face applyTermFont mirrors across the same boundary. Every URL
+// in them is root-relative, which is what makes the same string resolve inside
+// a document served from /terminal/<slug>/.
 //
 // The scrim is the wash xterm no longer paints (see ATMOSPHERE_TERM_BG). Doing
 // it in CSS rather than as a translucent xterm background keeps the tint
@@ -249,7 +259,7 @@ function termAtmosphereCSS(): string {
   const v = (name: string) => cs.getPropertyValue(name).trim()
   return [
     `html{background-color:${v("--r82-base")}!important;`,
-    `background-image:${v("--r82-wallpaper")}!important;`,
+    `background-image:${v(ATMOSPHERE_IMAGE_VAR)}!important;`,
     "background-attachment:fixed!important;background-repeat:no-repeat!important;",
     "background-size:cover!important}",
     `body{background:${v("--r82-scrim")}!important}`,
@@ -264,6 +274,9 @@ function termAtmosphereCSS(): string {
 // is still (re)connecting so a frame that arrives late still gets it. Removal
 // is what restores every other theme: the ttyd document is otherwise untouched.
 export function applyTermAtmosphere(tries = 0) {
+  // Built once per pass rather than per frame: it reads the parent's computed
+  // style, and both frames get the identical sheet.
+  const css = atmosphereOn ? termAtmosphereCSS() : ""
   let pending = false
   for (const el of termFrames()) {
     try {
@@ -277,10 +290,17 @@ export function applyTermAtmosphere(tries = 0) {
         have?.remove()
         continue
       }
-      if (have) continue
+      if (have) {
+        // Picking a different still has to reach an ALREADY-injected sheet, so
+        // presence alone is not enough to skip on — but only a real difference
+        // is written: restating identical text on every reconcile would have
+        // ttyd's document recompute style for nothing.
+        if (have.textContent !== css) have.textContent = css
+        continue
+      }
       const style = doc.createElement("style")
       style.id = TERM_ATMOSPHERE_STYLE_ID
-      style.textContent = termAtmosphereCSS()
+      style.textContent = css
       doc.head.appendChild(style)
     } catch {
       /* same-origin: never let the backdrop break the terminal */
@@ -290,6 +310,24 @@ export function applyTermAtmosphere(tries = 0) {
   // loaded yet cannot be holding a stylesheet to remove.
   if (atmosphereOn && pending && tries < 20)
     setTimeout(() => applyTermAtmosphere(tries + 1), 250)
+}
+
+// applyWallpaper pins the selected still onto the parent root — where index.css
+// reads it for the chrome — and pushes the same URL into every terminal
+// document. It is the one chokepoint: refreshTheme calls it (so a reload, a
+// re-theme and an appearance change all land here) and so does the Settings
+// gallery, which is what makes a pick repaint the chrome and an already-loaded
+// iframe at once instead of waiting for a remount.
+//
+// The property is pinned unconditionally, off the atmosphere theme too: it
+// costs one custom property nothing else reads, and it means the backdrop is
+// already correct at the instant data-atmosphere goes back on.
+export function applyWallpaper() {
+  document.documentElement.style.setProperty(
+    ATMOSPHERE_IMAGE_VAR,
+    `url("${getWallpaper().image}")`
+  )
+  applyTermAtmosphere(0)
 }
 
 let lastXtermTheme: Record<string, unknown> | null = null
@@ -331,8 +369,7 @@ export function applyTermTheme(tries = 0) {
     }
     pending = true
   }
-  if (pending && tries < 20)
-    setTimeout(() => applyTermTheme(tries + 1), 250)
+  if (pending && tries < 20) setTimeout(() => applyTermTheme(tries + 1), 250)
 }
 
 // reconcileTermTheme re-pins any terminal whose live xterm theme has drifted
@@ -459,7 +496,7 @@ export async function refreshTheme() {
     ? { ...t.xterm, background: ATMOSPHERE_TERM_BG }
     : t.xterm
   applyTermTheme(0)
-  applyTermAtmosphere(0)
+  applyWallpaper()
   applyTermFont(0)
   const herdrChrome = getMode() === "herdr"
   if (herdrChrome) applyHerdrChrome(t.css)
