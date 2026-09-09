@@ -667,6 +667,65 @@ export function NewDialog({
   const hostForImage = (p: string) =>
     pastedImages.find((im) => im.path === p)?.host ?? selectedHost
 
+  // One host picker for both tabs, rendered inside each footer beside the
+  // action buttons. In the footer's mobile column-reverse it sits above them.
+  const hostSelect = (
+    <select
+      id="agent-host"
+      aria-label="Host"
+      className={cn(
+        fieldClass,
+        "order-last h-8 min-w-0 py-0 sm:order-first sm:mr-auto sm:w-48"
+      )}
+      value={selectedHost}
+      disabled={createMutation.isPending || terminalCreating}
+      onChange={(e) => setSelectedHost(e.target.value)}
+    >
+      {hostGroups.map((g) => {
+        // Flat "<host> · <user>" for a single-account box; inside an
+        // optgroup the family/host is the group label, so options lead
+        // with the account name — the alias follows in parens unless
+        // it's just the group name plus that account.
+        const text = (
+          o: {
+            alias: string
+            label: string
+            user: string
+            disabled: boolean
+          },
+          inGroup: boolean
+        ) => {
+          const name = inGroup ? o.label : o.alias
+          const extra = inGroup
+            ? o.alias !== o.label && !o.alias.endsWith(`-${o.label}`)
+              ? ` (${o.alias})`
+              : ""
+            : o.user
+              ? ` · ${o.user}`
+              : ""
+          return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
+        }
+        if (g.opts.length === 1) {
+          const o = g.opts[0]
+          return (
+            <option key={o.value} value={o.value} disabled={o.disabled}>
+              {text(o, false)}
+            </option>
+          )
+        }
+        return (
+          <optgroup key={g.box} label={g.box}>
+            {g.opts.map((o) => (
+              <option key={o.value} value={o.value} disabled={o.disabled}>
+                {text(o, true)}
+              </option>
+            ))}
+          </optgroup>
+        )
+      })}
+    </select>
+  )
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -723,62 +782,6 @@ export function NewDialog({
               </Button>
             </DialogClose>
           </DialogHeader>
-          <Field label="Host" htmlFor="agent-host">
-            <select
-              id="agent-host"
-              className={fieldClass}
-              value={selectedHost}
-              disabled={createMutation.isPending || terminalCreating}
-              onChange={(e) => setSelectedHost(e.target.value)}
-            >
-              {hostGroups.map((g) => {
-                // Flat "<host> · <user>" for a single-account box; inside an
-                // optgroup the family/host is the group label, so options lead
-                // with the account name — the alias follows in parens unless
-                // it's just the group name plus that account.
-                const text = (
-                  o: {
-                    alias: string
-                    label: string
-                    user: string
-                    disabled: boolean
-                  },
-                  inGroup: boolean
-                ) => {
-                  const name = inGroup ? o.label : o.alias
-                  const extra = inGroup
-                    ? o.alias !== o.label && !o.alias.endsWith(`-${o.label}`)
-                      ? ` (${o.alias})`
-                      : ""
-                    : o.user
-                      ? ` · ${o.user}`
-                      : ""
-                  return `${name}${extra}${o.disabled ? " (unavailable)" : ""}`
-                }
-                if (g.opts.length === 1) {
-                  const o = g.opts[0]
-                  return (
-                    <option key={o.value} value={o.value} disabled={o.disabled}>
-                      {text(o, false)}
-                    </option>
-                  )
-                }
-                return (
-                  <optgroup key={g.box} label={g.box}>
-                    {g.opts.map((o) => (
-                      <option
-                        key={o.value}
-                        value={o.value}
-                        disabled={o.disabled}
-                      >
-                        {text(o, true)}
-                      </option>
-                    ))}
-                  </optgroup>
-                )
-              })}
-            </select>
-          </Field>
           <TabsContent
             value="agent"
             forceMount
@@ -912,7 +915,7 @@ export function NewDialog({
                 {/* Advanced */}
                 <button
                   type="button"
-                  className="flex w-fit items-center gap-1 self-start rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
+                  className="flex w-fit items-center gap-1 self-end rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
                   onClick={() => setShowAdvanced((s) => !s)}
                 >
                   <ChevronDown
@@ -1098,6 +1101,7 @@ export function NewDialog({
               {/* Drop the shared footer's muted bar/border — it reads as a stray
               block once the form's content is short. */}
               <DialogFooter className="border-t-0 bg-transparent pt-0">
+                {hostSelect}
                 <Button
                   type="button"
                   variant="outline"
@@ -1119,6 +1123,7 @@ export function NewDialog({
             <NewTerminalForm
               key={selectedHost}
               open={open}
+              hostSelect={hostSelect}
               active={tab === "terminal"}
               selectedHost={selectedHost}
               creating={terminalCreating}
