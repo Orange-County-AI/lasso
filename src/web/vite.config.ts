@@ -25,6 +25,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": { target: backend, changeOrigin: true },
+      "/omarchy": { target: backend, changeOrigin: true },
       "/terminal": { target: backend, changeOrigin: true, ws: true },
       "/shell": { target: backend, changeOrigin: true, ws: true },
     },
