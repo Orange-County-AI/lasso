@@ -28,6 +28,7 @@ import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
+import { patchUIState, uiStateNow } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 type AgentType = "git" | "scratch"
@@ -128,6 +129,65 @@ const PROMPT_PLACEHOLDERS = [
   "Make it so.",
   "The first line becomes the title…",
 ]
+
+// What the creator remembers between openings, per host. The server already
+// records last_repo/last_agent/last_agent_type — but only when a create
+// SUCCEEDS, so a form someone edited and closed reopened on the old answers
+// (Scratch back to Git, another repo, another harness). This is the browser's
+// copy of what was last SELECTED, whether or not it was submitted; the server's
+// values stay the seed for a browser that has never chosen here.
+//
+// Deliberately localStorage and not `ui_state`: a half-filled creator is a
+// property of the screen you are typing on, not a preference to push to every
+// device mid-edit. The prompt, attachments and pasted images are NOT kept —
+// reopening onto someone else's half-written instruction is the surprise this
+// is trying to avoid.
+type CreatorDraft = {
+  type: AgentType
+  repo: string
+  agent: string
+  model: string
+  effort: string
+  extraArgs: string
+  planMode: boolean
+  prefix: string
+  advanced: boolean
+}
+
+const DRAFT_KEY = "lasso-creator-draft"
+
+function readDrafts(): Record<string, Partial<CreatorDraft>> {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function readDraft(host: string): Partial<CreatorDraft> {
+  return readDrafts()[host] ?? {}
+}
+
+function saveDraft(host: string, draft: CreatorDraft) {
+  try {
+    const all = readDrafts()
+    all[host] = draft
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(all))
+  } catch {
+    // Private mode / blocked site data: the creator just stops remembering.
+  }
+}
+
+// Record the host a create actually ran on, so the next open lands there. Only
+// a real create writes it: a browse through the host dropdown is not a choice
+// about where work happens. Skipped when it already matches, since every write
+// bumps ui_state_rev and makes every open tab refetch.
+function rememberCreatorHost(host: string) {
+  if (!host || uiStateNow().creator_last_host === host) return
+  patchUIState({ creator_last_host: host })
+}
 
 function slugify(text: string): string {
   return text
@@ -392,20 +452,54 @@ export function NewDialog({
     return b ? [...(b.branches ?? []), ...(b.remoteBranches ?? [])] : []
   }, [branchesQuery.data])
 
-  // Default the form's host to the active host each time the dialog opens (the
-  // dropdown is otherwise a free local selection that previews repos per host).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: seed from activeHost only on open, not when it later changes
+  // Which host the form targets on open: the host pinned in Settings, else the
+  // one the last create actually ran on, else the tab's own host (the historical
+  // behavior, and what a lasso nobody has configured still does). Seeded on open
+  // without waiting for the host probe — that probe can take seconds, and
+  // watching the picker jump afterwards is worse than correcting a stale pin
+  // once it answers (see below).
+  // hostTouched: the user picked a host by hand this opening, so nothing may
+  // move it. hostChecked: the one-shot fallback below has already run.
+  const hostTouched = React.useRef(false)
+  const hostChecked = React.useRef(false)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: seed on open only, not when the prefs or the active host later change
   React.useEffect(() => {
-    if (open && activeHost) setSelectedHost(activeHost)
+    if (!open) return
+    hostTouched.current = false
+    hostChecked.current = false
+    const ui = uiStateNow()
+    setSelectedHost(
+      ui.creator_default_host || ui.creator_last_host || activeHost || "local"
+    )
   }, [open])
 
-  // Seed the form from the remembered selections once per host per open (not on
-  // every data change, so it never clobbers in-progress edits): the last agent
-  // type, branch prefix, AI agent (default_agent, else last_agent, else claude),
-  // and the last repo if it still exists on that host. Re-keyed on selectedHost
-  // so switching the dropdown re-seeds from that host's state — gated on the
-  // repos query having settled so it doesn't seed from the previous host's stale
-  // list while the refetch is still in flight.
+  // A pinned or remembered host that this lasso can no longer create on (an
+  // alias dropped from the ssh config, a machine that is asleep) would leave the
+  // form pointing at a disabled option and every create failing. Once the probe
+  // answers, fall back to the tab's own host — once per open, and never over a
+  // choice the user made in the meantime.
+  React.useEffect(() => {
+    if (!open || !hostsQuery.isSuccess || hostTouched.current) return
+    if (hostChecked.current) return
+    hostChecked.current = true
+    if (selectedHost === "local") return
+    const h = remoteHosts.find((r) => r.alias === selectedHost)
+    if (!h || !hostUsable(h)) setSelectedHost(activeHost || "local")
+  }, [open, hostsQuery.isSuccess, remoteHosts, selectedHost, activeHost])
+
+  // Seed the form once per host per open (not on every data change, so it never
+  // clobbers in-progress edits): this browser's draft for that host first, then
+  // the server's remembered selections — the last agent type, branch prefix, AI
+  // agent (default_agent, else last_agent, else claude), and the last repo if it
+  // still exists on that host. Re-keyed on selectedHost so switching the
+  // dropdown re-seeds from that host's state — gated on the repos query having
+  // settled so it doesn't seed from the previous host's stale list while the
+  // refetch is still in flight.
+  //
+  // A remembered repo/agent is only used while it still EXISTS on that host: a
+  // repo that has gone away, or a harness this backend no longer offers, falls
+  // through to the server's answer rather than pinning the form to something
+  // that can't be created.
   const seededForHost = React.useRef<string | null>(null)
   React.useEffect(() => {
     if (!open) {
@@ -415,21 +509,35 @@ export function NewDialog({
     if (!config || !reposQuery.isSuccess || reposQuery.isFetching) return
     if (seededForHost.current === selectedHost) return
     seededForHost.current = selectedHost
-    setType(config.last_agent_type || "git")
-    setPrefix(config.branch_prefix || "")
-    const seededAgent = config.default_agent || config.last_agent || "claude"
+    const draft = readDraft(selectedHost)
+    setType(draft.type || config.last_agent_type || "git")
+    setPrefix(draft.prefix ?? config.branch_prefix ?? "")
+    const seededAgent =
+      (draft.agent && harnesses.some((h) => h.id === draft.agent)
+        ? draft.agent
+        : "") ||
+      config.default_agent ||
+      config.last_agent ||
+      "claude"
     setAgent(seededAgent)
-    // Model and thinking effort deliberately start unset on every open: their
-    // blank state means "pass no flag", so the harness's CLI applies whatever
-    // it's configured with — the same thing launching it by hand does. Carrying
-    // a previous pick (or the CLI's currently-configured model) forward would
-    // silently pin a choice the user never made this time.
-    setModel("")
-    setEffort("")
-    setExtraArgs("")
+    // Model, thinking effort and extra args are only carried over when they
+    // belong to the harness being seeded — both are harness-specific, and their
+    // blank state means "pass no flag" (the CLI's own default, what launching by
+    // hand does). Anything else is dropped rather than silently pinned.
+    const draftAgentMatches = draft.agent === seededAgent
+    setModel(draftAgentMatches ? (draft.model ?? "") : "")
+    setEffort(draftAgentMatches ? (draft.effort ?? "") : "")
+    setExtraArgs(draftAgentMatches ? (draft.extraArgs ?? "") : "")
+    setPlanMode(draftAgentMatches ? (draft.planMode ?? false) : false)
+    setShowAdvanced(draft.advanced ?? false)
+    const remembered =
+      draft.repo && repos.some((r) => r.path === draft.repo) ? draft.repo : ""
     const last = config.last_repo
     setRepo(
-      last && repos.some((r) => r.path === last) ? last : (repos[0]?.path ?? "")
+      remembered ||
+        (last && repos.some((r) => r.path === last)
+          ? last
+          : (repos[0]?.path ?? ""))
     )
   }, [
     open,
@@ -438,6 +546,38 @@ export function NewDialog({
     reposQuery.isSuccess,
     reposQuery.isFetching,
     repos,
+    harnesses,
+  ])
+
+  // Persist the selections as they change, but only for a host this dialog has
+  // already seeded — otherwise the first render's defaults would overwrite the
+  // draft we are about to read. Declared AFTER the seeding effect so a close
+  // (which clears the ref) cannot be followed by a save of the reset form.
+  React.useEffect(() => {
+    if (!open || seededForHost.current !== selectedHost) return
+    saveDraft(selectedHost, {
+      type,
+      repo,
+      agent,
+      model,
+      effort,
+      extraArgs,
+      planMode,
+      prefix,
+      advanced: showAdvanced,
+    })
+  }, [
+    open,
+    selectedHost,
+    type,
+    repo,
+    agent,
+    model,
+    effort,
+    extraArgs,
+    planMode,
+    prefix,
+    showAdvanced,
   ])
 
   // When the selected repo's branches load, pick its remembered base branch (if
@@ -561,6 +701,10 @@ export function NewDialog({
     [pastedImages]
   )
 
+  // Clears only what belongs to the create that just happened. The remembered
+  // params (type, repo, harness, model, effort, args, plan mode, prefix) are
+  // deliberately left alone — the draft governs them, and the next open re-seeds
+  // from it.
   const reset = () => {
     setPrompt("")
     setPastingImage(false)
@@ -568,10 +712,6 @@ export function NewDialog({
     setAutoBranch("")
     setFiles([])
     setPastedImages([])
-    setPlanMode(false)
-    setEffort("")
-    setExtraArgs("")
-    setShowAdvanced(false)
   }
 
   const createMutation = useMutation({
@@ -632,6 +772,7 @@ export function NewDialog({
       }
       onOpenChange(false)
       reset()
+      rememberCreatorHost(selectedHost)
       // The creator just updated this host's remembered selections + agent log,
       // so refetch them (prefix-match clears every host's cached config).
       queryClient.invalidateQueries({ queryKey: ["agent-config"] })
@@ -667,19 +808,20 @@ export function NewDialog({
   const hostForImage = (p: string) =>
     pastedImages.find((im) => im.path === p)?.host ?? selectedHost
 
-  // One host picker for both tabs, rendered inside each footer beside the
-  // action buttons. In the footer's mobile column-reverse it sits above them.
+  // One host picker for both tabs, rendered inside each footer's leading group
+  // (see footerLead) beside the action buttons. Positioning belongs to that
+  // group, not to the select, since the agent tab pairs it with Advanced.
   const hostSelect = (
     <select
       id="agent-host"
       aria-label="Host"
-      className={cn(
-        fieldClass,
-        "order-last h-8 min-w-0 py-0 sm:order-first sm:mr-auto sm:w-48"
-      )}
+      className={cn(fieldClass, "h-8 min-w-0 flex-1 py-0 sm:w-44 sm:flex-none")}
       value={selectedHost}
       disabled={createMutation.isPending || terminalCreating}
-      onChange={(e) => setSelectedHost(e.target.value)}
+      onChange={(e) => {
+        hostTouched.current = true
+        setSelectedHost(e.target.value)
+      }}
     >
       {hostGroups.map((g) => {
         // Flat "<host> · <user>" for a single-account box; inside an
@@ -724,6 +866,16 @@ export function NewDialog({
         )
       })}
     </select>
+  )
+
+  // Both footers lead with the host picker (the agent tab pairs Advanced with
+  // it). In the footer's mobile column-reverse the group sits above the submit
+  // button; on sm+ it is pushed to the left edge.
+  const footerLead = (extra?: React.ReactNode) => (
+    <div className="order-last flex min-w-0 items-center gap-1.5 sm:order-first sm:mr-auto">
+      {hostSelect}
+      {extra}
+    </div>
   )
 
   return (
@@ -912,21 +1064,8 @@ export function NewDialog({
                   </div>
                 )}
 
-                {/* Advanced */}
-                <button
-                  type="button"
-                  className="flex w-fit items-center gap-1 self-end rounded-md border border-border bg-background px-2 py-1 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
-                  onClick={() => setShowAdvanced((s) => !s)}
-                >
-                  <ChevronDown
-                    className={cn(
-                      "size-4 transition-transform",
-                      showAdvanced && "rotate-180"
-                    )}
-                  />
-                  Advanced
-                </button>
-
+                {/* The toggle lives in the footer beside the host picker; the
+                fields it reveals stay here, inside the scrolling body. */}
                 {showAdvanced && (
                   <div className="flex flex-col gap-3 border-border border-l pl-3">
                     <div className="grid grid-cols-2 gap-3">
@@ -1100,15 +1239,22 @@ export function NewDialog({
 
               {/* Drop the shared footer's muted bar/border — it reads as a stray
               block once the form's content is short. */}
-              <DialogFooter className="border-t-0 bg-transparent pt-0">
-                {hostSelect}
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Cancel
-                </Button>
+              <DialogFooter className="gap-3 border-t-0 bg-transparent pt-0">
+                {footerLead(
+                  <button
+                    type="button"
+                    className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 text-muted-foreground text-sm shadow-elev-sm transition-all hover:bg-accent hover:text-foreground"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "size-4 transition-transform",
+                        showAdvanced && "rotate-180"
+                      )}
+                    />
+                    Advanced
+                  </button>
+                )}
                 <Button type="submit" disabled={!canSubmit}>
                   {createMutation.isPending ? "Creating…" : "Create agent"}
                 </Button>
@@ -1123,13 +1269,15 @@ export function NewDialog({
             <NewTerminalForm
               key={selectedHost}
               open={open}
-              hostSelect={hostSelect}
+              footerLead={footerLead()}
               active={tab === "terminal"}
               selectedHost={selectedHost}
               creating={terminalCreating}
               setCreating={setTerminalCreating}
-              onCancel={() => onOpenChange(false)}
-              onCreated={() => onOpenChange(false)}
+              onCreated={() => {
+                onOpenChange(false)
+                rememberCreatorHost(selectedHost)
+              }}
             />
           </TabsContent>
         </Tabs>

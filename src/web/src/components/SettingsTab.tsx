@@ -268,6 +268,7 @@ export function SettingsTab({
           <AutoTitleToggle active={active && sub === "general"} />
           <NotificationsSettings active={active && sub === "general"} />
           <UsageTrackingSettings />
+          <CreatorHostSetting hostOptions={hostOptions} />
           <div className="mb-4 flex flex-col gap-1">
             <label className={labelClass} htmlFor="settings-host">
               Configuring host
@@ -1435,6 +1436,50 @@ const USAGE_LAYOUTS = [
 // Usage tracking is global app chrome — it decides which providers lasso polls
 // at all, and drives both the footer and the Usage tab — so it belongs with the
 // other server-level settings above the host picker.
+// Which host the New dialog opens on. Unlike the creator defaults further down
+// this pane, it is a property of THIS lasso rather than of a host — you cannot
+// ask a machine which machine you meant to work on — so it lives in ui_state
+// beside the appearance prefs and is shared by every browser here.
+//
+// "Auto" is the default and the historical behavior: follow the last host a
+// create actually ran on, and before there is one, the host the tab is viewing.
+function CreatorHostSetting({
+  hostOptions,
+}: {
+  hostOptions: { value: string; label: string }[]
+}) {
+  const ui = useUIState()
+  const pinned = ui.creator_default_host ?? ""
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <label className={labelClass} htmlFor="settings-creator-host">
+        New agent/terminal host
+      </label>
+      <select
+        id="settings-creator-host"
+        className={cn(fieldClass, "max-w-xs")}
+        value={pinned}
+        onChange={(e) => patchUIState({ creator_default_host: e.target.value })}
+      >
+        <option value="">Auto (use last used)</option>
+        {/* A pinned host that has since gone away stays selectable, or the
+            picker would silently read as Auto while the pin is still stored. */}
+        {pinned && !hostOptions.some((o) => o.value === pinned) && (
+          <option value={pinned}>{pinned} (unavailable)</option>
+        )}
+        {hostOptions.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <p className="text-[11px] text-muted-foreground">
+        Which host the New dialog opens on, for both agents and terminals.
+      </p>
+    </div>
+  )
+}
+
 function UsageTrackingSettings() {
   const ui = useUIState()
   const hidden = ui.usage_hidden ?? []

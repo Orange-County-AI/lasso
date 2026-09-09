@@ -247,6 +247,12 @@ export interface UIState {
   // the terminals. Only the scheme in force applies; the other is remembered.
   palette_light: string
   palette_dark: string
+  // Which host the New dialog opens on, for both its tabs. "" (the default)
+  // defers to creator_last_host, and failing that to the tab's own host.
+  creator_default_host: string
+  // The host the last create actually targeted — so reopening the creator lands
+  // where the previous one did. Outranked by creator_default_host when set.
+  creator_last_host: string
 }
 
 // A partial write to /api/ui-state: the preference fields to merge, plus the
