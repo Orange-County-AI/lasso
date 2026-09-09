@@ -1,5 +1,4 @@
 import {
-  ChevronRight,
   Files,
   Gauge,
   Globe,
@@ -84,11 +83,9 @@ type TabDef = {
 // truncating the last tab to "Settin…" or forcing a horizontal scroll.
 function FitTabs({
   tabs,
-  trailing,
   listClassName,
 }: {
   tabs: TabDef[]
-  trailing?: React.ReactNode
   listClassName?: string
 }) {
   const scrollRef = React.useRef<HTMLDivElement>(null)
@@ -146,7 +143,6 @@ function FitTabs({
           ))}
         </div>
       </div>
-      {trailing}
     </TabsList>
   )
 }
@@ -502,24 +498,6 @@ function Shell() {
                   { value: "usage", label: "Usage", icon: Gauge },
                   { value: "settings", label: "Settings", icon: Settings },
                 ]}
-                trailing={
-                  // Styled like the tab icons (same box model) rather than a
-                  // bordered box, so it sits on the same baseline as them.
-                  <button
-                    type="button"
-                    className={cn(
-                      tabClass,
-                      "flex items-center hover:text-primary"
-                    )}
-                    title="collapse sidebar"
-                    onClick={() => {
-                      markSidebarIntent()
-                      collapseSidebar()
-                    }}
-                  >
-                    <ChevronRight className="size-4" />
-                  </button>
-                }
               />
 
               <div className="relative min-h-0 flex-1">
