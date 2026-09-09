@@ -432,6 +432,18 @@
   color: var(--h-muted);
   padding: 20px;
 }
+/* The viewer is a READING surface and covers the tree it opened from, so it
+ * opts out of the Retro 82 translucency for the same reason --popover does.
+ * At --background's 62% the tree's entries and the tab's own path bar showed
+ * straight through the file's text — two paths superimposed in the header. The
+ * header is pinned too: --card is translucent, and half an opaque overlay is
+ * still an unreadable one. */
+:root[data-atmosphere="retro-82"] .vsurface {
+  background-color: var(--h-bg);
+}
+:root[data-atmosphere="retro-82"] .vsurface-header {
+  background-color: var(--h-panel);
+}
 .vimg {
   padding: 16px;
   display: flex;
