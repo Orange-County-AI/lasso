@@ -464,6 +464,14 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// An unrecognized mode is refused rather than coerced: coercion would
+		// persist a preference nobody chose (and hide the client bug that sent
+		// it), while the rest of this patch would land around it. The stored
+		// blob is normalized on read, so only a caller can make this invalid.
+		if !validAppearanceMode(us.AppearanceMode) {
+			http.Error(w, fmt.Sprintf("appearance_mode must be one of %s", strings.Join(appearanceModes, ", ")), http.StatusBadRequest)
+			return
+		}
 		if us.UsageHidden == nil {
 			us.UsageHidden = []string{}
 		}

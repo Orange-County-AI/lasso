@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { toast } from "sonner"
 
 import {
   type AtmospherePref,
@@ -10,8 +11,9 @@ import {
 import { qk, queryClient } from "@/lib/query"
 
 // Persisted, SQLite-backed UI preferences (sidebar layout, the Files tab's
-// click behavior, usage-footer settings, and the per-theme backdrop). One
-// shared React Query cache is the source of truth in this tab; the server
+// click behavior, usage-footer settings, the appearance mode and its palettes,
+// and the per-theme backdrop). One shared React Query cache is the source of
+// truth in this tab; the server
 // merges partial patches (so concurrent tabs can't clobber fields they didn't
 // touch) and bumps ui_state_rev over SSE on every save, so every open tab —
 // and every other browser on this lasso — converges on the same state (see
@@ -33,6 +35,13 @@ const DEFAULTS: UIState = {
   usage_compact: false,
   theme_atmosphere: {},
   custom_backgrounds: [],
+  // Mirrors the server's own defaults (getUIState in db.go) and the class
+  // index.html paints pre-paint, so the instant before the first fetch lands
+  // looks like a browser that has never been told anything — not like a
+  // fourth appearance nobody chose.
+  appearance_mode: "herdr",
+  palette_light: "",
+  palette_dark: "",
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic
@@ -199,43 +208,145 @@ function mergeLocal(cached: UIState, patch: UIStatePatch): UIState {
   return out
 }
 
-// A pending write held back by `coalesceMs`. One slot, because the only caller
-// that coalesces is the dimming slider and successive ticks describe the same
-// field; a differently-shaped patch arriving meanwhile is merged in rather than
-// dropped or reordered.
+// A pending write, either held back by `coalesceMs` or waiting for the request
+// in flight to settle. One slot: writes are SERIALIZED (see sendPatch), and a
+// queue of patches and a single merged patch reach the same stored state —
+// while the merged one cannot arrive out of order. A differently-shaped patch
+// arriving meanwhile is folded in rather than dropped or reordered, which is
+// what makes the dimming slider and the reset button beside it safe: the reset
+// merges over the tick still waiting on its timer instead of racing past it.
 let pending: UIStatePatch | null = null
 let pendingIntent = true
 let pendingTimer: ReturnType<typeof setTimeout> | null = null
 
+// Whether a save is on the wire. Only one is, ever: two concurrent saves settle
+// in whatever order the network gives them, and since a response is now ADOPTED
+// (below) the slower one would write the older merge over the newer.
+let inFlight = false
+
+// Bumped by every local write. A response may only be adopted while this still
+// holds the value it had when the request left — anything newer means the cache
+// already carries a change the server has not seen, and adopting would revert
+// what the human is looking at.
+let writeSeq = 0
+
+// One toast id for every save failure, so a drag's worth of them is one line
+// rather than a stack.
+const SAVE_TOAST_ID = "ui-state-save"
+
+// How long before re-reading the server's copy after a save failed AND the
+// re-read failed too (i.e. lasso is unreachable). Only armed while a failure is
+// outstanding, and disarmed by the first successful read — a tab that cannot
+// reach lasso would otherwise sit on an optimistic value forever, since nothing
+// bumps ui_state_rev for a write that never landed.
+const RECOVER_MS = 5000
+
+let recoverTimer: ReturnType<typeof setTimeout> | null = null
+
+// Set by a failed save, cleared by the next successful one. The recovery read
+// cannot be issued from the rejection handler itself: `inFlight` is still true
+// there (it is cleared in the `finally`, which runs after), so the read would
+// stand down against the very write that just failed and nothing would ever
+// re-arm it. The settle handler below is where it fires.
+let recoverWanted = false
+
+// recoverUIState replaces the optimistic cache with what the server actually
+// holds. Called when a save failed: the local copy then contains a change
+// nothing persisted, so the honest state is the server's — and re-reading gets
+// it without having to snapshot and unwind the patch, which would also throw
+// away every OTHER field that changed meanwhile.
+//
+// It stands down while a write is queued or on the wire: that write's own
+// settle is the newer answer, and reverting under it would flash a value the
+// human has already replaced. The same reasoning applies to the read's own
+// flight, hence the `writeSeq` ticket.
+function recoverUIState() {
+  recoverTimer = null
+  if (inFlight || pending) return
+  const seq = writeSeq
+  void api.uiState().then(
+    (state) => {
+      if (seq === writeSeq && !inFlight && !pending)
+        queryClient.setQueryData(qk.uiState, state)
+    },
+    () => {
+      recoverWanted = true
+      if (!recoverTimer) recoverTimer = setTimeout(recoverUIState, RECOVER_MS)
+    }
+  )
+}
+
 function flushPending() {
   pendingTimer = null
+  // A save is on the wire: it will flush what is queued when it settles, so
+  // the merged patch stays queued rather than becoming a second concurrent
+  // write whose response could land out of order.
+  if (inFlight || !pending) return
   const body = pending
   pending = null
   const intent = pendingIntent
   pendingIntent = true
-  if (body) sendPatch(body, intent)
+  sendPatch(body, intent)
 }
 
 function sendPatch(body: UIStatePatch, intent: boolean) {
   lastPatchAt = Date.now()
+  inFlight = true
+  const seq = writeSeq
   void api
     .saveUIState({ ...body, client_id: clientID(), user_intent: intent })
-    .then((res) => {
-      // Refused: another client owns the sidebar layout. Adopt what the server
-      // actually holds instead of sitting on the optimistic value — the apply
-      // effect in App.tsx puts the panel back where the owner has it. No toast:
-      // a human's change always wins the claim, so the only writes that can be
-      // refused are ones nobody asked for.
-      deniedAt = res.layout_denied ? Date.now() : 0
-      if (res.layout_denied)
-        queryClient.setQueryData(qk.uiState, stripMeta(res))
+    .then(
+      (res) => {
+        // Refused: another client owns the sidebar layout, and the body is the
+        // owner's state. No toast — a human's change always wins the claim, so
+        // the only writes that can be refused are ones nobody asked for.
+        deniedAt = res.layout_denied ? Date.now() : 0
+        // This write reached the server, so an earlier failure's pending
+        // re-read is moot: the answer to it is in this very body.
+        recoverWanted = false
+        // Adopt the acknowledged whole. It is the server's merge of this patch
+        // over everything else stored, so it is also how a field another
+        // browser changed lands here without waiting for the SSE bump — and
+        // how a refused layout is put back where the owner has it (App.tsx's
+        // apply effect moves the panel). Skipped when anything was written
+        // here since the request left: that change is not in this body, and
+        // the follow-up write's own response carries both.
+        if (seq === writeSeq && !pending)
+          queryClient.setQueryData(qk.uiState, stripMeta(res))
+      },
+      () => {
+        // A preference that silently failed to save is worse than one that
+        // refused to change: the control keeps showing the new value and the
+        // next reload undoes it. Say so, then converge on the server.
+        toast.error("Couldn't save your preferences", {
+          id: SAVE_TOAST_ID,
+          description: "Restoring what lasso has stored.",
+        })
+        recoverWanted = true
+      }
+    )
+    .finally(() => {
+      inFlight = false
+      // Anything that queued while this was on the wire goes out now, unless
+      // its own coalescing timer is still running. Its own settle decides
+      // whether a recovery is still needed, so this returns rather than
+      // reading the server under a write that is about to change it.
+      if (pending && !pendingTimer) {
+        flushPending()
+        return
+      }
+      if (recoverWanted) {
+        recoverWanted = false
+        recoverUIState()
+      }
     })
-    .catch(() => {})
 }
 
 // patchUIState applies a partial update optimistically to the cache and sends
 // ONLY the patch — the server merges it into the stored state, so there is no
-// whole-object clobber and no need to wait for a fetch before writing.
+// whole-object clobber and no need to wait for a fetch before writing. The
+// response is then adopted (see sendPatch), so a tab converges on the stored
+// truth on every write rather than only on the next SSE bump.
 //
 // `intent` says a HUMAN just made this change here (a drag, ⌘\, the collapse
 // chevron, the mobile dial) as opposed to this tab's panel group reporting a
@@ -251,7 +362,9 @@ function sendPatch(body: UIStatePatch, intent: boolean) {
 // ui_state_rev bump to every open tab — a save per tick would turn one drag
 // into a fleet-wide refetch storm. The timer is not restarted by a follow-up
 // tick, so a long drag still lands a write every coalesceMs rather than only
-// on release.
+// on release. An IMMEDIATE write (coalesceMs 0) does not jump the queue: it is
+// merged over whatever is waiting and sent as one patch, so the slider's last
+// tick can never land after the reset that followed it.
 export function patchUIState(
   patch: UIStatePatch,
   intent = true,
@@ -271,15 +384,23 @@ export function patchUIState(
     if (Object.keys(body).length === 0) return
   }
   lastPatchAt = Date.now()
+  writeSeq++
   const cached = queryClient.getQueryData<UIState>(qk.uiState)
   if (cached) queryClient.setQueryData(qk.uiState, mergeLocal(cached, body))
+  pending = pending ? mergePatch(pending, body) : body
+  pendingIntent = pendingIntent && intent
   if (coalesceMs > 0) {
-    pending = pending ? mergePatch(pending, body) : body
-    pendingIntent = pendingIntent && intent
     if (!pendingTimer) pendingTimer = setTimeout(flushPending, coalesceMs)
     return
   }
-  sendPatch(body, intent)
+  // Immediate: cancel the coalescing timer this patch now rides in front of,
+  // and send the merged body (flushPending stands down if a save is already on
+  // the wire — its settle sends this one).
+  if (pendingTimer) {
+    clearTimeout(pendingTimer)
+    pendingTimer = null
+  }
+  flushPending()
 }
 
 // stripMeta drops the response-only fields so nothing but preferences reaches

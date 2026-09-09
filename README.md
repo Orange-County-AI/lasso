@@ -202,8 +202,9 @@ New, host switching, sidebar access, and the keys a touch keyboard lacks.
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
-**chrome** uses lasso's own design system and follows your system light/dark
-preference.
+**chrome** wears whatever Settings → Appearance says — herdr's own colors, each
+device's system light/dark preference, or a pinned scheme — and that choice is
+stored on the server, so every browser on the same lasso agrees.
 
 ## MCP: agents driving agents
 
@@ -301,9 +302,21 @@ otherwise keep painting your new theme in the old one's colors. Your own
 `[theme].name` is left exactly as you wrote it, even a name lasso doesn't know.
 
 The **chrome** around the terminal (sidebar, diff, files, settings) is lasso's
-own monochrome design system, not herdr's palette. It follows your **system
-light/dark** preference (`prefers-color-scheme`), overridable in Settings →
-Appearance (System / Light / Dark, persisted per device).
+own monochrome design system by default, not herdr's palette. Settings →
+**Appearance** picks what it follows: Herdr (herdr's own colors, the default),
+System (`prefers-color-scheme`), or a pinned Light/Dark. Below it, **Palette**
+can name a theme per light/dark scheme — lasso then wears that theme's colors
+in the chrome *and* the terminals, resolved by a read, so herdr's config.toml,
+the other hosts and the agent CLIs keep the shared theme (which is what makes
+System usable with real palettes: an OS flipping at dusk re-themes your
+browsers instead of the whole fleet, twice a day).
+
+Both live in lasso's own `ui_state` on the server, not in a browser: pick Dark
+on your phone and the desktop follows within a beat, with no reload, and a
+fresh browser opens on what you last chose rather than on the defaults. Only
+System's *answer* is per device — the OS scheme is an observation about the
+screen in front of you, not a preference to share. Appearance choices made in
+a browser before this moved server-side are not imported; set them once.
 
 A theme change is pushed to **every reachable host**, in parallel — not just the
 one lasso is currently driving — since panes from other machines are on screen

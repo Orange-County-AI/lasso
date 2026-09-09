@@ -3,7 +3,7 @@ import { toast } from "sonner"
 
 import { type ActiveState, api } from "@/lib/api"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
-import { applyMode, watchSystemMode } from "@/lib/mode"
+import { applyMode, subscribeAppearance, watchSystemMode } from "@/lib/mode"
 import { invalidateHostScoped } from "@/lib/query"
 import { applyAtmosphere, refreshTheme } from "@/lib/theme"
 import { syncUIState } from "@/lib/ui-state"
@@ -173,17 +173,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apply])
 
-  // Chrome light/dark follows the system color scheme (same as the main branch).
-  // The inline script in index.html sets the class pre-paint; here we re-assert
-  // it on mount and keep it live as the OS theme flips. An OS flip also changes
-  // WHICH browser-local palette applies (a preferred theme is stored per
-  // scheme — see lib/mode.ts:localPaletteName), so refreshTheme has to re-run
-  // on it: without that, a tab wearing its own dark palette would keep it
+  // Chrome light/dark follows the stored appearance mode. index.html paints the
+  // default class pre-paint (nothing about appearance is in localStorage any
+  // more), here we re-assert it from the cache on mount and keep it live as the
+  // OS theme flips. An OS flip also changes WHICH palette applies (one is named
+  // per scheme — see lib/mode.ts:localPaletteName), so refreshTheme has to
+  // re-run on it: without that, a tab wearing a dark palette would keep it
   // through sunrise, chrome tokens and terminals included.
   React.useEffect(() => {
     applyMode()
     watchSystemMode(refreshTheme)
   }, [])
+
+  // Repaint whenever the STORED appearance changes: the first fetch landing (so
+  // the pre-paint default converges on what the last human chose), a pick made
+  // in this tab, or one made in another browser and delivered by the
+  // ui_state_rev bump above. refreshTheme is the full repaint — the html class,
+  // the --h-* override, every terminal iframe's palette and the backdrop — and
+  // it re-derives everything from the cache, so nothing here remounts and
+  // nothing writes back.
+  React.useEffect(() => subscribeAppearance(refreshTheme), [])
 
   // Repaint the backdrop whenever the persisted per-theme choice changes: the
   // first fetch landing, a pick made in this tab, or one made in another

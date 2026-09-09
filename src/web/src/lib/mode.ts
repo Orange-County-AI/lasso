@@ -1,26 +1,47 @@
-// Appearance mode: the user's chrome theme preference, persisted in localStorage
-// (a per-device choice; no backend). "system" follows the OS via
-// prefers-color-scheme; "light"/"dark" pin the Nothing palette; "herdr" makes the
+// Appearance mode: what lasso's chrome is painted from. "herdr" makes the
 // chrome track herdr's own theme (the pre-Nothing behavior — see
-// lib/theme.ts:applyHerdrChrome). The resolved value drives the html dark/light
-// class, which all the --h-* Nothing tokens / shadcn primitives cascade from (see
-// index.css). An inline script in index.html applies the class before first paint
-// to avoid a flash; this module keeps it in sync afterwards.
+// lib/theme.ts:applyHerdrChrome), "system" follows the OS via
+// prefers-color-scheme, "light"/"dark" pin the Nothing palette. The resolved
+// value drives the html dark/light class, which all the --h-* Nothing tokens /
+// shadcn primitives cascade from (see index.css).
 //
-// NOTE: unlike the main (tmux) branch, the *terminal* palette is NOT mode-driven
-// here — herdr always dictates the terminal theme (see lib/theme.ts). So
-// applyMode only touches the chrome class; it deliberately does not re-pin the
-// terminals.
-export type Mode = "system" | "light" | "dark" | "herdr"
+// It is SERVER state, not a per-device one: the mode and the palette named for
+// each scheme are three fields of ui_state (lib/ui-state.ts), so they ride the
+// same patch-merge, the same React Query cache and the same ui_state_rev SSE
+// bump as the backdrop and the usage footer. Choosing "Dark" on a phone lands
+// on the desktop within a beat and with no reload, and a fresh browser wears
+// what the last human chose rather than the defaults. Nothing about appearance
+// is in localStorage — this module reads the cache and writes patches, and the
+// class is (re)applied from whatever the cache holds.
+//
+// "system" is the one answer that stays per DEVICE, and deliberately: the OS
+// scheme is an observation about the screen in front of someone, not a
+// preference to be shared. So "system" is what is stored fleet-wide and each
+// browser resolves it against its own media query.
+//
+// NOTE: unlike the main (tmux) branch, the *terminal* palette is not
+// mode-driven — herdr's theme (or the palette named for the scheme in force)
+// dictates it, see lib/theme.ts. So applyMode only touches the chrome class;
+// it deliberately does not re-pin the terminals.
+import type { AppearanceMode } from "@/lib/api"
+import { qk, queryClient } from "@/lib/query"
+import { patchUIState, uiStateNow, uiStateSettled } from "@/lib/ui-state"
 
-const KEY = "lasso-mode"
-// New installs default to "herdr" — the chrome matches herdr's theme out of the
-// box; the user opts into the Nothing light/dark palette explicitly.
+export type Mode = AppearanceMode
+
+// Installs default to "herdr" — the chrome matches herdr's theme out of the
+// box; the Nothing light/dark palette is an explicit opt-in. Mirrors the
+// server's own default (getUIState in db.go) and index.html's pre-paint class.
 const DEFAULT_MODE: Mode = "herdr"
 const mql = () => window.matchMedia("(prefers-color-scheme: dark)")
 
+// getMode reads the stored mode out of the shared cache — the defaults until
+// the first /api/ui-state lands, which is the same value index.html painted
+// pre-paint, so a boot converges rather than flashing. The value is validated
+// rather than trusted: an older server (or a hand-edited row) has no field
+// here at all, and an unknown string must not reach the class toggle.
 export function getMode(): Mode {
-  const v = localStorage.getItem(KEY)
+  const v = uiStateNow().appearance_mode
   return v === "light" || v === "dark" || v === "system" || v === "herdr"
     ? v
     : DEFAULT_MODE
@@ -46,8 +67,9 @@ export function applyScheme(scheme: "light" | "dark") {
 }
 
 // applyMode sets the class from the appearance mode. It's the chokepoint every
-// appearance change funnels through — setMode, the on-mount call, and the
-// watchSystemMode OS-change handler all land here.
+// appearance change funnels through — a pick here, a pick in another browser
+// arriving over ui_state_rev, the on-mount call, and the watchSystemMode
+// OS-change handler all land here.
 //
 // It is not the LAST word, though: while the chrome follows a herdr/Omarchy
 // palette the class has to match that palette's canvas rather than the mode's
@@ -59,21 +81,23 @@ export function applyMode(m: Mode = getMode()) {
   applyScheme(resolvedMode(m))
 }
 
-// setMode persists the choice and applies the class immediately. The caller is
-// responsible for refreshing the herdr chrome override (refreshTheme) so toggling
-// into/out of "herdr" repaints the chrome without waiting for the next theme tick.
+// setMode stores the choice for every browser on this lasso and applies the
+// class here immediately (the optimistic cache write is what the other tabs'
+// subscription eventually reports too). The caller is responsible for
+// refreshing the chrome override (refreshTheme) so toggling into/out of "herdr"
+// repaints without waiting for the next theme tick.
 export function setMode(m: Mode) {
-  localStorage.setItem(KEY, m)
+  patchUIState({ appearance_mode: m })
   applyMode(m)
 }
 
-// watchSystemMode re-applies on OS theme changes while the user is on "system".
+// watchSystemMode re-applies on OS theme changes while the mode is "system".
 // `onChange` is called after the class flip so the caller can re-derive
-// anything that depends on the resolved scheme — the browser-local palette is
-// chosen PER SCHEME (see localPaletteName), so an OS flip at dusk changes which
-// theme this tab wears and its terminals have to be re-pinned. It is a callback
-// rather than a direct refreshTheme() call because lib/theme.ts imports this
-// module, not the other way round.
+// anything that depends on the resolved scheme — the palette is named PER
+// SCHEME (see localPaletteName), so an OS flip at dusk changes which theme this
+// tab wears and its terminals have to be re-pinned. It is a callback rather
+// than a direct refreshTheme() call because lib/theme.ts imports this module,
+// not the other way round.
 // Idempotent — safe to call once on app mount.
 let watching = false
 export function watchSystemMode(onChange?: () => void) {
@@ -104,41 +128,73 @@ export function systemPrefersDark(): boolean {
   return mql().matches
 }
 
+// subscribeAppearance fires when the stored appearance changes — a pick made
+// here, one made in another browser and delivered by the ui_state_rev bump, or
+// the first fetch landing. AppProvider hangs refreshTheme off it, which is the
+// full repaint: the class, the --h-* override, the terminals and the backdrop.
+//
+// It compares only the appearance slice for the same reason
+// subscribeAtmosphere does: the one cache entry also carries the sidebar width,
+// which a drag rewrites dozens of times a second, and a repaint reaches into
+// every terminal iframe. Read-only — nothing here writes, so an arriving change
+// cannot echo back out as a write.
+export function subscribeAppearance(onChange: () => void): () => void {
+  let last = appearanceSignature()
+  return queryClient.getQueryCache().subscribe((event) => {
+    if (event.query.queryKey[0] !== qk.uiState[0]) return
+    const now = appearanceSignature()
+    if (now === last) return
+    last = now
+    onChange()
+  })
+}
+
+// The slice a repaint depends on: whether the server's copy has arrived (the
+// defaults are painted before it does, and the real values may differ) and the
+// three appearance fields.
+function appearanceSignature(): string {
+  const ui = uiStateNow()
+  return JSON.stringify([
+    uiStateSettled(),
+    getMode(),
+    ui.palette_light ?? "",
+    ui.palette_dark ?? "",
+  ])
+}
+
 // ---------------------------------------------------------------------------
-// Browser-local palettes
+// Palettes
 // ---------------------------------------------------------------------------
 
 // Outside "herdr" mode the chrome is the Nothing palette by default, and the
-// terminals wear whatever herdr resolves fleet-wide. A user who wants their own
-// look per light/dark can instead name a theme for each scheme: this tab then
-// paints its chrome AND its terminals from that theme, resolved through
-// /api/theme?name= — a read, so nothing is written to herdr's config.toml and
-// no other tab, host or agent follows. That is the whole point: an OS that
-// flips to dark at sunset must not re-theme the fleet, which with a global
-// switch would oscillate every machine twice a day.
+// terminals wear whatever herdr resolves fleet-wide. A user who wants a
+// different look per light/dark can instead name a theme for each scheme:
+// lasso then paints its chrome AND its terminals from that theme, resolved
+// through /api/theme?name= — a read, so nothing is written to herdr's
+// config.toml and no other host or agent CLI follows. That is the whole point:
+// an OS that flips to dark at sunset must re-theme the browsers, not oscillate
+// every machine in the fleet twice a day.
 //
-// "" (the default, and what every existing install has) means "no local
-// palette": the Nothing chrome, exactly as before.
-const PALETTE_KEYS: Record<"light" | "dark", string> = {
-  light: "lasso-palette-light",
-  dark: "lasso-palette-dark",
-}
-
+// "" (the default, and what every existing install has) means "no palette":
+// the Nothing chrome, exactly as before.
 export function getPalettePref(scheme: "light" | "dark"): string {
-  return localStorage.getItem(PALETTE_KEYS[scheme]) ?? ""
+  const ui = uiStateNow()
+  return (scheme === "light" ? ui.palette_light : ui.palette_dark) ?? ""
 }
 
-// setPalettePref persists one scheme's theme ("" clears it). Repainting is
-// lib/theme.ts's job (refreshTheme), which has to re-resolve the palette.
+// setPalettePref stores one scheme's theme ("" clears it) for every browser on
+// this lasso. Repainting is lib/theme.ts's job (refreshTheme), which has to
+// re-resolve the palette.
 export function setPalettePref(scheme: "light" | "dark", name: string) {
-  if (name) localStorage.setItem(PALETTE_KEYS[scheme], name)
-  else localStorage.removeItem(PALETTE_KEYS[scheme])
+  patchUIState(
+    scheme === "light" ? { palette_light: name } : { palette_dark: name }
+  )
 }
 
-// localPaletteName is the theme THIS BROWSER should resolve for itself, or ""
-// to follow herdr's own. In "herdr" mode it is always "" — that mode is the
-// explicit "follow the fleet" choice — and otherwise it is the preference for
-// the scheme currently in force, so "system" picks up the OS flip for free.
+// localPaletteName is the theme to resolve instead of herdr's own, or "" to
+// follow herdr's. In "herdr" mode it is always "" — that mode is the explicit
+// "follow the fleet" choice — and otherwise it is the palette named for the
+// scheme currently in force, so "system" picks up the OS flip for free.
 export function localPaletteName(m: Mode = getMode()): string {
   if (m === "herdr") return ""
   return getPalettePref(resolvedMode(m))

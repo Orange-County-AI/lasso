@@ -108,8 +108,10 @@
  * the `:root.light` block below overrides only the --h-* values for light mode
  * ("printed technical manual" — off-white paper, black ink), so every shadcn
  * token and bespoke view flips automatically. The active mode is a dark/light
- * class on <html>, chosen from the system color scheme (see lib/mode.ts + the
- * inline script in index.html) — exactly like the main (tmux) branch.
+ * class on <html>, set from the appearance mode stored in ui_state — server
+ * state shared by every browser on this lasso, with "system" resolved against
+ * each device's own color scheme (see lib/mode.ts; index.html paints the
+ * default class pre-paint).
  *
  * NOTE: the chrome no longer reflects herdr's theme. herdr now dictates *only*
  * the terminal (xterm) palette — refreshTheme() in lib/theme.ts pins the live
@@ -227,7 +229,7 @@
 
 /* Set as data-atmosphere="<theme>" on <html> by lib/theme.ts, and only while
  * the chrome is actually following a herdr/Omarchy palette (appearance mode
- * "herdr", or a browser-local palette) — the Nothing light/dark chrome keeps
+ * "herdr", or a named palette) — the Nothing light/dark chrome keeps
  * its flat monochrome canvas. Matched on the attribute's PRESENCE, since every
  * theme can carry a backdrop; the value is there to be inspectable, not to be
  * selected on. Everything here is additive: drop the attribute and the chrome

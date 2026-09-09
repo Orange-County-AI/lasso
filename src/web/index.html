@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -7,27 +7,16 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>lasso</title>
-    <!-- Apply the saved appearance mode (herdr|system|light|dark) before first
-         paint so there's no flash of the wrong chrome theme. Mirrors lib/mode.ts;
-         default is "herdr", which resolves to the dark class (herdr's --h-*
-         override is layered on at runtime once /api/theme lands, see
-         lib/theme.ts). The terminal palette is herdr's, set separately. -->
-    <script>
-      ;(() => {
-        let m, dark
-        try {
-          m = localStorage.getItem("lasso-mode") || "herdr"
-          dark =
-            m === "dark" ||
-            m === "herdr" ||
-            (m !== "light" &&
-              window.matchMedia("(prefers-color-scheme: dark)").matches)
-          document.documentElement.classList.add(dark ? "dark" : "light")
-        } catch {
-          document.documentElement.classList.add("dark")
-        }
-      })()
-    </script>
+    <!-- The pre-paint chrome scheme. Appearance is SERVER state (three fields
+         of ui_state — see lib/mode.ts), and nothing about it is readable
+         before the first paint: no localStorage, and a fetch cannot be waited
+         on here. So the class is the DEFAULT mode's ("herdr" → dark, matching
+         DEFAULTS in lib/ui-state.ts and getUIState in db.go), and lib/mode.ts
+         re-asserts it from the stored state the moment /api/ui-state lands —
+         which is also when the --h-* palette override arrives. A lasso pinned
+         to Light therefore opens dark for that one round trip rather than
+         flashing an unstyled page. The terminal palette is herdr's, set
+         separately. -->
     <!-- Generated from the current L logomark by docs/icon/build.py.
          Versioned URLs retire browsers' aggressively cached old favicons. -->
     <link rel="icon" type="image/svg+xml" href="/lasso.svg?v=2" />

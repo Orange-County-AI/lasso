@@ -165,8 +165,8 @@ function SaveStatus({
 // are scoped to the active host. All of it persists in ~/.lasso/lasso.db.
 //
 // Themes is everything about how lasso and herdr LOOK — the palette, its
-// backdrop, and which of those choices are this browser's alone (see
-// ThemesSettings). It is its own pane because half of it is a gallery of
+// backdrop, and which of those choices are lasso's own rather than herdr's
+// (see ThemesSettings). It is its own pane because half of it is a gallery of
 // pictures: inline with the creator settings it pushed everything else off the
 // screen.
 type SettingsSub = "general" | "themes"
@@ -367,20 +367,20 @@ export function SettingsTab({
 }
 
 // ThemesSettings is the Themes pane: the palette, its backdrop, and which of
-// those are this browser's own choice rather than the fleet's.
+// those are lasso's own choice rather than the fleet's.
 //
 // Two scopes live here and the difference is the whole design. The herdr theme
-// is SHARED: it is written to herdr's config.toml, which the TUI reloads and
-// every lasso tab follows, and lasso mirrors it to the hosts and agent CLIs
-// below. Appearance, the preferred light/dark palettes, and every backdrop
-// control are PER BROWSER: they resolve through reads (/api/theme?name=) and
-// localStorage, so a tab can wear its own look — and an OS that flips to dark
-// at dusk re-themes that tab instead of oscillating the whole fleet twice a
-// day.
+// is SHARED WITH HERDR: it is written to herdr's config.toml, which the TUI
+// reloads, and lasso mirrors it to the hosts and agent CLIs below. Appearance,
+// the light/dark palettes and every backdrop control are lasso's own UI state
+// (ui_state, shared by every browser on this lasso) and resolve through reads
+// (/api/theme?name=) — so choosing one re-themes the browsers without touching
+// herdr's config, and an OS that flips to dark at dusk re-themes them instead
+// of oscillating the whole fleet twice a day.
 //
-// It owns the mode and palette state rather than each control holding its own,
-// because the backdrop gallery has to follow whichever theme is actually on
-// screen: under a browser-local palette that is not the one herdr is
+// It derives the mode and palettes here rather than letting each control hold
+// its own copy, because the backdrop gallery has to follow whichever theme is
+// actually on screen: under a named palette that is not the one herdr is
 // configured with.
 function ThemesSettings({ active }: { active: boolean }) {
   const { themeRev } = useApp()
@@ -402,11 +402,18 @@ function ThemesSettings({ active }: { active: boolean }) {
     queryFn: () => api.themeCatalog(),
     enabled: active,
   })
-  const [mode, setModeState] = React.useState<Mode>(() => getMode())
-  const [prefs, setPrefs] = React.useState(() => ({
+  // Appearance is server state, read straight from the shared ui_state cache —
+  // useUIState is the subscription, getMode/getPalettePref the validated read
+  // of the same entry. No copy in React state: that copy is how a control and
+  // the document drift apart, and it is also what kept these buttons showing
+  // this tab's own choice after another browser changed it. Now a pick made
+  // anywhere re-renders this pane as its ui_state_rev bump lands.
+  useUIState()
+  const mode = getMode()
+  const prefs = {
     light: getPalettePref("light"),
     dark: getPalettePref("dark"),
-  }))
+  }
   const t = themeQuery.data
   const catalogThemes = catalogQuery.data?.themes
   const catalog = catalogThemes ?? []
@@ -423,10 +430,11 @@ function ThemesSettings({ active }: { active: boolean }) {
   // it has to, or the gallery would offer another theme's backgrounds.
   //
   // The OS scheme is SUBSCRIBED, not read at render: on "system" it decides
-  // which of the two preferred palettes is in force, and it changes under this
-  // pane (at dusk, or from devtools). Without the subscription the document
-  // re-themed while the gallery kept the other scheme's backgrounds and said
-  // "Backdrop for <the other theme>".
+  // which of the two palettes is in force, and it changes under this pane (at
+  // dusk, or from devtools). Without the subscription the document re-themed
+  // while the gallery kept the other scheme's backgrounds and said "Backdrop
+  // for <the other theme>". It stays a per-DEVICE observation even though the
+  // mode itself is shared — see lib/mode.ts.
   const systemDark = React.useSyncExternalStore(
     subscribeSystemScheme,
     systemPrefersDark
@@ -443,28 +451,21 @@ function ThemesSettings({ active }: { active: boolean }) {
     [entry]
   )
 
-  const chooseMode = (m: Mode) => {
-    setModeState(m)
-    setMode(m)
-    // Repaint for the new mode: applies the palette when entering "herdr" or a
-    // scheme with a preferred theme, removes the override when leaving one.
-    refreshTheme()
-  }
-  const choosePalette = (s: "light" | "dark", name: string) => {
-    setPalettePref(s, name)
-    setPrefs((p) => ({ ...p, [s]: name }))
-    refreshTheme()
-  }
+  // Both writes go through lib/mode.ts, which patches ui_state; the repaint is
+  // AppProvider's subscribeAppearance(refreshTheme), so this tab and every
+  // other one re-derive the palette from the same stored value through the same
+  // path. Repainting from here as well would fetch /api/theme twice for one
+  // click and give this tab a code path no other tab runs.
 
   return (
     <>
-      <AppearanceToggle mode={mode} onChoose={chooseMode} />
+      <AppearanceToggle mode={mode} onChoose={setMode} />
       {mode !== "herdr" && (
         <PalettePrefs
           mode={mode}
           prefs={prefs}
           themes={catalog}
-          onChoose={choosePalette}
+          onChoose={setPalettePref}
         />
       )}
       <HerdrThemeSelect theme={t} themes={catalog} pinned={!!localPalette} />
@@ -481,14 +482,15 @@ function ThemesSettings({ active }: { active: boolean }) {
 }
 
 // AppearanceToggle picks what the chrome is painted from: Herdr (match herdr's
-// own theme — the default), System (follow the OS), or a pinned Light/Dark. The
-// choice persists in localStorage and applies live: setMode sets the html
-// dark/light class the Nothing --h-* tokens cascade from, then refreshTheme
-// applies or clears the palette --h-* override (see lib/theme.ts).
+// own theme — the default), System (follow the OS), or a pinned Light/Dark.
+// The choice is stored on the server (ui_state) and applies live everywhere:
+// setMode patches it and sets the html dark/light class the Nothing --h-*
+// tokens cascade from, and every open browser repaints from the bump (see
+// lib/mode.ts:subscribeAppearance).
 //
-// Outside Herdr the chrome is the flat Nothing palette unless a preferred theme
-// is named for the scheme (PalettePrefs below), in which case this browser
-// resolves that one for its chrome AND its terminals.
+// Outside Herdr the chrome is the flat Nothing palette unless a theme is named
+// for the scheme (PalettePrefs below), in which case lasso resolves that one
+// for its chrome AND its terminals.
 function AppearanceToggle({
   mode,
   onChoose,
@@ -524,20 +526,20 @@ function AppearanceToggle({
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Sets the UI theme. Herdr matches herdr's own colors; System follows your
-        OS; Light/Dark pin the scheme. Saved in this browser only.
+        Sets the UI theme for every browser on this lasso. Herdr matches herdr's
+        own colors; System follows each device's OS; Light/Dark pin the scheme.
       </p>
     </div>
   )
 }
 
-// PalettePrefs names a theme per light/dark scheme for THIS BROWSER. Picking
-// one makes the tab resolve that theme through /api/theme?name= — a read — and
-// wear it in the chrome and the terminals, while herdr's config.toml, the other
-// tabs, the other hosts and every agent keep the shared theme. That is what
-// makes "System" usable with real palettes: the OS flipping at dusk re-themes
-// this window, where switching the herdr theme instead would re-theme every
-// machine in the fleet twice a day.
+// PalettePrefs names a theme per light/dark scheme. Picking one makes lasso
+// resolve that theme through /api/theme?name= — a read — and wear it in the
+// chrome and the terminals, while herdr's config.toml, the other hosts and
+// every agent keep the shared theme. That is what makes "System" usable with
+// real palettes: the OS flipping at dusk re-themes the browsers, where
+// switching the herdr theme instead would re-theme every machine in the fleet
+// twice a day.
 //
 // Only the current mode's schemes are offered (System has both, a pinned
 // Light/Dark just the one), and each list is filtered to themes of that
@@ -558,7 +560,7 @@ function PalettePrefs({
     mode === "system" ? ["light", "dark"] : [resolvedMode(mode)]
   return (
     <div className="mb-4 flex flex-col gap-2">
-      <span className={labelClass}>This browser's palette</span>
+      <span className={labelClass}>Palette</span>
       <div className="flex flex-wrap gap-3">
         {schemes.map((s) => (
           <div key={s} className="flex min-w-0 flex-col gap-1">
@@ -580,8 +582,8 @@ function PalettePrefs({
                   selected option: while the catalog is loading — or after a
                   request that failed — there would otherwise be no option
                   matching the value, and a <select> then displays its first,
-                  i.e. this control read as "Nothing" while the browser was
-                  wearing a palette. Its own name is the only label available. */}
+                  i.e. this control read as "Nothing" while lasso was wearing
+                  a palette. Its own name is the only label available. */}
               {prefs[s] && !themes.some((o) => o.name === prefs[s]) && (
                 <option value={prefs[s]}>{prefs[s]}</option>
               )}
@@ -593,9 +595,9 @@ function PalettePrefs({
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Wears a theme in this browser only — nothing is written to herdr's
-        config, and no other tab, host or agent follows. Leave it on Nothing for
-        the flat monochrome chrome.
+        Wears a theme in the browsers only — nothing is written to herdr's
+        config, and no host or agent follows. Leave it on Nothing for the flat
+        monochrome chrome.
       </p>
     </div>
   )
@@ -660,8 +662,9 @@ function HerdrThemeSelect({
 }: {
   theme: ThemePayload | undefined
   themes: ThemeCatalogEntry[]
-  // True when this browser has a palette of its own, so the shared theme is not
-  // what is on screen here — worth saying, or the select reads as broken.
+  // True when a palette is named for the scheme in force, so the shared herdr
+  // theme is not what is on screen — worth saying, or the select reads as
+  // broken.
   pinned: boolean
 }) {
   const t = theme
@@ -725,7 +728,7 @@ function HerdrThemeSelect({
         {t?.forced &&
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
         {pinned &&
-          " This browser is wearing a palette of its own above, so the change will show in herdr and in other tabs, not here."}
+          " A palette is named above, so the change will show in herdr and its TUIs, not in the browsers."}
       </p>
     </div>
   )
@@ -955,8 +958,8 @@ function ThemeBackgrounds({
         {theme ? `Backdrop for ${theme}.` : "Backdrop for the current theme."}{" "}
         Saved on this lasso, per theme — every browser follows.
         {chromeToo
-          ? " The terminals and this window both wear it."
-          : " The terminals wear it; pick a palette above for this window to as well."}
+          ? " The terminals and the chrome both wear it."
+          : " The terminals wear it; name a palette above for the chrome to as well."}
       </p>
       <AtmosphereControls theme={theme} hasImage={current !== ""} />
     </div>
