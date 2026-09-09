@@ -63,10 +63,14 @@
   --color-warn: var(--h-warn);
   --color-bad: var(--h-bad);
   --color-dir: var(--h-dir);
+  --radius-xs: calc(var(--radius) * 0.4);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 
   /* Nothing is flat: no elevation shadows — surfaces separate by border + a
    * panel/hover brightness step, never by drop shadow or blur. The shadow-elev-*
@@ -77,6 +81,12 @@
   --shadow-elev-pop: none;
   --shadow-elev-modal: none;
   --shadow-well: none;
+}
+
+/* Register the base radius with Tailwind too: bare `rounded` otherwise falls
+ * back to a fixed 0.25rem instead of sharing the component radius scale. */
+@theme {
+  --radius: 0rem;
 }
 
 /* The creator floats above the workspace without fading its text or controls.
@@ -125,8 +135,6 @@
   --h-warn: #d4a843; /* Nothing warning — pending/degraded */
   --h-bad: #d71921; /* Nothing accent red — destructive/error ONLY */
   --h-link: #5b9bf6; /* interactive blue — links & code keywords only */
-
-  --radius: 0.25rem; /* technical 4px — instrument, not pill */
 
   /* shadcn tokens → --h-* palette */
   --background: var(--h-bg);
@@ -228,8 +236,8 @@
   /* Two layers in one element: the scrim as a flat gradient ON TOP of the
      still, so the chrome reads over the same washed backdrop the terminal
      document gets from its own <body> rule. */
-  background-image: linear-gradient(var(--r82-scrim), var(--r82-scrim)),
-    var(--r82-wallpaper);
+  background-image:
+    linear-gradient(var(--r82-scrim), var(--r82-scrim)), var(--r82-wallpaper);
   /* Fixed, so the backdrop belongs to the window rather than scrolling with a
      panel, and cover so the still fills any aspect ratio without repeating. */
   background-attachment: fixed;
@@ -591,13 +599,13 @@
   font-size: 0.88em;
   background: var(--h-panel);
   border: 1px solid var(--h-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.1em 0.35em;
 }
 .md-body pre {
   background: var(--h-panel);
   border: 1px solid var(--h-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 12px 14px;
   overflow: auto;
   margin: 0.8em 0;
@@ -724,7 +732,7 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 2px 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   border: 1px solid currentColor;
 }
 .dfhead .dfbadge-added {

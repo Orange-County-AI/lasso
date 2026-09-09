@@ -106,7 +106,7 @@ export function DiffTab({
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto h-6 rounded-full px-3 font-normal text-[13px]"
+            className="ml-auto h-6 rounded-lg px-3 font-normal text-[13px]"
             onClick={toggleAll}
           >
             {allCollapsed ? "expand all" : "collapse all"}
