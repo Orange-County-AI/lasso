@@ -144,9 +144,9 @@ function PaceBar({ percent, elapsed }: { percent: number; elapsed: number }) {
   const onPace = e >= 0 ? Math.min(p, e) : p
   const over = e >= 0 ? Math.max(0, p - e) : 0
   return (
-    <span className="relative inline-block h-[7px] w-9 shrink-0 overflow-hidden rounded-sm bg-border align-middle">
+    <span className="relative inline-block h-[7px] w-9 shrink-0 overflow-hidden rounded-sm bg-[color-mix(in_srgb,var(--foreground)_12%,var(--background))] align-middle">
       <span
-        className="absolute inset-y-0 left-0 bg-foreground/70"
+        className="absolute inset-y-0 left-0 bg-foreground"
         style={{ width: `${onPace}%` }}
       />
       {over > 0 ? (
@@ -157,7 +157,7 @@ function PaceBar({ percent, elapsed }: { percent: number; elapsed: number }) {
       ) : null}
       {e >= 0 ? (
         <span
-          className="absolute inset-y-0 w-px bg-foreground"
+          className="absolute inset-y-0 w-px bg-foreground shadow-[0_0_0_1px_var(--background)]"
           style={{ left: `${e}%` }}
           aria-hidden
         />
