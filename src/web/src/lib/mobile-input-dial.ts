@@ -379,13 +379,18 @@ html.${TRACKING_CLASS} .xterm-screen {
 ${sel} .input-picker {
   display: none;
 }
+/* The parent visual-viewport pin shrinks this iframe above the keyboard.
+   Fit the buffer to that height instead of pushing its top outside the frame;
+   the textarea gives up space first, while the commit buttons stay visible. */
 ${sel} .input-panel {
   position: fixed;
   right: 14px;
-  bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
   left: 14px;
   z-index: 6;
   display: flex;
+  box-sizing: border-box;
+  height: min(320px, calc(100% - 24px - env(safe-area-inset-bottom, 0px)));
   max-width: 440px;
   margin: 0 auto;
   flex-direction: column;
@@ -395,12 +400,14 @@ ${sel} .input-panel {
   border-radius: 18px;
   background: var(--h-panel, #111);
   color: var(--h-fg, #ededed);
+  overflow: auto;
   pointer-events: auto;
 }
 ${sel} .input-header,
 ${sel} .input-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 8px;
 }
 ${sel} .input-header {
@@ -415,14 +422,16 @@ ${sel} .input-status {
 ${sel} .input-buffer {
   box-sizing: border-box;
   width: 100%;
-  min-height: 96px;
-  resize: vertical;
+  flex: 1 1 auto;
+  min-height: 44px;
+  resize: none;
+  overflow: auto;
   border: 1px solid var(--h-border, #262626);
   border-radius: 12px;
   background: var(--h-bg, #000);
   color: var(--h-fg, #ededed);
   padding: 10px 11px;
-  font: 400 15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 400 16px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   outline: none;
 }
 ${sel} .input-buffer:focus {
