@@ -277,6 +277,13 @@ type uiState struct {
 	// UsageCompact selects the one-line abbreviated footer layout. Footer-only:
 	// the Usage tab has one layout.
 	UsageCompact bool `json:"usage_compact"`
+	// UsageFooterHidden hides the bottom usage bar without touching what is
+	// TRACKED: the providers keep being polled and the Usage tab keeps showing
+	// them. Deliberately separate from UsageHidden, which is a tracking
+	// deny-list — folding the two would make "I don't want a footer" silently
+	// stop collecting the numbers the tab exists to show. False (footer shown)
+	// is the zero value, so existing installs are unaffected.
+	UsageFooterHidden bool `json:"usage_footer_hidden"`
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar

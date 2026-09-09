@@ -773,6 +773,7 @@ function UsageTrackingSettings() {
   const hidden = ui.usage_hidden ?? []
   const order = completeUsageProviderOrder(ui.usage_order)
   const compact = ui.usage_compact ?? false
+  const footerHidden = ui.usage_footer_hidden ?? false
 
   const setShown = (provider: string, shown: boolean) => {
     const next = new Set(hidden)
@@ -792,16 +793,39 @@ function UsageTrackingSettings() {
     <div className="mb-4 flex flex-col gap-1">
       <span className={labelClass}>Usage tracking</span>
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground">Footer layout</span>
+        <Checkbox
+          id="settings-usage-footer"
+          checked={!footerHidden}
+          onCheckedChange={(checked) =>
+            patchUIState({ usage_footer_hidden: checked !== true })
+          }
+        />
+        <label
+          className="cursor-pointer select-none text-[13px] text-foreground"
+          htmlFor="settings-usage-footer"
+        >
+          Show usage footer
+        </label>
+      </div>
+      <div className="mb-1 flex items-center gap-2">
+        <span
+          className={cn(
+            "text-[11px] text-muted-foreground",
+            footerHidden && "opacity-50"
+          )}
+        >
+          Footer layout
+        </span>
         <div className="inline-flex w-fit gap-0.5 rounded-lg border border-border p-0.5">
           {USAGE_LAYOUTS.map((layout) => (
             <button
               key={layout.label}
               type="button"
               aria-pressed={compact === layout.compact}
+              disabled={footerHidden}
               onClick={() => patchUIState({ usage_compact: layout.compact })}
               className={cn(
-                "rounded-md px-2 py-0.5 text-xs transition-colors",
+                "rounded-md px-2 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                 compact === layout.compact
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:text-foreground"
@@ -871,8 +895,10 @@ function UsageTrackingSettings() {
         shows them in the footer and the Usage tab. Unchecking one stops the
         requests too, so a provider you don't care about costs nothing. Arrows
         set the order. Compact shortens provider names and removes the footer's
-        pace bars—hover a metric for its full label, reset, and pace. Providers
-        without credentials stay hidden automatically.
+        pace bars—hover a metric for its full label, reset, and pace. Hiding
+        the footer only removes that bar: providers stay tracked and the Usage
+        tab keeps showing them. Providers without credentials stay hidden
+        automatically.
       </p>
     </div>
   )

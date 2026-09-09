@@ -24,6 +24,7 @@ const DEFAULTS: UIState = {
   usage_hidden: [],
   usage_order: [],
   usage_compact: false,
+  usage_footer_hidden: false,
 }
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).

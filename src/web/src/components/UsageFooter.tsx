@@ -307,7 +307,18 @@ function ProviderGroups({
   ))
 }
 
+// The footer is gated OUTSIDE the component that queries: `usage_footer_hidden`
+// is a preference about this bar alone, and a hidden bar has no reason to keep
+// a 60s poll alive. Unmounting UsageFooterBar retires the query with it, while
+// the Usage tab (its own consumer of the same key) is untouched — hiding the
+// footer never stops provider tracking, which is `usage_hidden`'s job.
 export function UsageFooter() {
+  const footerHidden = useUIState().usage_footer_hidden
+  if (footerHidden) return null
+  return <UsageFooterBar />
+}
+
+function UsageFooterBar() {
   const { data, isError } = useUsage()
   const ui = useUIState()
   const hidden = ui.usage_hidden ?? []
