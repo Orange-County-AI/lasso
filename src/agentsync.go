@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -906,6 +907,16 @@ type claudeThemeFile struct {
 	Overrides map[string]string `json:"overrides"`
 }
 
+// How far a diff band's relative luminance sits above the panel background: a
+// changed line reads as a band rather than a slab, and the changed span inside
+// it stays clearly the brighter of the two. Tuned on retro-82, which is the
+// hardest case in the set — the most saturated accents, and a wallpaper behind
+// the terminal rather than a flat color.
+const (
+	diffLineLift = 0.13
+	diffWordLift = 0.28
+)
+
 // claudeOverrides maps herdr's UI tokens onto Claude Code's theme tokens
 // (ported from herdr-theme-sync's mapping).
 func claudeOverrides(p uiPalette) map[string]string {
@@ -944,8 +955,8 @@ func claudeOverrides(p uiPalette) map[string]string {
 	// was left unset it fell through to the base theme's, so the highlighted
 	// span read DARKER than the line holding it. On a saturated palette
 	// (retro-82's #f85525) a screen of diff glows, which is unpleasant at
-	// night. So the line is the accent taken most of the way to the panel
-	// background, and the accent itself is kept for the word.
+	// night. So each band is the accent brought down to a fixed lift over the
+	// panel background, the word's larger than the line's.
 	bg := p.PanelBg
 	if bg == "" {
 		if luminance(p.Text) > 0.5 {
@@ -962,8 +973,8 @@ func claudeOverrides(p uiPalette) map[string]string {
 		if c == "" {
 			return // let Claude's base show through, as put() does
 		}
-		m[line] = blendHex(c, bg, 0.62)
-		m[word] = blendHex(c, bg, 0.2)
+		m[line] = tintForBg(c, bg, diffLineLift)
+		m[word] = tintForBg(c, bg, diffWordLift)
 		m[dimmed] = blendHex(m[line], p.Overlay0, 0.35)
 	}
 	diff(p.Green, "diffAdded", "diffAddedWord", "diffAddedDimmed")
@@ -1196,4 +1207,94 @@ func blendHex(a, b string, t float64) string {
 	}
 	mix := func(x, y int) int { return int(float64(x)*(1-t) + float64(y)*t + 0.5) }
 	return fmt.Sprintf("#%02x%02x%02x", mix(ar, br), mix(ag, bg), mix(ab, bb))
+}
+
+func rgbHSL(r, g, b int) (h, s, l float64) {
+	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
+	hi := math.Max(rf, math.Max(gf, bf))
+	lo := math.Min(rf, math.Min(gf, bf))
+	l = (hi + lo) / 2
+	d := hi - lo
+	if d == 0 {
+		return 0, 0, l // gray: hue is undefined, and nothing below reads it
+	}
+	if l > 0.5 {
+		s = d / (2 - hi - lo)
+	} else {
+		s = d / (hi + lo)
+	}
+	switch hi {
+	case rf:
+		h = math.Mod((gf-bf)/d, 6)
+	case gf:
+		h = (bf-rf)/d + 2
+	default:
+		h = (rf-gf)/d + 4
+	}
+	if h *= 60; h < 0 {
+		h += 360
+	}
+	return h, s, l
+}
+
+func hslHex(h, s, l float64) string {
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := l - c/2
+	var rf, gf, bf float64
+	switch {
+	case h < 60:
+		rf, gf, bf = c, x, 0
+	case h < 120:
+		rf, gf, bf = x, c, 0
+	case h < 180:
+		rf, gf, bf = 0, c, x
+	case h < 240:
+		rf, gf, bf = 0, x, c
+	case h < 300:
+		rf, gf, bf = x, 0, c
+	default:
+		rf, gf, bf = c, 0, x
+	}
+	q := func(v float64) int {
+		return int(math.Round(math.Min(1, math.Max(0, v+m)) * 255))
+	}
+	return fmt.Sprintf("#%02x%02x%02x", q(rf), q(gf), q(bf))
+}
+
+// tintForBg returns c at whatever lightness sits `lift` of relative luminance
+// away from bg's — brighter on a dark background, darker on a light one —
+// keeping c's own hue and saturation.
+//
+// Deliberately NOT a blend toward bg. Mixing a color into the background
+// desaturates it by however far apart the two hues are, so on a navy panel a
+// teal accent keeps its chroma while a red one collapses to brown: equal
+// luminance, a third of the saturation, and invisible against anything warm
+// behind it (a Retro 82 wallpaper, say). Moving only lightness treats the two
+// accents alike, and lift is a luminance delta rather than an HSL one so a red
+// and a green asked for the same lift come back equally present to the eye
+// (green carries 0.7152 of luminance, red 0.2126 — the same HSL lightness would
+// leave the red looking half-lit).
+func tintForBg(c, bg string, lift float64) string {
+	cr, cg, cb, ok := hexRGB(c)
+	if !ok {
+		return c
+	}
+	h, s, _ := rgbHSL(cr, cg, cb)
+	target := luminance(bg) + lift
+	if luminance(bg) > 0.5 {
+		target = luminance(bg) - lift
+	}
+	// Luminance is monotonic in lightness at a fixed hue and saturation, so
+	// bisection converges; 24 rounds is well past 8-bit resolution.
+	loL, hiL := 0.0, 1.0
+	for range 24 {
+		mid := (loL + hiL) / 2
+		if luminance(hslHex(h, s, mid)) < target {
+			loL = mid
+		} else {
+			hiL = mid
+		}
+	}
+	return hslHex(h, s, (loL+hiL)/2)
 }
