@@ -244,26 +244,15 @@ ${sel} .dial-root {
 ${sel} .dial-root:hover {
   background: color-mix(in srgb, var(--h-hover, #1a1a1a) 72%, transparent);
 }
-/* Only the character gets a denser plate. The 58px circle stays a ~15% wash —
-   that is the affordance, and making all of it opaque would blank out two lines
-   of whatever the terminal is printing — while the glyph itself needs to be
-   readable against arbitrary output, so it carries a small disc of the page
-   background with it. Expanded, the accent fill already supplies the contrast,
-   so the plate gets out of the way rather than sitting as a second shape
-   inside it. */
+/* The glyph has no separate fill; the button's translucent background shows
+   through uniformly, including directly behind the character. */
 ${sel} .dial-root-glyph {
   display: grid;
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--h-bg, #000) 60%, transparent);
   color: inherit;
   pointer-events: none;
-  transition: background 120ms ease;
-}
-${sel} .dial-root[aria-expanded="true"] .dial-root-glyph {
-  background: transparent;
 }
 /* Ordered after :hover deliberately — equal specificity, so an expanded root
    under the cursor must still read as armed rather than merely hovered. */
@@ -626,10 +615,7 @@ function buildTerminalInputDial(
   const root = doc.createElement("button")
   root.type = "button"
   root.className = "dial-root"
-  // The ⌘ rides its own small backplate (see .dial-root-glyph) so the character
-  // stays readable against arbitrary terminal output. A level change writes into
-  // this span — the dial swaps in "‹" for a branch — since writing textContent
-  // on the button would throw the plate away.
+  // Level changes replace the glyph with "‹" without changing the root button.
   const rootGlyph = doc.createElement("span")
   rootGlyph.className = "dial-root-glyph"
   rootGlyph.textContent = "⌘"
