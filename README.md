@@ -12,17 +12,19 @@ Answer them from your phone.**
 <table align="center">
 <tr>
 <td align="center" valign="top">
-<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the herdr terminal in the middle, herdr's agent list on the left, the Files browser on the right, and the usage footer along the bottom">
+<img src="docs/screenshots/hero.png" width="605" alt="lasso on a desktop: the herdr terminal in the middle, herdr's workspace list on the left, the Files browser on the right, and the usage footer along the bottom">
 </td>
 <td align="center" valign="top">
-<img src="docs/screenshots/mobile-dial.png" width="170" alt="lasso on a phone: the same agent, with the radial key dial open over the terminal">
+<img src="docs/screenshots/mobile-dial.png" width="170" alt="lasso on a phone: the same workspace, with the radial input dial open over the terminal">
 </td>
 </tr>
 <tr>
 <td align="center"><sub>Your desk: the whole fleet, the diff, the files, the budget.</sub></td>
-<td align="center"><sub>Pocket: same agent, real keys.</sub></td>
+<td align="center"><sub>Pocket: same workspace, real keys.</sub></td>
 </tr>
 </table>
+
+<p align="center"><sub>Real UI captures from isolated demo workspaces. Identifying details are redacted.</sub></p>
 
 An agent that has been waiting forty minutes on a `y/n` you never saw is an
 agent doing nothing. lasso is a single Go binary that puts your whole fleet of
@@ -111,9 +113,10 @@ A host that isn't answering says so rather than hanging the list:
 
 Working tree while it's dirty, branch-vs-base once it's clean. It re-roots
 itself as focus moves between panes and machines, so the diff is always the one
-you're looking at. Here it is on lasso's own repo, mid-redesign of this logo:
+you're looking at. Here it is on lasso's own repo, mid-redesign of the footer
+navigation, with one file's hunks expanded:
 
-<img src="docs/screenshots/diff.png" alt="the Diff pane showing lasso's own working tree" width="620">
+<img src="docs/screenshots/diff.png" alt="the Diff pane showing lasso's own working tree: seven dirty files, one expanded to its hunks" width="620">
 
 ### Files — browse and edit the box the pane is working on
 
@@ -147,13 +150,14 @@ Those controls remain available even with no tracked providers or unavailable
 usage data; there is no footer-visibility toggle. Usage metrics scroll within
 their own track rather than pushing navigation offscreen.
 
-<img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
+<img src="docs/screenshots/usage-footer.png" alt="the desktop footer: host and keyboard-shortcut buttons on the left, each provider's 5-hour and weekly budgets in the middle, New and Sidebar on the right" width="700">
 
 The **Usage** tab in the sidebar is the same numbers in full: every window per
 provider with its own bar, a notch at the share of the window that has already
 elapsed, and — when usage is running ahead of that clock — where it lands at
-reset. So "16%, ahead of pace, ~160% at reset" tells you a weekly budget is
-going to run out on Thursday while the footer still reads a comfortable 16%.
+reset. So "28%, ahead of pace, ~165% at reset" tells you a weekly budget is
+going to run out before the window ever resets, while the footer still reads a
+comfortable 28%.
 
 <img src="docs/screenshots/usage-tab.png" alt="the Usage sidebar tab: per-provider quota windows with pace notches, projected landings, and reset countdowns" width="460">
 
