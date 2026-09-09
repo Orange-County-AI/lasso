@@ -1,12 +1,10 @@
 import {
-  ChevronLeft,
   ChevronRight,
   Files,
   Gauge,
   Globe,
   type LucideIcon,
   NotebookPen,
-  Search,
   Settings,
   SquareTerminal,
 } from "lucide-react"
@@ -35,6 +33,7 @@ import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
+import { mountDesktopNavigationDial } from "@/lib/mobile-input-dial"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import { qk, queryClient } from "@/lib/query"
@@ -147,32 +146,6 @@ function FitTabs({
   )
 }
 
-// A search affordance for the header: styled like an input but it's a button
-// that fires ⌘K, i.e. herdr's own pane search inside the terminal. It
-// fills its centre slot (flex-1, capped at max-w-xs) so it reads as a real
-// search bar at every width — the label just truncates when space runs out
-// rather than collapsing to a lone icon. The ⌘K hint shows once the strip has
-// room for it (container query, `/lnav`).
-function HeaderSearch({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title="Search panes (⌘K)"
-      className="flex h-7 w-full max-w-xs items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground"
-    >
-      <Search className="size-3.5 shrink-0" />
-      {/* The bar fills its centre slot (flex-1), so the label rides along in
-          whatever space is free and only truncates when the strip is genuinely
-          tight — no premature collapse to a lone icon with dead space around it. */}
-      <span className="min-w-0 flex-1 truncate text-left">Search</span>
-      <kbd className="@min-[520px]/lnav:inline-block hidden rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-        ⌘K
-      </kbd>
-    </button>
-  )
-}
-
 function Pane({
   show,
   children,
@@ -203,13 +176,9 @@ function Shell() {
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
-  const [mobileHostOpen, setMobileHostOpen] = React.useState(false)
-  // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
-  // the collapsed-sidebar indicator stay live even when the Files panel is
-  // hidden or the sidebar boots collapsed. `gitReady` gates the badge on the
-  // active pane actually being in a repo — GitStatusBadge renders a green
-  // "clean" dot for ready && dirty === 0, which would be a lie for a plain
-  // directory like $HOME.
+  const [hostMenuOpen, setHostMenuOpen] = React.useState(false)
+  // Keep the Files tab's git badge live even while another sidebar tab is
+  // selected. The floating navigation replaces the old header indicator.
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
   const gitReady = diff.data?.isRepo === true
@@ -302,23 +271,27 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // The touch-only terminal dial lives inside the ttyd iframe. Its app branch
-  // crosses that same-origin boundary with one typed event; desktop keeps using
-  // the visible header and keyboard shortcuts.
+  // Desktop navigation floats in this document; the mobile input dial stays
+  // beside xterm's textarea to preserve the iOS keyboard. Both share commands.
+  React.useEffect(mountDesktopNavigationDial, [])
+
   React.useEffect(() => {
     const onMobileCommand = (event: Event) => {
       const command = (event as CustomEvent<MobileCommand>).detail
       if (command === "new") {
+        setNewTab("agent")
         setNewOpen(true)
       } else if (command === "sidebar") {
         toggleSidebar()
       } else if (command === "host") {
-        setMobileHostOpen(true)
+        setHostMenuOpen(true)
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
         // chord a software keyboard can't type, and openHerdrGoto hands the
         // keyboard to xterm so the query can be typed straight into it.
         openHerdrGoto()
+      } else if (command === "keybindings") {
+        setShortcutsOpen(true)
       }
     }
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
@@ -420,62 +393,10 @@ function Shell() {
             minSize={15}
             className="flex h-full min-h-0 flex-col"
           >
-            {/* The left column's header row. It is not a tab strip: the column
-                is always the Herdr terminal, so the row carries the host picker,
-                ⌘K search, and the shared New agent/terminal action. Styled with
-                the sidebar's strip classes so both columns share one chrome. */}
-            <div
-              className={cn(
-                stripClass,
-                "@container/lnav mobile-terminal-nav flex items-center pr-2 text-muted-foreground"
-              )}
-            >
-              <HostSwitcher variant="nav" />
-              <div className="flex min-w-0 flex-1 justify-center px-2">
-                {/* Arrow, not the bare function: onClick would otherwise hand
-                    the click event in as `tries` and kill the retry. */}
-                <HeaderSearch onOpen={() => openHerdrGoto()} />
-              </div>
-              {/* New sits at the far-right of the row; when the sidebar is
-                  collapsed the git status + expand control follow it. The
-                  dialog hands keyboard focus to a newly created pane. */}
-              <div className="ml-2 flex items-center gap-1.5">
-                <NewDialog
-                  open={newOpen}
-                  onOpenChange={setNewOpen}
-                  tab={newTab}
-                  onTabChange={setNewTab}
-                  variant="header"
-                />
-                {collapsed && (
-                  <>
-                    {/* Git status at a glance while the file viewer is hidden:
-                        the uncommitted-change count (or a green dot when clean),
-                        mirroring the Files tab's badge. */}
-                    <GitStatusBadge
-                      dirty={diffDirty}
-                      ready={gitReady}
-                      textClassName="self-center text-[13px]"
-                    />
-                    <button
-                      type="button"
-                      className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                      title="show file viewer"
-                      onClick={() => {
-                        markSidebarIntent()
-                        expandSidebar()
-                      }}
-                    >
-                      <ChevronLeft className="size-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
             {/* term-shell is the hook the Retro 82 atmosphere draws its
                 amber/teal hairline on (index.css); inert under every other
                 theme. */}
-            <div className="term-shell relative flex min-h-0 flex-1 flex-col">
+            <div className="term-shell relative isolate flex min-h-0 flex-1 flex-col">
               <TerminalFrame
                 id="term"
                 base="/terminal"
@@ -483,6 +404,11 @@ function Shell() {
                 suppressContext
                 inputMode="herdr"
                 hidden={false}
+              />
+              <HostSwitcher
+                className="absolute right-6 bottom-24 z-40"
+                open={hostMenuOpen}
+                onOpenChange={setHostMenuOpen}
               />
             </div>
           </ResizablePanel>
@@ -608,11 +534,11 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
-        <HostSwitcher
-          anchorOnly
-          className="mobile-host-anchor fixed right-6 bottom-24 z-40"
-          open={mobileHostOpen}
-          onOpenChange={setMobileHostOpen}
+        <NewDialog
+          open={newOpen}
+          onOpenChange={setNewOpen}
+          tab={newTab}
+          onTabChange={setNewTab}
         />
         {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
           with herdr-mirror running covers the fleet (other machines' workspaces

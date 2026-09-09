@@ -294,20 +294,6 @@
   }
 }
 
-.mobile-host-anchor {
-  display: none;
-}
-
-@media (pointer: coarse) {
-  .mobile-terminal-nav {
-    display: none !important;
-  }
-
-  .mobile-host-anchor {
-    display: block;
-  }
-}
-
 /* Horizontally-scrollable strips (e.g. the sidebar tab row) without a visible
  * scrollbar — the bar still scrolls via wheel/trackpad, but the scrollbar
  * doesn't steal vertical space (which otherwise inflates the row and throws the

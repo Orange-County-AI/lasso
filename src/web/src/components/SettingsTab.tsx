@@ -895,9 +895,9 @@ function UsageTrackingSettings() {
         shows them in the footer and the Usage tab. Unchecking one stops the
         requests too, so a provider you don't care about costs nothing. Arrows
         set the order. Compact shortens provider names and removes the footer's
-        pace bars—hover a metric for its full label, reset, and pace. Hiding
-        the footer only removes that bar: providers stay tracked and the Usage
-        tab keeps showing them. Providers without credentials stay hidden
+        pace bars—hover a metric for its full label, reset, and pace. Hiding the
+        footer only removes that bar: providers stay tracked and the Usage tab
+        keeps showing them. Providers without credentials stay hidden
         automatically.
       </p>
     </div>
