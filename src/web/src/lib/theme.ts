@@ -1,5 +1,5 @@
 import { api, type ThemeCatalogEntry, type ThemePayload } from "@/lib/api"
-import { ensureContrast, isLightSurface } from "@/lib/contrast"
+import { contrastRatio, ensureContrast, isLightSurface } from "@/lib/contrast"
 import { applyMode, applyScheme, getMode, localPaletteName } from "@/lib/mode"
 import {
   backgroundFor,
@@ -688,10 +688,9 @@ const HERDR_CHROME_STYLE_ID = "lasso-herdr-chrome"
 //
 // --fg is body text and gets WCAG AA; --muted is secondary and gets a lower bar
 // so the brightness hierarchy survives the repair; the status hues and --accent
-// are small text, icons and button fills and get AA-large. Surfaces
-// (--panel/--border/--hover) and --accent-dim are deliberately not touched:
-// they are backgrounds, and "repairing" one would flatten the very step the
-// design separates surfaces by.
+// are small text, icons and button fills and get AA-large. A raised surface
+// (--hover) that hides body text is derived from the canvas instead; other
+// surface tokens and --accent-dim retain their palette values.
 const TEXT_TOKEN_CONTRAST: Record<string, number> = {
   "--fg": 4.5,
   "--muted": 3.2,
@@ -724,8 +723,15 @@ function legiblePalette(css: string): string {
   const bg = value("--bg")
   const panel = value("--panel") || bg
   if (!bg) return css
+  const fg = ensureContrast(ensureContrast(value("--fg"), bg, 4.5), panel, 4.5)
   return decls
     .map(([name, raw]) => {
+      // Terminal ANSI gray is not necessarily a usable raised UI surface.
+      // Tabs, selected wallpaper tiles and muted controls all share --hover;
+      // keep it near the canvas when the supplied surface hides their text.
+      if (name === "--hover" && contrastRatio(raw, fg) < 4.5) {
+        return `${name}: color-mix(in srgb, ${bg} 94%, ${fg});`
+      }
       const target = TEXT_TOKEN_CONTRAST[name]
       if (!target) return `${name}: ${raw};`
       const onBG = ensureContrast(raw, bg, target)
