@@ -52,8 +52,26 @@ type themeDef struct {
 	ansi ansiPalette
 }
 
+const defaultTheme = "retro-82"
+
 // themes is keyed by canonical (normalized) herdr theme name.
 var themes = map[string]themeDef{
+	// UI roles adapted from upstream colors.toml; ANSI colors from alacritty.toml.
+	// https://github.com/OldJobobo/omarchy-retro-82-theme
+	"retro-82": {
+		ui: uiPalette{
+			Accent: "#faa968", PanelBg: "#00172e", Surface0: "#001123", Surface1: "#57898a",
+			SurfaceDim: "#000c17", Overlay0: "#57898a", Overlay1: "#65a5a1", Text: "#f6dcac",
+			Subtext0: "#8cbfb8", Mauve: "#3f8f8a", Green: "#028391", Yellow: "#e97b3c",
+			Red: "#f85525", Blue: "#faa968", Teal: "#8cbfb8", Peach: "#ed9563",
+		},
+		ansi: ansiPalette{
+			Black: "#00172e", Red: "#f85525", Green: "#028391", Yellow: "#e97b3c",
+			Blue: "#faa968", Magenta: "#3f8f8a", Cyan: "#8cbfb8", White: "#f6dcac",
+			BrightBlack: "#57898a", BrightRed: "#f97751", BrightGreen: "#35a2a7", BrightYellow: "#ed9563",
+			BrightBlue: "#fbb986", BrightMagenta: "#65a5a1", BrightCyan: "#a3ccc6", BrightWhite: "#f6dcac",
+		},
+	},
 	"catppuccin": {
 		ui: uiPalette{
 			Accent: "#89b4fa", PanelBg: "#181825", Surface0: "#313244", Surface1: "#45475a",
@@ -317,8 +335,8 @@ var themes = map[string]themeDef{
 }
 
 // themeOption is one selectable built-in theme, served at /api/theme so the
-// Settings dropdown offers exactly the set this build can resolve (and herdr
-// accepts), with display labels and dark/light grouping.
+// Settings dropdown offers exactly the set this build can resolve,
+// with display labels and dark/light grouping.
 type themeOption struct {
 	Name  string `json:"name"`
 	Label string `json:"label"`
@@ -328,6 +346,7 @@ type themeOption struct {
 // themeOptions lists the selectable themes in display order: dark schemes
 // first, then the light variants. Every Name is a canonical key in themes.
 var themeOptions = []themeOption{
+	{Name: "retro-82", Label: "Retro 82"},
 	{Name: "catppuccin", Label: "Catppuccin"},
 	{Name: "tokyo-night", Label: "Tokyo Night"},
 	{Name: "dracula", Label: "Dracula"},
@@ -351,7 +370,7 @@ var themeOptions = []themeOption{
 // themeAliases maps herdr's alternate theme spellings to our canonical keys,
 // mirroring herdr's from_name match arms (src/app/state.rs) so every name herdr
 // accepts resolves to the same palette here. Unknown names fall back to
-// catppuccin, matching herdr (its from_name returns None → default).
+// lasso's default theme.
 var themeAliases = map[string]string{
 	"catppuccin-mocha": "catppuccin",
 	"mocha":            "catppuccin",
@@ -419,7 +438,7 @@ func herdrConfigIn(configPath, xdgConfigHome, home string) string {
 
 // loadHerdrTheme resolves the active theme. If forceName != "" and != "auto" it
 // is used directly; otherwise the name (and overrides) come from config.toml.
-// Falls back to catppuccin (herdr's default) on anything unreadable/unknown.
+// Falls back to Retro 82 on anything unreadable/unknown.
 func loadHerdrTheme(forceName string) resolvedTheme {
 	name, custom, legacyAccent := "", map[string]string{}, ""
 	if forceName != "" && forceName != "auto" {
@@ -430,17 +449,17 @@ func loadHerdrTheme(forceName string) resolvedTheme {
 
 	rawName := name
 	if name == "" {
-		name = "catppuccin"
+		name = defaultTheme
 	}
 	key := normalizeThemeName(name)
 	def, ok := themes[key]
 	if !ok {
-		key, def = "catppuccin", themes["catppuccin"]
+		key, def = defaultTheme, themes[defaultTheme]
 	}
 
 	rt := resolvedTheme{Name: rawName, Resolved: key, ui: def.ui, ansi: def.ansi}
 	if rt.Name == "" {
-		rt.Name = "(default catppuccin)"
+		rt.Name = "(default " + defaultTheme + ")"
 	}
 
 	// [theme.custom] per-token overrides, then legacy [ui].accent (only if

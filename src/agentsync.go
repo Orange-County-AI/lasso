@@ -405,7 +405,7 @@ func resolveThemeByName(name string) resolvedTheme {
 	key := normalizeThemeName(name)
 	def, ok := themes[key]
 	if !ok {
-		key, def = "catppuccin", themes["catppuccin"]
+		key, def = defaultTheme, themes[defaultTheme]
 	}
 	return resolvedTheme{Name: name, Resolved: key, ui: def.ui, ansi: def.ansi}
 }

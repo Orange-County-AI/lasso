@@ -85,14 +85,14 @@ func TestEveryThemeResolves(t *testing.T) {
 
 func TestAliasesAndUnknown(t *testing.T) {
 	cases := map[string]string{
-		"Rosé Pine":        "rose-pine", // note: not a real alias; spaces/accents -> falls back
+		"Retro 82":         "retro-82",
 		"rosepine":         "rose-pine",
 		"Tokyo Night":      "tokyo-night",
 		"tokyo_night":      "tokyo-night",
 		"catppuccin-mocha": "catppuccin",
 		"gruvbox-dark":     "gruvbox",
 		"onedark":          "one-dark",
-		"totally-bogus":    "catppuccin", // unknown -> herdr default
+		"totally-bogus":    "retro-82",
 		// light variants + herdr's alternate spellings for them
 		"tokyo-night-day": "tokyo-night-day",
 		"Tokyo Night Day": "tokyo-night-day",
@@ -107,11 +107,8 @@ func TestAliasesAndUnknown(t *testing.T) {
 		"solarized-light": "solarized-light",
 	}
 	for in, want := range cases {
-		got := normalizeThemeName(in)
-		if _, ok := themes[got]; !ok {
-			got = "catppuccin"
-		}
-		if got != want && !(in == "Rosé Pine") { // accented form legitimately won't match
+		got := loadHerdrTheme(in).Resolved
+		if got != want {
 			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
 		}
 	}

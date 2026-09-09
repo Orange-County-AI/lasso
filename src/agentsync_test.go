@@ -279,13 +279,13 @@ func TestSyncLassoResolved(t *testing.T) {
 	}
 }
 
-// resolveThemeByName normalizes aliases and falls back to catppuccin.
+// resolveThemeByName normalizes aliases and uses lasso's default fallback.
 func TestResolveThemeByName(t *testing.T) {
 	if got := resolveThemeByName("mocha").Resolved; got != "catppuccin" {
 		t.Errorf("alias mocha -> %q, want catppuccin", got)
 	}
-	if got := resolveThemeByName("nonsense").Resolved; got != "catppuccin" {
-		t.Errorf("unknown -> %q, want catppuccin", got)
+	if got := resolveThemeByName("nonsense").Resolved; got != "retro-82" {
+		t.Errorf("unknown -> %q, want retro-82", got)
 	}
 	if got := resolveThemeByName("catppuccin-latte").Resolved; got != "catppuccin-latte" {
 		t.Errorf("latte -> %q", got)
