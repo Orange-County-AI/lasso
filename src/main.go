@@ -79,7 +79,7 @@ var (
 	disableSelfUpdate = flag.Bool("disable-self-update", envOn("LASSO_DISABLE_SELF_UPDATE"),
 		"disable the in-app self-update (git pull + systemctl --user restart); env LASSO_DISABLE_SELF_UPDATE=1")
 	devMode   = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
-	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live, or force a herdr theme name — dark: catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live (default: retro-82 when unconfigured), or force a theme name — dark: retro-82/catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the

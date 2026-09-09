@@ -247,7 +247,11 @@ plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.g
 The **terminal** adopts the theme from `~/.config/herdr/config.toml`
 (`[theme].name`) and repaints live when you change it — no restart. Leave
 `-theme auto` to follow herdr, or force one with `-theme <name>` (`lasso serve -h`
-lists the names).
+lists the names). **Retro 82** is the default when no theme is configured (and
+the fallback for unknown names); an existing configured theme still wins.
+Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
+Its navy, amber, and teal palette comes from
+[OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
 The **chrome** around the terminal (sidebar, diff, files, settings) is lasso's
 own monochrome design system, not herdr's palette. It follows your **system
