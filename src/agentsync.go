@@ -205,8 +205,15 @@ func themeBackend(host string) (themeTarget, func(), error) {
 // syncThemeToHost pushes rt to one host and records the result (themeSynced), so
 // a host that failed or was skipped is retried by the next convergence pass. It
 // is best-effort: a host lasso cannot reach logs and is left for that retry.
+//
+// A FOREIGN resolution is never pushed. Every write here spells the theme by
+// name, and for a selection this build cannot resolve the only name it has is
+// the herdr base — so pushing would overwrite the selection on each host with
+// the base it is expressed as, which is the fleet-wide half of the revert this
+// exists not to do (see resolvedTheme.Foreign). Nothing is recorded either, so
+// whichever build does know the theme converges the fleet on its next pass.
 func syncThemeToHost(host string, rt resolvedTheme) {
-	if !themeSyncEnabledFor(host) {
+	if !themeSyncEnabledFor(host) || rt.Foreign {
 		return
 	}
 	if isLocalHost(host) {
@@ -404,7 +411,7 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 // herdr owns any [theme.custom]).
 func resolveThemeByName(name string) resolvedTheme {
 	key := normalizeThemeName(name)
-	def, ok := themes[key]
+	def, ok := lookupThemeDef(key)
 	if !ok {
 		key, def = defaultTheme, themes[defaultTheme]
 	}

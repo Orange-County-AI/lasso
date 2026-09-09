@@ -28,16 +28,14 @@
         }
       })()
     </script>
-    <!-- The SVG is the master (docs/icon/build.py renders every PNG from it).
-         Browsers that support it take it and scale the glow cleanly at any
-         DPR; the .ico and PNGs below stay for the ones that don't, and for
-         iOS, which only ever reads apple-touch-icon. -->
-    <link rel="icon" type="image/svg+xml" href="/lasso.svg" />
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- Generated from the current L logomark by docs/icon/build.py.
+         Versioned URLs retire browsers' aggressively cached old favicons. -->
+    <link rel="icon" type="image/svg+xml" href="/lasso.svg?v=2" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico?v=2" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=2" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png?v=2" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
     <!-- Home Screen web app. iOS only delivers Web Push to a site the user has
          added to their Home Screen, and only treats it as a standalone app —
          rather than a Safari shortcut — when it declares itself one. The

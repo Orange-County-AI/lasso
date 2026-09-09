@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -677,5 +678,161 @@ func TestWriteHerdrThemeNameViaSynthesizes(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(cfg); strings.Contains(string(got), lassoThemeTag) {
 		t.Errorf("generated data survived on the remote:\n%s", got)
+	}
+}
+
+// foreignSelection writes the config a NEWER lasso leaves behind: a real
+// generated block for a theme this build knows, with the identity marker moved
+// to a name it does not. That is byte-for-byte what an older binary sees when a
+// newer one selects a theme it has never heard of.
+func foreignSelection(t *testing.T, cfg, known, unknown string) (base string) {
+	t.Helper()
+	if def, ok := lookupThemeDef(known); !ok || def.herdrBase == "" {
+		t.Skipf("%s is not a lasso-only theme in this build", known)
+	}
+	if err := setHerdrThemeName(cfg, known); err != nil {
+		t.Fatalf("select %s: %v", known, err)
+	}
+	body, _ := os.ReadFile(cfg)
+	swapped := strings.Replace(string(body),
+		lassoThemeTag+" = "+strconv.Quote(known),
+		lassoThemeTag+" = "+strconv.Quote(unknown), 1)
+	if swapped == string(body) {
+		t.Fatalf("no identity marker for %s in:\n%s", known, body)
+	}
+	os.WriteFile(cfg, []byte(swapped), 0o644)
+	return parseThemeConfig(cfg).Name
+}
+
+// A theme this build cannot resolve is still the human's selection, and the
+// generated block beside it is that theme's palette. Deleting it is what made a
+// theme revert on its own: a released lasso and a newer one share one
+// config.toml, and the older one used to strip every block it could not claim,
+// leaving [theme].name holding the bare herdr base (Vesper, or Catppuccin Latte
+// for a light theme). So: paint the block, report nothing stranded, rewrite
+// nothing.
+func TestForeignThemeSelectionIsPaintedAndNeverRewritten(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	base := foreignSelection(t, cfg, "matte-black", "moonveil-1999")
+	want, ok := lookupThemeDef("matte-black")
+	if !ok {
+		t.Skip("matte-black is not vendored in this build")
+	}
+	before, _ := os.ReadFile(cfg)
+
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	rt, stranded := loadHerdrThemeConfig("auto")
+	if stranded {
+		t.Error("reported stranded: the poll would delete another build's selection")
+	}
+	if rt.ui.PanelBg != want.ui.PanelBg {
+		t.Errorf("panel_bg %q, want the generated block's %q (base %s paints %q)",
+			rt.ui.PanelBg, want.ui.PanelBg, base, themes[base].ui.PanelBg)
+	}
+	if rt.Name != "moonveil-1999" {
+		t.Errorf("selection reported as %q, want the marker's moonveil-1999", rt.Name)
+	}
+
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || changed {
+		t.Errorf("migrate rewrote a selection it cannot resolve: changed=%v err=%v", changed, err)
+	}
+	if got, _ := os.ReadFile(cfg); string(got) != string(before) {
+		t.Errorf("config rewritten:\n%s\nwant:\n%s", got, before)
+	}
+}
+
+// Not claiming a block must not mean never clearing one: herdr's own theme
+// popup writes [theme].name, and once it moves off the base the block records,
+// the block is leftovers herdr would keep applying — whether or not this build
+// knows the theme it was generated for.
+func TestOutsideRethemeClearsAForeignBlock(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	base := foreignSelection(t, cfg, "matte-black", "moonveil-1999")
+	body, _ := os.ReadFile(cfg)
+	moved := strings.Replace(string(body), "name = "+strconv.Quote(base), `name = "nord"`, 1)
+	os.WriteFile(cfg, []byte(moved), 0o644)
+
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	rt, stranded := loadHerdrThemeConfig("auto")
+	if !stranded {
+		t.Fatal("leftovers not reported: nothing would ever clear them")
+	}
+	if rt.Resolved != "nord" || rt.ui.PanelBg != themes["nord"].ui.PanelBg {
+		t.Errorf("resolved %q panel_bg %q, want nord's — herdr paints what the human picked", rt.Resolved, rt.ui.PanelBg)
+	}
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || !changed {
+		t.Fatalf("migrate: changed=%v err=%v", changed, err)
+	}
+	if got, _ := os.ReadFile(cfg); strings.Contains(string(got), lassoThemeTag) {
+		t.Errorf("leftovers survived:\n%s", got)
+	}
+}
+
+// The tag on a generated token line is a delete right, and lasso 3.0.2 and
+// earlier take it for any `# lasso-theme` line — including one written for a
+// theme they cannot resolve, which is why they stripped Omarchy selections off
+// a shared config.toml. Nothing this build generates may carry that tag; the
+// identity marker, which those builds only read, still must.
+func TestGeneratedTokensAreNotTaggedForOlderBuilds(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	body, _ := os.ReadFile(cfg)
+	for _, line := range strings.Split(string(body), "\n") {
+		// 3.0.2's own rule: a line whose trailing comment is exactly the tag.
+		code, comment, ok := lineComment(line)
+		if ok && comment == lassoThemeTag && strings.TrimSpace(code) != "" {
+			t.Errorf("an older lasso would delete this line: %q", line)
+		}
+	}
+	c := parseThemeConfig(cfg)
+	if c.Marker != "retro-82" || c.MarkerBase != "vesper" {
+		t.Errorf("marker=%q base=%q, want retro-82 on vesper", c.Marker, c.MarkerBase)
+	}
+	if len(c.Generated) == 0 {
+		t.Error("no generated tokens: this build no longer reads its own block")
+	}
+}
+
+// The upgrade path off the old representation (marker with no recorded base,
+// tokens under the legacy tag): it has to migrate exactly once, keep resolving
+// to the same theme, and not stack a second block beside the first.
+func TestMigrateLegacyTaggedBlock(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := setHerdrThemeName(cfg, "retro-82"); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	body, _ := os.ReadFile(cfg)
+	legacy := strings.ReplaceAll(string(body), "# "+lassoTokenTag, "# "+lassoThemeTag)
+	var kept []string
+	for _, line := range strings.Split(legacy, "\n") {
+		if markerBase(line) == "" {
+			kept = append(kept, line)
+		}
+	}
+	os.WriteFile(cfg, []byte(strings.Join(kept, "\n")), 0o644)
+
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || !changed {
+		t.Fatalf("migrate: changed=%v err=%v", changed, err)
+	}
+	got, _ := os.ReadFile(cfg)
+	c := parseThemeConfig(cfg)
+	if c.Name != "vesper" || c.lassoTheme() != "retro-82" || c.MarkerBase != "vesper" {
+		t.Fatalf("migrated to name=%q marker=%q base=%q", c.Name, c.Marker, c.MarkerBase)
+	}
+	if n := strings.Count(string(got), "panel_bg ="); n != 1 {
+		t.Errorf("panel_bg written %d times:\n%s", n, got)
+	}
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	if rt := loadHerdrTheme("auto"); rt.Resolved != "retro-82" || rt.Customized {
+		t.Errorf("after migration resolved %q customized %v", rt.Resolved, rt.Customized)
+	}
+	if changed, err := migrateHerdrThemeConfig(cfg); err != nil || changed {
+		t.Errorf("second migrate rewrote a current file: changed=%v err=%v", changed, err)
 	}
 }

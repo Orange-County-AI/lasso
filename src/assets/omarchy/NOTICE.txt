@@ -1,0 +1,63 @@
+Omarchy themes vendored into lasso
+==================================
+
+Source:  https://github.com/basecamp/omarchy
+Commit:  5ead870507dfb68db696b3ddb948cc3d178e8d62 (2026-09-09)
+Path:    themes/<name>/
+License: MIT — Copyright (c) David Heinemeier Hansson (the repository's LICENSE,
+         reproduced verbatim in LICENSE.omarchy beside this file). The MIT terms
+         cover this directory's contents, palettes and wallpapers alike; the
+         copyright notice above and that license file are what the terms
+         require to travel with them.
+
+What was vendored
+-----------------
+For each of the 22 official themes:
+
+  themes/<name>/colors.toml      the semantic palette Omarchy renders every
+                                 app's theme from (see the repo's
+                                 docs/theming.md) — byte-for-byte upstream
+  themes/<name>/backgrounds/     that theme's wallpapers — byte-for-byte
+                                 upstream, all 92 of them, ~53 MB
+  themes/<name>/thumbs/          NOT upstream: a 320px WebP preview generated
+                                 here for each wallpaper (~1 MB in total), so a
+                                 theme picker loads ~20 KB a tile instead of
+                                 ~1 MB. Named after the wallpaper's stem, since
+                                 a JPEG's thumbnail is still WebP.
+
+Everything is embedded in the lasso binary (src/omarchy.go), so both the palette
+and the wallpapers of every official theme work with no network and no Omarchy
+installation.
+
+Re-vendoring
+------------
+From a fresh checkout of the commit above:
+
+  for d in themes/*/; do n=$(basename "$d")
+    mkdir -p "$DST/$n/backgrounds" "$DST/$n/thumbs"
+    cp "$d/colors.toml" "$DST/$n/colors.toml"
+    cp "$d"/backgrounds/* "$DST/$n/backgrounds/"
+    for f in "$d"/backgrounds/*; do b=$(basename "$f")
+      magick "$f[0]" -resize '320x320>' -strip -quality 72 "$DST/$n/thumbs/${b%.*}.webp"
+    done
+  done
+
+then update the commit and date above.
+
+What was NOT vendored
+---------------------
+The previews (preview.png, preview-unlock.png), the unlock images, and every
+generated per-app config (alacritty.toml, btop.theme, neovim.lua, vscode.json,
+…). lasso derives its own UI palette and xterm.js ITheme from colors.toml
+(src/omarchy.go) and needs none of them.
+
+Backgrounds on the machine itself
+---------------------------------
+A vendored wallpaper is shadowed by a file of the same name in any of these,
+searched in order, so an Omarchy box's own themes and lasso's git installs win:
+
+  ~/.lasso/omarchy/themes/<name>/backgrounds   (installed by lasso from a git URL)
+  ~/.config/omarchy/backgrounds/<name>         (the user's own overlay)
+  ~/.config/omarchy/themes/<name>/backgrounds
+  ~/.local/share/omarchy/themes/<name>/backgrounds
+  /usr/share/omarchy/themes/<name>/backgrounds

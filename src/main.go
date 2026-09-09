@@ -164,6 +164,12 @@ func runServer() {
 			"or pass -insecure-no-auth to bind bare (only safe on a private interface like tailscale0)", *listenAddr)
 	}
 
+	// Resolve the Omarchy registry (vendored official palettes + whatever was
+	// installed from a git URL) before the theme, so a config naming an
+	// installed theme resolves to it at the first paint rather than falling
+	// back to the default until something re-reads it.
+	logOmarchyThemes()
+
 	// Bring the local config.toml up to the form herdr 0.9 accepts before
 	// reading it: a theme lasso picked under an older build is written as a name
 	// herdr rejects, which costs that machine both its palette and a clean
@@ -245,21 +251,11 @@ func runServer() {
 		}
 		writeJSON(w, a)
 	})
-	mux.HandleFunc("/api/theme", func(w http.ResponseWriter, r *http.Request) {
-		rt := hub.themeSnapshot()
-		writeJSON(w, themePayload{
-			Name:            rt.Name,
-			Resolved:        rt.Resolved,
-			Customized:      rt.Customized,
-			CSS:             rt.cssVars(),
-			Xterm:           json.RawMessage(rt.xtermJSON()),
-			Themes:          themeOptions,
-			Forced:          *themeName != "" && *themeName != "auto",
-			SyncAgentThemes: syncAgentThemesEnabled(),
-			ThemeSyncOff:    themeSyncOffHosts(),
-		})
-	})
+	mux.HandleFunc("/api/theme", serveTheme)
 	mux.HandleFunc("/api/theme-set", serveThemeSet)
+	mux.HandleFunc("/api/omarchy-themes", serveOmarchyThemes)
+	mux.HandleFunc(omarchyBGPrefix, serveOmarchyBackground)
+	mux.HandleFunc(omarchyThumbPrefix, serveOmarchyBackground)
 	mux.HandleFunc("/api/events", hub.serveSSE)
 	mux.HandleFunc("/api/files", serveFiles)
 	mux.HandleFunc("/api/file", serveFile)
@@ -1337,6 +1333,35 @@ func serveClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"closed": closed, "errors": errs})
 }
 
+// serveTheme is GET /api/theme: the live theme by default, or — with ?name= —
+// the SAME payload resolved for one named theme WITHOUT selecting it anywhere.
+// That is what lets the browser preview a palette in the Themes tab, and what
+// lets it paint the user's preferred light/dark theme from the system setting
+// without writing herdr's config (which is a fleet-wide, per-machine decision:
+// two tabs disagreeing about light mode must not fight over it).
+func serveTheme(w http.ResponseWriter, r *http.Request) {
+	rt := liveTheme()
+	if q := r.URL.Query().Get("name"); q != "" {
+		key := normalizeThemeName(q)
+		if _, ok := lookupThemeDef(key); !ok {
+			http.Error(w, fmt.Sprintf("unknown theme %q", q), http.StatusBadRequest)
+			return
+		}
+		rt = resolveThemeByName(key)
+	}
+	writeJSON(w, themePayload{
+		Name:            rt.Name,
+		Resolved:        rt.Resolved,
+		Customized:      rt.Customized,
+		CSS:             rt.cssVars(),
+		Xterm:           json.RawMessage(rt.xtermJSON()),
+		Themes:          themeOptionsAll(),
+		Forced:          *themeName != "" && *themeName != "auto",
+		SyncAgentThemes: syncAgentThemesEnabled(),
+		ThemeSyncOff:    themeSyncOffHosts(),
+	})
+}
+
 // serveThemeSet (Settings tab) switches the herdr/lasso theme by rewriting
 // [theme].name in the LOCAL herdr config.toml — the single source of truth both
 // already follow: the hub re-resolves the config every poll (bumping theme_rev
@@ -1398,7 +1423,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := normalizeThemeName(req.Name)
-	if _, ok := themes[name]; !ok {
+	if _, ok := lookupThemeDef(name); !ok {
 		http.Error(w, fmt.Sprintf("unknown theme %q", req.Name), http.StatusBadRequest)
 		return
 	}

@@ -1,13 +1,22 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import {
   ChevronDown,
   ChevronUp,
+  Download,
+  ExternalLink,
   Keyboard,
   Monitor,
   Moon,
   Palette,
   RotateCw,
   Sun,
+  Upload,
+  X,
 } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
@@ -20,9 +29,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { api, completeUsageProviderOrder } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
-import { getMode, type Mode, setMode } from "@/lib/mode"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  api,
+  completeUsageProviderOrder,
+  type ThemeCatalogEntry,
+  type ThemePayload,
+} from "@/lib/api"
+import { lsGet, lsSet, useApp } from "@/lib/app-store"
+import {
+  getMode,
+  getPalettePref,
+  type Mode,
+  resolvedMode,
+  setMode,
+  setPalettePref,
+  subscribeSystemScheme,
+  systemPrefersDark,
+} from "@/lib/mode"
 import {
   disablePush,
   enablePush,
@@ -31,13 +55,27 @@ import {
 } from "@/lib/push"
 import { qk } from "@/lib/query"
 import { SHORTCUTS } from "@/lib/shortcuts"
-import { ATMOSPHERE_THEME, applyWallpaper, refreshTheme } from "@/lib/theme"
+import {
+  applyAtmosphere,
+  primeThemeCatalog,
+  refreshTheme,
+  shippedPairs,
+} from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 import {
-  getWallpaper,
-  RETRO82_WALLPAPERS,
-  setWallpaperId,
+  backgroundFor,
+  DEFAULT_SCRIM,
+  forgetBackground,
+  getScrim,
+  getShading,
+  NO_BACKGROUND,
+  rememberBackground,
+  type ShippedBackground,
+  setScrim,
+  setShading,
+  setThemeBackground,
+  themeBackgrounds,
 } from "@/lib/wallpaper"
 
 // Native textarea/select styled to match the shadcn <Input>.
@@ -123,13 +161,21 @@ function SaveStatus({
   )
 }
 
-// The Settings tab: lasso↔herdr socket-protocol compatibility (top) plus the
-// "New Agent" creator configuration. Lasso targets a fixed protocol (baked in
-// at build time); the daemon reports its own over the socket, and when they
-// drift terminals and RPC silently break, so we surface it here. The creator
-// defaults (where to scan for repos, the default agent, the scratch setup
-// script) are global; each repo's files-to-copy + setup commands are scoped to
-// the active host. All of it persists in ~/.lasso/lasso.db.
+// The Settings tab, in two panes. General is lasso↔herdr socket-protocol
+// compatibility (top) plus the "New Agent" creator configuration: lasso targets
+// a fixed protocol (baked in at build time), the daemon reports its own over the
+// socket, and when they drift terminals and RPC silently break, so we surface it
+// here. The creator defaults (where to scan for repos, the default agent, the
+// scratch setup script) are global; each repo's files-to-copy + setup commands
+// are scoped to the active host. All of it persists in ~/.lasso/lasso.db.
+//
+// Themes is everything about how lasso and herdr LOOK — the palette, its
+// backdrop, and which of those choices are this browser's alone (see
+// ThemesSettings). It is its own pane because half of it is a gallery of
+// pictures: inline with the creator settings it pushed everything else off the
+// screen.
+type SettingsSub = "general" | "themes"
+const SUB_KEY = "lasso-settings-sub"
 export function SettingsTab({
   active,
   onOpenShortcuts,
@@ -145,6 +191,15 @@ export function SettingsTab({
   const info = versionQuery.data ?? null
   const loading = versionQuery.isLoading
   const errored = versionQuery.isError
+
+  // Which pane is showing, remembered per browser like the right-hand view
+  // itself: someone iterating on a theme should not have to re-find it.
+  const [sub, setSub] = React.useState<SettingsSub>(() =>
+    lsGet(SUB_KEY) === "themes" ? "themes" : "general"
+  )
+  React.useEffect(() => {
+    lsSet(SUB_KEY, sub)
+  }, [sub])
 
   // Which host's settings to edit — each host stores them in its own lasso.db.
   // The picker lists the local machine plus every reachable, compatible remote
@@ -195,109 +250,257 @@ export function SettingsTab({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-border border-b bg-background px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
-            lasso
-          </span>
-          <Pill multiline>
-            targets protocol{" "}
-            {loading ? "…" : errored || !info ? "unknown" : info.lasso_protocol}
-          </Pill>
-          {info?.lasso_version && (
-            <Pill title="this lasso build's version" multiline>
-              lasso {info.lasso_version}
-            </Pill>
-          )}
-          {info?.latest_version && info.update_state === "available" && (
-            <Pill
-              tone="warn"
-              title="a newer lasso release is available — run `lasso update`"
-              multiline
+      <Tabs
+        value={sub}
+        onValueChange={(v) => setSub(v as SettingsSub)}
+        className="@container min-h-0 flex-1 gap-0 overflow-hidden"
+      >
+        <TabsList className="mx-3 mt-3 grid w-auto grid-cols-2">
+          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="themes">
+            <Palette className="size-3.5" />
+            Themes
+          </TabsTrigger>
+        </TabsList>
+        {/* Both panes stay mounted so the theme queries and the gallery's
+            scroll position survive a hop to General and back — and so a
+            background pick is never interrupted by a remount. */}
+        <TabsContent
+          value="general"
+          forceMount
+          className="min-h-0 overflow-y-auto px-3 py-4 data-[state=inactive]:hidden"
+        >
+          <AutoTitleToggle active={active && sub === "general"} />
+          <NotificationsSettings active={active && sub === "general"} />
+          <UsageTrackingSettings />
+          <div className="mb-4 flex flex-col gap-1">
+            <label className={labelClass} htmlFor="settings-host">
+              Configuring host
+            </label>
+            <select
+              id="settings-host"
+              className={cn(fieldClass, "max-w-xs")}
+              value={host}
+              onChange={(e) => setSelectedHost(e.target.value)}
             >
-              update available → {info.latest_version}
-            </Pill>
-          )}
-          {herdr}
-          {!loading && !errored && info && !info.err && !info.compatible && (
-            <span className="text-[13px] text-warn">
-              rebuild lasso (or update herdr) so both speak the same protocol
-            </span>
-          )}
-          <Button
-            variant="outline"
-            size="icon"
-            className="ml-auto size-7"
-            title="Keyboard shortcuts"
-            onClick={onOpenShortcuts}
-          >
-            <Keyboard />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-7"
-            title="re-check protocol compatibility"
-            onClick={() => versionQuery.refetch()}
-          >
-            <RotateCw />
-          </Button>
-        </div>
-      </header>
-
-      <div className="@container min-h-0 flex-1 overflow-y-auto px-3 py-4">
-        <AppearanceToggle />
-        <HerdrThemeSelect active={active} />
-        <AutoTitleToggle active={active} />
-        <NotificationsSettings active={active} />
-        <UsageTrackingSettings />
-        <div className="mb-4 flex flex-col gap-1">
-          <label className={labelClass} htmlFor="settings-host">
-            Configuring host
-          </label>
-          <select
-            id="settings-host"
-            className={cn(fieldClass, "max-w-xs")}
-            value={host}
-            onChange={(e) => setSelectedHost(e.target.value)}
-          >
-            {/* Ensure the current value is always selectable even before the
-                host probe returns (e.g. an active remote not yet in the list). */}
-            {!hostOptions.some((o) => o.value === host) && (
-              <option value={host}>{host}</option>
-            )}
-            {hostOptions.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-                {o.value === activeHost ? " (active)" : ""}
-              </option>
-            ))}
-          </select>
-          <p className="text-[11px] text-muted-foreground">
-            These settings live in {host}'s own ~/.lasso/lasso.db.
-          </p>
-        </div>
-        <CreationSettings active={active} host={host} />
-      </div>
+              {/* Ensure the current value is always selectable even before the
+                  host probe returns (e.g. an active remote not yet in the list). */}
+              {!hostOptions.some((o) => o.value === host) && (
+                <option value={host}>{host}</option>
+              )}
+              {hostOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                  {o.value === activeHost ? " (active)" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              These settings live in {host}'s own ~/.lasso/lasso.db.
+            </p>
+          </div>
+          <CreationSettings active={active && sub === "general"} host={host} />
+          <footer className="mt-4 border-border border-t bg-background px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
+                lasso
+              </span>
+              <Pill multiline>
+                targets protocol{" "}
+                {loading
+                  ? "…"
+                  : errored || !info
+                    ? "unknown"
+                    : info.lasso_protocol}
+              </Pill>
+              {info?.lasso_version && (
+                <Pill title="this lasso build's version" multiline>
+                  lasso {info.lasso_version}
+                </Pill>
+              )}
+              {info?.latest_version && info.update_state === "available" && (
+                <Pill
+                  tone="warn"
+                  title="a newer lasso release is available — run `lasso update`"
+                  multiline
+                >
+                  update available → {info.latest_version}
+                </Pill>
+              )}
+              {herdr}
+              {!loading &&
+                !errored &&
+                info &&
+                !info.err &&
+                !info.compatible && (
+                  <span className="text-[13px] text-warn">
+                    rebuild lasso (or update herdr) so both speak the same
+                    protocol
+                  </span>
+                )}
+              <Button
+                variant="outline"
+                size="icon"
+                className="ml-auto size-7"
+                title="Keyboard shortcuts"
+                onClick={onOpenShortcuts}
+              >
+                <Keyboard />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                title="re-check protocol compatibility"
+                onClick={() => versionQuery.refetch()}
+              >
+                <RotateCw />
+              </Button>
+            </div>
+          </footer>
+        </TabsContent>
+        <TabsContent
+          value="themes"
+          forceMount
+          className="min-h-0 overflow-y-auto px-3 py-4 data-[state=inactive]:hidden"
+        >
+          <ThemesSettings active={active && sub === "themes"} />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
 
-// AppearanceToggle picks the chrome theme: System (follow the OS), Light, Dark,
-// or Herdr (match herdr's own theme — the default). The choice persists in
-// localStorage and applies live: setMode sets the html dark/light class the
-// Nothing --h-* tokens cascade from, then refreshTheme applies or clears the
-// herdr --h-* override (see lib/theme.ts). The terminal palette is always
-// herdr's and is unaffected by this control.
-function AppearanceToggle() {
+// ThemesSettings is the Themes pane: the palette, its backdrop, and which of
+// those are this browser's own choice rather than the fleet's.
+//
+// Two scopes live here and the difference is the whole design. The herdr theme
+// is SHARED: it is written to herdr's config.toml, which the TUI reloads and
+// every lasso tab follows, and lasso mirrors it to the hosts and agent CLIs
+// below. Appearance, the preferred light/dark palettes, and every backdrop
+// control are PER BROWSER: they resolve through reads (/api/theme?name=) and
+// localStorage, so a tab can wear its own look — and an OS that flips to dark
+// at dusk re-themes that tab instead of oscillating the whole fleet twice a
+// day.
+//
+// It owns the mode and palette state rather than each control holding its own,
+// because the backdrop gallery has to follow whichever theme is actually on
+// screen: under a browser-local palette that is not the one herdr is
+// configured with.
+function ThemesSettings({ active }: { active: boolean }) {
+  const { themeRev } = useApp()
+  const themeQuery = useQuery({
+    queryKey: qk.theme(themeRev),
+    queryFn: () => api.theme(),
+    enabled: active,
+    // theme_rev is part of the KEY, so every bump — a config edit anywhere in
+    // the fleet, this pane's own save — starts a new query whose data is
+    // undefined until it lands. Without carrying the last one over, the pane
+    // blanked for a round trip on each: the Herdr select lost its value (a
+    // <select> with no matching option shows its FIRST one, i.e. whatever
+    // theme heads the list), and `effective` fell to "" — which is the theme
+    // name a backdrop clicked in that window would have been persisted under.
+    placeholderData: keepPreviousData,
+  })
+  const catalogQuery = useQuery({
+    queryKey: qk.themeCatalog,
+    queryFn: () => api.themeCatalog(),
+    enabled: active,
+  })
   const [mode, setModeState] = React.useState<Mode>(() => getMode())
-  const choose = (m: Mode) => {
+  const [prefs, setPrefs] = React.useState(() => ({
+    light: getPalettePref("light"),
+    dark: getPalettePref("dark"),
+  }))
+  const t = themeQuery.data
+  const catalogThemes = catalogQuery.data?.themes
+  const catalog = catalogThemes ?? []
+  // lib/theme.ts resolves a backdrop against the catalog too (which backgrounds
+  // a theme shipped with), and it fetches its own copy. Hand it this one the
+  // moment it lands — including the list an install writes straight into the
+  // cache — so the gallery and what actually gets painted are the same list,
+  // rather than two independently-failing fetches of it.
+  React.useEffect(() => {
+    if (catalogThemes) primeThemeCatalog(catalogThemes)
+  }, [catalogThemes])
+  // The theme on screen: the palette this browser resolves for itself, or
+  // herdr's when it follows the fleet. Mirrors lib/theme.ts's own resolution —
+  // it has to, or the gallery would offer another theme's backgrounds.
+  //
+  // The OS scheme is SUBSCRIBED, not read at render: on "system" it decides
+  // which of the two preferred palettes is in force, and it changes under this
+  // pane (at dusk, or from devtools). Without the subscription the document
+  // re-themed while the gallery kept the other scheme's backgrounds and said
+  // "Backdrop for <the other theme>".
+  const systemDark = React.useSyncExternalStore(
+    subscribeSystemScheme,
+    systemPrefersDark
+  )
+  const scheme: "light" | "dark" =
+    mode === "system" ? (systemDark ? "dark" : "light") : resolvedMode(mode)
+  const localPalette = mode === "herdr" ? "" : prefs[scheme]
+  const effective = localPalette || t?.resolved || ""
+  const entry = catalog.find((c) => c.name === effective)
+  // Memoized because the gallery takes it as a prop: a fresh array each render
+  // would be a new identity on every keystroke in this pane.
+  const shipped = React.useMemo(
+    () => (entry ? shippedPairs(entry) : []),
+    [entry]
+  )
+
+  const chooseMode = (m: Mode) => {
     setModeState(m)
     setMode(m)
-    // Repaint the chrome for the new mode: applies herdr's palette when entering
-    // "herdr", removes the override when leaving it.
+    // Repaint for the new mode: applies the palette when entering "herdr" or a
+    // scheme with a preferred theme, removes the override when leaving one.
     refreshTheme()
   }
+  const choosePalette = (s: "light" | "dark", name: string) => {
+    setPalettePref(s, name)
+    setPrefs((p) => ({ ...p, [s]: name }))
+    refreshTheme()
+  }
+
+  return (
+    <>
+      <AppearanceToggle mode={mode} onChoose={chooseMode} />
+      {mode !== "herdr" && (
+        <PalettePrefs
+          mode={mode}
+          prefs={prefs}
+          themes={catalog}
+          onChoose={choosePalette}
+        />
+      )}
+      <HerdrThemeSelect theme={t} themes={catalog} pinned={!!localPalette} />
+      <ThemeBackgrounds
+        theme={effective}
+        shipped={shipped}
+        chromeToo={mode === "herdr" || !!localPalette}
+      />
+      <ThemeInstall themes={catalog} loading={catalogQuery.isLoading} />
+      <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
+      <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
+    </>
+  )
+}
+
+// AppearanceToggle picks what the chrome is painted from: Herdr (match herdr's
+// own theme — the default), System (follow the OS), or a pinned Light/Dark. The
+// choice persists in localStorage and applies live: setMode sets the html
+// dark/light class the Nothing --h-* tokens cascade from, then refreshTheme
+// applies or clears the palette --h-* override (see lib/theme.ts).
+//
+// Outside Herdr the chrome is the flat Nothing palette unless a preferred theme
+// is named for the scheme (PalettePrefs below), in which case this browser
+// resolves that one for its chrome AND its terminals.
+function AppearanceToggle({
+  mode,
+  onChoose,
+}: {
+  mode: Mode
+  onChoose: (m: Mode) => void
+}) {
   const opts: { m: Mode; label: string; Icon: typeof Monitor }[] = [
     { m: "herdr", label: "Herdr", Icon: Palette },
     { m: "system", label: "System", Icon: Monitor },
@@ -312,7 +515,7 @@ function AppearanceToggle() {
           <button
             key={m}
             type="button"
-            onClick={() => choose(m)}
+            onClick={() => onChoose(m)}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[13px] transition-colors",
               mode === m
@@ -327,34 +530,163 @@ function AppearanceToggle() {
       </div>
       <p className="text-[11px] text-muted-foreground">
         Sets the UI theme. Herdr matches herdr's own colors; System follows your
-        OS; Light/Dark pin the Nothing palette. The terminal always keeps
-        herdr's theme.
+        OS; Light/Dark pin the scheme. Saved in this browser only.
       </p>
     </div>
   )
 }
 
-// HerdrThemeSelect picks the herdr theme itself — distinct from Appearance,
-// which only chooses whether the chrome follows it. Saving writes [theme].name
-// in herdr's config.toml, the source of truth both already track: the herdr
-// TUI reloads it, and lasso repaints the terminals (and, in Herdr mode, the
-// chrome) off the theme_rev SSE bump. When lasso is connected to a remote
-// host, the theme is mirrored to that host's herdr config too (see
-// syncRemoteTheme), so the remote TUI follows as well.
-function HerdrThemeSelect({ active }: { active: boolean }) {
-  const { themeRev } = useApp()
-  const themeQuery = useQuery({
-    queryKey: qk.theme(themeRev),
-    queryFn: () => api.theme(),
-    enabled: active,
-  })
-  const t = themeQuery.data
+// PalettePrefs names a theme per light/dark scheme for THIS BROWSER. Picking
+// one makes the tab resolve that theme through /api/theme?name= — a read — and
+// wear it in the chrome and the terminals, while herdr's config.toml, the other
+// tabs, the other hosts and every agent keep the shared theme. That is what
+// makes "System" usable with real palettes: the OS flipping at dusk re-themes
+// this window, where switching the herdr theme instead would re-theme every
+// machine in the fleet twice a day.
+//
+// Only the current mode's schemes are offered (System has both, a pinned
+// Light/Dark just the one), and each list is filtered to themes of that
+// lightness: a light palette under the dark class would leave every `dark:`
+// variant in the chrome fighting the palette it sits on.
+function PalettePrefs({
+  mode,
+  prefs,
+  themes,
+  onChoose,
+}: {
+  mode: Mode
+  prefs: { light: string; dark: string }
+  themes: ThemeCatalogEntry[]
+  onChoose: (scheme: "light" | "dark", name: string) => void
+}) {
+  const schemes: ("light" | "dark")[] =
+    mode === "system" ? ["light", "dark"] : [resolvedMode(mode)]
+  return (
+    <div className="mb-4 flex flex-col gap-2">
+      <span className={labelClass}>This browser's palette</span>
+      <div className="flex flex-wrap gap-3">
+        {schemes.map((s) => (
+          <div key={s} className="flex min-w-0 flex-col gap-1">
+            <label
+              className="text-[11px] text-muted-foreground capitalize"
+              htmlFor={`settings-palette-${s}`}
+            >
+              {s} scheme
+            </label>
+            <select
+              id={`settings-palette-${s}`}
+              className={cn(fieldClass, "max-w-[15rem]")}
+              value={prefs[s]}
+              disabled={themes.length === 0}
+              onChange={(e) => onChoose(s, e.target.value)}
+            >
+              <option value="">Nothing (flat {s})</option>
+              {/* A pref the catalog does not carry still has to be the
+                  selected option: while the catalog is loading — or after a
+                  request that failed — there would otherwise be no option
+                  matching the value, and a <select> then displays its first,
+                  i.e. this control read as "Nothing" while the browser was
+                  wearing a palette. Its own name is the only label available. */}
+              {prefs[s] && !themes.some((o) => o.name === prefs[s]) && (
+                <option value={prefs[s]}>{prefs[s]}</option>
+              )}
+              <ThemePickerOptions
+                themes={themes.filter((o) => o.light === (s === "light"))}
+              />
+            </select>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Wears a theme in this browser only — nothing is written to herdr's
+        config, and no other tab, host or agent follows. Leave it on Nothing for
+        the flat monochrome chrome.
+      </p>
+    </div>
+  )
+}
+
+// ThemePickerOptions is the <option> half of every theme dropdown here, grouped
+// by where a theme came from and then by its lightness — with a catalog that
+// now runs to dozens of names, "Omarchy · Light" is the only thing that makes
+// one findable.
+//
+// The grouping is the server's own provenance (`source`), never a name: a
+// built-in whose key herdr itself accepts is reported "builtin" because the
+// palette actually painted is herdr's, one that herdr rejects and lasso vendors
+// from Omarchy is "official", and a clone is "installed". retro-82 used to be
+// special-cased to "official" here, which is exactly the kind of second
+// convention that goes stale the moment the catalog gains a row.
+function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
+  return (
+    <>
+      {(["builtin", "official", "installed"] as const).flatMap((source) =>
+        [false, true].map((light) => {
+          const options = themes.filter(
+            (theme) => theme.source === source && theme.light === light
+          )
+          if (!options.length) return null
+          const label =
+            source === "builtin"
+              ? "Herdr"
+              : source === "official"
+                ? "Omarchy"
+                : "Omarchy · Installed"
+          return (
+            <optgroup
+              key={`${source}-${light}`}
+              label={`${label} · ${light ? "Light" : "Dark"}`}
+            >
+              {options.map((theme) => (
+                <option key={theme.name} value={theme.name}>
+                  {theme.label}
+                </option>
+              ))}
+            </optgroup>
+          )
+        })
+      )}
+    </>
+  )
+}
+
+// HerdrThemeSelect picks the herdr theme itself — the SHARED one. Saving writes
+// [theme].name in herdr's config.toml, the source of truth both already track:
+// the herdr TUI reloads it, and lasso repaints the terminals (and, in Herdr
+// mode, the chrome) off the theme_rev SSE bump. Every host lasso syncs to gets
+// it too (see ThemeSyncHosts), so the remote TUIs follow as well.
+//
+// The list is the server's own: lasso's built-ins, the bundled Omarchy
+// palettes, and anything installed from a URL, in one canonical order.
+function HerdrThemeSelect({
+  theme,
+  themes,
+  pinned,
+}: {
+  theme: ThemePayload | undefined
+  themes: ThemeCatalogEntry[]
+  // True when this browser has a palette of its own, so the shared theme is not
+  // what is on screen here — worth saying, or the select reads as broken.
+  pinned: boolean
+}) {
+  const t = theme
   // Optimistic selection so the dropdown doesn't snap back while the config
-  // write → theme_rev bump round-trips; cleared once the server agrees (or the
-  // write fails).
+  // write → theme_rev bump → refetch round-trips.
   const [pending, setPending] = React.useState<string | null>(null)
+  // The payload that was on screen when the write went out. The optimistic
+  // value is dropped as soon as the server answers with a DIFFERENT one:
+  // react-query hands back the same object while nothing has changed
+  // (structural sharing), and keepPreviousData makes the placeholder for the
+  // new theme_rev that same object too, so an identity change is exactly "the
+  // server has re-announced the theme".
+  //
+  // Deliberately not "hold it until the names agree": a pick that something
+  // else overwrote — an older lasso sharing this config.toml, a hand edit,
+  // herdr refusing it — would then be displayed indefinitely as though it had
+  // taken, and a picker that hides a revert is worse than one that shows it.
+  const wroteOn = React.useRef<ThemePayload | undefined>(undefined)
   React.useEffect(() => {
-    if (pending && t?.resolved === pending) setPending(null)
+    if (pending && t && t !== wroteOn.current) setPending(null)
   }, [pending, t])
   const setMutation = useMutation({
     mutationFn: (name: string) => api.setTheme(name),
@@ -364,18 +696,10 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
     },
   })
   const value = pending ?? t?.resolved ?? ""
-  const group = (light: boolean) =>
-    (t?.themes ?? [])
-      .filter((o) => o.light === light)
-      .map((o) => (
-        <option key={o.name} value={o.name}>
-          {o.label}
-        </option>
-      ))
   return (
     <div className="mb-4 flex flex-col gap-1">
       <label className={labelClass} htmlFor="settings-herdr-theme">
-        Herdr theme
+        Herdr theme (shared)
       </label>
       <select
         id="settings-herdr-theme"
@@ -383,92 +707,450 @@ function HerdrThemeSelect({ active }: { active: boolean }) {
         value={value}
         disabled={!t}
         onChange={(e) => {
+          wroteOn.current = t
           setPending(e.target.value)
           setMutation.mutate(e.target.value)
         }}
       >
-        {!t?.themes.some((o) => o.name === value) && (
+        {/* Checked against the list actually RENDERED — the catalog — not
+            against /api/theme's own themes: a value the catalog does not carry
+            (still loading, or a request that failed) then had no matching
+            option at all, and a <select> falls back to displaying its FIRST
+            one, which is the top of the Herdr group. That is the whole of
+            "my Omarchy theme reverted to a herdr one" as seen in this
+            control. */}
+        {!themes.some((o) => o.name === value) && (
           <option value={value}>{value || "…"}</option>
         )}
-        <optgroup label="Dark">{group(false)}</optgroup>
-        <optgroup label="Light">{group(true)}</optgroup>
+        <ThemePickerOptions themes={themes} />
       </select>
       <p className="text-[11px] text-muted-foreground">
         Sets herdr's own theme in its config.toml; herdr and the terminals
         follow it live.
         {t?.forced &&
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
+        {pinned &&
+          " This browser is wearing a palette of its own above, so the change will show in herdr and in other tabs, not here."}
       </p>
-      {value === ATMOSPHERE_THEME && <Retro82Wallpaper />}
-      <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
-      <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
     </div>
   )
 }
 
-// Retro82Wallpaper is the backdrop gallery. Retro 82 is the one theme that
-// carries a wallpaper, and which of the vendored stills it wears is a
-// per-browser choice (localStorage, like Appearance — see lib/wallpaper.ts),
-// so this is deliberately NOT one of herdr's config settings and is not
-// mirrored to any host. It renders only while herdr resolves to that theme:
-// under any other palette it would be a control with no effect.
+// ThemeBackgrounds is the backdrop gallery for the theme currently on screen:
+// what lasso bundles for it (retro-82's 27 vendored stills, served from the
+// embedded build), what the theme itself shipped with (an installed Omarchy
+// theme brings its own), and whatever this browser was handed by URL or upload.
+// Plus the two knobs that go with a backdrop: the scrim that keeps glyphs
+// readable over a photograph, and the palette-derived shading that gives a flat
+// theme some depth with no image at all.
 //
-// A pick repaints on the spot — applyWallpaper pins the URL the chrome paints
-// from and rewrites the injected stylesheet inside every already-loaded
-// terminal iframe, so neither half waits for a remount or a theme tick.
-function Retro82Wallpaper() {
-  const [id, setId] = React.useState(() => getWallpaper().id)
-  // The chrome only wears the wallpaper in Herdr appearance mode (the Nothing
-  // canvases are flat by design), so say so rather than let the gallery look
-  // broken when the terminal is the only half showing it.
-  const chromeToo = getMode() === "herdr"
+// Every choice here is per browser AND per theme (localStorage — see
+// lib/wallpaper.ts): nothing is written to herdr's config, nothing is mirrored
+// to another host, and switching palette back and forth restores the backdrop
+// each one had. A pick repaints on the spot — applyAtmosphere pins what the
+// chrome paints from and rewrites the injected stylesheet inside every
+// already-loaded terminal iframe, so neither half waits for a remount or a
+// theme tick.
+function ThemeBackgrounds({
+  theme,
+  shipped,
+  chromeToo,
+}: {
+  theme: string
+  shipped: readonly ShippedBackground[]
+  // Whether the surrounding window wears the backdrop too, or only the
+  // terminals (the flat Nothing chrome does not — say so rather than let the
+  // gallery look broken).
+  chromeToo: boolean
+}) {
+  // The tab's host, as api's optional selector: an upload has to land on the
+  // machine whose /api/file will serve it back, and a bare undefined is that
+  // host's own default.
+  const host = useApp().host ?? undefined
+  // The persisted choices are read on every render rather than mirrored into
+  // component state: lib/wallpaper.ts is the single source of truth for both
+  // the gallery and the selection, and a copy here is how the two drift apart.
+  // A write therefore needs nothing but a re-render, which is all `bump` is.
+  const [, bump] = React.useReducer((n: number) => n + 1, 0)
+  const [url, setUrl] = React.useState("")
+  const [uploading, setUploading] = React.useState(false)
+  const fileRef = React.useRef<HTMLInputElement>(null)
+  const gallery = themeBackgrounds(theme, shipped)
+  const current = backgroundFor(theme, shipped)
+  const choose = (pick: string) => {
+    // The choice is stored PER THEME, so it needs a theme to store it under.
+    // While /api/theme is still in flight — a first paint, a failed request —
+    // there is none, and writing the pick under "" both loses it and leaves an
+    // entry no theme will ever read.
+    if (!theme) {
+      toast.error("Waiting for the theme — try again in a moment")
+      return
+    }
+    setThemeBackground(theme, pick)
+    bump()
+    applyAtmosphere()
+  }
+  const add = (pick: string) => {
+    rememberBackground(pick)
+    choose(pick)
+  }
+  const addTyped = () => {
+    const raw = url.trim()
+    if (!raw) return
+    // An absolute path is read back through /api/file on the tab's host — the
+    // same endpoint the file viewer previews an image with — so a picture
+    // already sitting on the machine needs no upload. Anything else has to be
+    // a URL a browser can actually fetch.
+    if (raw.startsWith("/") && !raw.startsWith("//")) {
+      add(raw.startsWith("/api/") ? raw : api.fileURL(raw, host))
+    } else if (/^https?:\/\//i.test(raw)) {
+      add(raw)
+    } else {
+      toast.error("Enter an http(s) URL or an absolute path on this host")
+      return
+    }
+    setUrl("")
+  }
+  const upload = async (file: File) => {
+    setUploading(true)
+    try {
+      // Written to the host's own ~/.lasso/uploads through the endpoint the
+      // terminal's paste/drop already uses, then read back through /api/file:
+      // one place that accepts bytes from a browser, and the picture survives a
+      // reload (a blob: URL would not) without lasso growing an image store.
+      const { path } = await api.pasteFile(file, host, file.name)
+      add(api.fileURL(path, host))
+      toast.success(`Uploaded ${file.name}`)
+    } catch (e) {
+      toast.error(`Couldn't upload: ${(e as Error).message}`)
+    } finally {
+      setUploading(false)
+    }
+  }
+  const tileClass =
+    "flex w-full flex-col gap-1 rounded-md border p-1 text-left outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50"
   return (
-    <div className="mt-1 mb-3 flex flex-col gap-1.5">
-      <span className={labelClass}>Wallpaper</span>
-      <div className="grid max-h-64 @lg:grid-cols-6 @sm:grid-cols-4 grid-cols-3 gap-1.5 overflow-y-auto rounded-lg border border-border p-1.5">
-        {RETRO82_WALLPAPERS.map((w) => (
-          <button
-            key={w.id}
-            type="button"
-            aria-pressed={w.id === id}
-            onClick={() => {
-              setWallpaperId(w.id)
-              setId(w.id)
-              applyWallpaper()
-            }}
+    <div className="mb-4 flex flex-col gap-1.5">
+      <span className={labelClass}>Background</span>
+      <div className="grid max-h-72 @lg:grid-cols-6 @sm:grid-cols-4 grid-cols-3 gap-1.5 overflow-y-auto rounded-lg border border-border p-1.5">
+        <button
+          type="button"
+          aria-pressed={current === ""}
+          onClick={() => choose(NO_BACKGROUND)}
+          className={cn(
+            tileClass,
+            current === ""
+              ? "border-primary bg-secondary"
+              : "border-transparent hover:border-border"
+          )}
+        >
+          <span className="flex aspect-video w-full items-center justify-center rounded-sm border border-border border-dashed text-[11px] text-muted-foreground">
+            flat
+          </span>
+          <span
             className={cn(
-              "flex flex-col gap-1 rounded-md border p-1 text-left outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
-              w.id === id
-                ? "border-primary bg-secondary"
-                : "border-transparent hover:border-border"
+              "truncate text-[11px]",
+              current === "" ? "text-foreground" : "text-muted-foreground"
             )}
           >
-            {/* Decorative: the visible caption is the button's name, so an
-                alt text here would just read it out twice. object-cover
-                because the stills range from 16:9 to ultrawide. */}
-            <img
-              src={w.thumbnail}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              className="aspect-video w-full rounded-sm object-cover"
-            />
-            <span
+            None
+          </span>
+        </button>
+        {gallery.map((w) => (
+          <div key={w.url} className="relative">
+            <button
+              type="button"
+              aria-pressed={w.url === current}
+              onClick={() => choose(w.url)}
               className={cn(
-                "truncate text-[11px]",
-                w.id === id ? "text-foreground" : "text-muted-foreground"
+                tileClass,
+                w.url === current
+                  ? "border-primary bg-secondary"
+                  : "border-transparent hover:border-border"
               )}
             >
-              {w.label}
-            </span>
-          </button>
+              {/* Decorative: the visible caption is the button's name, so an
+                  alt text here would just read it out twice. object-cover
+                  because the images range from 16:9 to ultrawide. */}
+              <img
+                src={w.thumbnail}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                className="aspect-video w-full rounded-sm object-cover"
+              />
+              <span
+                className={cn(
+                  "truncate text-[11px]",
+                  w.url === current
+                    ? "text-foreground"
+                    : "text-muted-foreground"
+                )}
+              >
+                {w.label}
+              </span>
+            </button>
+            {w.custom && (
+              // Only a hand-given picture can be forgotten; a bundled or
+              // shipped one belongs to the theme. Sibling of the tile rather
+              // than inside it: a button within a button is not a button.
+              <button
+                type="button"
+                title="Forget this picture"
+                onClick={() => {
+                  forgetBackground(w.url)
+                  if (w.url === current) choose(NO_BACKGROUND)
+                  else bump()
+                }}
+                className="absolute top-1.5 right-1.5 rounded-sm bg-popover/90 p-0.5 text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            )}
+          </div>
         ))}
       </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          className={cn(fieldClass, "min-w-0 flex-1 basis-52")}
+          placeholder="Image URL, or an absolute path on this host"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              addTyped()
+            }
+          }}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={addTyped}
+          disabled={!url.trim()}
+        >
+          Add
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+        >
+          <Upload className="size-3.5" />
+          {uploading ? "Uploading…" : "Upload"}
+        </Button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            // Cleared first: picking the same file twice must fire again.
+            e.target.value = ""
+            if (f) upload(f)
+          }}
+        />
+      </div>
       <p className="text-[11px] text-muted-foreground">
-        Retro 82's backdrop, bundled with lasso. Saved in this browser only.
+        {theme ? `Backdrop for ${theme}.` : "Backdrop for the current theme."}{" "}
+        Saved in this browser only, per theme.
         {chromeToo
           ? " The terminals and this window both wear it."
-          : " The terminals wear it; switch Appearance to Herdr for this window to as well."}
+          : " The terminals wear it; pick a palette above for this window to as well."}
+      </p>
+      <AtmosphereControls hasImage={current !== ""} onChange={bump} />
+    </div>
+  )
+}
+
+// AtmosphereControls is the pair of knobs a backdrop needs: how much wash sits
+// between an image and the glyphs, and whether a theme with no image gets a
+// little light. Both are per browser and apply to every theme — they are
+// properties of this screen, not of a palette — and both repaint live through
+// applyAtmosphere.
+function AtmosphereControls({
+  hasImage,
+  onChange,
+}: {
+  hasImage: boolean
+  // The gallery owns the re-read counter (the selection and these values are
+  // read from the same store), so a change here has to tell it.
+  onChange: () => void
+}) {
+  const [shade, setShade] = React.useState(() => getShading())
+  const [scrim, setScrimState] = React.useState(() => getScrim())
+  return (
+    <div className="mt-1 flex flex-col gap-2">
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-muted-foreground text-xs"
+        htmlFor="settings-atmo-shade"
+      >
+        <Checkbox
+          id="settings-atmo-shade"
+          checked={shade}
+          onCheckedChange={(c) => {
+            const on = c === true
+            setShade(on)
+            setShading(on)
+            applyAtmosphere()
+            onChange()
+          }}
+        />
+        Palette shading — two faint washes of the theme's own colors across the
+        canvas
+      </label>
+      <div className="flex flex-col gap-1">
+        <label
+          className="flex items-center gap-2 text-muted-foreground text-xs"
+          htmlFor="settings-atmo-scrim"
+        >
+          Image dimming
+          <span className="font-mono text-[11px]">
+            {Math.round(scrim * 100)}%
+          </span>
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id="settings-atmo-scrim"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(scrim * 100)}
+            disabled={!hasImage}
+            className="w-56 min-w-0 accent-primary disabled:opacity-50"
+            onChange={(e) => {
+              const v = Number(e.target.value) / 100
+              setScrimState(v)
+              setScrim(v)
+              applyAtmosphere()
+            }}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={scrim === DEFAULT_SCRIM}
+            title={`Reset image dimming to ${Math.round(DEFAULT_SCRIM * 100)}%`}
+            onClick={() => {
+              setScrimState(DEFAULT_SCRIM)
+              setScrim(DEFAULT_SCRIM)
+              applyAtmosphere()
+            }}
+          >
+            Reset to default
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {hasImage
+            ? `How much of the theme's canvas color washes over the picture. The default is ${Math.round(DEFAULT_SCRIM * 100)}%.`
+            : "Applies once a background image is picked."}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ThemeInstall adds a community Omarchy theme from its git URL — the server
+// clones it, reads its palette (and any backgrounds it ships) and adds it to
+// the catalog, so it becomes selectable above like a built-in. Uninstalling is
+// deliberately not offered: the clone is a directory on the machine, and
+// deleting one from a browser is a footgun with no undo.
+function ThemeInstall({
+  themes,
+  loading,
+}: {
+  themes: ThemeCatalogEntry[]
+  loading: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [url, setUrl] = React.useState("")
+  // The install answers with the whole catalog, so the cache is written from
+  // the response rather than invalidated into a second round trip. That write
+  // is also what re-primes the module-level catalog lib/theme.ts resolves
+  // backgrounds from (ThemesSettings watches the same query), so the palette
+  // only has to be re-resolved: an install can change what the CURRENT theme
+  // has to offer, since a name already selected can arrive with images.
+  const settle = (list: ThemeCatalogEntry[]) => {
+    queryClient.setQueryData(qk.themeCatalog, { themes: list })
+    queryClient.invalidateQueries({ queryKey: ["theme"] })
+    refreshTheme()
+  }
+  const install = useMutation({
+    mutationFn: (u: string) => api.installTheme(u),
+    onSuccess: (res) => {
+      setUrl("")
+      settle(res.themes)
+      toast.success(`Installed ${res.installed}`)
+    },
+    onError: (e: Error) => toast.error(`Couldn't install: ${e.message}`),
+  })
+  const installed = themes.filter((c) => c.source === "installed")
+  return (
+    <div className="mb-4 flex flex-col gap-1.5">
+      <span className={labelClass}>Install a theme</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          className={cn(fieldClass, "min-w-0 flex-1 basis-64")}
+          placeholder="https://github.com/user/omarchy-<name>-theme"
+          value={url}
+          disabled={install.isPending}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && url.trim()) {
+              e.preventDefault()
+              install.mutate(url.trim())
+            }
+          }}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!url.trim() || install.isPending}
+          onClick={() => install.mutate(url.trim())}
+        >
+          <Download className="size-3.5" />
+          {install.isPending ? "Installing…" : "Install"}
+        </Button>
+      </div>
+      {installed.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {installed.map((c) => (
+            <span
+              key={c.name}
+              className="flex items-center gap-1.5 rounded-md border border-border px-1.5 py-0.5 text-[11px]"
+              title={c.url || c.name}
+            >
+              <span
+                aria-hidden
+                className="size-3 rounded-full border border-border"
+                style={{
+                  background: `linear-gradient(135deg, ${c.background} 50%, ${c.accent} 50%)`,
+                }}
+              />
+              <span className="truncate">{c.label}</span>
+              {c.url && (
+                <a
+                  href={c.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={c.url}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <ExternalLink className="size-3" />
+                </a>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        Clones an Omarchy theme repo on this machine and adds it — palette and
+        any backgrounds it ships — to the lists above.
+        {loading && " Loading the catalog…"}
       </p>
     </div>
   )

@@ -174,11 +174,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Chrome light/dark follows the system color scheme (same as the main branch).
   // The inline script in index.html sets the class pre-paint; here we re-assert
-  // it on mount and keep it live as the OS theme flips. The terminal palette is
-  // herdr's and is handled separately (refreshTheme), so this never touches it.
+  // it on mount and keep it live as the OS theme flips. An OS flip also changes
+  // WHICH browser-local palette applies (a preferred theme is stored per
+  // scheme — see lib/mode.ts:localPaletteName), so refreshTheme has to re-run
+  // on it: without that, a tab wearing its own dark palette would keep it
+  // through sunrise, chrome tokens and terminals included.
   React.useEffect(() => {
     applyMode()
-    watchSystemMode()
+    watchSystemMode(refreshTheme)
   }, [])
 
   // Re-pin the terminals to herdr's theme whenever its theme revision moves

@@ -546,18 +546,16 @@ match `lassoSemver` (the workflow enforces it).
 
 ## The logo
 
-The mark is a lasso in perspective — a loop, the honda knot, and the rope
-trailing off — drawn as neon so it holds its own on a phone home screen.
-Everything ships from one vector source:
+The favicon and app icons use the amber L outline and teal cursor from the
+wordmark in `docs/brand/`. Regenerate the standalone vector and raster assets:
 
 ```bash
-mise x ubi:linebender/resvg -- ./docs/icon/build.py
+uv run --with cairosvg --with pillow python docs/icon/build.py
 ```
 
-That renders `docs/icon/lasso.svg`, the favicon/app-icon PNG set in
-`src/web/public/`, and the wordmark in `docs/brand/`. Sizes are rendered
-individually with tiered stroke weights rather than downscaled — a neon mark
-resampled to 16px averages away to a smudge.
+This writes `docs/icon/lasso.svg` and the SVG, PNG, and ICO assets in
+`src/web/public/`, leaving the wordmark untouched. Icon URLs are versioned in
+`src/web/index.html` and `src/web/public/manifest.json` to invalidate cached art.
 
 ## Dogfooding
 

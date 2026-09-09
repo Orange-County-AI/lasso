@@ -40,6 +40,10 @@ export const qk = {
   // The herdr theme picker's payload — refetched keyed on the live theme_rev
   // so the dropdown follows external config.toml edits too.
   theme: (rev: number) => ["theme", rev] as const,
+  // Every selectable theme with its metadata (sources, swatches, backgrounds).
+  // Not keyed on theme_rev: it only changes when a theme is installed or
+  // removed, and both write the response straight into this key.
+  themeCatalog: ["theme-catalog"] as const,
 }
 
 // invalidateHostScoped refetches everything tied to a host, called when the

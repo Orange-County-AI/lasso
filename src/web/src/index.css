@@ -195,60 +195,58 @@
 }
 
 /* ===========================================================================
- * Retro 82 atmosphere — the wallpaper treatment.
+ * Atmosphere — the backdrop treatment, for any theme that has one.
  *
- * Retro 82 is the only theme with a wallpaper, and it is a real image: one of
- * the 27 stills from upstream's own set, vendored as WebP under
- * web/public/wallpapers/retro-82 (provenance in that directory's NOTICE.txt)
- * and served from the embedded bundle, so the backdrop never reaches the
- * network. WHICH still is a per-browser choice — the gallery in Settings,
- * persisted by lib/wallpaper.ts — so the URL cannot be authored here:
- * lib/theme.ts:applyWallpaper pins it as --r82-wallpaper on <html>, and both
- * halves below read it from there. Palette tokens are the upstream retro-82
- * ones (https://github.com/OldJobobo/omarchy-retro-82-theme): amber #faa968,
- * teal #8cbfb8, on #00172e.
+ * A backdrop is a real image: one of the 27 retro-82 stills lasso bundles
+ * (vendored as WebP under web/public/wallpapers/retro-82 — provenance in that
+ * directory's NOTICE.txt — and served from the embedded bundle, so it never
+ * reaches the network), one that came with an installed Omarchy theme, or one
+ * this browser was handed by URL or upload. It may also be nothing but the
+ * optional palette-derived shading. All of that is a per-browser, per-theme
+ * choice (the gallery in Settings, persisted by lib/wallpaper.ts), so none of
+ * it can be authored here: lib/theme.ts:applyAtmosphere pins the canvas color
+ * as --atmo-base and the whole background-image stack — scrim over shading over
+ * image — as --atmo-layers on <html>, and both halves read them from there.
  *
- * The base and the scrim are declared UNCONDITIONALLY, on purpose: lib/theme.ts
- * mirrors them into each ttyd iframe's document (a parent stylesheet does not
- * cross that boundary — same reason applyTermFont re-declares the @font-face
- * there), and the terminal wears the wallpaper whenever herdr resolves to
- * retro-82, independently of whether the CHROME is following herdr's palette.
- * The rules below are the chrome half and are gated on the attribute
- * lib/theme.ts sets.
+ * Both properties are pinned for EVERY theme, flat ones included, on purpose:
+ * lib/theme.ts mirrors them into each ttyd iframe's document (a parent
+ * stylesheet does not cross that boundary — same reason applyTermFont
+ * re-declares the @font-face there), and the terminal wears the backdrop
+ * whenever the effective theme has one, independently of whether the CHROME is
+ * following that palette. The rules below are the chrome half and are gated on
+ * the attribute lib/theme.ts sets.
+ *
+ * The scrim inside the stack is the wash that sits BETWEEN an image and the
+ * content, so glyphs never have to fight a photograph. Its default (70% of the
+ * theme's own background color) is sized for the brightest of the bundled
+ * stills rather than the darkest, since one value serves all 27 and unreadable
+ * is worse than dim; the Settings slider moves it. Deliberately a color with
+ * alpha, never `opacity`: opacity would fade the text with it.
  */
-:root {
-  --r82-base: #00172e;
-  /* The wash that sits BETWEEN the wallpaper and the content, so glyphs never
-     have to fight a photograph. Sized for the brightest still in the set (neon
-     signage, a sunlit dune) rather than the darkest, since one value serves all
-     27 and unreadable is worse than dim. Deliberately a background-color with
-     alpha, never `opacity`: opacity would fade the text with it. */
-  --r82-scrim: rgba(0, 23, 46, 0.62);
-}
 
-/* Set as data-atmosphere="retro-82" on <html> by lib/theme.ts, and only while
- * the chrome is actually following herdr (appearance mode "herdr") on that
- * palette — the Nothing light/dark chrome keeps its flat monochrome canvas.
- * Everything here is additive: drop the attribute and the chrome is back
- * exactly as it was. */
-:root[data-atmosphere="retro-82"] body {
-  background-color: var(--r82-base);
-  /* Two layers in one element: the scrim as a flat gradient ON TOP of the
-     still, so the chrome reads over the same washed backdrop the terminal
-     document gets from its own <body> rule. */
-  background-image:
-    linear-gradient(var(--r82-scrim), var(--r82-scrim)), var(--r82-wallpaper);
+/* Set as data-atmosphere="<theme>" on <html> by lib/theme.ts, and only while
+ * the chrome is actually following a herdr/Omarchy palette (appearance mode
+ * "herdr", or a browser-local palette) — the Nothing light/dark chrome keeps
+ * its flat monochrome canvas. Matched on the attribute's PRESENCE, since every
+ * theme can carry a backdrop; the value is there to be inspectable, not to be
+ * selected on. Everything here is additive: drop the attribute and the chrome
+ * is back exactly as it was. */
+:root[data-atmosphere] body {
+  background-color: var(--atmo-base);
+  /* The stack lib/theme.ts composed, so the chrome reads over exactly the
+     backdrop the terminal document gets from its own <html> rule. */
+  background-image: var(--atmo-layers);
   /* Fixed, so the backdrop belongs to the window rather than scrolling with a
-     panel, and cover so the still fills any aspect ratio without repeating. */
+     panel, and cover so the image fills any aspect ratio without repeating. */
   background-attachment: fixed;
   background-repeat: no-repeat;
   background-size: cover;
 }
 
-/* Surfaces float ON the wallpaper: a translucent background-color, so text and
+/* Surfaces float ON the backdrop: a translucent background-color, so text and
  * icons stay fully opaque. --popover is deliberately left solid — a menu or
  * dialog is a reading surface, and a wallpaper behind its text is noise. */
-:root[data-atmosphere="retro-82"] {
+:root[data-atmosphere] {
   --background: color-mix(in srgb, var(--h-bg) 62%, transparent);
   --card: color-mix(in srgb, var(--h-panel) 55%, transparent);
   --sidebar: color-mix(in srgb, var(--h-panel) 58%, transparent);
@@ -433,15 +431,15 @@
   padding: 20px;
 }
 /* The viewer is a READING surface and covers the tree it opened from, so it
- * opts out of the Retro 82 translucency for the same reason --popover does.
+ * opts out of the atmosphere's translucency for the same reason --popover does.
  * At --background's 62% the tree's entries and the tab's own path bar showed
  * straight through the file's text — two paths superimposed in the header. The
  * header is pinned too: --card is translucent, and half an opaque overlay is
  * still an unreadable one. */
-:root[data-atmosphere="retro-82"] .vsurface {
+:root[data-atmosphere] .vsurface {
   background-color: var(--h-bg);
 }
-:root[data-atmosphere="retro-82"] .vsurface-header {
+:root[data-atmosphere] .vsurface-header {
   background-color: var(--h-panel);
 }
 .vimg {
@@ -813,18 +811,20 @@
   background: var(--h-bg);
 }
 
-/* Under the Retro 82 atmosphere the iframe element itself must not paint: the
- * ttyd document carries the same wallpaper (lib/theme.ts injects it), and an
- * opaque element background would show as a flat navy slab in the gap between
- * the parent's backdrop and the frame's first paint. */
-:root[data-atmosphere="retro-82"] .frame {
+/* Under an atmosphere the iframe element itself must not paint: the ttyd
+ * document carries the same backdrop (lib/theme.ts injects it), and an opaque
+ * element background would show as a flat slab of the theme's canvas color in
+ * the gap between the parent's backdrop and the frame's first paint. */
+:root[data-atmosphere] .frame {
   background: transparent;
 }
 
-/* The terminal reads as an object sitting on the wallpaper rather than a hole
- * in the chrome: a hairline of the palette's amber with a teal inner seam.
- * 1px each, at low alpha — the point is a delicate edge, not a frame. */
-:root[data-atmosphere="retro-82"] .term-shell {
+/* The terminal reads as an object sitting on the backdrop rather than a hole in
+ * the chrome: a hairline of the palette's accent with its success hue as an
+ * inner seam. 1px each, at low alpha — the point is a delicate edge, not a
+ * frame — and both come from the live --h-* tokens, so every theme gets its own
+ * seam rather than retro-82's amber and teal. */
+:root[data-atmosphere] .term-shell {
   border: 1px solid color-mix(in srgb, var(--h-accent) 30%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--h-good) 16%, transparent);
 }
