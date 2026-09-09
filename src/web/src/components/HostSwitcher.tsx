@@ -26,6 +26,7 @@ import { api, type HostInfo, type HostsPayload } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, type HostGroup, memberLabel } from "@/lib/hosts"
 import { qk } from "@/lib/query"
+import { focusHerdrTerminal } from "@/lib/terminal"
 import { getQueryParam, setQueryParam } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
@@ -101,26 +102,20 @@ function upgradable(h: HostInfo, localVersion: string | undefined): boolean {
   return usable(h) && versionOlder(h.version, localVersion)
 }
 
-// HostSwitcher lets the app drive a herdr daemon on any compatible ssh-config
-// host as if it were local. It names the active host — the local machine's
-// hostname (laptop icon) or the remote alias (server icon, primary-tinted as a
-// "you are elsewhere" cue). Incompatible/unreachable hosts are listed greyed-out
-// with why. The "nav" variant sits inline in the left tab strip (left of the
-// Herdr tab, menu opening downward); "floating" keeps the old pinned-pill look.
+// HostSwitcher is the controlled host menu, opened by the desktop footer's Host
+// control and by the mobile input dial's host command. Its invisible anchor
+// keeps Radix positioning in the parent document: the mobile command originates
+// inside a terminal iframe, and the footer's button is display:none on a phone,
+// so neither can be the menu's own trigger.
 export function HostSwitcher({
-  variant = "floating",
   className,
-  open: controlledOpen,
-  onOpenChange,
-  anchorOnly = false,
+  open,
+  onOpenChange: setOpen,
 }: {
-  variant?: "floating" | "nav"
   className?: string
-  open?: boolean
-  onOpenChange?: (open: boolean) => void
-  anchorOnly?: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
-  const isNav = variant === "nav"
   const { host: liveHost } = useApp()
   const [data, setData] = React.useState<HostsPayload | null>(null)
   const [loading, setLoading] = React.useState(false)
@@ -140,15 +135,6 @@ export function HostSwitcher({
   const [actionErrors, setActionErrors] = React.useState<
     ReadonlyMap<string, string>
   >(() => new Map())
-  const [internalOpen, setInternalOpen] = React.useState(false)
-  const open = controlledOpen ?? internalOpen
-  const setOpen = React.useCallback(
-    (next: boolean) => {
-      if (controlledOpen === undefined) setInternalOpen(next)
-      onOpenChange?.(next)
-    },
-    [controlledOpen, onOpenChange]
-  )
   const [updatingLasso, setUpdatingLasso] = React.useState(false)
 
   // This lasso build's version + whether it can self-update (a systemd-
@@ -162,11 +148,8 @@ export function HostSwitcher({
   // Prefer the live SSE host (reflects switches from anywhere); fall back to the
   // last /api/hosts snapshot, then "local".
   const active = liveHost ?? data?.active ?? "local"
-  const isRemote = active !== "local"
-  // The local host is shown by its machine hostname rather than the literal
-  // "local" sentinel; the label for whatever host is active.
+  // Display the machine hostname instead of the internal "local" sentinel.
   const localLabel = data?.local?.hostname || "local"
-  const activeLabel = isRemote ? active : localLabel
 
   const load = React.useCallback(async (refresh = false) => {
     setLoading(true)
@@ -497,43 +480,27 @@ export function HostSwitcher({
     )
   }
 
-  const iconClass = isNav ? "size-3.5" : "size-3"
   return (
     <div className={cn("relative", className)}>
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger
-          tabIndex={anchorOnly ? -1 : undefined}
-          aria-hidden={anchorOnly || undefined}
+          tabIndex={-1}
+          aria-hidden
           disabled={switching}
-          title={`Host: ${activeLabel} (click to switch)`}
-          className={cn(
-            isNav
-              ? // Inline nav affordance: borderless, matching the tab strip.
-                "flex shrink-0 items-center gap-1 self-center rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-              : "flex items-center gap-1 rounded-md border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60",
-            // Tint when remote so it reads as an active "you are elsewhere" badge.
-            isRemote &&
-              (isNav ? "text-foreground" : "border-primary/40 text-foreground"),
-            anchorOnly &&
-              "pointer-events-none size-px overflow-hidden p-0 opacity-0"
-          )}
-        >
-          {switching ? (
-            <Loader2 className={cn(iconClass, "animate-spin")} />
-          ) : isRemote ? (
-            <Server className={cn(iconClass, "text-primary")} />
-          ) : (
-            <Laptop className={iconClass} />
-          )}
-          {/* Name the active host inline in both variants. */}
-          <span className="@min-[420px]/lnav:max-w-32 max-w-20 truncate font-medium">
-            {activeLabel}
-          </span>
-        </DropdownMenuTrigger>
+          className="pointer-events-none size-px overflow-hidden p-0 opacity-0"
+        />
         <DropdownMenuContent
-          align={anchorOnly ? "end" : "start"}
-          side={isNav ? "bottom" : "top"}
+          align="start"
+          side="top"
+          collisionPadding={8}
           className="min-w-56"
+          // The anchor above is not a real control, so returning focus to it on
+          // close would park the keyboard on an invisible element. Hand it back
+          // to the terminal instead, as every other dismissal here does.
+          onCloseAutoFocus={(e) => {
+            e.preventDefault()
+            focusHerdrTerminal()
+          }}
         >
           <DropdownMenuLabel className="flex items-center justify-between">
             <span>Host</span>

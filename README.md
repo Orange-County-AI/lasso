@@ -142,6 +142,11 @@ have no credentials for stay hidden automatically; the rest you order and
 switch on/off under **Settings → Usage tracking**. Switching one off stops the
 polling too, so a provider you don't use costs no requests.
 
+The desktop footer also holds **New**, **Sidebar**, **Host**, and **Keybindings**.
+Those controls remain available even with no tracked providers or unavailable
+usage data; there is no footer-visibility toggle. Usage metrics scroll within
+their own track rather than pushing navigation offscreen.
+
 <img src="docs/screenshots/usage-footer.png" alt="the usage footer showing 5-hour and weekly budgets per provider" width="700">
 
 The **Usage** tab in the sidebar is the same numbers in full: every window per
@@ -175,10 +180,8 @@ The binary is both the server and its own control surface:
 
 Two resizable, collapsible columns:
 
-- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), under a
-  header row with the host switcher, the ⌘K pane search (every pane on the
-  active host — including the ones herdr-mirror streams in from other machines —
-  plus past sessions to reopen) and **New Agent**.
+- **Left** — the **herdr** terminal (a `ttyd` session in an iframe), with no
+  header row covering the workspace. ⌘K still opens herdr's own pane search.
 - **Right** — the git **Diff** of the focused pane's repo, a **Files** browser
   that follows the active pane's directory and opens files in a
   markdown/code/image viewer, a **Browser** iframe that embeds a local
@@ -188,6 +191,10 @@ Two resizable, collapsible columns:
   (the lasso version and whether an update is available, the herdr
   protocol/version with a one-click `herdr update`, notifications for blocked
   agents, and the New-Agent defaults).
+
+Desktop navigation lives in the footer, not a floating overlay. On phones the
+footer stays out of the terminal viewport and the existing ⌘ input dial supplies
+New, host switching, sidebar access, and the keys a touch keyboard lacks.
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding

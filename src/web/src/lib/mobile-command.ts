@@ -1,3 +1,4 @@
+// App commands sent by the touch dial inside a terminal iframe.
 export const MOBILE_COMMAND_EVENT = "lasso:mobile-command"
 
 export type MobileCommand = "new" | "sidebar" | "host" | "search"

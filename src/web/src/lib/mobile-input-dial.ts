@@ -189,17 +189,20 @@ const THEME_VARS = [
 ]
 
 // The dial is chrome, so it follows the same Nothing law as the rest of the app
-// (index.css): surfaces are OPAQUE and separate by border + a panel/hover
-// brightness step — never by drop shadow, translucency, or backdrop blur. It
-// used to float as a 30%-alpha blurred panel, which on the light palette mixed
-// the control into the terminal underneath and read washed out; the two states
-// that matter now carry real contrast instead. Brightness is the hierarchy:
-// --h-hover (surface-raised) for the root, --h-panel for the ring of items, and
-// the monochrome --h-accent fill (white on dark, black on light) for whatever is
-// armed. That inverts correctly in both modes, which a hand-mixed tint does not.
+// (index.css): it separates by border and a brightness step, never by drop
+// shadow or backdrop blur. What it does NOT do any more is sit opaque: a
+// permanent floating control over someone's terminal has to be readable without
+// hiding the two lines of output underneath it, so the CLOSED root is a ~15%
+// wash of the raised surface behind a lifted border — the glyph and the ring
+// carry it — and every state that is actually being used steps up to a solid
+// tint: hover, the accent fill for an armed/expanded root, and --h-panel for
+// the ring of items. Brightness stays the hierarchy, and the monochrome
+// --h-accent (white on dark, black on light) inverts correctly in both
+// palettes, which a hand-mixed tint does not.
 function dialCSS(): string {
+  const sel = `#${DIAL_ID}`
   return `
-#${DIAL_ID} {
+${sel} {
   position: fixed;
   right: calc(18px + env(safe-area-inset-right, 0px));
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
@@ -215,27 +218,12 @@ function dialCSS(): string {
   -webkit-user-select: none;
   user-select: none;
 }
-html.${TRACKING_CLASS},
-html.${TRACKING_CLASS} body {
-  overscroll-behavior: none !important;
-  touch-action: none !important;
-}
-html.${TRACKING_CLASS} #terminal-container,
-html.${TRACKING_CLASS} .xterm,
-html.${TRACKING_CLASS} .xterm-viewport,
-html.${TRACKING_CLASS} .xterm-screen {
-  overscroll-behavior: none !important;
-  touch-action: none !important;
-}
-#terminal-container {
-  height: calc(100% - ${TERMINAL_BOTTOM_GAP}px) !important;
-}
-#${DIAL_ID} button {
+${sel} button {
   appearance: none;
   -webkit-appearance: none;
   -webkit-tap-highlight-color: transparent;
 }
-#${DIAL_ID} .dial-root {
+${sel} .dial-root {
   position: absolute;
   inset: 0;
   z-index: 4;
@@ -246,39 +234,63 @@ html.${TRACKING_CLASS} .xterm-screen {
   padding: 0;
   border: 1px solid var(--dial-edge);
   border-radius: 50%;
-  background: var(--h-hover, #1a1a1a);
+  background: color-mix(in srgb, var(--h-hover, #1a1a1a) 15%, transparent);
   color: var(--h-fg, #ededed);
   font: 700 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  cursor: grab;
   pointer-events: auto;
   touch-action: none;
   transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-#${DIAL_ID} .dial-root[aria-expanded="true"] {
+${sel} .dial-root:hover {
+  background: color-mix(in srgb, var(--h-hover, #1a1a1a) 72%, transparent);
+}
+/* Only the character gets a denser plate. The 58px circle stays a ~15% wash —
+   that is the affordance, and making all of it opaque would blank out two lines
+   of whatever the terminal is printing — while the glyph itself needs to be
+   readable against arbitrary output, so it carries a small disc of the page
+   background with it. Expanded, the accent fill already supplies the contrast,
+   so the plate gets out of the way rather than sitting as a second shape
+   inside it. */
+${sel} .dial-root-glyph {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--h-bg, #000) 60%, transparent);
+  color: inherit;
+  pointer-events: none;
+  transition: background 120ms ease;
+}
+${sel} .dial-root[aria-expanded="true"] .dial-root-glyph {
+  background: transparent;
+}
+/* Ordered after :hover deliberately — equal specificity, so an expanded root
+   under the cursor must still read as armed rather than merely hovered. */
+${sel} .dial-root[aria-expanded="true"] {
   border-color: var(--h-accent, #fff);
   background: var(--h-accent, #fff);
   color: var(--h-bg, #000);
 }
-#${DIAL_ID} .dial-root:active {
-  cursor: grabbing;
+${sel} .dial-root:active {
   transform: scale(.94);
 }
 /* Pressing a CLOSED dial dips its surface; an open one must keep the accent fill
    (equal specificity otherwise lets this rule win and drop the armed state). */
-#${DIAL_ID} .dial-root[aria-expanded="false"]:active {
-  background: var(--h-panel, #111);
+${sel} .dial-root[aria-expanded="false"]:active {
+  background: color-mix(in srgb, var(--h-panel, #111) 82%, transparent);
 }
-#${DIAL_ID} .dial-root:focus-visible,
-#${DIAL_ID} .dial-item:focus-visible {
+${sel} .dial-root:focus-visible,
+${sel} .dial-item:focus-visible {
   outline: 2px solid var(--h-accent, #fff);
   outline-offset: 3px;
 }
-#${DIAL_ID} .dial-menu {
+${sel} .dial-menu {
   position: absolute;
   inset: 0;
   pointer-events: none;
 }
-#${DIAL_ID} .dial-line {
+${sel} .dial-line {
   position: absolute;
   left: ${ROOT_SIZE / 2}px;
   top: ${ROOT_SIZE / 2}px;
@@ -288,7 +300,7 @@ html.${TRACKING_CLASS} .xterm-screen {
   transform-origin: 0 50%;
   pointer-events: none;
 }
-#${DIAL_ID} .dial-item {
+${sel} .dial-item {
   position: absolute;
   z-index: 2;
   display: inline-flex;
@@ -300,7 +312,7 @@ html.${TRACKING_CLASS} .xterm-screen {
   padding: 0;
   border: 1px solid var(--dial-edge);
   border-radius: 999px;
-  background: var(--h-panel, #111);
+  background: color-mix(in srgb, var(--h-panel, #111) 92%, transparent);
   color: var(--h-fg, #ededed);
   font: 700 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   opacity: 0;
@@ -309,17 +321,17 @@ html.${TRACKING_CLASS} .xterm-screen {
   touch-action: none;
   transition: opacity 130ms ease, transform 130ms ease, background 90ms ease, color 90ms ease;
 }
-#${DIAL_ID} .dial-item.is-visible {
+${sel} .dial-item.is-visible {
   opacity: 1;
   transform: scale(1);
 }
-#${DIAL_ID} .dial-item[data-active="true"] {
+${sel} .dial-item[data-active="true"] {
   border-color: var(--h-accent, #fff);
   background: var(--h-accent, #fff);
   color: var(--h-bg, #000);
   transform: scale(1.1);
 }
-#${DIAL_ID} .dial-item::after {
+${sel} .dial-item::after {
   position: absolute;
   bottom: calc(100% + 9px);
   left: 50%;
@@ -337,26 +349,48 @@ html.${TRACKING_CLASS} .xterm-screen {
   visibility: hidden;
   white-space: nowrap;
 }
-#${DIAL_ID} .dial-item[data-active="true"]::after {
+${sel} .dial-item[data-active="true"]::after {
   opacity: 1;
   visibility: visible;
 }
-#${DIAL_ID} .dial-branch {
+${sel} .dial-branch {
   justify-content: center;
   padding: 0 12px;
   font-size: 14px;
 }
-#${DIAL_ID} .dial-branch .dial-glyph {
+${sel} .dial-branch .dial-glyph {
   color: var(--h-accent, #fff);
   font-size: 18px;
 }
-#${DIAL_ID} .dial-branch[data-active="true"] .dial-glyph {
+${sel} .dial-branch[data-active="true"] .dial-glyph {
   color: inherit;
 }
-#${DIAL_ID} .input-picker {
+${sel} .dial-root {
+  cursor: grab;
+}
+${sel} .dial-root:active {
+  cursor: grabbing;
+}
+html.${TRACKING_CLASS},
+html.${TRACKING_CLASS} body {
+  overscroll-behavior: none !important;
+  touch-action: none !important;
+}
+html.${TRACKING_CLASS} #terminal-container,
+html.${TRACKING_CLASS} .xterm,
+html.${TRACKING_CLASS} .xterm-viewport,
+html.${TRACKING_CLASS} .xterm-screen {
+  overscroll-behavior: none !important;
+  touch-action: none !important;
+}
+/* The gap is where the closed dial sits above the software keyboard's edge. */
+#terminal-container {
+  height: calc(100% - ${TERMINAL_BOTTOM_GAP}px) !important;
+}
+${sel} .input-picker {
   display: none;
 }
-#${DIAL_ID} .input-panel {
+${sel} .input-panel {
   position: fixed;
   right: 14px;
   bottom: calc(88px + env(safe-area-inset-bottom, 0px));
@@ -374,22 +408,22 @@ html.${TRACKING_CLASS} .xterm-screen {
   color: var(--h-fg, #ededed);
   pointer-events: auto;
 }
-#${DIAL_ID} .input-header,
-#${DIAL_ID} .input-actions {
+${sel} .input-header,
+${sel} .input-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-#${DIAL_ID} .input-header {
+${sel} .input-header {
   justify-content: space-between;
   font: 600 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-#${DIAL_ID} .input-status {
+${sel} .input-status {
   color: var(--h-muted, #8a8a8a);
   font-size: 11px;
   font-weight: 500;
 }
-#${DIAL_ID} .input-buffer {
+${sel} .input-buffer {
   box-sizing: border-box;
   width: 100%;
   min-height: 96px;
@@ -402,21 +436,21 @@ html.${TRACKING_CLASS} .xterm-screen {
   font: 400 15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   outline: none;
 }
-#${DIAL_ID} .input-buffer:focus {
+${sel} .input-buffer:focus {
   border-color: var(--h-accent, #fff);
 }
-#${DIAL_ID} .input-buffer::placeholder {
+${sel} .input-buffer::placeholder {
   color: var(--h-muted, #8a8a8a);
 }
-#${DIAL_ID} .input-actions {
+${sel} .input-actions {
   justify-content: flex-end;
 }
 /* The attach action belongs to the buffer, not to the commit trio, so it holds
    the left edge while Cancel/Insert/Enter stay grouped at the right. */
-#${DIAL_ID} .input-action.attach {
+${sel} .input-action.attach {
   margin-right: auto;
 }
-#${DIAL_ID} .input-action {
+${sel} .input-action {
   min-height: 38px;
   padding: 0 13px;
   border: 1px solid var(--dial-edge);
@@ -425,17 +459,17 @@ html.${TRACKING_CLASS} .xterm-screen {
   color: var(--h-fg, #ededed);
   font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-#${DIAL_ID} .input-action.primary {
+${sel} .input-action.primary {
   border-color: var(--h-accent, #fff);
   background: var(--h-accent, #fff);
   color: var(--h-bg, #000);
 }
-#${DIAL_ID} .input-action:disabled {
+${sel} .input-action:disabled {
   opacity: .42;
 }
 @media (prefers-reduced-motion: reduce) {
-  #${DIAL_ID} .dial-root,
-  #${DIAL_ID} .dial-item { transition: none; }
+  ${sel} .dial-root,
+  ${sel} .dial-item { transition: none; }
 }
 `
 }
@@ -447,38 +481,110 @@ function targetCenter(target: DialTarget): { x: number; y: number } {
   }
 }
 
-// mountTerminalInputDial is idempotent and touch-only. ttyd may not have built
-// #terminal-container yet when the iframe load event fires, so mounting retries
-// briefly just like the old key bar did. `pasteHost` names the host an attached
-// image must be written to — the focused pane's filesystem, resolved fresh on
-// every use because focus moves without remounting anything.
+// Touch capability is watched, not merely sampled at boot. Sampling it once was
+// a hole either way round: a tab that went from a mouse to a touch primary (a
+// hybrid folded into tablet mode, a tablet's keyboard case detached) never got
+// the dial at all, and one that went the other way kept it — its hold-and-slide
+// gesture and its 24px terminal gap still in force — with no touchscreen left
+// to work them.
+//
+// The returned teardown is what makes that possible, and terminal.ts holds
+// exactly one per iframe: it releases the previous document's mount on every
+// `load` (a reload builds a new document, so the dial in the old one is already
+// gone, but its listeners on the parent's <html> observer are not) and on hook
+// cleanup. `pasteHost` names the host an attached image must be written to — the
+// focused pane's filesystem, resolved fresh on every use because focus moves
+// without remounting anything.
 export function mountTerminalInputDial(
   id: string,
-  pasteHost: () => string | undefined,
-  tries = 0
-): void {
+  pasteHost: () => string | undefined
+): () => void {
   const frame = document.getElementById(id) as HTMLIFrameElement | null
   const win = frame?.contentWindow as Window | null
-  if (!win?.matchMedia?.("(pointer: coarse)").matches) return
+  const coarse = win?.matchMedia?.("(pointer: coarse)")
+  if (!win || !coarse) return () => {}
 
-  const doc = win.document
-  if (doc.getElementById(DIAL_ID)) return
-  if (!doc.getElementById("terminal-container")) {
-    if (tries < 20) {
-      win.setTimeout(
-        () => mountTerminalInputDial(id, pasteHost, tries + 1),
-        150
-      )
+  let release: (() => void) | null = null
+  let disposed = false
+
+  const sync = () => {
+    if (disposed) return
+    if (coarse.matches && !release)
+      release = attachTerminalInputDial(win, id, pasteHost)
+    else if (!coarse.matches && release) {
+      release()
+      release = null
     }
-    return
+  }
+  sync()
+  coarse.addEventListener("change", sync)
+
+  return () => {
+    disposed = true
+    coarse.removeEventListener("change", sync)
+    release?.()
+    release = null
+  }
+}
+
+// ttyd may not have built #terminal-container yet when the iframe's load event
+// fires, so mounting retries briefly just like the old key bar did. The retry
+// has to be cancellable now: a capability flip or an unmount landing inside that
+// window would otherwise build a dial nobody is holding a teardown for.
+function attachTerminalInputDial(
+  win: Window,
+  id: string,
+  pasteHost: () => string | undefined
+): () => void {
+  const doc = win.document
+  let cancelled = false
+  let release: (() => void) | null = null
+
+  const attempt = (tries: number) => {
+    if (cancelled) return
+    if (!doc.getElementById("terminal-container")) {
+      if (tries < 20) win.setTimeout(() => attempt(tries + 1), 150)
+      return
+    }
+    release = buildTerminalInputDial(win, id, pasteHost)
+  }
+  attempt(0)
+
+  return () => {
+    cancelled = true
+    release?.()
+    release = null
+  }
+}
+
+function buildTerminalInputDial(
+  win: Window,
+  id: string,
+  pasteHost: () => string | undefined
+): () => void {
+  const doc = win.document
+  // A hot reload or a double `load` must leave one dial, not two.
+  doc.getElementById(DIAL_ID)?.remove()
+  doc.getElementById(STYLE_ID)?.remove()
+
+  // Collected rather than removed by hand: half a dozen of these sit on the
+  // iframe's window at capture, and one missed pair is a dial that keeps eating
+  // the terminal's touches after it is gone.
+  const cleanups: Array<() => void> = []
+  const on = <T extends EventTarget>(
+    target: T,
+    type: string,
+    handler: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions
+  ) => {
+    target.addEventListener(type, handler, options)
+    cleanups.push(() => target.removeEventListener(type, handler, options))
   }
 
-  if (!doc.getElementById(STYLE_ID)) {
-    const style = doc.createElement("style")
-    style.id = STYLE_ID
-    style.textContent = dialCSS()
-    doc.head.appendChild(style)
-  }
+  const style = doc.createElement("style")
+  style.id = STYLE_ID
+  style.textContent = dialCSS()
+  doc.head.appendChild(style)
 
   const dial = doc.createElement("div")
   dial.id = DIAL_ID
@@ -511,9 +617,8 @@ export function mountTerminalInputDial(
     attributes: true,
     attributeFilter: ["class", "style"],
   })
-  win.addEventListener("pagehide", () => themeObserver.disconnect(), {
-    once: true,
-  })
+  cleanups.push(() => themeObserver.disconnect())
+  on(win, "pagehide", () => themeObserver.disconnect(), { once: true })
 
   const menu = doc.createElement("div")
   menu.className = "dial-menu"
@@ -521,7 +626,14 @@ export function mountTerminalInputDial(
   const root = doc.createElement("button")
   root.type = "button"
   root.className = "dial-root"
-  root.textContent = "⌘"
+  // The ⌘ rides its own small backplate (see .dial-root-glyph) so the character
+  // stays readable against arbitrary terminal output. A level change writes into
+  // this span — the dial swaps in "‹" for a branch — since writing textContent
+  // on the button would throw the plate away.
+  const rootGlyph = doc.createElement("span")
+  rootGlyph.className = "dial-root-glyph"
+  rootGlyph.textContent = "⌘"
+  root.appendChild(rootGlyph)
   root.title = "Hold and slide for input controls"
   root.setAttribute("aria-label", "Open input controls")
   root.setAttribute("aria-expanded", "false")
@@ -582,24 +694,13 @@ export function mountTerminalInputDial(
   // has mouse reporting enabled. Block the parallel touch stream at Window
   // capture while the dial owns the pointer; pointermove still reaches the
   // captured dial button and drives selection.
-  win.addEventListener(
-    "touchmove",
-    (event) => {
-      if (!inputLocked) return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-    },
-    { capture: true, passive: false }
-  )
-  win.addEventListener(
-    "wheel",
-    (event) => {
-      if (!inputLocked) return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-    },
-    { capture: true, passive: false }
-  )
+  const blockParallelTouch = (event: Event) => {
+    if (!inputLocked) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+  on(win, "touchmove", blockParallelTouch, { capture: true, passive: false })
+  on(win, "wheel", blockParallelTouch, { capture: true, passive: false })
 
   const setActive = (id: string | null) => {
     if (activeID === id) return
@@ -614,7 +715,7 @@ export function mountTerminalInputDial(
     level = "root"
     activeID = null
     menu.replaceChildren()
-    root.textContent = "⌘"
+    rootGlyph.textContent = "⌘"
     root.title = "Hold and slide for input controls"
     root.setAttribute("aria-label", "Open input controls")
     root.setAttribute("aria-expanded", "false")
@@ -840,6 +941,8 @@ export function mountTerminalInputDial(
       button.textContent = target.glyph
     }
 
+    menu.appendChild(button)
+
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -875,7 +978,6 @@ export function mountTerminalInputDial(
       setActive(null)
       unlockTerminalInput()
     })
-    menu.appendChild(button)
     win.requestAnimationFrame(() => button.classList.add("is-visible"))
   }
 
@@ -888,7 +990,7 @@ export function mountTerminalInputDial(
     // a crumb chip naming the branch sat where the ring's own items are and
     // covered them, to say what the ring below it already says.
     const inBranch = level !== "root"
-    root.textContent = inBranch ? "‹" : "⌘"
+    rootGlyph.textContent = inBranch ? "‹" : "⌘"
     root.title = inBranch ? "Back to input controls" : "Close input controls"
     root.setAttribute(
       "aria-label",
@@ -1046,60 +1148,75 @@ export function mountTerminalInputDial(
     swallowTimer = win.setTimeout(endSwallow, ms)
   }
 
+  const swallowGesture = (event: Event) => {
+    if (!swallowing) return
+    // The dial's own events are never swallowed: a dismissing tap may be
+    // followed straight away by a deliberate press on the root.
+    if (dial.contains(event.target as Node)) {
+      endSwallow()
+      return
+    }
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    // `click` closes the compatibility sequence; anything after it belongs
+    // to a new gesture, which the terminal is entitled to.
+    if (event.type === "click") {
+      endSwallow()
+      return
+    }
+    // The finger is up, so only that trailing mouse pair is still owed —
+    // and preventDefault here usually means it never comes at all.
+    if (
+      (event.type === "pointerup" || event.type === "pointercancel") &&
+      (event as PointerEvent).pointerId === swallowPointer
+    ) {
+      swallowPointer = null
+      armSwallowTimer(SWALLOW_TAIL_MS)
+    }
+  }
   for (const type of SWALLOWED_EVENTS) {
-    win.addEventListener(
-      type,
-      (event: Event) => {
-        if (!swallowing) return
-        // The dial's own events are never swallowed: a dismissing tap may be
-        // followed straight away by a deliberate press on the root.
-        if (dial.contains(event.target as Node)) {
-          endSwallow()
-          return
-        }
-        event.preventDefault()
-        event.stopImmediatePropagation()
-        // `click` closes the compatibility sequence; anything after it belongs
-        // to a new gesture, which the terminal is entitled to.
-        if (event.type === "click") {
-          endSwallow()
-          return
-        }
-        // The finger is up, so only that trailing mouse pair is still owed —
-        // and preventDefault here usually means it never comes at all.
-        if (
-          (event.type === "pointerup" || event.type === "pointercancel") &&
-          (event as PointerEvent).pointerId === swallowPointer
-        ) {
-          swallowPointer = null
-          armSwallowTimer(SWALLOW_TAIL_MS)
-        }
-      },
-      { capture: true, passive: false }
-    )
+    on(win, type, swallowGesture, { capture: true, passive: false })
   }
 
   // Registered after the swallow so it sees the dismissing pointerdown first
   // (the loop above ignores that one, nothing being swallowed yet) and can arm
   // on it. Any dial level counts, root included: whether an item happens to be
   // armed changes nothing about where the tap would otherwise land.
-  win.addEventListener(
+  on(
+    win,
     "pointerdown",
-    (event) => {
+    (event: Event) => {
       if (!open || dial.contains(event.target as Node)) return
       close()
       event.preventDefault()
       event.stopImmediatePropagation()
       swallowing = true
-      swallowPointer = event.pointerId
+      swallowPointer = (event as PointerEvent).pointerId
       // Backstop for a pointer whose up/cancel never arrives.
       armSwallowTimer(SWALLOW_MAX_MS)
     },
     { capture: true, passive: false }
   )
-  doc.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return
+  on(doc, "keydown", (event: Event) => {
+    if ((event as KeyboardEvent).key !== "Escape") return
     if (inputPanel) closeInputPanel()
     else if (open) close()
   })
+
+  return () => {
+    // Order matters: the gesture state has to be released before the DOM goes,
+    // since unlocking restores xterm's disableStdin and drops the tracking class
+    // from <html> — neither of which lives inside the dial.
+    clearGesture()
+    endSwallow()
+    closeInputPanel()
+    close()
+    for (const undo of cleanups.reverse()) undo()
+    cleanups.length = 0
+    dial.remove()
+    style.remove()
+    // The 24px terminal gap went with the stylesheet, so xterm has to refit to
+    // the height it just got back.
+    win.requestAnimationFrame(() => win.dispatchEvent(new Event("resize")))
+  }
 }

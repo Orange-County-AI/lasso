@@ -772,13 +772,18 @@ export function bootTermFrame(
 ) {
   const el = document.getElementById(id) as HTMLIFrameElement | null
   if (!el) return () => {}
+  // Exactly one live dial mount per frame. A reload builds a new document, so
+  // the old dial is gone with it — but its capability listener and its observer
+  // on the parent's <html> are not, hence the release before remounting.
+  let releaseDial = mountTerminalInputDial(id, pasteHost) // in case it already loaded
   const onLoad = () => {
     applyTermTheme(0)
     applyTermFont(0)
     applyTermFit(0)
     applyTermAtmosphere(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
-    mountTerminalInputDial(id, pasteHost)
+    releaseDial()
+    releaseDial = mountTerminalInputDial(id, pasteHost)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without
@@ -789,8 +794,10 @@ export function bootTermFrame(
   applyTermFit(0) // in case it already loaded
   applyTermAtmosphere(0) // in case it already loaded
   wireTerminalIframe(id, suppressContext, inputMode, pasteHost) // in case it already loaded
-  mountTerminalInputDial(id, pasteHost) // in case it already loaded
-  return () => el.removeEventListener("load", onLoad)
+  return () => {
+    el.removeEventListener("load", onLoad)
+    releaseDial()
+  }
 }
 
 // Nudge a hidden-then-shown terminal to refit and take the keyboard.

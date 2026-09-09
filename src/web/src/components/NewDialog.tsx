@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Plus, X } from "lucide-react"
+import { ChevronDown, X } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { NewTerminalForm } from "@/components/NewTerminalForm"
@@ -13,7 +13,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
@@ -209,27 +208,18 @@ export function NewDialog({
   onOpenChange,
   tab,
   onTabChange,
-  variant = "button",
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   tab: NewDialogTab
   onTabChange: (tab: NewDialogTab) => void
-  // "button" — the inline outline button on a panel header.
-  // "floating" — a pill matching the host switcher, for the bottom-left footer.
-  // "header" — a compact button for the left column's header row.
-  variant?: "button" | "floating" | "header"
 }) {
   const [showAdvanced, setShowAdvanced] = React.useState(false)
   const [terminalCreating, setTerminalCreating] = React.useState(false)
   const [placeholderIdx, setPlaceholderIdx] = React.useState(0)
   const queryClient = useQueryClient()
-  // Set when the dialog closes because a pane was just created, so the close
-  // handler hands keyboard focus to Herdr instead of restoring the trigger.
-  const createdRef = React.useRef(false)
   const modeTabsRef = React.useRef<HTMLDivElement>(null)
   const agentTypeTabsRef = React.useRef<HTMLDivElement>(null)
-  const focusHerdrOnEscapeRef = React.useRef(false)
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
   const gitTypeTabRef = React.useRef<HTMLButtonElement>(null)
   const scratchTypeTabRef = React.useRef<HTMLButtonElement>(null)
@@ -640,7 +630,6 @@ export function NewDialog({
           description: (error as Error).message,
         })
       }
-      createdRef.current = true
       onOpenChange(false)
       reset()
       // The creator just updated this host's remembered selections + agent log,
@@ -680,46 +669,6 @@ export function NewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild>
-        {variant === "header" ? (
-          // Prominent (but unfilled) button for the left column's tab-strip
-          // trailing slot — the accent carried by the border + text, with only a
-          // faint tint, so it reads as the row's primary action without a solid fill.
-          <button
-            type="button"
-            onClick={() => onTabChange("agent")}
-            className="my-1 flex shrink-0 items-center gap-1 self-center rounded-md border border-primary/60 bg-primary/10 @min-[400px]/lnav:px-2.5 px-2 py-1 font-medium text-primary text-xs transition-colors hover:border-primary hover:bg-primary/20"
-            title="create an agent or terminal (⌘O / ⌘I)"
-          >
-            <Plus className="size-3.5" />
-            {/* Label collapses to a bare "+" only when the strip is genuinely
-                tight — tracked against the `/lnav` container, not the viewport. */}
-            <span className="@min-[400px]/lnav:inline hidden">New</span>
-          </button>
-        ) : variant === "floating" ? (
-          // Mirrors the HostSwitcher pill so the two footer controls read as a
-          // pair (see App.tsx, where this sits to the host button's right).
-          <button
-            type="button"
-            onClick={() => onTabChange("agent")}
-            className="flex items-center gap-1 rounded-md border border-border bg-card/90 px-2 py-0.5 text-[11px] text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
-            title="create an agent or terminal (⌘O / ⌘I)"
-          >
-            <Plus className="size-3" />
-            <span className="font-medium">New</span>
-          </button>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1"
-            onClick={() => onTabChange("agent")}
-          >
-            <Plus className="size-4" />
-            New
-          </Button>
-        )}
-      </DialogTrigger>
       <DialogContent
         data-surface="creator"
         className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
@@ -736,19 +685,11 @@ export function NewDialog({
               ?.focus()
           }
         }}
-        onEscapeKeyDown={() => {
-          focusHerdrOnEscapeRef.current = true
-        }}
         onCloseAutoFocus={(e) => {
-          // A successful creation or Esc should return the keyboard to Herdr;
-          // other dismissals retain Radix's normal focus restoration.
-          const focusHerdr = createdRef.current || focusHerdrOnEscapeRef.current
-          createdRef.current = false
-          focusHerdrOnEscapeRef.current = false
-          if (focusHerdr) {
-            e.preventDefault()
-            focusHerdrTerminal()
-          }
+          // There is no header trigger to restore anymore: every dismissal
+          // returns the keyboard to the terminal, including Cancel and Close.
+          e.preventDefault()
+          focusHerdrTerminal()
         }}
       >
         <Tabs
@@ -1183,10 +1124,7 @@ export function NewDialog({
               creating={terminalCreating}
               setCreating={setTerminalCreating}
               onCancel={() => onOpenChange(false)}
-              onCreated={() => {
-                createdRef.current = true
-                onOpenChange(false)
-              }}
+              onCreated={() => onOpenChange(false)}
             />
           </TabsContent>
         </Tabs>

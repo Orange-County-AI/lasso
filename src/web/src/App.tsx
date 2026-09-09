@@ -1,12 +1,15 @@
 import {
-  ChevronLeft,
   ChevronRight,
   Files,
   Gauge,
   Globe,
+  Keyboard,
   type LucideIcon,
   NotebookPen,
-  Search,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  Server,
   Settings,
   SquareTerminal,
 } from "lucide-react"
@@ -24,6 +27,7 @@ import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import { UsageFooter } from "@/components/UsageFooter"
 import { UsageTab } from "@/components/UsageTab"
+import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -45,7 +49,7 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
-import { openHerdrGoto } from "@/lib/terminal"
+import { focusHerdrTerminal, openHerdrGoto } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -147,32 +151,6 @@ function FitTabs({
   )
 }
 
-// A search affordance for the header: styled like an input but it's a button
-// that fires ⌘K, i.e. herdr's own pane search inside the terminal. It
-// fills its centre slot (flex-1, capped at max-w-xs) so it reads as a real
-// search bar at every width — the label just truncates when space runs out
-// rather than collapsing to a lone icon. The ⌘K hint shows once the strip has
-// room for it (container query, `/lnav`).
-function HeaderSearch({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title="Search panes (⌘K)"
-      className="flex h-7 w-full max-w-xs items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-muted-foreground text-sm hover:border-primary hover:text-foreground"
-    >
-      <Search className="size-3.5 shrink-0" />
-      {/* The bar fills its centre slot (flex-1), so the label rides along in
-          whatever space is free and only truncates when the strip is genuinely
-          tight — no premature collapse to a lone icon with dead space around it. */}
-      <span className="min-w-0 flex-1 truncate text-left">Search</span>
-      <kbd className="@min-[520px]/lnav:inline-block hidden rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-        ⌘K
-      </kbd>
-    </button>
-  )
-}
-
 function Pane({
   show,
   children,
@@ -203,13 +181,9 @@ function Shell() {
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
-  const [mobileHostOpen, setMobileHostOpen] = React.useState(false)
-  // Git working-tree status, polled app-wide (see useDiff) so the tab badge and
-  // the collapsed-sidebar indicator stay live even when the Files panel is
-  // hidden or the sidebar boots collapsed. `gitReady` gates the badge on the
-  // active pane actually being in a repo — GitStatusBadge renders a green
-  // "clean" dot for ready && dirty === 0, which would be a lie for a plain
-  // directory like $HOME.
+  const [hostMenuOpen, setHostMenuOpen] = React.useState(false)
+  // Keep the Files tab's git badge live even while another sidebar tab is
+  // selected — the footer shows the same badge while the sidebar is collapsed.
   const diff = useDiff()
   const diffDirty = diff.data?.dirty ?? 0
   const gitReady = diff.data?.isRepo === true
@@ -302,18 +276,43 @@ function Shell() {
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
 
-  // The touch-only terminal dial lives inside the ttyd iframe. Its app branch
-  // crosses that same-origin boundary with one typed event; desktop keeps using
-  // the visible header and keyboard shortcuts.
+  // Footer navigation. New always opens on the agent tab — the terminal tab is
+  // ⌘I's business — and the mobile dial's "new" command shares this.
+  const openNew = React.useCallback(() => {
+    setNewTab("agent")
+    setNewOpen(true)
+  }, [])
+
+  // Collapsing the sidebar hands the screen back to the terminal, so hand it
+  // the keyboard too rather than leaving focus parked on the footer button.
+  // Expanding leaves focus where it is — the user is looking at what they just
+  // opened, and stealing it would type their next keystroke into herdr.
+  const toggleSidebarFromFooter = React.useCallback(() => {
+    const wasOpen = rightPanel.current?.isCollapsed() === false
+    toggleSidebar()
+    if (wasOpen) focusHerdrTerminal()
+  }, [toggleSidebar])
+
+  // The footer button is separate from the menu's mobile-capable anchor.
+  // Capture its pointer-down state before Radix's outside-click dismissal, so
+  // that same click toggles closed rather than reopening the menu.
+  const hostOpenAtPointerDown = React.useRef<boolean | null>(null)
+  const openHostMenu = React.useCallback(() => setHostMenuOpen(true), [])
+  const toggleHostMenu = React.useCallback(() => {
+    const wasOpen = hostOpenAtPointerDown.current
+    hostOpenAtPointerDown.current = null
+    setHostMenuOpen((current) => !(wasOpen ?? current))
+  }, [])
+
   React.useEffect(() => {
     const onMobileCommand = (event: Event) => {
       const command = (event as CustomEvent<MobileCommand>).detail
       if (command === "new") {
-        setNewOpen(true)
+        openNew()
       } else if (command === "sidebar") {
         toggleSidebar()
       } else if (command === "host") {
-        setMobileHostOpen(true)
+        openHostMenu()
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
         // chord a software keyboard can't type, and openHerdrGoto hands the
@@ -324,7 +323,7 @@ function Shell() {
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
     return () =>
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
-  }, [toggleSidebar])
+  }, [toggleSidebar, openNew, openHostMenu])
 
   // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
@@ -420,62 +419,10 @@ function Shell() {
             minSize={15}
             className="flex h-full min-h-0 flex-col"
           >
-            {/* The left column's header row. It is not a tab strip: the column
-                is always the Herdr terminal, so the row carries the host picker,
-                ⌘K search, and the shared New agent/terminal action. Styled with
-                the sidebar's strip classes so both columns share one chrome. */}
-            <div
-              className={cn(
-                stripClass,
-                "@container/lnav mobile-terminal-nav flex items-center pr-2 text-muted-foreground"
-              )}
-            >
-              <HostSwitcher variant="nav" />
-              <div className="flex min-w-0 flex-1 justify-center px-2">
-                {/* Arrow, not the bare function: onClick would otherwise hand
-                    the click event in as `tries` and kill the retry. */}
-                <HeaderSearch onOpen={() => openHerdrGoto()} />
-              </div>
-              {/* New sits at the far-right of the row; when the sidebar is
-                  collapsed the git status + expand control follow it. The
-                  dialog hands keyboard focus to a newly created pane. */}
-              <div className="ml-2 flex items-center gap-1.5">
-                <NewDialog
-                  open={newOpen}
-                  onOpenChange={setNewOpen}
-                  tab={newTab}
-                  onTabChange={setNewTab}
-                  variant="header"
-                />
-                {collapsed && (
-                  <>
-                    {/* Git status at a glance while the file viewer is hidden:
-                        the uncommitted-change count (or a green dot when clean),
-                        mirroring the Files tab's badge. */}
-                    <GitStatusBadge
-                      dirty={diffDirty}
-                      ready={gitReady}
-                      textClassName="self-center text-[13px]"
-                    />
-                    <button
-                      type="button"
-                      className="my-1 flex size-6 shrink-0 items-center justify-center self-center rounded border border-border text-muted-foreground hover:border-primary hover:text-primary"
-                      title="show file viewer"
-                      onClick={() => {
-                        markSidebarIntent()
-                        expandSidebar()
-                      }}
-                    >
-                      <ChevronLeft className="size-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
             {/* term-shell is the hook the Retro 82 atmosphere draws its
                 amber/teal hairline on (index.css); inert under every other
                 theme. */}
-            <div className="term-shell relative flex min-h-0 flex-1 flex-col">
+            <div className="term-shell relative isolate flex min-h-0 flex-1 flex-col">
               <TerminalFrame
                 id="term"
                 base="/terminal"
@@ -608,11 +555,18 @@ function Shell() {
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
+        {/* Match the footer's left-hand Host control on desktop; keep the
+          mobile input dial's host menu anchored at the terminal's right edge. */}
         <HostSwitcher
-          anchorOnly
-          className="mobile-host-anchor fixed right-6 bottom-24 z-40"
-          open={mobileHostOpen}
-          onOpenChange={setMobileHostOpen}
+          className="absolute right-8 bottom-1 z-40 md:right-auto md:left-2"
+          open={hostMenuOpen}
+          onOpenChange={setHostMenuOpen}
+        />
+        <NewDialog
+          open={newOpen}
+          onOpenChange={setNewOpen}
+          tab={newTab}
+          onTabChange={setNewTab}
         />
         {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
           with herdr-mirror running covers the fleet (other machines' workspaces
@@ -627,7 +581,79 @@ function Shell() {
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
-      <UsageFooter />
+      {/* The app's only chrome. There is no header and no floating navigation,
+        so this footer is always present at desktop widths and has no visibility
+        toggle: it is the only pointer route to New, the sidebar, the host menu
+        and the shortcuts reference. Usage metrics scroll inside their own track
+        so a long provider list can never push the controls offscreen. Phones
+        keep the whole viewport for the terminal — the input dial beside xterm's
+        textarea carries the same commands there. */}
+      <footer className="hidden flex-none items-center gap-2 border-border border-t bg-card px-2 py-1 md:flex">
+        <div className="flex flex-none items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Switch host"
+            aria-label="Switch host"
+            aria-haspopup="menu"
+            aria-expanded={hostMenuOpen}
+            onPointerDownCapture={() => {
+              hostOpenAtPointerDown.current = hostMenuOpen
+            }}
+            onPointerCancel={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onKeyDownCapture={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onClick={toggleHostMenu}
+          >
+            <Server />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Keyboard shortcuts (⌘/)"
+            aria-label="Keyboard shortcuts"
+            onClick={() => setShortcutsOpen(true)}
+          >
+            <Keyboard />
+          </Button>
+        </div>
+        <UsageFooter />
+        <div className="ml-auto flex flex-none items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            title="New agent or terminal (⌘O / ⌘I)"
+            onClick={openNew}
+          >
+            <Plus />
+            New
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={!collapsed}
+            title="Toggle sidebar (⌘\)"
+            onClick={toggleSidebarFromFooter}
+          >
+            {collapsed ? <PanelRightOpen /> : <PanelRightClose />}
+            Sidebar
+            {/* With the sidebar closed its Files tab's badge is offscreen, so
+              the working tree's state shows here instead — the same round
+              indicator the retired header carried. */}
+            {collapsed && (
+              <GitStatusBadge
+                dirty={diffDirty}
+                ready={gitReady}
+                className="ml-0.5"
+                textClassName="text-[11px]"
+              />
+            )}
+          </Button>
+        </div>
+      </footer>
     </div>
   )
 }
