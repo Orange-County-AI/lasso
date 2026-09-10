@@ -239,6 +239,14 @@ terminal routes to the Go backend: frontend edits reload instantly, Go changes
 need a task restart. It binds your tailscale interface and uses a dedicated dev
 port that bumps if busy, so it never clashes with a production instance.
 
+The frontend half of all of this — `bun install`, Vite, tsc, biome — runs inside
+an unprivileged [incus](https://linuxcontainers.org/incus/) container rather than
+on your machine, so a compromised npm dependency executes as a throwaway uid with
+nothing but `src/web` mounted. The Go backend still runs on the host, and two
+incus proxy devices carry the one port each direction needs. `scripts/container.sh`
+documents the arrangement; the container rebuilds itself from a base image if you
+delete it.
+
 ## Architecture
 
 One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals

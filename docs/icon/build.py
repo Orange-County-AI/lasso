@@ -1,9 +1,12 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["cairosvg", "pillow"]
+# ///
 """Render favicon and home-screen assets from the current standalone L mark.
 
 The amber outline and teal terminal cursor reproduce the mark at the left of
 brand/lasso-wordmark.png. The wordmark itself is deliberately left untouched.
-Requires cairosvg and Pillow.
 """
 from pathlib import Path
 import io

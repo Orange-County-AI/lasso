@@ -14,22 +14,60 @@
 # stale pin here doesn't just build the frontend with an old bun, it stops an
 # omp agent from booting in a lasso worktree while the same command works fine
 # one directory up. Keep it at or above what the spawnable harnesses need.
+#
+# node is pinned because the frontend build silently depended on it and nobody
+# had declared it: `bun run build` runs vite through node when a node is on
+# PATH, and through bun's own runtime when none is. Those two produce different
+# bundles — node 26 emits vite's module-preload helper without the
+# Promise.allSettled shim, bun's runtime emits it with — so an undeclared node
+# meant the output depended on whatever the global mise config happened to
+# float to. Everything else in dist/ was byte-identical either way.
 [tools]
 go = "1.25.3"
 bun = "1.3.14"
+node = "26.7.0"
 # Renders the icon set from docs/icon/lasso.svg. It has to be resvg (or a
 # browser): the glow is an feGaussianBlur, and cairosvg drops SVG filters
 # silently, which yields a flat mark that looks merely wrong rather than broken.
 "ubi:linebender/resvg" = "0.48.1"
 
+# Runs in the dev-lasso container: the work here is uv resolving cairosvg and
+# Pillow from PyPI and building their C extensions, not the twenty lines of
+# rendering. Until 2026-09-10 this task could not run at all — cairosvg was
+# imported but never declared or installed anywhere — so the deps now live in
+# PEP 723 metadata at the top of build.py.
 [tasks.icons]
-description = "Re-render the icon set, favicons and wordmark from the vector mark"
-run = "./docs/icon/build.py"
+description = "Re-render the icon set, favicons and wordmark from the vector mark, inside the dev-lasso container"
+dir = "{{config_root}}"
+run = "./scripts/container-icons.sh"
 
+# Runs in the dev-lasso incus container, not on titan: `bun install` executes
+# third-party postinstall scripts, and that is the one place in this repo where
+# code we didn't write runs. See scripts/container-build-web.sh for the mount
+# and idmap details. Output still lands in src/web/dist for the Go embed.
 [tasks."build:web"]
-description = "Build the React/shadcn frontend into src/web/dist (embedded by Go)"
-dir = "src/web"
-run = "bun install && bun run build"
+description = "Build the React/shadcn frontend into src/web/dist (embedded by Go), inside the dev-lasso container"
+dir = "{{config_root}}"
+run = "./scripts/container-build-web.sh"
+
+# The frontend checks run in the container for the same reason the build does:
+# tsc and biome are third-party binaries out of node_modules. Note typecheck is
+# `tsc -b`, not `tsc --noEmit` — the root tsconfig has `files: []`, so a bare
+# --noEmit checks nothing at all and passes.
+[tasks.typecheck]
+description = "Typecheck the frontend (tsc -b) inside the dev-lasso container"
+dir = "{{config_root}}"
+run = "./scripts/container-web.sh typecheck"
+
+[tasks.lint]
+description = "Lint the frontend (biome) inside the dev-lasso container"
+dir = "{{config_root}}"
+run = "./scripts/container-web.sh lint"
+
+[tasks.check]
+description = "biome check --write (format + lint fixes + sorting) inside the dev-lasso container"
+dir = "{{config_root}}"
+run = "./scripts/container-web.sh check"
 
 [tasks.build]
 description = "Build the frontend then the lasso binary"
@@ -110,10 +148,9 @@ done
 tail -n +1 -f "$logf" & tailpid=$!
 trap 'kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT
 
-echo "lasso (dev): backend on 127.0.0.1:$port · Vite UI on http://$ip (frontend hot reload ON)"
+echo "lasso (dev): backend on 127.0.0.1:$port · Vite UI in the dev-lasso container, URL printed below (frontend hot reload ON)"
 echo "edit anything under src/web/src and the browser hot-reloads; restart this task for Go changes."
-# Vite auto-bumps its own port (5173→5174→…) if busy and prints the chosen URL.
-cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
+./scripts/container-dev-web.sh "$port" "$ip"
 '''
 
 [tasks.dev-herdr]
@@ -204,7 +241,7 @@ done
 tail -n +1 -f "$logf" & tailpid=$!
 trap 'stop_herdr; kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT INT TERM
 
-echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI http://$ip"
+echo "lasso (dev-herdr $ver): backend 127.0.0.1:$port → herdr $ver ($sock) · Vite UI printed below"
 echo "Settings tab should read herdr $ver / the protocol that daemon pongs / compatible. Ctrl-C stops lasso AND the isolated daemon."
-cd src/web && env LASSO_BACKEND="http://127.0.0.1:$port" bun run dev --host "$ip"
+./scripts/container-dev-web.sh "$port" "$ip"
 '''

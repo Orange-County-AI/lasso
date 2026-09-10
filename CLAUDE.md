@@ -9,20 +9,24 @@ Lasso is a Go backend (`src/main.go` and friends) that serves a React/TypeScript
 ## Commands
 
 Backend (run from repo root, via [mise](https://mise.jdx.dev); Go sources are in `src/`):
-- `mise run build` — builds the frontend (`bun run build` in `src/web/`) then `go build` in `src/` (binary → `./lasso`)
+- `mise run build` — builds the frontend then `go build` in `src/` (binary → `./lasso`)
 - `mise run dev` — Vite dev server with HMR, proxying to the Go backend (requires tailscale up; auto-bumps the dev port from 8190 if busy)
 - `mise run test` — `go test .` in `src/`
+- `mise run typecheck` / `mise run lint` / `mise run check` — the frontend checks
+- `mise run icons` — re-render the icon set from the vector mark
 
-Frontend (`src/web/`, package manager is **bun**):
+**Every frontend command runs inside the `dev-lasso` incus container, not on titan.** `bun install`, Vite, tsc and biome are all third-party code, and on the host that code would run as the logged-in user next to the SSH key, the 1Password session and the tunnel credentials. The mise tasks above handle this for you — see `scripts/container.sh`. Do **not** reach past them and run `bun` directly in `src/web/`; that puts the dependency tree back on the host and is exactly what the container exists to prevent. The Go half (`build`, `test`) still runs on the host: Go has no install hooks, and the binary has to be here anyway to drive herdr.
+
+Underlying bun scripts, for reference (invoke via the mise tasks, not directly):
 - `bun run dev` / `bun run build` (`tsc -b && vite build`)
-- `bun run typecheck` — `tsc --noEmit`
+- `bun run typecheck` — `tsc -b`
 - `bun run lint` — `biome lint .`
 - `bun run format` — `biome format --write .`
 - `bun run check` — `biome check --write .` (format + lint fixes + import/class sorting)
 
 ## Frontend workflow
 
-- Run `bun run typecheck` (`tsc -b` — the project references mean a bare `tsc --noEmit` checks *nothing*, since the root tsconfig has `files: []`) and `bun run lint` before considering frontend work done.
+- Run `mise run typecheck` (`tsc -b` — the project references mean a bare `tsc --noEmit` checks *nothing*, since the root tsconfig has `files: []`) and `mise run lint` before considering frontend work done.
 - `src/web/dist/` is the embedded bundle — gitignored and not committed. Run `mise run build` to regenerate it locally; CI builds it for releases.
 
 ## Formatting & linting
