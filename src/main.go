@@ -560,7 +560,11 @@ func withLiveTtydTheme(next http.Handler) http.Handler {
 		if !q.Has("rendererType") {
 			q.Set("rendererType", "canvas")
 		}
-		q.Set("theme", liveTheme().xtermJSON())
+		q.Set("theme", ttydDocTheme(q))
+		// Consumed here — ttyd merges the whole query into its client options,
+		// and two keys it has never heard of have no business in them.
+		q.Del("palette")
+		q.Del("transparent")
 		u := *r.URL
 		u.RawQuery = q.Encode()
 		// The palette rides in the Location, so a cached redirect would pin the
@@ -568,6 +572,49 @@ func withLiveTtydTheme(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, u.RequestURI(), http.StatusFound)
 	})
+}
+
+// ttydDocTheme is the ITheme the DOCUMENT loads with, and it answers to the
+// TAB rather than to this process.
+//
+// The palette is per browser tab (appearance_mode + palette_light/palette_dark,
+// resolved against each device's own scheme — see lib/mode.ts), so the hub's
+// liveTheme() is only the right answer for a tab following herdr. It was
+// nevertheless the only answer served here, and the gap showed twice:
+//
+//   - A tab wearing a light palette loaded its terminal on herdr's dark canvas
+//     (or the reverse). The page then re-pinned it from lib/theme.ts, so the
+//     window ended up right — but xterm had already answered herdr's OSC 11
+//     query from the palette it BOOTED with, and herdr records that once, for
+//     the session, for every attached client. One tab whose device was in light
+//     mode was enough to leave every pane on this herdr painting a near-white
+//     canvas, in every other browser too, until they were reloaded.
+//   - `background` was always the opaque PanelBg, so a terminal under a backdrop
+//     loaded solid and only turned transparent when the page's re-pin landed —
+//     and that re-pin gives up after 20 tries (5s), which a cold ttyd on a busy
+//     box loses often enough to leave a terminal opaque for its whole life.
+//
+// So the tab names what it is wearing (`palette`, and `transparent=1` when its
+// backdrop needs the see-through canvas) and gets it in the document, before
+// the first cell is painted. Absent — a hand-typed /terminal/<slug>/ URL, an
+// older bundle — this is exactly the previous behavior. An unknown palette name
+// falls back to the live theme rather than 400ing: a stale preference should
+// cost the shared look, not the terminal.
+//
+// Naming the live theme's own resolved key is treated as "no palette", which
+// keeps any [theme.custom] overrides herdr's config carries: resolveThemeByName
+// is the canonical palette, deliberately without them.
+func ttydDocTheme(q url.Values) string {
+	rt := liveTheme()
+	if name := normalizeThemeName(q.Get("palette")); name != "" && name != rt.Resolved {
+		if _, ok := lookupThemeDef(name); ok {
+			rt = resolveThemeByName(name)
+		}
+	}
+	if q.Get("transparent") == "1" {
+		return rt.xtermJSONBG(transparentPanelBG(rt.ui.PanelBg))
+	}
+	return rt.xtermJSON()
 }
 
 // ttydDocRequest reports whether r asks for a terminal's HTML document (the one

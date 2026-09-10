@@ -614,10 +614,17 @@ const termSelectionAlpha = 0x66
 // tokens so the terminal blends with herdr's own theme, a translucent-accent
 // selection highlight (theme-matched yet always visible — see
 // termSelectionAlpha), and the 16 ANSI colors from the scheme's canonical palette.
-func (rt resolvedTheme) xtermJSON() string {
+func (rt resolvedTheme) xtermJSON() string { return rt.xtermJSONBG(rt.ui.PanelBg) }
+
+// xtermJSONBG is xtermJSON with the canvas spelled out, which is how a terminal
+// under a backdrop gets served transparent from its very first byte (see
+// transparentPanelBG and withLiveTtydTheme). Only `background` moves:
+// `cursorAccent` is the glyph drawn INSIDE the cursor block, so it has to stay
+// the opaque color or the cursor becomes a hole in the wallpaper.
+func (rt resolvedTheme) xtermJSONBG(bg string) string {
 	a := rt.ansi
 	return `{` +
-		q("background", rt.ui.PanelBg) + "," + q("foreground", rt.ui.Text) + "," +
+		q("background", bg) + "," + q("foreground", rt.ui.Text) + "," +
 		q("cursor", rt.ui.Text) + "," + q("cursorAccent", rt.ui.PanelBg) + "," +
 		q("selectionBackground", rgba(rt.ui.Accent, termSelectionAlpha)) + "," +
 		q("black", a.Black) + "," + q("red", a.Red) + "," + q("green", a.Green) + "," +
@@ -627,6 +634,29 @@ func (rt resolvedTheme) xtermJSON() string {
 		q("brightGreen", a.BrightGreen) + "," + q("brightYellow", a.BrightYellow) + "," +
 		q("brightBlue", a.BrightBlue) + "," + q("brightMagenta", a.BrightMagenta) + "," +
 		q("brightCyan", a.BrightCyan) + "," + q("brightWhite", a.BrightWhite) + `}`
+}
+
+// transparentPanelBG is the theme's own background with a zero alpha — the one
+// value that makes a backdrop visible through the terminal. It must keep the
+// theme's RGB rather than being some neutral transparent: xterm answers herdr's
+// OSC 11 query with the alpha dropped, herdr records that as the host terminal's
+// background, and its pane renderer only leaves a cell unpainted (Color::Reset)
+// when the cell's default MATCHES that. A different RGB would have herdr paint
+// every pane cell explicitly and the backdrop would never show inside a pane.
+// It is also the reply omp and opencode read to infer light vs dark, so the
+// lightness has to survive too. Mirrors lib/theme.ts:transparentTermBG,
+// including its degradation: a palette whose background is not a plain #rrggbb
+// (nothing to append an alpha to) keeps its opaque canvas rather than breaking.
+func transparentPanelBG(hex string) string {
+	if len(hex) != 7 || hex[0] != '#' {
+		return hex
+	}
+	for _, c := range hex[1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return hex
+		}
+	}
+	return hex + "00"
 }
 
 func q(k, v string) string { return `"` + k + `":"` + v + `"` }

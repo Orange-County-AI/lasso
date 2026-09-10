@@ -279,3 +279,83 @@ func TestLiveTtydThemeOnDocumentOnly(t *testing.T) {
 		t.Errorf("a themed document should pass through, got %d (reached %q)", rec.Code, reached)
 	}
 }
+
+// The document has to boot on the palette the TAB is wearing, transparency
+// included: xterm answers herdr's OSC 11 query from whatever it booted with,
+// and herdr keeps that answer for the session and every client on it, so a tab
+// that boots its terminal on the wrong lightness repaints every pane on that
+// herdr — in other browsers too. Re-pinning from the page afterwards is too
+// late for that, and gives up entirely on a ttyd slower than 5s.
+func TestTtydDocThemeFollowsTabPalette(t *testing.T) {
+	prev := srvHub
+	srvHub = newHub()
+	srvHub.curTheme = resolveThemeByName("nord")
+	t.Cleanup(func() { srvHub = prev })
+
+	live := resolveThemeByName("nord")
+	bg := func(q string) string {
+		var got map[string]string
+		v, err := url.ParseQuery(q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		if err := json.Unmarshal([]byte(ttydDocTheme(v)), &got); err != nil {
+			t.Fatalf("theme for %q isn't an ITheme: %v", q, err)
+		}
+		return got["background"]
+	}
+
+	if got := bg(""); got != live.ui.PanelBg {
+		t.Errorf("no palette named: background %q, want the live theme's %q", got, live.ui.PanelBg)
+	}
+	// A light tab on a dark fleet: the whole point.
+	lotus := resolveThemeByName("kanagawa-lotus")
+	if got := bg("palette=kanagawa-lotus"); got != lotus.ui.PanelBg {
+		t.Errorf("named palette: background %q, want %q", got, lotus.ui.PanelBg)
+	}
+	// A stale preference costs the shared look, never the terminal.
+	if got := bg("palette=no-such-theme"); got != live.ui.PanelBg {
+		t.Errorf("unknown palette: background %q, want the live theme's %q", got, live.ui.PanelBg)
+	}
+	if got := bg("transparent=1"); got != live.ui.PanelBg+"00" {
+		t.Errorf("transparent: background %q, want %q", got, live.ui.PanelBg+"00")
+	}
+	if got := bg("palette=kanagawa-lotus&transparent=1"); got != lotus.ui.PanelBg+"00" {
+		t.Errorf("named + transparent: background %q, want %q", got, lotus.ui.PanelBg+"00")
+	}
+	// The cursor's own glyph is drawn IN the block, so it stays opaque or the
+	// cursor becomes a hole in the wallpaper.
+	var full map[string]string
+	if err := json.Unmarshal([]byte(ttydDocTheme(url.Values{"transparent": {"1"}})), &full); err != nil {
+		t.Fatalf("ITheme: %v", err)
+	}
+	if full["cursorAccent"] != live.ui.PanelBg {
+		t.Errorf("cursorAccent %q went transparent with the canvas", full["cursorAccent"])
+	}
+
+	// ttyd merges the whole query into its client options, so the two keys it
+	// has never heard of must not survive the redirect.
+	var reached string
+	h := withLiveTtydTheme(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		reached = r.URL.RequestURI()
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/terminal/local/?palette=kanagawa-lotus&transparent=1", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("document should be redirected, got %d (reached %q)", rec.Code, reached)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("Location %q: %v", rec.Header().Get("Location"), err)
+	}
+	if loc.Query().Has("palette") || loc.Query().Has("transparent") {
+		t.Errorf("the tab's own hints leaked into ttyd's options: %q", loc.RawQuery)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(loc.Query().Get("theme")), &got); err != nil {
+		t.Fatalf("theme option isn't the xterm.js ITheme: %v", err)
+	}
+	if want := lotus.ui.PanelBg + "00"; got["background"] != want {
+		t.Errorf("redirect carries background %q, want %q", got["background"], want)
+	}
+}
