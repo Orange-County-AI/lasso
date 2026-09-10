@@ -23,7 +23,7 @@
 // mode-driven — herdr's theme (or the palette named for the scheme in force)
 // dictates it, see lib/theme.ts. So applyMode only touches the chrome class;
 // it deliberately does not re-pin the terminals.
-import type { AppearanceMode } from "@/lib/api"
+import { type AppearanceMode, api } from "@/lib/api"
 import { qk, queryClient } from "@/lib/query"
 import { patchUIState, uiStateNow, uiStateSettled } from "@/lib/ui-state"
 
@@ -89,6 +89,7 @@ export function applyMode(m: Mode = getMode()) {
 export function setMode(m: Mode) {
   patchUIState({ appearance_mode: m })
   applyMode(m)
+  pushPaletteToFleet()
 }
 
 // watchSystemMode re-applies on OS theme changes while the mode is "system".
@@ -107,6 +108,7 @@ export function watchSystemMode(onChange?: () => void) {
     if (getMode() !== "system") return
     applyMode("system")
     onChange?.()
+    pushPaletteToFleet()
   })
 }
 
@@ -170,10 +172,14 @@ function appearanceSignature(): string {
 // terminals wear whatever herdr resolves fleet-wide. A user who wants a
 // different look per light/dark can instead name a theme for each scheme:
 // lasso then paints its chrome AND its terminals from that theme, resolved
-// through /api/theme?name= — a read, so nothing is written to herdr's
-// config.toml and no other host or agent CLI follows. That is the whole point:
-// an OS that flips to dark at sunset must re-theme the browsers, not oscillate
-// every machine in the fleet twice a day.
+// through /api/theme?name= — a read, so RESOLVING one writes nothing.
+//
+// The write is a separate, deliberate act: an appearance change made in this
+// browser pushes what it resolved to the fleet (pushPaletteToFleet, below), so
+// the agents inside the terminals match the terminals. A palette that merely
+// arrived from another browser, or a repaint, still writes nothing — which is
+// what keeps an OS flip on an unattended screen from oscillating every machine
+// in the fleet twice a day.
 //
 // "" (the default, and what every existing install has) means "no palette":
 // the Nothing chrome, exactly as before.
@@ -189,6 +195,7 @@ export function setPalettePref(scheme: "light" | "dark", name: string) {
   patchUIState(
     scheme === "light" ? { palette_light: name } : { palette_dark: name }
   )
+  pushPaletteToFleet()
 }
 
 // localPaletteName is the theme to resolve instead of herdr's own, or "" to
@@ -198,4 +205,85 @@ export function setPalettePref(scheme: "light" | "dark", name: string) {
 export function localPaletteName(m: Mode = getMode()): string {
   if (m === "herdr") return ""
   return getPalettePref(resolvedMode(m))
+}
+
+// ---------------------------------------------------------------------------
+// Pushing the resolved palette to the fleet
+// ---------------------------------------------------------------------------
+
+// The palette above is a browser-local READ, but the theme lasso WRITES —
+// herdr's config.toml plus every agent CLI's own theme file (src/agentsync.go)
+// — is a single fleet-wide value, and nothing connected the two. So naming a
+// light palette repainted this tab's chrome and its terminals ayu-light while
+// omp, opencode, Claude Code and herdr's own tab bar kept the theme the herdr
+// picker last set: a cream canvas with retro-82 navy panels drawn on it. Only
+// the Settings "Sync now" button closed that, by hand.
+//
+// An appearance change made HERE now makes the same call that button does.
+// Deliberately only from the three entry points where this device is the CAUSE
+// — setMode, setPalettePref and the OS-scheme flip — and never from
+// refreshTheme, which also runs for a change that ARRIVED over ui_state_rev: a
+// push bumps theme_rev and repaints every other browser, so pushing from a
+// repaint would have two devices resolving "system" differently re-theming each
+// other forever. The last human to act decides, which is what asking the fleet
+// to follow your screen means.
+const FLEET_PUSH_DEBOUNCE_MS = 500
+const FLEET_PUSH_RETRY_MS = 3000
+
+// The palette last handed to the fleet, so clicking around the appearance
+// controls doesn't fan a 14-host SFTP push out per click. Reset on a final
+// failure, below.
+let pushedPalette: string | null = null
+let pushTimer: ReturnType<typeof setTimeout> | null = null
+
+// pushPaletteToFleet mirrors this browser's resolved palette onto herdr's config
+// and every reachable host's agent themes. "" is skipped: that is "herdr" mode,
+// whose whole meaning is that the fleet's own theme wins, and pushing it would
+// be a fleet-wide write of what is already there.
+export function pushPaletteToFleet() {
+  const palette = localPaletteName()
+  if (!palette) {
+    // "herdr" mode hands the fleet theme back to the herdr picker, which may
+    // move it while we are not looking. Forget what we pushed, or coming back to
+    // a palette we happen to have pushed BEFORE that would read as already
+    // synced and leave the fleet on whatever the picker set — the exact
+    // mismatch this exists to close.
+    pushedPalette = null
+    return
+  }
+  if (palette === pushedPalette) return
+  pushedPalette = palette
+  if (pushTimer) clearTimeout(pushTimer)
+  // Debounced because the appearance controls are clicked in runs (mode, then
+  // the palette for it), and each push is a fleet-wide fanout the server
+  // refuses to run twice at once.
+  pushTimer = setTimeout(
+    () => void sendPush(palette, true),
+    FLEET_PUSH_DEBOUNCE_MS
+  )
+}
+
+// sendPush is fire-and-forget except for one retry, because a dropped push is
+// not self-healing: convergence catches a host up against the theme lasso last
+// WROTE, and a push that never landed never became that. A 409 (the server
+// already has a fanout in flight) is the likely case and is exactly the one
+// worth retrying.
+async function sendPush(palette: string, retry: boolean) {
+  pushTimer = null
+  try {
+    await api.syncThemeNow(palette, true)
+    return
+  } catch {
+    // fall through
+  }
+  if (retry && localPaletteName() === palette) {
+    pushTimer = setTimeout(
+      () => void sendPush(palette, false),
+      FLEET_PUSH_RETRY_MS
+    )
+    return
+  }
+  // Out of retries: forget it, so the next appearance action tries again rather
+  // than reading as already pushed. The failing fanout toasts on its own.
+  if (pushedPalette === palette) pushedPalette = null
 }

@@ -721,8 +721,12 @@ export const api = {
   // host that missed one catches up on its next probe), so this is the only way
   // to force the question. It returns when the push starts; the per-host result
   // arrives as a notice toast.
-  syncThemeNow: (palette: string) =>
-    postJSON<ThemeSyncStarted>("/api/theme-sync", { palette }),
+  // `quiet` drops that toast on SUCCESS only — for the automatic push an
+  // appearance change makes (lib/mode.ts:pushPaletteToFleet), where a fleet-wide
+  // "synced to 14 hosts" on every click is noise. A host that REFUSED the write
+  // still toasts either way: that is the one thing worth interrupting for.
+  syncThemeNow: (palette: string, quiet = false) =>
+    postJSON<ThemeSyncStarted>("/api/theme-sync", { palette, quiet }),
   // Flips the server-level "sync agent themes" toggle (no theme change).
   setSyncAgentThemes: (enabled: boolean) =>
     postJSON<{ ok: boolean; sync_agent_themes: boolean }>("/api/theme-set", {
