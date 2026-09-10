@@ -40,6 +40,7 @@ import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import {
   getMode,
   getPalettePref,
+  localPaletteName,
   type Mode,
   resolvedMode,
   setMode,
@@ -1155,18 +1156,68 @@ function SyncAgentThemesToggle({ enabled }: { enabled: boolean }) {
     onError: (e: Error) => toast.error(`Couldn't save: ${e.message}`),
   })
   return (
-    <label
-      className="mt-1 flex cursor-pointer select-none items-center gap-2 text-muted-foreground text-xs"
-      htmlFor="settings-sync-agent-themes"
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-muted-foreground text-xs"
+        htmlFor="settings-sync-agent-themes"
+      >
+        <Checkbox
+          id="settings-sync-agent-themes"
+          checked={enabled}
+          disabled={mutation.isPending}
+          onCheckedChange={(c) => mutation.mutate(c === true)}
+        />
+        Sync agent themes (Claude Code, OpenCode, Oh My Pi)
+      </label>
+      <SyncThemeNowButton />
+    </div>
+  )
+}
+
+// SyncThemeNowButton pushes the current theme to the fleet on demand.
+//
+// Everything else about theme sync is implicit — a theme change fans out, and a
+// host that was asleep for one catches up on its next probe — which leaves no
+// way to ask "did minime actually get this?", and no way to force it after
+// something on the far side drifted.
+//
+// The push runs on the server and answers by notice toast, because it is slow
+// (titan's fourteen hosts measured 40s: theme writes wait on SFTP, six hosts at
+// a time). So this button reports that it STARTED, and the outcome — named
+// hosts, not a count, since which machine is out of step is the whole question —
+// arrives on its own. The button re-enables immediately rather than pretending
+// to track work it is no longer holding.
+//
+// It sends the palette THIS browser resolved, which the server cannot work out
+// for itself: appearance "system" resolves per device, so a light desktop and a
+// dark phone genuinely disagree about what the fleet should wear. Whoever
+// presses the button decides — the one place a browser-local palette is allowed
+// to reach the fleet, and only because a press is a deliberate act by someone
+// looking at the result. In "herdr" appearance mode localPaletteName() is "" and
+// the server falls back to herdr's own theme, which is that mode's whole meaning.
+function SyncThemeNowButton() {
+  const mutation = useMutation({
+    mutationFn: () => api.syncThemeNow(localPaletteName()),
+    onSuccess: (r) =>
+      toast.info(
+        `Syncing ${r.theme} to ${r.hosts} host${r.hosts === 1 ? "" : "s"}…`
+      ),
+    onError: (e: Error) => toast.error(`Couldn't sync: ${e.message}`),
+  })
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-6 px-2 text-xs"
+      disabled={mutation.isPending}
+      onClick={() => mutation.mutate()}
+      title="Push the current theme to every reachable host now"
     >
-      <Checkbox
-        id="settings-sync-agent-themes"
-        checked={enabled}
-        disabled={mutation.isPending}
-        onCheckedChange={(c) => mutation.mutate(c === true)}
+      <RotateCw
+        className={cn("size-3.5", mutation.isPending && "animate-spin")}
       />
-      Sync agent themes (Claude Code, OpenCode, Oh My Pi)
-    </label>
+      Sync now
+    </Button>
   )
 }
 

@@ -143,6 +143,7 @@ func (f *hostFeed) push(a Active) {
 func (f *hostFeed) pushCurrent() {
 	f.mu.Lock()
 	f.cur.ThemeRev, f.cur.UIStateRev = f.h.revs()
+	f.cur.TermOwner = termOwner(f.host, time.Now())
 	cur := f.cur
 	f.mu.Unlock()
 	f.push(cur)
@@ -220,6 +221,7 @@ func (f *hostFeed) refresh() {
 	a.PanesRev = f.rev
 	a.ThemeRev = themeRev
 	a.UIStateRev = uiStateRev
+	a.TermOwner = termOwner(f.host, time.Now())
 	a.Host = f.host
 	a.HostSlug = hostSlug(f.host)
 	// activeCwd fills CwdHost only when a resolver knows the host; an empty one
@@ -397,4 +399,18 @@ func hostInUse(host string) bool {
 		}
 	}
 	return terminals.herdr.resident(host) || terminals.shell.resident(host)
+}
+
+// pushTermOwner re-sends host's frame after its terminal-size claim moved, so
+// the tab that just took it may resize immediately and the one that lost it
+// stops. The claim lives in memory, not in herdr, so there is nothing to
+// refetch — this is bumpUIStateRev's shape, scoped to the one host whose pty
+// changed hands.
+func (h *hub) pushTermOwner(host string) {
+	h.mu.RLock()
+	f := h.feeds[host]
+	h.mu.RUnlock()
+	if f != nil {
+		f.pushCurrent()
+	}
 }

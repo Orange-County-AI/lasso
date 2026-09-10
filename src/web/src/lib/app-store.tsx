@@ -2,9 +2,11 @@ import * as React from "react"
 import { toast } from "sonner"
 
 import { type ActiveState, api } from "@/lib/api"
+import { clientID } from "@/lib/client-id"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
 import { applyMode, subscribeAppearance, watchSystemMode } from "@/lib/mode"
 import { invalidateHostScoped } from "@/lib/query"
+import { setTermOwner, watchTermIntent } from "@/lib/term-claim"
 import { applyAtmosphere, refreshTheme } from "@/lib/theme"
 import { syncUIState } from "@/lib/ui-state"
 import { subscribeAtmosphere } from "@/lib/wallpaper"
@@ -95,6 +97,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const lastUIStateRev = React.useRef<number | null>(null)
 
   const apply = React.useCallback((a: ActiveState) => {
+    // Who currently owns the shared terminal's size. Kept in a module, not in
+    // this store: the resize gate lives inside the ttyd iframes and is not a
+    // React consumer.
+    setTermOwner(a.term_owner)
     if (a.host) {
       if (lastHost.current !== null && a.host !== lastHost.current) {
         window.dispatchEvent(new CustomEvent(HOST_CHANGED_EVENT))
@@ -141,7 +147,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         .catch(() => {
           /* SSE will populate */
         })
-      es = new EventSource(withTabHost("/api/events"))
+      // The stream doubles as this tab's presence (uiclients.go), so it carries
+      // the client id. An EventSource cannot set a header, hence the query
+      // param — the same carrier the host already rides on.
+      const url = withTabHost("/api/events")
+      es = new EventSource(
+        `${url}${url.includes("?") ? "&" : "?"}client=${encodeURIComponent(clientID())}`
+      )
       es.addEventListener("active", (e) =>
         apply(JSON.parse((e as MessageEvent).data))
       )
@@ -193,6 +205,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // it re-derives everything from the cache, so nothing here remounts and
   // nothing writes back.
   React.useEffect(() => subscribeAppearance(refreshTheme), [])
+
+  // Claim the shared terminal's size whenever a human acts in THIS tab, so the
+  // pty follows whoever is actually working rather than whichever background tab
+  // last happened to reflow (lib/term-claim.ts).
+  React.useEffect(() => watchTermIntent(), [])
 
   // Repaint the backdrop whenever the persisted per-theme choice changes: the
   // first fetch landing, a pick made in this tab, or one made in another
