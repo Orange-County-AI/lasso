@@ -1,6 +1,7 @@
 import { api, type ThemeCatalogEntry, type ThemePayload } from "@/lib/api"
 import { contrastRatio, ensureContrast, isLightSurface } from "@/lib/contrast"
 import { applyMode, applyScheme, getMode, localPaletteName } from "@/lib/mode"
+import { uiStateSettled } from "@/lib/ui-state"
 import {
   backgroundFor,
   getScrim,
@@ -239,6 +240,12 @@ let atmosphereOn = false
 // it derives from without re-fetching the theme.
 let lastPalette: ThemePayload | null = null
 
+// Whether refreshTheme has finished a pass — arrived, or FAILED. termDocParams
+// holds the terminal back until it has, so a failed /api/theme must settle too:
+// gating on lastPalette alone would mean an unreachable theme endpoint at boot
+// leaves the tab with no terminal at all rather than with the shared one.
+let paletteSettled = false
+
 // The palette every terminal is pinned to — the theme's own xterm ITheme, with
 // its background made transparent while a backdrop is on. Read live by
 // applyTermTheme and its reconciler rather than passed to them, so a retry
@@ -408,6 +415,34 @@ function shadeLayers(): string[] {
 function transparentTermBG(): string {
   const bg = atmosphereBase()
   return /^#[0-9a-f]{6}$/i.test(bg) ? `${bg}00` : ""
+}
+
+// termDocParams is what a terminal iframe's URL has to carry for its DOCUMENT
+// to load on this tab's canvas instead of herdr's — the palette this tab
+// resolved, and whether its backdrop needs the terminal transparent. The server
+// composes the ITheme from them (main.go:ttydDocTheme); we only name things, so
+// there is still one place that spells an xterm palette out.
+//
+// It exists because pinning the palette afterwards is too late for two things
+// that happen at boot. xterm answers herdr's OSC 11 query from the palette it
+// BOOTED with, and herdr keeps that one answer for the session and for every
+// client attached to it — so a tab that booted its terminal on the wrong
+// lightness leaves every pane on that herdr painting the wrong canvas, in other
+// browsers too. And applyTermTheme gives up after 20 tries, so a ttyd that takes
+// longer than 5s to expose window.term never gets the transparency at all.
+//
+// null means "not yet": both inputs are async, and a URL guessed before they
+// land is the boot-time mismatch this removes — the caller renders no iframe
+// until then (TerminalFrame already waits on /api/active for the same reason).
+// A failed fetch settles too, so an unreachable server degrades to the shared
+// theme rather than to a terminal that never loads.
+export function termDocParams(): string | null {
+  if (!paletteSettled || !uiStateSettled()) return null
+  const p = new URLSearchParams({ transparent: atmosphereOn ? "1" : "0" })
+  // Empty in herdr mode — and when the palette did not resolve at all — which
+  // is precisely "use the live theme" on the server.
+  if (lastPalette && localPaletteName()) p.set("palette", effectiveTheme)
+  return p.toString()
 }
 
 // termAtmosphereCSS builds the stylesheet injected into a ttyd document: the
@@ -849,6 +884,9 @@ export async function refreshTheme() {
     t = await api.theme().catch(() => null)
     if (gen !== themeGen) return
   }
+  // Settled either way, and only for the newest pass: a superseded one is not
+  // this tab's answer, and the pass that superseded it settles in its place.
+  paletteSettled = true
   if (!t) return
   lastPalette = t
   effectiveTheme = t.resolved

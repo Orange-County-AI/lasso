@@ -927,14 +927,20 @@ type claudeThemeFile struct {
 	Overrides map[string]string `json:"overrides"`
 }
 
-// How far a diff band's relative luminance sits above the panel background: a
-// changed line reads as a band rather than a slab, and the changed span inside
-// it stays clearly the brighter of the two. Tuned on retro-82, which is the
-// hardest case in the set — the most saturated accents, and a wallpaper behind
-// the terminal rather than a flat color.
+// How far a diff band's PERCEIVED lightness (perceivedL — Oklab, not relative
+// luminance) sits above the panel background: a changed line reads as a band
+// rather than a slab, and the changed span inside it stays clearly the brighter
+// of the two. Tuned on retro-82, which is the hardest case in the set — the most
+// saturated accents, and a wallpaper behind the terminal rather than a flat
+// color.
+//
+// The numbers are the ones retro-82's ADDED band already landed on under the old
+// luminance target (0.13/0.28 of luminance measured 0.15/0.31 in Oklab, and
+// within 0.02 of that on every other theme), so a green band is unchanged
+// wherever it already looked right. It is the reds that move, and only down.
 const (
-	diffLineLift = 0.13
-	diffWordLift = 0.28
+	diffLineLift = 0.14
+	diffWordLift = 0.29
 )
 
 // claudeOverrides maps herdr's UI tokens onto Claude Code's theme tokens
@@ -1269,6 +1275,42 @@ func luminance(hex string) float64 {
 	return (0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)) / 255.0
 }
 
+// perceivedL is Oklab's lightness (0..1) of a "#rrggbb" color — how present the
+// color LOOKS, as opposed to how much light it emits.
+//
+// The difference is the whole reason this exists. Relative luminance is 71%
+// green and 21% red, so a pure red measures 0.213 against a pure green's 0.715:
+// hold two bands at the same luminance and the red has to be driven to maximum
+// while the green stays dark. That is what turned a removed-line band into a
+// fire-engine slab on every theme whose red is close to pure hue — measured at
+// 0.35 above the panel in Oklab against the added band's 0.14, on osaka-jade,
+// gruvbox and vesper alike. Oklab puts pure red at 0.63 and pure green at 0.87,
+// which is the ratio the eye actually reports, so equal lift here reads as
+// equal presence.
+//
+// Straight from Björn Ottosson's definition: sRGB → linear → LMS → cube root →
+// L. Luminance above stays as it is: it answers "is this a light or a dark
+// theme?", where the cheap approximation is fine and every caller compares it
+// against 0.5.
+func perceivedL(hex string) float64 {
+	ri, gi, bi, ok := hexRGB(hex)
+	if !ok {
+		return 0
+	}
+	lin := func(v int) float64 {
+		c := float64(v) / 255
+		if c <= 0.04045 {
+			return c / 12.92
+		}
+		return math.Pow((c+0.055)/1.055, 2.4)
+	}
+	r, g, b := lin(ri), lin(gi), lin(bi)
+	l := math.Cbrt(0.4122214708*r + 0.5363325363*g + 0.0514459929*b)
+	m := math.Cbrt(0.2119034982*r + 0.6806995451*g + 0.1073969566*b)
+	s := math.Cbrt(0.0883024619*r + 0.2817188376*g + 0.6299787005*b)
+	return 0.2104542553*l + 0.7936177850*m - 0.0040720468*s
+}
+
 // blendHex mixes color a toward color b by fraction t (0..1).
 func blendHex(a, b string, t float64) string {
 	ar, ag, ab, ok1 := hexRGB(a)
@@ -1343,25 +1385,34 @@ func hslHex(h, s, l float64) string {
 // luminance, a third of the saturation, and invisible against anything warm
 // behind it (a Retro 82 wallpaper, say). Moving only lightness treats the two
 // accents alike, and lift is a luminance delta rather than an HSL one so a red
-// and a green asked for the same lift come back equally present to the eye
-// (green carries 0.7152 of luminance, red 0.2126 — the same HSL lightness would
-// leave the red looking half-lit).
+// and a green asked for the same lift come back equally present to the eye.
+//
+// That last part is what `lift` is measured in, and it is PERCEIVED lightness
+// (perceivedL), not luminance. Luminance was the first attempt and it is not
+// far enough: it is 71% green and 21% red, so equalizing it drove a red band to
+// maximum saturation and lightness while the green sat dark — the removed line
+// arriving as a fire-engine slab on osaka-jade, gruvbox and vesper (measured
+// 0.35 above the panel in Oklab against the added band's 0.14). Oklab ranks the
+// two hues the way the eye does, so one lift now buys the same presence from
+// either. Saturation is still never touched: dropping it is what collapses a
+// red on a navy panel into a brown that vanishes against a warm wallpaper.
 func tintForBg(c, bg string, lift float64) string {
 	cr, cg, cb, ok := hexRGB(c)
 	if !ok {
 		return c
 	}
 	h, s, _ := rgbHSL(cr, cg, cb)
-	target := luminance(bg) + lift
+	target := perceivedL(bg) + lift
 	if luminance(bg) > 0.5 {
-		target = luminance(bg) - lift
+		target = perceivedL(bg) - lift
 	}
-	// Luminance is monotonic in lightness at a fixed hue and saturation, so
-	// bisection converges; 24 rounds is well past 8-bit resolution.
+	// Perceived lightness is monotonic in HSL lightness at a fixed hue and
+	// saturation, so bisection converges; 24 rounds is well past 8-bit
+	// resolution.
 	loL, hiL := 0.0, 1.0
 	for range 24 {
 		mid := (loL + hiL) / 2
-		if luminance(hslHex(h, s, mid)) < target {
+		if perceivedL(hslHex(h, s, mid)) < target {
 			loL = mid
 		} else {
 			hiL = mid

@@ -1,6 +1,7 @@
 import * as React from "react"
 
 import { useApp } from "@/lib/app-store"
+import { termDocParams } from "@/lib/theme"
 import {
   bootTermFrame,
   refitTerminal,
@@ -45,9 +46,27 @@ export function TerminalFrame({
   // may not be saved." prompt, whereas unmounting the element just tears the
   // frame down with no prompt.
   //
-  // Null until the first /api/active answer lands. Rendering the frame before
-  // then would load the role's bare prefix, which addresses no instance.
-  const src = hostSlug ? `${base}/${hostSlug}/` : null
+  // The document is served with the palette named in its own URL, so the
+  // terminal boots on this tab's canvas — see lib/theme.ts:termDocParams for
+  // why pinning it afterwards is too late, and main.go:ttydDocTheme for what
+  // the server does with it.
+  //
+  // Captured ONCE per host, and deliberately never updated: src is the iframe's
+  // React key, so folding a live re-theme into it would remount every terminal
+  // (and drop its websocket) on each appearance change. applyTermTheme re-pins
+  // an open terminal in place; this URL only has to be right at boot.
+  const frame = React.useRef<{ slug: string; params: string } | null>(null)
+  const params = termDocParams()
+  // Null until the first /api/active answer lands — rendering the frame before
+  // then would load the role's bare prefix, which addresses no instance — and
+  // until the palette has settled, for the same reason: a URL guessed before
+  // then boots the terminal on a canvas nobody chose.
+  if (hostSlug && params !== null && frame.current?.slug !== hostSlug)
+    frame.current = { slug: hostSlug, params }
+  // Read back through the LIVE slug, so a host that goes away unmounts the
+  // frame as it always did rather than leaving the last host's terminal up.
+  const pinned = frame.current?.slug === hostSlug ? frame.current : null
+  const src = pinned ? `${base}/${pinned.slug}/?${pinned.params}` : null
 
   // Re-wire xterm whenever the iframe element is (re)created — on mount and on
   // each host-move remount. A new src means a fresh iframe element (it is the

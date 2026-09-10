@@ -254,11 +254,13 @@ func TestSyncClaudeTheme(t *testing.T) {
 				c.line, line, lineSat, c.accent, accentSat)
 		}
 	}
-	// Both accents must land at the same perceived strength: a red and a green
-	// at equal HSL lightness are not equally present (0.2126 vs 0.7152 of
-	// luminance), which is what left one band readable and the other not.
-	if d := math.Abs(luminance(got.Overrides["diffAdded"]) - luminance(got.Overrides["diffRemoved"])); d > 0.02 {
-		t.Errorf("added/removed lines differ in luminance by %.3f: %q vs %q",
+	// Both accents must land at the same perceived strength, and that is
+	// measured in Oklab (perceivedL), not luminance: luminance is 71% green and
+	// 21% red, so holding the two bands equal THERE is what drove the removed
+	// line to a fire-engine slab beside a dark green added one. Equal perceived
+	// lightness deliberately means UNequal luminance.
+	if d := math.Abs(perceivedL(got.Overrides["diffAdded"]) - perceivedL(got.Overrides["diffRemoved"])); d > 0.02 {
+		t.Errorf("added/removed lines differ in perceived lightness by %.3f: %q vs %q",
 			d, got.Overrides["diffAdded"], got.Overrides["diffRemoved"])
 	}
 
@@ -962,4 +964,32 @@ func saturationOf(hex string) float64 {
 	r, g, b, _ := hexRGB(hex)
 	_, s, _ := rgbHSL(r, g, b)
 	return s
+}
+
+// A band's lift is what it LOOKS like, on every hue. This is the regression
+// that named the file: with the lift measured in relative luminance — 71% green,
+// 21% red — a theme whose red sits near pure hue could only reach the target by
+// going vivid, so the removed line arrived as a fire-engine slab (osaka-jade
+// #db1100) beside a calm dark green added one, at 0.35 of Oklab lift against
+// 0.14. Both accents, every theme, one number.
+func TestDiffBandsLiftEquallyOnEveryHue(t *testing.T) {
+	for _, name := range []string{"osaka-jade", "retro-82", "gruvbox", "vesper", "catppuccin", "nord"} {
+		rt := resolveThemeByName(name)
+		m := claudeOverrides(rt.ui)
+		base := perceivedL(rt.ui.PanelBg)
+		for _, c := range []struct {
+			tok  string
+			want float64
+		}{
+			{"diffAdded", diffLineLift},
+			{"diffRemoved", diffLineLift},
+			{"diffAddedWord", diffWordLift},
+			{"diffRemovedWord", diffWordLift},
+		} {
+			got := perceivedL(m[c.tok]) - base
+			if math.Abs(got-c.want) > 0.02 {
+				t.Errorf("%s: %s (%q) lifts %.3f, want %.3f", name, c.tok, m[c.tok], got, c.want)
+			}
+		}
+	}
 }
