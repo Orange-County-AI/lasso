@@ -7,4 +7,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/container.sh"
 
 container_ensure "$(cd "$HERE/../src/web" && pwd)"
-container_run "bun install && bun run build"
+# --frozen-lockfile here, not in the dev loop: this build feeds src/web/dist,
+# which go:embed bakes into the shipped binary. A resolution that quietly drifts
+# from bun.lock should fail loudly at that point, not get rewritten in passing.
+container_run "bun install --frozen-lockfile && bun run build"

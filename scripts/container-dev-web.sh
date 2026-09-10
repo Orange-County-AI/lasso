@@ -75,6 +75,8 @@ incus config device add "$CONTAINER" vite proxy bind=host \
 echo "vite: http://$ip:$hostport  (in $CONTAINER, backend on host 127.0.0.1:$port)"
 
 # Deps must be present before vite starts; unlike the build task this is the
-# only place they get installed on a fresh container.
-container_run "bun install --frozen-lockfile"
+# only place they get installed on a fresh container. Deliberately NOT frozen:
+# the dev loop is where you add a dependency, and it should pick it up and
+# update bun.lock rather than refuse. The build is the strict one.
+container_run "bun install"
 container_run "env LASSO_BACKEND=http://127.0.0.1:8190 bun run dev --host 127.0.0.1 --port 5173 --strictPort"
