@@ -39,16 +39,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/container.sh
 . "$HERE/container.sh"
 
-# A container already serving a dev session has a `vite` device on it; step to
-# the next one rather than stealing its port and re-pointing its mount.
-while incus config device get "$CONTAINER" vite listen >/dev/null 2>&1; do
+# Step past a container that is actually serving a dev session. Test for the
+# live process, not for the `vite` device: a device left behind by a run that
+# died without its trap (SIGKILL, a closed terminal) is garbage to reclaim — the
+# `cleanup` below does that — not a session to make way for. Testing the device
+# instead would spawn a fresh container per crash and leak the old one's
+# tailnet port forever. `incus exec` fails on a container that does not exist,
+# which ends the loop.
+while incus exec "$CONTAINER" -- pgrep -f 'bun run dev' >/dev/null 2>&1; do
   n=$(( ${n:-1} + 1 )); CONTAINER="${LASSO_DEV_CONTAINER:-dev-lasso}-$n"
-done
-
-# First free tailnet port from 5173 up.
-hostport=5173
-while ss -tln | grep -qE "[[:space:]]${ip}:${hostport}[[:space:]]"; do
-  hostport=$(( hostport + 1 ))
 done
 
 container_ensure "$(cd "$HERE/../src/web" && pwd)"
@@ -59,6 +58,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 cleanup   # clear anything a previous run left behind
+
+# First free tailnet port from 5173 up. This has to come AFTER cleanup: a stale
+# `vite` device from a killed run still holds its listener, so scanning first
+# would step around a port we are about to release and bump for no reason.
+hostport=5173
+while ss -tln | grep -qE "[[:space:]]${ip}:${hostport}[[:space:]]"; do
+  hostport=$(( hostport + 1 ))
+done
 
 incus config device add "$CONTAINER" backend proxy bind=guest \
   listen=tcp:127.0.0.1:8190 connect=tcp:127.0.0.1:"$port" >/dev/null

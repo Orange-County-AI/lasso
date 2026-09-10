@@ -28,9 +28,20 @@ GUEST_WEB="$GUEST_ROOT/src/web"
 GUEST_ICON="$GUEST_ROOT/docs/icon"
 
 # container_mount <device> <host path> <guest path>
+#
+# Only touches the device when it is actually wrong. Re-adding a disk device
+# remounts it inside the container, and that silently kills any inotify watch a
+# running process holds: a live `mise run dev` keeps answering 200 while its
+# HMR goes quiet, which is the worst way for this to fail. So `mise run lint`
+# next to a running dev server must be a no-op here, not a remount.
 container_mount() {
-  incus config device remove "$CONTAINER" "$1" >/dev/null 2>&1 || true
-  incus config device add "$CONTAINER" "$1" disk source="$2" path="$3" >/dev/null
+  local dev="$1" src="$2" dst="$3"
+  if [ "$(incus config device get "$CONTAINER" "$dev" source 2>/dev/null)" = "$src" ] &&
+     [ "$(incus config device get "$CONTAINER" "$dev" path   2>/dev/null)" = "$dst" ]; then
+    return 0
+  fi
+  incus config device remove "$CONTAINER" "$dev" >/dev/null 2>&1 || true
+  incus config device add "$CONTAINER" "$dev" disk source="$src" path="$dst" >/dev/null
 }
 
 # container_ensure <host-path-to-src/web>
