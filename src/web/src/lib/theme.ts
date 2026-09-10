@@ -847,9 +847,10 @@ let themeGen = 0
 // resolved theme, shared with the TUI and every host. But lasso may name a
 // palette per light/dark scheme (stored in ui_state, so every browser on this
 // lasso agrees), and then it resolves THAT one through /api/theme?name= — a
-// read: nothing is written to herdr's config.toml, so no host or agent CLI
-// follows, and an OS that flips at dusk re-themes the browsers instead of
-// oscillating the fleet twice a day.
+// read: this function writes nothing, wherever it was called from. Pushing a
+// palette to herdr's config.toml and the agent CLIs is lib/mode.ts's job and
+// happens only for a change made in THIS browser, so a repaint (an arriving
+// ui_state_rev, a theme_rev bump, a reconnect) can never re-theme the fleet.
 //
 // It is also the repaint every APPEARANCE change lands on, wherever it was
 // made: AppProvider hangs it off lib/mode.ts:subscribeAppearance, so a mode or

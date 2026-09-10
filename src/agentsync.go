@@ -1499,15 +1499,26 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 	}
 	// The palette the CALLING browser resolved, when it wears one instead of
 	// following herdr. It has to come from the client: appearance "system"
-	// resolves per DEVICE, so the server cannot know whether the human pressing
-	// this is looking at a light screen or a dark one.
+	// resolves per DEVICE, so the server cannot know whether the human whose
+	// change this is is looking at a light screen or a dark one.
 	//
-	// This is the one place a browser-local palette may reach the fleet, and only
-	// because a button press is a deliberate act by someone who can see the
-	// result. The palette is otherwise a browser-local READ precisely so an OS
-	// flipping at dusk cannot re-theme every host twice a day.
+	// This endpoint is the only route a browser-local palette has to the fleet,
+	// and both its callers are a human ACTING here: the "Sync now" button, and an
+	// appearance change made in this browser (lib/mode.ts:pushPaletteToFleet).
+	// Deliberately not every repaint — a palette that merely ARRIVED over
+	// ui_state_rev must not push back, or two browsers resolving "system"
+	// differently would re-theme each other forever. The palette stays a
+	// browser-local READ everywhere else, which is what keeps an OS flip on a
+	// screen nobody is watching from re-theming every host twice a day.
 	var body struct {
 		Palette string `json:"palette"`
+		// Quiet drops the SUCCESS notice, never the failure one. An appearance
+		// change pushes automatically (lib/mode.ts:pushPaletteToFleet), and a
+		// toast on every click — arriving fleet-wide, seconds after the click,
+		// naming a host count nobody asked about — is noise. A host that refused
+		// the write is the opposite: it is the one thing about this that a human
+		// has to be told, and nothing else would tell them.
+		Quiet bool `json:"quiet"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -1559,10 +1570,12 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(failed) == 0 && localCfgErr == nil {
-			notifyUI(notice{
-				Level: "success",
-				Title: fmt.Sprintf("Synced %s to %d host%s", rt.Resolved, len(results), plural(len(results))),
-			})
+			if !body.Quiet {
+				notifyUI(notice{
+					Level: "success",
+					Title: fmt.Sprintf("Synced %s to %d host%s", rt.Resolved, len(results), plural(len(results))),
+				})
+			}
 			return
 		}
 		// Name them. The whole reason to press this is to find out which machine
