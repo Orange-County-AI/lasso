@@ -2,12 +2,12 @@
 // switch, or an out-of-band edit to herdr's config.toml picked up by the hub
 // poll), mirror it into the agent CLIs' own theme files — a generated
 // opencode theme (themes/herdr.json, pinned via tui.json), Claude Code's
-// ~/.claude/themes/herdr.json, ghostty's themes/herdr, omp's
-// ~/.omp/agent/themes/herdr.json (pinned in both of its mode slots, and the one
-// mirror a running agent picks up live), and lasso's settings.json
-// (.theme.resolved, read by claude-contextline) — so agents render in step with
-// herdr. Writes go through the Backend interface, so every reachable host gets
-// the same treatment over SFTP (see syncRemoteTheme).
+// ~/.claude/themes/herdr.json (pinned via its settings.json), ghostty's
+// themes/herdr, omp's ~/.omp/agent/themes/herdr.json (pinned in both of its
+// mode slots, and the one mirror a running agent picks up live), and lasso's
+// settings.json (.theme.resolved, read by claude-contextline) — so agents
+// render in step with herdr. Writes go through the Backend interface, so every
+// reachable host gets the same treatment over SFTP (see syncRemoteTheme).
 //
 // Reach and convergence are the two things this file gets right on purpose:
 //
@@ -31,6 +31,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1001,6 +1002,53 @@ func claudeOverrides(p uiPalette) map[string]string {
 	return m
 }
 
+// claudeThemePin is what Claude Code's settings.json has to name for the
+// generated file to be the theme it actually paints from: "custom:" plus that
+// file's stem.
+const claudeThemePin = "custom:herdr"
+
+// syncClaudeSettingsTheme selects the generated theme in ~/.claude/settings.json.
+//
+// Writing themes/herdr.json alone changed nothing on a host where the theme had
+// never been picked by hand: Claude Code DISCOVERS custom themes but paints
+// whichever one `theme` names, so a machine kept Claude's stock palette however
+// many times lasso synced — observed on a Mac carrying a herdr.json in step with
+// the fleet beside a settings.json with no `theme` key at all. This is Claude's
+// half of the pin opencode gets from tui.json and omp from its two mode slots.
+//
+// The file is the human's, so it is merged rather than rewritten: an unparseable
+// one is left alone (a clobbered settings.json costs far more than a stale
+// palette) and an already-pinned one is not rewritten at all. It does overwrite
+// a theme chosen inside Claude Code with /theme, which is what "sync agent
+// themes" means — the toggle and the per-host list are how you opt out.
+func syncClaudeSettingsTheme(b Backend, home string) error {
+	path := filepath.Join(home, ".claude", "settings.json")
+	root := map[string]any{}
+	if data, err := b.ReadFile(path); err == nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber() // keep the human's numbers spelled as they wrote them
+		if dec.Decode(&root) != nil {
+			return nil
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if cur, _ := root["theme"].(string); cur == claudeThemePin {
+		return nil // already in step; leave the file (and its mtime) alone
+	}
+	root["theme"] = claudeThemePin
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	log.Printf("theme:    claude theme pin -> %s on %s", claudeThemePin, b.Name())
+	return b.WriteFile(path, out, 0o644)
+}
+
 func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error {
 	path := filepath.Join(home, ".claude", "themes", "herdr.json")
 	base := "dark"
@@ -1018,13 +1066,17 @@ func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error
 	}
 	out = append(out, '\n')
 
-	if cur, err := b.ReadFile(path); err == nil && string(cur) == string(out) {
-		return nil
+	if cur, err := b.ReadFile(path); err != nil || string(cur) != string(out) {
+		if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := b.WriteFile(path, out, 0o644); err != nil {
+			return err
+		}
 	}
-	if err := b.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return b.WriteFile(path, out, 0o644)
+	// Only once the file is there: pinning settings.json at a theme that failed
+	// to write would swap a stale palette for a missing one.
+	return syncClaudeSettingsTheme(b, home)
 }
 
 // ---------------------------------------------------------------------------

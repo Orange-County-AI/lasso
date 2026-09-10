@@ -275,6 +275,76 @@ func TestSyncClaudeTheme(t *testing.T) {
 	}
 }
 
+// Writing themes/herdr.json is only half the sync: Claude Code paints whatever
+// settings.json's `theme` names, so the pin is what makes the file take effect.
+// The file is the human's, so unrelated keys survive, an unparseable one is left
+// alone, and an already-pinned one is not rewritten.
+func TestSyncClaudeSettingsTheme(t *testing.T) {
+	home := t.TempDir()
+	b := &localBackend{}
+	path := filepath.Join(home, ".claude", "settings.json")
+
+	// syncClaudeTheme pins as part of its own run — the theme file alone was
+	// the bug.
+	if err := syncClaudeTheme(b, home, resolveThemeByName("nord"), false); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	read := func() map[string]any {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var root map[string]any
+		if err := json.Unmarshal(data, &root); err != nil {
+			t.Fatalf("parse %s: %v", data, err)
+		}
+		return root
+	}
+	if got := read()["theme"]; got != claudeThemePin {
+		t.Errorf("theme = %v, want %q", got, claudeThemePin)
+	}
+
+	// A human's settings.json keeps everything else, including whatever theme it
+	// named before — that's what "sync" means, and the toggle is how you opt out.
+	os.WriteFile(path, []byte(`{"theme":"dark","env":{"FOO":"1"},"n":12345678901}`), 0o644)
+	if err := syncClaudeSettingsTheme(b, home); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	root := read()
+	if root["theme"] != claudeThemePin {
+		t.Errorf("theme = %v, want %q", root["theme"], claudeThemePin)
+	}
+	if env, _ := root["env"].(map[string]any); env["FOO"] != "1" {
+		t.Errorf("unrelated keys lost: %v", root)
+	}
+	// Numbers keep the spelling the human gave them: a float64 round trip would
+	// rewrite a large int as 1.2345678901e+10.
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "12345678901") {
+		t.Errorf("number was reformatted: %s", data)
+	}
+
+	// Already pinned: no rewrite at all, so the mtime a backup tool watches
+	// doesn't move on every theme change.
+	before, _ := os.Stat(path)
+	if err := syncClaudeSettingsTheme(b, home); err != nil {
+		t.Fatalf("noop: %v", err)
+	}
+	if after, _ := os.Stat(path); !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("an already-pinned settings.json was rewritten")
+	}
+
+	// Unparseable (a hand-edit in progress): left exactly as found. Losing a
+	// human's settings.json costs far more than a stale palette.
+	os.WriteFile(path, []byte("{not json"), 0o644)
+	if err := syncClaudeSettingsTheme(b, home); err != nil {
+		t.Fatalf("malformed: %v", err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "{not json" {
+		t.Errorf("malformed settings.json was clobbered: %s", data)
+	}
+}
+
 func TestSyncLassoResolved(t *testing.T) {
 	home := t.TempDir()
 	b := &localBackend{}
