@@ -11,6 +11,7 @@ import {
   Server,
   Settings,
   SquareTerminal,
+  X,
 } from "lucide-react"
 import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
@@ -84,9 +85,13 @@ type TabDef = {
 function FitTabs({
   tabs,
   listClassName,
+  trailing,
 }: {
   tabs: TabDef[]
   listClassName?: string
+  // Pinned to the right of the strip, outside the scrolling track so it stays
+  // reachable however many tabs there are.
+  trailing?: React.ReactNode
 }) {
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const measureRef = React.useRef<HTMLDivElement>(null)
@@ -143,6 +148,7 @@ function FitTabs({
           ))}
         </div>
       </div>
+      {trailing}
     </TabsList>
   )
 }
@@ -288,6 +294,16 @@ function Shell() {
     toggleSidebar()
     if (wasOpen) focusHerdrTerminal()
   }, [toggleSidebar])
+
+  // Phones have no footer — it's md+ only — and an open sidebar covers the
+  // whole screen there, so the tab strip's ✕ is the ONLY pointer route back to
+  // the terminal (the input dial's sidebar command is behind the keyboard).
+  // Same hand-off as the footer toggle: closing gives the terminal the keyboard.
+  const closeSidebar = React.useCallback(() => {
+    markSidebarIntent()
+    collapseSidebar()
+    focusHerdrTerminal()
+  }, [collapseSidebar])
 
   // The footer button is separate from the menu's mobile-capable anchor.
   // Capture its pointer-down state before Radix's outside-click dismissal, so
@@ -458,7 +474,9 @@ function Shell() {
               scheduleLayoutPersist(c, pct)
             }}
             className={cn(
-              "relative flex h-full min-h-0 flex-col border-border border-l bg-card",
+              // sidebar-panel: the atmosphere's translucency opt-out at phone
+              // widths, where this panel covers the terminal (see index.css).
+              "sidebar-panel relative flex h-full min-h-0 flex-col border-border border-l bg-card",
               // On phones there isn't room to split the screen, so an open sidebar
               // takes it over entirely: lift it out of the flex flow and overlay the
               // left panel full-screen. Drops back to an in-flow resizable panel at
@@ -498,6 +516,18 @@ function Shell() {
                   { value: "usage", label: "Usage", icon: Gauge },
                   { value: "settings", label: "Settings", icon: Settings },
                 ]}
+                trailing={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="mr-1 ml-1 flex-none self-center md:hidden"
+                    title="Close sidebar"
+                    aria-label="Close sidebar"
+                    onClick={closeSidebar}
+                  >
+                    <X />
+                  </Button>
+                }
               />
 
               <div className="relative min-h-0 flex-1">
