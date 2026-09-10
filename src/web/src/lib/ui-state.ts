@@ -8,6 +8,7 @@ import {
   type UIStatePatch,
   type UIStateResponse,
 } from "@/lib/api"
+import { clientID } from "@/lib/client-id"
 import { qk, queryClient } from "@/lib/query"
 
 // Persisted, SQLite-backed UI preferences (sidebar layout, the Files tab's
@@ -95,47 +96,6 @@ const ECHO_MS = 1000
 
 let lastPatchAt = 0
 let pendingSync: ReturnType<typeof setTimeout> | null = null
-
-// clientID identifies this TAB to the server's sidebar-layout claim (see
-// uilock.go). Per tab, not per browser: two tabs on one machine are two clients
-// that can disagree about the sidebar, and sessionStorage is per tab by
-// construction — the same reason the tab's host lives there (lib/host.ts). It
-// survives a reload, which is what keeps a refreshing tab from silently
-// dropping the lock it was holding.
-const CLIENT_KEY = "lasso-client-id"
-
-let cachedClientID: string | null = null
-
-// crypto.randomUUID exists only in a secure context, and lasso is routinely
-// reached over plain http on a tailnet address — which is not one. Falling back
-// to Math.random is fine here: this id only has to be unlikely to collide with
-// the handful of other tabs open on the same server, and it authorizes nothing.
-function newClientID(): string {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  }
-}
-
-function clientID(): string {
-  if (cachedClientID) return cachedClientID
-  let id = ""
-  try {
-    id = sessionStorage.getItem(CLIENT_KEY) ?? ""
-    if (!id) {
-      id = newClientID()
-      sessionStorage.setItem(CLIENT_KEY, id)
-    }
-  } catch {
-    // Private mode / storage disabled: a per-load id still distinguishes this
-    // tab from the others for as long as it is open, which is all the claim
-    // needs. It just can't survive a reload.
-    id = newClientID()
-  }
-  cachedClientID = id
-  return id
-}
 
 // How long a client that was refused the sidebar layout stops offering it. The
 // panel group that produced the refused size will keep producing it — that is

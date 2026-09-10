@@ -23,6 +23,10 @@ export interface ActiveState {
   // Bumps whenever the persisted UI prefs change (any tab saving /api/ui-state)
   // so every open tab refetches and converges.
   ui_state_rev?: number
+  // Which client_id may resize this host's shared terminal right now; "" means
+  // the claim is free and the next tab whose human acts takes it. See
+  // lib/term-claim.ts.
+  term_owner?: string
   // The host `cwd` lives on — normally the active host, but the focused pane
   // may be an ssh window onto another host's herdr, in which case this is that
   // host and file/diff requests must address it explicitly.
@@ -37,6 +41,39 @@ export interface ActiveState {
 // budget. Neither says the host is down — rendering them as failures is how a
 // healthy-but-slow machine used to get dropped from the switcher.
 export type HostState = "probing" | "timeout"
+
+// One browser attached to this lasso, from /api/clients.
+export interface ClientRow {
+  id: string
+  host: string
+  user_agent?: string
+  addr?: string
+  // >1 only while a tab is moving host and briefly holds two SSE streams.
+  streams: number
+  connected_at: string
+  owns_terminal: boolean
+  self?: boolean
+}
+
+// Per-host outcome of a manual "Sync now". A host that is unreachable or still
+// probing is not attempted at all, so it appears in no row — the button reports
+// what it tried, not what it skipped.
+// The acknowledgement of a manual "Sync now". The push itself runs on the server
+// (fourteen hosts measured 40s, too long to hold a request open), so this only
+// says it STARTED and how many hosts it is going to; the outcome arrives as a
+// notice toast when the fanout finishes.
+export interface ThemeSyncStarted {
+  started: boolean
+  theme: string
+  hosts: number
+}
+
+export interface ClientsPayload {
+  clients: ClientRow[]
+  // Streams from a client too old to send a client_id. They can't be told apart,
+  // so they're counted rather than listed.
+  unidentified: number
+}
 
 export interface HostInfo {
   alias: string
@@ -676,6 +713,16 @@ export const api = {
   // herdr reloads it and lasso follows via the theme_rev SSE bump.
   setTheme: (name: string) =>
     postJSON<{ ok: boolean; name: string }>("/api/theme-set", { name }),
+  // Starts a push of a theme to local herdr and every reachable, non-opted-out
+  // host. `palette` is the theme THIS browser resolved ("" to follow herdr's own
+  // config) — the server cannot derive it, since appearance "system" resolves
+  // per device.
+  // Everything else about theme sync is implicit (a theme change fans out, a
+  // host that missed one catches up on its next probe), so this is the only way
+  // to force the question. It returns when the push starts; the per-host result
+  // arrives as a notice toast.
+  syncThemeNow: (palette: string) =>
+    postJSON<ThemeSyncStarted>("/api/theme-sync", { palette }),
   // Flips the server-level "sync agent themes" toggle (no theme change).
   setSyncAgentThemes: (enabled: boolean) =>
     postJSON<{ ok: boolean; sync_agent_themes: boolean }>("/api/theme-set", {
@@ -815,6 +862,18 @@ export const api = {
   // returns the merged whole.
   saveUIState: (write: UIStateWrite) =>
     postJSON<UIStateResponse>("/api/ui-state", write),
+  // Report that a human just acted in this tab, taking the right to resize this
+  // host's shared terminal (uilock.go). See lib/term-claim.ts.
+  claimTerminal: (clientId: string) =>
+    postJSON<{ host: string; term_owner: string }>("/api/term-claim", {
+      client_id: clientId,
+    }),
+  // Every browser currently attached to this lasso, as seen by their SSE
+  // streams. `client` marks the caller's own row.
+  clients: (clientId: string) =>
+    getJSON<ClientsPayload>(
+      `/api/clients?client=${encodeURIComponent(clientId)}`
+    ),
   version: () => getJSON<VersionInfo>("/api/version"),
   // Subscription usage limits (Claude Code / Kimi Code / Codex / Z.ai),
   // rendered in the bottom UsageFooter.

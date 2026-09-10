@@ -253,6 +253,7 @@ func runServer() {
 	})
 	mux.HandleFunc("/api/theme", serveTheme)
 	mux.HandleFunc("/api/theme-set", serveThemeSet)
+	mux.HandleFunc("/api/theme-sync", serveThemeSync)
 	mux.HandleFunc("/api/omarchy-themes", serveOmarchyThemes)
 	mux.HandleFunc(omarchyBGPrefix, serveOmarchyBackground)
 	mux.HandleFunc(omarchyThumbPrefix, serveOmarchyBackground)
@@ -266,6 +267,8 @@ func runServer() {
 	mux.HandleFunc("/api/panes", servePanes)
 	mux.HandleFunc("/api/all-panes", serveAllPanes)
 	mux.HandleFunc("/api/ui-state", serveUIState)
+	mux.HandleFunc("/api/clients", serveClients)
+	mux.HandleFunc("/api/term-claim", serveTermClaim)
 	mux.HandleFunc("/api/focus", serveFocus)
 	mux.HandleFunc("/api/rename", serveRename)
 	mux.HandleFunc("/api/workspace-rename", serveWorkspaceRename)
@@ -908,6 +911,7 @@ type Active struct {
 	HostSlug       string `json:"host_slug"`    // Host's URL path segment, so the browser can address /terminal/<slug>/ without re-deriving it
 	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's herdr; the sidebar browses Cwd on this host
 	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
+	TermOwner      string `json:"term_owner"`   // client_id currently allowed to resize this host's shared terminal; "" means the claim is free and the next asker gets it (see uilock.go)
 }
 
 // fetchActive returns the focused-pane state plus a layout signature. The
@@ -2435,6 +2439,19 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unwatch()
+
+	// This stream IS the client's presence: it is opened on mount and held for
+	// the tab's whole life, so registering here is what makes /api/clients able
+	// to name a tab that has been sitting idle on a phone, and what lets a
+	// terminal claim be freed the instant its owner goes away. f.host rather
+	// than the raw header, so the row and the claim agree on the host's name.
+	defer registerClient(&clientConn{
+		id:        r.URL.Query().Get("client"),
+		host:      f.host,
+		userAgent: r.Header.Get("User-Agent"),
+		addr:      r.RemoteAddr,
+		since:     time.Now(),
+	})()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

@@ -37,11 +37,13 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -212,30 +214,40 @@ func themeBackend(host string) (themeTarget, func(), error) {
 // the base it is expressed as, which is the fleet-wide half of the revert this
 // exists not to do (see resolvedTheme.Foreign). Nothing is recorded either, so
 // whichever build does know the theme converges the fleet on its next pass.
-func syncThemeToHost(host string, rt resolvedTheme) {
+func syncThemeToHost(host string, rt resolvedTheme) { _ = syncThemeToHostErr(host, rt) }
+
+// syncThemeToHostErr is syncThemeToHost with the outcome kept. Every scheduled
+// caller drops it — a failed host is retried on its next probe, which is the
+// whole design — but the "Sync now" button has a human waiting on an answer, and
+// "it went out" is not one when a machine refused it.
+//
+// A host excluded by the per-host opt-out, or a foreign resolution, is not a
+// failure and reports none: nothing was attempted.
+func syncThemeToHostErr(host string, rt resolvedTheme) error {
 	if !themeSyncEnabledFor(host) || rt.Foreign {
-		return
+		return nil
 	}
 	if isLocalHost(host) {
 		if err := syncAgentThemesVia(localFsBackend(), rt); err != nil {
 			forgetThemeSynced(host)
-			return
+			return err
 		}
 		markThemeSynced(host, rt.Resolved)
-		return
+		return nil
 	}
 	t, release, err := themeBackend(host)
 	if err != nil {
 		forgetThemeSynced(host)
 		log.Printf("theme:    %s not reachable to sync theme: %v", host, err)
-		return
+		return err
 	}
 	defer release()
 	if err := syncRemoteTheme(t, rt.Resolved); err != nil {
 		forgetThemeSynced(host)
-		return
+		return err
 	}
 	markThemeSynced(host, rt.Resolved)
+	return nil
 }
 
 // syncThemeEverywhere mirrors rt locally and across each settled reachable host.
@@ -1304,4 +1316,214 @@ func tintForBg(c, bg string, lift float64) string {
 		}
 	}
 	return hslHex(h, s, (loL+hiL)/2)
+}
+
+// ---------------------------------------------------------------------------
+// "Sync now" — the manual push
+// ---------------------------------------------------------------------------
+//
+// Theme sync is otherwise entirely implicit: a theme change fans out, and a host
+// that was asleep for one catches up on its next probe (convergeThemeOnProbe).
+// That covers the fleet eventually and says nothing while it does, so there was
+// no way to answer "did minime actually get this?" without reading a log — and
+// no way to force the question. This is that button's endpoint.
+//
+// It re-pushes unconditionally rather than skipping hosts already recorded in
+// step: the record says what THIS lasso wrote, and a human clicking Sync now is
+// usually doing it because something on the far side no longer matches what we
+// believe we wrote there.
+
+// themeSyncResult is one host's outcome, in the order the fanout targeted them.
+type themeSyncResult struct {
+	Host string `json:"host"`
+	OK   bool   `json:"ok"`
+	Err  string `json:"error,omitempty"`
+}
+
+// syncThemeNow pushes rt to local plus every settled reachable host that has not
+// opted out, and reports what each one did. Same target set and the same
+// concurrency cap as syncThemeEverywhere — an unreachable or still-probing host
+// is not attempted at all rather than counted as a failure, since the button
+// would otherwise report a sleeping laptop as an error every time.
+func syncThemeNow(rt resolvedTheme) []themeSyncResult {
+	themeFanoutMu.Lock()
+	defer themeFanoutMu.Unlock()
+
+	rows, _ := hostSnapshot()
+	hosts := append([]string{"local"}, themeFanoutHosts(rows)...)
+	out := make([]themeSyncResult, len(hosts))
+	var wg sync.WaitGroup
+	for i, host := range hosts {
+		wg.Add(1)
+		go func(i int, host string) {
+			defer wg.Done()
+			themeSem <- struct{}{}
+			defer func() { <-themeSem }()
+			res := themeSyncResult{Host: host, OK: true}
+			if err := syncThemeToHostErr(host, rt); err != nil {
+				res.OK, res.Err = false, err.Error()
+			}
+			out[i] = res
+		}(i, host)
+	}
+	wg.Wait()
+	return out
+}
+
+// themeSyncRunning guards against a second manual push while one is in flight.
+// themeFanoutMu alone would serialize them, but serializing here means a second
+// click QUEUES a whole fleet-wide push behind the first — so an impatient human
+// clicking twice pays for two, and the second reports on a theme that may have
+// changed under it. Refusing is the honest answer.
+var themeSyncRunning atomic.Bool
+
+// serveThemeSync pushes the live theme to the fleet on demand.
+//
+// It returns as soon as the push STARTS, and reports the outcome as a notice
+// toast when it finishes. A synchronous answer was the obvious design and the
+// wrong one: theme writes wait on SFTP, six hosts run at a time, and titan's
+// fleet of fourteen measured 40s end to end — a button that blocks that long is
+// a hang, and it is long enough for an edge proxy in front of lasso to give up
+// on the request before the fanout is done.
+//
+// The notice reaches every open tab rather than only the one that clicked, which
+// is right for a fleet-wide change: the phone that will wear this palette should
+// hear that it landed too.
+func serveThemeSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	// The palette the CALLING browser resolved, when it wears one instead of
+	// following herdr. It has to come from the client: appearance "system"
+	// resolves per DEVICE, so the server cannot know whether the human pressing
+	// this is looking at a light screen or a dark one.
+	//
+	// This is the one place a browser-local palette may reach the fleet, and only
+	// because a button press is a deliberate act by someone who can see the
+	// result. The palette is otherwise a browser-local READ precisely so an OS
+	// flipping at dusk cannot re-theme every host twice a day.
+	var body struct {
+		Palette string `json:"palette"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	rt := liveTheme()
+	if body.Palette != "" {
+		key := normalizeThemeName(body.Palette)
+		if _, ok := lookupThemeDef(key); !ok {
+			http.Error(w, fmt.Sprintf("unknown theme %q", body.Palette), http.StatusBadRequest)
+			return
+		}
+		rt = resolveThemeByName(key)
+	}
+	if rt.Resolved == "" {
+		http.Error(w, "no theme resolved yet", http.StatusConflict)
+		return
+	}
+	// A resolution this build cannot name is never pushed — writing it would
+	// spell the selection as the herdr base it degraded to and revert the whole
+	// fleet (see resolvedTheme.Foreign). Refusing loudly beats a button that
+	// silently does damage.
+	if rt.Foreign {
+		http.Error(w, "this lasso can't resolve the selected theme; update it before syncing", http.StatusConflict)
+		return
+	}
+	if !themeSyncRunning.CompareAndSwap(false, true) {
+		http.Error(w, "a theme sync is already running", http.StatusConflict)
+		return
+	}
+
+	rows, _ := hostSnapshot()
+	targets := len(themeFanoutHosts(rows)) + 1 // +1 for local
+	go func() {
+		defer themeSyncRunning.Store(false)
+		// Local herdr's own config.toml FIRST, so liveTheme() and the theme_rev
+		// repaint already agree with what the fleet is about to be given — and
+		// so a fanout that fails part way still leaves this machine coherent
+		// with the browser that asked for it.
+		var failed []string
+		// Counted separately from the hosts: it is not one of them, and folding
+		// it in would make the "N of M" read as a host that refused.
+		localCfgErr := setLocalHerdrTheme(rt.Resolved)
+		if localCfgErr != nil {
+			log.Printf("theme:    local herdr config: %v", localCfgErr)
+		}
+		results := syncThemeNow(rt)
+		for _, res := range results {
+			if !res.OK {
+				failed = append(failed, res.Host)
+			}
+		}
+		if len(failed) == 0 && localCfgErr == nil {
+			notifyUI(notice{
+				Level: "success",
+				Title: fmt.Sprintf("Synced %s to %d host%s", rt.Resolved, len(results), plural(len(results))),
+			})
+			return
+		}
+		// Name them. The whole reason to press this is to find out which machine
+		// is out of step, and a count does not answer that.
+		detail := ""
+		if len(failed) > 0 {
+			detail = "failed: " + strings.Join(failed, ", ")
+		}
+		if localCfgErr != nil {
+			if detail != "" {
+				detail += " · "
+			}
+			detail += "herdr config.toml: " + localCfgErr.Error()
+		}
+		notifyUI(notice{
+			Level:  "error",
+			Title:  fmt.Sprintf("Synced %s to %d of %d hosts", rt.Resolved, len(results)-len(failed), len(results)),
+			Detail: detail,
+		})
+	}()
+
+	writeJSON(w, map[string]any{"started": true, "theme": rt.Resolved, "hosts": targets})
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// setLocalHerdrTheme points the LOCAL herdr's config.toml at name and asks the
+// running TUI to reload it, the same two steps serveThemeSet takes when a human
+// picks a theme.
+//
+// It is part of a manual sync rather than an afterthought to one. Without it a
+// "Sync now" left titan's own herdr on the theme it happened to be configured
+// with while every agent inside it — and every remote herdr — moved to the one
+// the browser is wearing, which is the mismatch the button exists to close.
+// Local herdr is the one host whose config.toml the fanout never writes:
+// syncThemeToHostErr's local branch only mirrors agent theme files, because
+// every OTHER caller of it runs right after serveThemeSet already wrote that
+// file.
+//
+// Respects the per-host opt-out like any other write: a human who unchecked
+// "titan (this machine)" has said lasso may not theme it.
+func setLocalHerdrTheme(name string) error {
+	if !themeSyncEnabledFor("local") {
+		return nil
+	}
+	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
+		return err
+	}
+	// herdr does not watch its config file, so ask the server to re-read it.
+	// Best-effort: with herdr down the theme still applies on its next start,
+	// and it must not turn a successful write into a reported failure.
+	if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
+		log.Printf("theme:    herdr reload-config: %v", err)
+	}
+	// Re-resolve now so theme_rev moves and every tab repaints on the new theme
+	// instead of waiting out a poll.
+	if srvHub != nil {
+		srvHub.refreshTheme()
+		srvHub.kick("")
+	}
+	return nil
 }

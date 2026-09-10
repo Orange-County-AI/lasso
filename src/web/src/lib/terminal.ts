@@ -1,6 +1,11 @@
 import { api } from "@/lib/api"
 import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
 import {
+  mayResizeTerminal,
+  onTermOwnerChange,
+  watchTermIntentIn,
+} from "@/lib/term-claim"
+import {
   applyTermAtmosphere,
   applyTermFit,
   applyTermFont,
@@ -237,19 +242,23 @@ function wireOsc52(id: string, tries: number) {
 // slot. So a lasso session sitting in a background tab or unfocused window that
 // reflows its terminal (an OS window resize, a mobile viewport change, the theme
 // reconciler's refit nudge) clamps every other session's herdr view to ITS
-// width — the "terminal shrinks as though the sidebar opened" effect. Gate the
-// push at its chokepoint: every resize funnels through xterm's term.resize (the
-// iframe's FitAddon reacts to resize events and calls it), so wrap it and drop
-// resizes while this session is hidden or unfocused. When the session returns to
-// the foreground, nudge a refit so xterm recomputes against the *current* box
-// (the dropped dims may be stale by then).
+// width — the "terminal shrinks as though the sidebar opened" effect, and the
+// scroll jump that rides along with it, since herdr rewraps every pane's
+// scrollback on the way. Gate the push at its chokepoint: every resize funnels
+// through xterm's term.resize (the iframe's FitAddon reacts to resize events and
+// calls it), so wrap it and drop resizes this session is not entitled to send.
+// When it becomes entitled, nudge a refit so xterm recomputes against the
+// *current* box (the dropped dims may be stale by then).
 //
-// The first resize always passes, foreground or not: a session that loads in a
-// background tab must still establish its real size at connect, or its herdr
-// client attaches at the pty default (80×24) and clamps everyone far worse.
-function sessionInForeground(): boolean {
-  return document.visibilityState === "visible" && document.hasFocus()
-}
+// Entitlement is the SERVER's answer (lib/term-claim.ts), not this tab's focus.
+// Focus was the whole test until 2026-09-10 and it cannot be: two windows on two
+// machines are both "visible and focused" at the same instant and neither can
+// observe the other, and the rule that let the FIRST resize through
+// unconditionally — so a background tab could establish its size at connect —
+// meant every reload, self-update and revived phone tab clamped the desktop on
+// its way in. The claim closes both: a tab that owns nothing does not resize,
+// and a tab that connects while nobody owns the pty still may, so a lone session
+// is never stuck at the pty default.
 
 function wireResizeGate(id: string, tries: number) {
   let win: TermWindow | null
@@ -287,6 +296,7 @@ function wireResizeGate(id: string, tries: number) {
         }
       }, 100)
     }
+    let unwire: Array<() => void> = []
     term.resize = (cols: number, rows: number) => {
       const laidOut =
         Number.isFinite(cols) &&
@@ -297,7 +307,7 @@ function wireResizeGate(id: string, tries: number) {
         if (!sized) refitWhenLaidOut()
         return
       }
-      if (!sized || sessionInForeground()) {
+      if (mayResizeTerminal()) {
         sized = true
         orig(cols, rows)
         return
@@ -314,11 +324,11 @@ function wireResizeGate(id: string, tries: number) {
         /* cross-realm access after teardown */
       }
       if (!alive) {
-        document.removeEventListener("visibilitychange", flush)
-        window.removeEventListener("focus", flush)
+        for (const off of unwire) off()
+        unwire = []
         return
       }
-      if (!deferred || !sessionInForeground()) return
+      if (!deferred || !mayResizeTerminal()) return
       deferred = false
       try {
         w.dispatchEvent(new Event("resize"))
@@ -326,11 +336,18 @@ function wireResizeGate(id: string, tries: number) {
         /* ignore */
       }
     }
-    document.addEventListener("visibilitychange", flush)
-    window.addEventListener("focus", flush)
-    // Focus can land directly in the iframe (a click on the terminal) without
-    // the parent window ever firing focus, so listen there too.
-    w.addEventListener("focus", flush)
+    // Typing into a terminal is the clearest statement that this is the tab
+    // being used, and those events never reach the parent document — they fire
+    // in the iframe's own realm. So the claim is wired HERE as well as on the
+    // app page (AppProvider), or the strongest signal would be the missed one.
+    unwire = [
+      watchTermIntentIn(w),
+      // The owner moving is what makes a deferred resize sendable, so the flush
+      // hangs off the claim rather than off focus: this tab may take the pty
+      // because a human acted here, or because whoever held it just closed
+      // their tab — and only the first of those is a focus event.
+      onTermOwnerChange(flush),
+    ]
     return
   }
   if (tries < 20) setTimeout(() => wireResizeGate(id, tries + 1), 150)
