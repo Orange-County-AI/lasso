@@ -333,15 +333,25 @@ func leaderCwd(pi paneProcessInfo) string {
 // activeCwd resolves the directory the file viewer follows for the focused pane,
 // and the host that directory lives on.
 //
-// The ssh hop comes first: when the pane is an attach onto another host's herdr,
+// A machine selected in the terminal's own herdr client comes first, and
+// outranks the pane entirely: it replaces the whole screen with another
+// machine's session, so the pane this was called for is not even visible (see
+// clientmachine.go).
+//
+// The ssh hop is next: when the pane is an attach onto another host's herdr,
 // every local answer below is the ssh client's directory and none of them
 // describes what is on screen. Otherwise, most-authoritative first: the
 // harness's own cwd (which the pane never sees), then the pane's foreground
 // leader, then herdr's pane cwds — all on be, since that is whose herdr reported
 // the pane. The second return is the Active.CwdSource label naming which
 // resolver answered, prefixed "ssh:" when it answered on the far side of an
-// attach.
+// attach, and "machine:" when it answered on a machine the client has selected.
 func activeCwd(be Backend, p pane) (cwd, source, host string) {
+	if hop, ok := clientMachineHop(be); ok {
+		if c, src := remoteAttachCwd(hop); c != "" {
+			return c, "machine:" + src, hop.host
+		}
+	}
 	pi := paneForeground(be, p.PaneID)
 	if hop, ok := paneSSHHop(pi); ok {
 		if c, src := remoteAttachCwd(hop); c != "" {

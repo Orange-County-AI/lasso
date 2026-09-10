@@ -968,7 +968,7 @@ type workspace struct {
 type Active struct {
 	PaneID         string `json:"pane_id"`
 	Cwd            string `json:"cwd"`
-	CwdSource      string `json:"cwd_source"` // which resolver answered: "harness" (the agent's own cwd, from its session transcript) | "leader" (the foreground process-group leader's cwd) | "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell-reported cwd)
+	CwdSource      string `json:"cwd_source"` // which resolver answered: "harness" (the agent's own cwd, from its session transcript) | "leader" (the foreground process-group leader's cwd) | "foreground" (herdr's resolved foreground-process cwd) | "shell" (herdr's shell-reported cwd), prefixed "ssh:" when it answered on the far side of an attach and "machine:" when the terminal's herdr client has another machine selected
 	WorkspaceID    string `json:"workspace_id"`
 	WorkspaceLabel string `json:"workspace_label"`
 	TabID          string `json:"tab_id"`

@@ -25,6 +25,11 @@ type paneHostBackend struct {
 func (b *paneHostBackend) Name() string      { return b.host }
 func (b *paneHostBackend) HerdrSock() string { return "" } // no event stream; the poll carries everything
 
+// No filesystem behind this fake: activeCwd looks for the herdr client's
+// selected machine under the home dir (clientmachine.go), and an empty home
+// reads as "nothing selected" rather than dereferencing a nil Backend.
+func (b *paneHostBackend) HomeDir() (string, error) { return "", nil }
+
 func (b *paneHostBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
 	switch method {
 	case "pane.list":
