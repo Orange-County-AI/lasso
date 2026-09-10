@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { EditableCombobox } from "@/components/ui/editable-combobox"
 import { Input } from "@/components/ui/input"
+import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ApiError,
@@ -1303,7 +1304,14 @@ export function NewDialog({
                   </button>
                 )}
                 <Button type="submit" disabled={!canSubmit}>
-                  {createMutation.isPending ? "Creating…" : "Create agent"}
+                  {createMutation.isPending ? (
+                    <>
+                      <Orb state="working" px={16} on="accent" />
+                      Creating…
+                    </>
+                  ) : (
+                    "Create agent"
+                  )}
                 </Button>
               </DialogFooter>
             </form>

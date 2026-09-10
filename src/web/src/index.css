@@ -320,22 +320,6 @@
   padding: 16px 12px;
 }
 
-/* A small inline "work in flight" spinner (the Files panel's follow-the-pane
-   overlay). */
-.spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid var(--h-border);
-  border-top-color: var(--h-accent);
-  animation: spinner-spin 0.7s linear infinite;
-}
-@keyframes spinner-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* file list */
 .filelist {
   flex: 1 1 auto;

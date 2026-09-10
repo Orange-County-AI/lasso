@@ -2,6 +2,7 @@ import { ExternalLink, RotateCw } from "lucide-react"
 import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Orb } from "@/components/ui/orb"
 import { lsGet, lsSet } from "@/lib/app-store"
 
 function normalize(raw: string): string {
@@ -207,7 +208,8 @@ export function BrowserTab() {
         </Button>
       </div>
       {status === "loading" && (
-        <div className="flex-shrink-0 border-border border-b bg-background px-2 py-1 text-[12px] text-muted-foreground">
+        <div className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-background px-2 py-1 text-[12px] text-muted-foreground">
+          <Orb state="working" px={14} />
           loading…
         </div>
       )}

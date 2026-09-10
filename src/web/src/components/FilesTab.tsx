@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Orb } from "@/components/ui/orb"
 import {
   Tooltip,
   TooltipContent,
@@ -589,7 +590,10 @@ export function FilesTab({
         {!curPath ? (
           <div className="empty">waiting for herdr…</div>
         ) : !rootPath ? (
-          <div className="empty">loading…</div>
+          <div className="empty flex items-center gap-2">
+            <Orb state="working" px={16} />
+            loading…
+          </div>
         ) : (
           <>
             {rootParent && (

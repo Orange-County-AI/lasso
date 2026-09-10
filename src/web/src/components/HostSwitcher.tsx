@@ -4,7 +4,6 @@ import {
   Check,
   Download,
   Laptop,
-  Loader2,
   RefreshCw,
   Server,
 } from "lucide-react"
@@ -22,6 +21,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Orb } from "@/components/ui/orb"
 import { api, type HostInfo, type HostsPayload } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, type HostGroup, memberLabel } from "@/lib/hosts"
@@ -366,7 +366,7 @@ export function HostSwitcher({
         }}
       >
         {busy ? (
-          <Loader2 className="size-3 animate-spin" />
+          <Orb state="working" px={14} />
         ) : action === "update" ? (
           <RefreshCw className="size-3" />
         ) : (
@@ -419,11 +419,11 @@ export function HostSwitcher({
           </span>
         ) : waiting ? (
           // No verdict yet — pending, not failed. Muted (not warn) so a slow
-          // host doesn't read as a broken one, and a spinner while it's live.
+          // host doesn't read as a broken one, and an orb while it's live.
           <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
             {h.state === "probing" ? (
               <>
-                <Loader2 className="size-3 animate-spin" />
+                <Orb state="working" px={14} />
                 probing…
               </>
             ) : (
@@ -513,7 +513,11 @@ export function HostSwitcher({
                 void load(true)
               }}
             >
-              <RefreshCw className={cn("size-3", loading && "animate-spin")} />
+              {loading ? (
+                <Orb state="working" px={14} />
+              ) : (
+                <RefreshCw className="size-3" />
+              )}
             </button>
           </DropdownMenuLabel>
 
@@ -585,7 +589,7 @@ export function HostSwitcher({
                   }}
                 >
                   {updatingLasso ? (
-                    <Loader2 className="size-3 animate-spin" />
+                    <Orb state="working" px={14} />
                   ) : (
                     <ArrowUpCircle className="size-3" />
                   )}
