@@ -445,6 +445,18 @@
 :root[data-atmosphere] .vsurface-header {
   background-color: var(--h-panel);
 }
+
+/* Same opt-out, for the same reason, one level up: at phone widths the sidebar
+ * OVERLAYS the terminal full-screen instead of sitting beside it, so at --card's
+ * 55% the terminal's text read straight through Settings' prose. A surface that
+ * covers something has to be opaque. Desktop keeps the translucency — there the
+ * sidebar floats on the backdrop with nothing but wallpaper behind it. Matches
+ * Tailwind's `md` breakpoint, which is what switches the panel to an overlay. */
+@media (max-width: 767px) {
+  :root[data-atmosphere] .sidebar-panel {
+    background-color: var(--h-panel);
+  }
+}
 .vimg {
   padding: 16px;
   display: flex;
