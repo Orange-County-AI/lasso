@@ -7,9 +7,10 @@
 # 1Password session and the tunnel credentials. In an unprivileged container it
 # is an unprivileged uid in its own userns with one directory mounted.
 #
-# Only src/web is mounted, deliberately — NOT the repo root. A postinstall
-# script that could reach ../.git could drop a hook, and the global post-commit
-# hook auto-pushes main, so a writable .git is a path back out to the host.
+# Only src/web and docs/icon are mounted, deliberately — NOT the repo root. A
+# postinstall script that could reach ../.git could drop a hook, and the global
+# post-commit hook auto-pushes main, so a writable .git is a path back out to
+# the host.
 #
 # The container is disposable. Delete it and the next task rebuilds it from the
 # dev-base image in about a minute. To refresh the toolchain: start the stopped
@@ -51,7 +52,7 @@ container_mount() {
 container_ensure() {
   local web="$1"
 
-  if ! incus image list -f csv -c l | grep -qx "$IMAGE"; then
+  if ! incus image list -f csv -c l | tr ',' '\n' | grep -qx "$IMAGE"; then
     echo "error: incus image '$IMAGE' not found. See scripts/container.sh" >&2
     return 1
   fi
