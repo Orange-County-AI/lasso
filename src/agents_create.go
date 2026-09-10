@@ -613,6 +613,13 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 
 	rootPane := rec.RootPane
 
+	// herdr just gained a workspace and a pane, and the browser's next move is to
+	// look that pane up so it can focus it. pane.list takes 0.5-1.5s on a busy
+	// session, so without this the client routinely coalesces onto a call that was
+	// already in flight before the create — a snapshot that cannot contain the new
+	// pane — and gives up on navigating to an agent that does exist.
+	invalidatePaneList(host)
+
 	// The create's durable facts exist — flip the write-ahead record to booting
 	// (with its workspace/pane) BEFORE the async boot starts, so bootAgent can
 	// update its status without racing this write (and a failed boot is never

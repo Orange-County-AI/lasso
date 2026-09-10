@@ -995,8 +995,11 @@ export const api = {
     return getJSON<FileDiff>(withHost(`/api/diff-file?${params}`, host))
   },
 
-  // Both ids are required — /api/focus 400s on a missing tab_id.
-  focus: (workspace_id: string, tab_id: string) =>
+  // workspace_id is required (/api/focus 400s without it); tab_id is optional —
+  // omitting it focuses the workspace, which lands on its active tab. That is
+  // the fallback for a just-created workspace whose pane hasn't surfaced in
+  // pane.list yet, where the tab id is simply not knowable.
+  focus: (workspace_id: string, tab_id?: string) =>
     postJSON<unknown>("/api/focus", { workspace_id, tab_id }),
 
   rename: (tab_id: string | undefined, label: string) =>

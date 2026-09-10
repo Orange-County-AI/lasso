@@ -152,9 +152,9 @@ export function NewTerminalForm({
       })
       try {
         await moveTabToHost(selectedHost)
-        if (result.tab_id) {
-          await api.focus(result.workspace_id, result.tab_id)
-        }
+        // tab_id may be missing; the workspace alone still lands on the new
+        // terminal rather than leaving the user where they were.
+        await api.focus(result.workspace_id, result.tab_id)
       } catch (error) {
         toast.warning("Terminal created, but navigation failed", {
           description: (error as Error).message,

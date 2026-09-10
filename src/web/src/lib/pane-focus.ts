@@ -60,6 +60,48 @@ export async function focusPaneInHerdr(p: HostPane, activeHost: string | null) {
   )
 }
 
+// focusCreatedAgent lands herdr on an agent the creator just made. The pane id
+// the create returns is not enough on its own: focusing a PANE means focusing
+// its tab, and only pane.list knows which tab that is — a listing that can still
+// be answering from a call issued before the pane existed (it takes 0.5-1.5s on
+// a busy session; the server invalidates its cache on create, but a remote
+// host's herdr can also lag its own create). A single miss used to abandon the
+// navigation entirely, which is what made landing on a new agent a coin flip.
+//
+// So it retries the lookup briefly, and then falls back to focusing the
+// WORKSPACE: landing on the new agent is the point, and its workspace has one
+// tab at this stage anyway.
+export async function focusCreatedAgent(
+  workspaceID: string | undefined,
+  rootPane: string | undefined
+) {
+  if (!workspaceID && !rootPane) {
+    throw new Error("The created pane is not available in Herdr")
+  }
+  const deadline = Date.now() + 4000
+  let lastErr: unknown
+  while (rootPane) {
+    try {
+      const { panes } = await api.panes()
+      const pane = panes?.find((p) => p.pane_id === rootPane)
+      if (pane?.workspace_id && pane.tab_id) {
+        await api.focus(pane.workspace_id, pane.tab_id)
+        return
+      }
+    } catch (err) {
+      lastErr = err
+    }
+    if (Date.now() >= deadline) break
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  if (!workspaceID) {
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error("The created pane is not available in Herdr")
+  }
+  await api.focus(workspaceID)
+}
+
 // restoreHost re-points THIS TAB at the host a history entry names, on
 // Back/Forward, without pushing an entry of its own. It is the whole of what a
 // history entry restores, because which pane herdr focuses is herdr's state,
