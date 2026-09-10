@@ -26,6 +26,7 @@ import {
 } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, memberLabel } from "@/lib/hosts"
+import { focusCreatedAgent } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
 import { focusHerdrTerminal } from "@/lib/terminal"
 import { patchUIState, uiStateNow } from "@/lib/ui-state"
@@ -792,19 +793,9 @@ export function NewDialog({
     },
     onSuccess: async (rec) => {
       toast.success(`Created agent “${rec.title}”`)
-      try {
-        await moveTabToHost(selectedHost)
-        const { panes } = await api.panes()
-        const pane = panes?.find((p) => p.pane_id === rec.root_pane)
-        if (!pane?.workspace_id || !pane.tab_id) {
-          throw new Error("The created pane is not available in Herdr")
-        }
-        await api.focus(pane.workspace_id, pane.tab_id)
-      } catch (error) {
-        toast.warning("Agent created, but navigation failed", {
-          description: (error as Error).message,
-        })
-      }
+      // Close first: the navigation below can retry for a few seconds while
+      // herdr's pane listing catches up, and holding the dialog open for that
+      // reads as a create that hasn't finished.
       onOpenChange(false)
       reset()
       rememberCreatorHost(selectedHost)
@@ -812,6 +803,14 @@ export function NewDialog({
       // so refetch them (prefix-match clears every host's cached config).
       queryClient.invalidateQueries({ queryKey: ["agent-config"] })
       queryClient.invalidateQueries({ queryKey: ["repos"] })
+      try {
+        await moveTabToHost(selectedHost)
+        await focusCreatedAgent(rec.workspace_id, rec.root_pane)
+      } catch (error) {
+        toast.warning("Agent created, but navigation failed", {
+          description: (error as Error).message,
+        })
+      }
     },
     onError: (err) => {
       toast.error("Failed to create agent", {

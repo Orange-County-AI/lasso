@@ -874,10 +874,27 @@ func paneCwdUsesForeground(p pane) bool {
 // that makes this cache worth having is per host, since the slow call it
 // coalesces is one host's pane.list.
 type paneListCacheEntry struct {
-	mu   sync.Mutex
+	mu sync.Mutex
+	// at is when the cached snapshot's pane.list was ISSUED, not when it
+	// returned. pane.list routinely takes 0.5-1.5s, so timing the TTL from the
+	// reply would serve a snapshot taken seconds ago as if it were fresh.
 	at   time.Time
 	data json.RawMessage
 	err  error
+
+	// invMu guards inval, which invalidatePaneList writes WITHOUT taking mu: a
+	// caller that waited on mu for an in-flight pane.list would otherwise land
+	// its invalidation after that call stored its result, and the stale snapshot
+	// would then be served as fresh for a full TTL.
+	invMu sync.Mutex
+	inval time.Time
+}
+
+// invalidatedAt reports when this entry was last invalidated.
+func (e *paneListCacheEntry) invalidatedAt() time.Time {
+	e.invMu.Lock()
+	defer e.invMu.Unlock()
+	return e.inval
 }
 
 var paneListCache struct {
@@ -906,13 +923,18 @@ func herdrPaneList(be Backend) (json.RawMessage, error) {
 	e := paneCacheFor(be.Name())
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.at.IsZero() && time.Since(e.at) < paneListTTL {
+	// Serve the cache only when the snapshot was TAKEN after the last
+	// invalidation. A call already in flight when a pane appeared cannot contain
+	// it, and a caller coalescing onto that call is usually the very client
+	// asking about the new pane (the creator focusing the agent it just made).
+	if !e.at.IsZero() && time.Since(e.at) < paneListTTL && e.at.After(e.invalidatedAt()) {
 		return e.data, e.err
 	}
 	// The call is made under the lock on purpose: concurrent callers coalesce
 	// onto this one in-flight request rather than firing parallel slow calls.
+	started := time.Now()
 	data, err := be.HerdrCall("pane.list", map[string]any{})
-	e.at = time.Now()
+	e.at = started
 	e.data, e.err = data, err
 	return data, err
 }
@@ -920,17 +942,19 @@ func herdrPaneList(be Backend) (json.RawMessage, error) {
 // invalidatePaneList drops host's cached pane.list so the next call refetches.
 // Each host's feed calls it on every herdr event from THAT host: an event means
 // that host's pane state changed, so its cached snapshot would be stale — and no
-// other host's is affected.
+// other host's is affected. createAgent calls it too, so the browser's very next
+// pane lookup can see the pane it just made.
+//
+// It deliberately does NOT take the entry's mu: that lock is held for the whole
+// (slow) pane.list, so waiting on it would stamp the invalidation AFTER the
+// in-flight call stored a snapshot that predates the change — which is exactly
+// the case this exists to catch. herdrPaneList compares its snapshot's start
+// time against this stamp instead.
 func invalidatePaneList(host string) {
-	paneListCache.mu.Lock()
-	e := paneListCache.byHost[host]
-	paneListCache.mu.Unlock()
-	if e == nil {
-		return
-	}
-	e.mu.Lock()
-	e.at = time.Time{}
-	e.mu.Unlock()
+	e := paneCacheFor(host)
+	e.invMu.Lock()
+	e.inval = time.Now()
+	e.invMu.Unlock()
 }
 
 type workspace struct {
@@ -1168,6 +1192,11 @@ func servePanes(w http.ResponseWriter, r *http.Request) {
 // serveFocus focuses a pane. herdr exposes no pane.focus, so focusing a pane
 // means focusing its workspace and then its tab (panes live one-per-tab in the
 // common case; for split tabs this focuses the tab the pane belongs to).
+//
+// tab_id is OPTIONAL: a caller that knows only the workspace (the creator
+// landing on an agent whose pane hasn't surfaced in pane.list yet) still gets
+// the workspace focused, which lands on its active tab. Only workspace_id is
+// required — with neither there is nothing to focus.
 func serveFocus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1181,8 +1210,8 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.WorkspaceID == "" || req.TabID == "" {
-		http.Error(w, "workspace_id and tab_id required", http.StatusBadRequest)
+	if req.WorkspaceID == "" {
+		http.Error(w, "workspace_id required", http.StatusBadRequest)
 		return
 	}
 	be, err := reqBackend(r, "")
@@ -1194,9 +1223,11 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace.focus: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := be.HerdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
-		http.Error(w, "tab.focus: "+err.Error(), http.StatusBadGateway)
-		return
+	if req.TabID != "" {
+		if _, err := be.HerdrCall("tab.focus", map[string]any{"tab_id": req.TabID}); err != nil {
+			http.Error(w, "tab.focus: "+err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }
