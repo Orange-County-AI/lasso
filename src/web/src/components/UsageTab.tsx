@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, RotateCw } from "lucide-react"
 import * as React from "react"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
+import { Orb } from "@/components/ui/orb"
 import {
   api,
   completeUsageProviderOrder,
@@ -256,7 +257,7 @@ export function UsageTab({ active }: { active: boolean }) {
           disabled={usage.isFetching}
           onClick={() => queryClient.invalidateQueries({ queryKey: qk.usage })}
         >
-          <RotateCw className={cn(usage.isFetching && "animate-spin")} />
+          {usage.isFetching ? <Orb state="working" px={16} /> : <RotateCw />}
         </Button>
       </div>
 

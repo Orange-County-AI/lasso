@@ -1,6 +1,7 @@
 import * as React from "react"
 import { Pill } from "@/components/Pill"
 import { Button } from "@/components/ui/button"
+import { Orb } from "@/components/ui/orb"
 import { api, type DiffFileMeta, type DiffPayload } from "@/lib/api"
 import { type DiffLine, parseDiff } from "@/lib/diff"
 import { cn } from "@/lib/utils"
@@ -124,7 +125,10 @@ export function DiffTab({
         ) : !activeCwd ? (
           <div className="empty">no active directory yet</div>
         ) : !data ? (
-          <div className="empty">loading diff…</div>
+          <div className="empty flex items-center gap-2">
+            <Orb state="working" px={16} />
+            loading diff…
+          </div>
         ) : !data.isRepo ? (
           <div className="empty">not a git repository</div>
         ) : files.length === 0 ? (

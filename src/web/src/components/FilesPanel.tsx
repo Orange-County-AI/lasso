@@ -6,6 +6,7 @@ import {
   FilesTab,
   type FilesTabState,
 } from "@/components/FilesTab"
+import { Orb } from "@/components/ui/orb"
 import { useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { lazyWithReload } from "@/lib/lazy"
@@ -248,7 +249,7 @@ export function FilesPanel() {
 
         {focusing && (
           <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background/70 text-muted-foreground text-xs">
-            <span className="spinner" role="status" aria-label="loading" />
+            <Orb state="working" px={16} label="following pane" />
             following pane…
           </div>
         )}

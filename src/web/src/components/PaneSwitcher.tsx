@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Orb } from "@/components/ui/orb"
 import { api, type HostPane } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { tilde } from "@/lib/format"
@@ -442,7 +443,10 @@ export function PaneSwitcher({
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted-foreground text-sm">
               {q.isLoading || hist.isLoading ? (
-                "Loading…"
+                <span className="flex items-center justify-center gap-2">
+                  <Orb state="working" px={16} />
+                  Loading…
+                </span>
               ) : loadError ? (
                 // A failed fetch used to render as "No matching panes." — the
                 // palette claiming the fleet is empty when it simply couldn't

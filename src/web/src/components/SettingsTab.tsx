@@ -29,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   api,
@@ -1213,9 +1214,11 @@ function SyncThemeNowButton() {
       onClick={() => mutation.mutate()}
       title="Push the current theme to every reachable host now"
     >
-      <RotateCw
-        className={cn("size-3.5", mutation.isPending && "animate-spin")}
-      />
+      {mutation.isPending ? (
+        <Orb state="working" px={14} />
+      ) : (
+        <RotateCw className="size-3.5" />
+      )}
       Sync now
     </Button>
   )

@@ -9,6 +9,7 @@ import rehypeRaw from "rehype-raw"
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
+import { Orb } from "@/components/ui/orb"
 import { api } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import {
@@ -356,7 +357,10 @@ export function FileViewer({
         ) : error ? (
           <div className="vloading">error: {error}</div>
         ) : draft == null ? (
-          <div className="vloading">loading…</div>
+          <div className="vloading flex items-center gap-2">
+            <Orb state="working" px={16} />
+            loading…
+          </div>
         ) : markdown && preview ? (
           <div className="md-body">
             <ReactMarkdown

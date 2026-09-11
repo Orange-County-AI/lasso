@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { DialogFooter } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Orb } from "@/components/ui/orb"
 import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -271,7 +272,14 @@ export function NewTerminalForm({
       <DialogFooter className="mt-auto gap-3 border-t-0 bg-transparent pt-0">
         {footerLead}
         <Button type="submit" disabled={creating || !workspace}>
-          {creating ? "Creating…" : "Create terminal"}
+          {creating ? (
+            <>
+              <Orb state="working" px={16} on="accent" />
+              Creating…
+            </>
+          ) : (
+            "Create terminal"
+          )}
         </Button>
       </DialogFooter>
     </form>
