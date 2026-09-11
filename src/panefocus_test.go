@@ -101,9 +101,30 @@ func TestPaneListInvalidationDoesNotWaitOnAnInFlightCall(t *testing.T) {
 	}
 }
 
+// resetPaneListCache drops every host's cached pane.list.
+//
+// The cache is process-global and keyed by host NAME, and it stores errors as
+// well as snapshots. The two tests above dodge that by inventing their own host
+// names, but TestCreateAgentInvalidatesPaneList cannot: createAgent invalidates
+// by its backend's own name, so the test has to share "local" with every other
+// test in the package. A transport failure cached under that name by an earlier
+// test was therefore served straight back here, inside the 400ms TTL — which is
+// what made it fail roughly one run in four with "dial unix: missing address",
+// a dial this test never makes.
+func resetPaneListCache() {
+	paneListCache.mu.Lock()
+	defer paneListCache.mu.Unlock()
+	paneListCache.byHost = nil
+}
+
 // createAgent must drop its host's pane.list cache: the browser's very next move
 // is to look the new pane up so it can focus it.
 func TestCreateAgentInvalidatesPaneList(t *testing.T) {
+	// Start cold, and leave cold: this test shares the "local" cache slot with
+	// the rest of the package in both directions.
+	resetPaneListCache()
+	t.Cleanup(resetPaneListCache)
+
 	t.Setenv("LASSO_DIR", t.TempDir())
 	if err := openDB(); err != nil {
 		t.Fatalf("openDB: %v", err)
