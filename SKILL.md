@@ -26,6 +26,11 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
 >
+> **No MCP client? Use `lasso mcp`.** Every tool above is also a shell command —
+> `lasso mcp` lists them, `lasso mcp <tool> -h` shows one tool's flags, and
+> `lasso mcp <tool> [flags]` calls it. Same server, same descriptions. See
+> [From a shell: `lasso mcp`](#from-a-shell-lasso-mcp).
+>
 > The rest of this skill covers the common self-identity case; everything above
 > applies to acting on **other** agents too.
 
@@ -164,6 +169,42 @@ Use the lasso MCP tools to inspect agent state and manage agent lifecycles:
 
 These are the canonical, purpose-built path. Only drop to reading `lasso.db`
 directly or shelling out when a tool genuinely can't express what you need.
+
+## From a shell: `lasso mcp`
+
+If you have a terminal but lasso's MCP server isn't configured as a client,
+`lasso mcp` is the same surface as a command. It speaks MCP to the local
+server, so there is no second implementation to drift and no extra
+dependency — no `uvx`, no python, and it works on every host lasso is
+installed on.
+
+```bash
+lasso mcp                                   # every tool, one line each
+lasso mcp read-agent -h                     # one tool's flags
+lasso mcp list-agents -host gigachad        # call it
+lasso mcp list-agents | jq -r '.agents[].title'
+```
+
+- **Flags come from the server's live schema**, so they follow it
+  automatically. `-h` on any tool is authoritative; don't guess a flag name.
+- **Either spelling of a name works** — `read-agent` or `read_agent`,
+  `-agent-id` or `-agent_id`.
+- **An omitted flag is left out of the call entirely**, so the tool's own
+  default applies. That matters: an empty `host` means "search every host I
+  may reach", which is not the same as naming one.
+- **Output is JSON** — indented on a terminal, compact when piped, so `| jq`
+  needs no flag. `-json` gives the whole MCP envelope instead of just the
+  structured result.
+- **Exit codes:** `0` fine, `1` the tool itself refused (its message goes to
+  stderr), `2` you typed something wrong.
+- **A blocking tool's own timeout wins.** `lasso mcp wait-agent -agent-id X
+  -timeout-ms 300000` waits the full five minutes; the CLI's transport
+  deadline stretches to cover it. `-timeout <dur>` (before the tool name)
+  sets the floor for everything else.
+
+`lasso notify` and `lasso closeme` stay the short spelling of calls this can
+also make the long way — notify because its exit code is a contract and it
+reads a piped message, closeme because it resolves `$HERDR_PANE_ID` for you.
 
 ## Scope: which agents you can actually see
 

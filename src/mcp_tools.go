@@ -404,6 +404,25 @@ func paneAgentStatus(b Backend, paneID string) string {
 	return ompGateStatus(b, paneID, kind, status)
 }
 
+// statusSatisfies decides whether the status a pane is reporting answers the one
+// a caller is waiting for. Everything is an exact match except "idle", which
+// also accepts "done": herdr publishes "done" for a pane whose agent finished a
+// turn nobody has looked at since, which agentAtRest already calls idle wearing
+// a badge. Matching only the literal made the DEFAULT wait unsatisfiable for
+// exactly the case it exists to serve — an agent that has finished — so
+// `wait_agent` after a `send_agent` ran to its full timeout and reported
+// matched:false about an agent that had answered seconds earlier.
+//
+// The asymmetry is deliberate: a caller that asks for "done" specifically wants
+// the badge, and collapsing the pair in that direction too would make a
+// never-worked agent read as one that had finished.
+func statusSatisfies(want, got string) bool {
+	if want == "idle" {
+		return agentAtRest(got)
+	}
+	return want == got
+}
+
 // paneHasAgent reports whether an agent is still running in the pane. It returns
 // false once the agent process has exited (herdr's agent field clears, and the
 // harness's title chrome goes with it) or the pane is gone — the signal
@@ -1290,7 +1309,7 @@ func readAgentTool(_ context.Context, req *mcp.CallToolRequest, in readAgentIn) 
 type waitAgentIn struct {
 	Host      string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
 	AgentID   string `json:"agent_id" jsonschema:"The agent's id."`
-	Status    string `json:"status,omitempty" jsonschema:"Status to wait for: idle (default), working, blocked, or unknown."`
+	Status    string `json:"status,omitempty" jsonschema:"Status to wait for: idle (default), working, blocked, done, or unknown. \"idle\" also matches \"done\" — herdr reports done for an agent that finished a turn nobody has looked at since, which is idle wearing a badge — so the default answers \"has it finished?\" for every harness. Ask for \"done\" specifically only when you want that badge and not a never-worked agent."`
 	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"Max time to wait in milliseconds (default 120000)."`
 }
 
@@ -1325,7 +1344,7 @@ func waitAgentTool(ctx context.Context, req *mcp.CallToolRequest, in waitAgentIn
 	var last string
 	for time.Now().Before(deadline) {
 		last = paneAgentStatus(b, rec.RootPane)
-		if last == want {
+		if statusSatisfies(want, last) {
 			return nil, waitAgentOut{Status: last, Matched: true}, nil
 		}
 		select {

@@ -415,3 +415,31 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 		t.Errorf("plan overlay must not live in the user's omp config dir: %s", overlay)
 	}
 }
+
+// The default wait has to answer "has it finished?" for every harness. herdr
+// publishes "done" for a pane whose agent finished a turn nobody has looked at
+// since, so exact-matching "idle" made the default unsatisfiable for exactly the
+// case it exists to serve: wait_agent after send_agent ran its full timeout and
+// reported matched:false about an agent that had answered seconds earlier.
+func TestWaitAgentIdleAcceptsDone(t *testing.T) {
+	if !statusSatisfies("idle", "done") {
+		t.Error(`waiting for "idle" must match "done" — it is idle wearing a badge`)
+	}
+	if !statusSatisfies("idle", "idle") {
+		t.Error(`"idle" must still match itself`)
+	}
+	// The asymmetry is deliberate: a caller asking for "done" wants the badge,
+	// and collapsing the pair both ways would make a never-worked agent read as
+	// one that had finished.
+	if statusSatisfies("done", "idle") {
+		t.Error(`waiting for "done" must not match a never-worked "idle"`)
+	}
+	for _, s := range []string{"working", "blocked", "unknown", ""} {
+		if statusSatisfies("idle", s) {
+			t.Errorf(`"idle" must not match %q`, s)
+		}
+	}
+	if !statusSatisfies("blocked", "blocked") || statusSatisfies("blocked", "working") {
+		t.Error("every other status stays an exact match")
+	}
+}
