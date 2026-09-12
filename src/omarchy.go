@@ -832,6 +832,39 @@ func legibleThemeText(color, bg string) string {
 	return pole
 }
 
+// recessedSurfaceMax is how far SurfaceDim may sit from the canvas before it
+// stops reading as the same surface. Measured across every vendored palette
+// plus the installed ones: a sane dim lands between 1.02 and 1.21 against its
+// background, so 1.3 is clear of all of them.
+const recessedSurfaceMax = 1.3
+
+// recessedSurfaceStep is the fallback separation — the small step away from the
+// canvas that the hand-written light palettes use (catppuccin-latte's
+// #eff1f5 -> #e6e9ef, one-light's #fafafa -> #f5f5f6).
+const recessedSurfaceStep = 0.06
+
+// recessedSurface picks the surface behind blocks of text that sit BELOW the
+// canvas — omp's pending tool frames and user messages, opencode's subtle
+// border, Claude Code's composer sidebar.
+//
+// Omarchy's dark_background is that surface on a dark theme. On a light one it
+// is a contrast colour rather than a recess, and a theme that never declared it
+// gets Omarchy's fallback — the background mixed a quarter of the way to black
+// — which on a light canvas is a mid-grey rather than a dimmer white. Ayu Light
+// lands on #babbbc under #f8f9fa: its own text drops to 3.25:1 and its syntax
+// green to 1.19:1, i.e. a running omp's tool frame is unreadable.
+//
+// So a dark_background further from the canvas than any real theme's is
+// replaced by the step the light built-ins use. Recessed means darker on both
+// lightnesses (every vendored palette's dim is below its background), so there
+// is no branch on mode.
+func recessedSurface(dim, bg string) string {
+	if contrastRatio(dim, bg) <= recessedSurfaceMax {
+		return dim
+	}
+	return mixHex(bg, "#000000", recessedSurfaceStep)
+}
+
 // themeDef maps an Omarchy palette onto lasso's two palettes.
 //
 // The ANSI half is Omarchy's own mapping, verbatim from its alacritty/ghostty
@@ -878,7 +911,7 @@ func (p omarchyPalette) themeDef() themeDef {
 			PanelBg:    bg,
 			Surface0:   p.at("lighter_background"),
 			Surface1:   p.at("muted"),
-			SurfaceDim: p.at("dark_background"),
+			SurfaceDim: recessedSurface(p.at("dark_background"), bg),
 			Overlay0:   legibleThemeText(p.at("dark_foreground"), bg),
 			Overlay1:   legibleThemeText(mixHex(p.at("dark_foreground"), p.at("foreground"), 0.25), bg),
 			Text:       text,
