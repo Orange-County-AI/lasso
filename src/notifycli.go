@@ -166,16 +166,9 @@ func (t cliAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // its structured output. Split from cliNotify (which owns the flags and the exit
 // codes) so a test can drive the real /mcp handler over httptest.
 func callNotifyTool(ctx context.Context, endpoint string, hc *http.Client, in notifyIn) (notifyOut, error) {
-	c := mcp.NewClient(&mcp.Implementation{Name: "lasso-cli", Version: lassoSemver}, nil)
-	sess, err := c.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:   endpoint,
-		HTTPClient: hc,
-		// Nothing here consumes server-initiated messages, and a one-shot command
-		// must not hold a second connection open for them.
-		DisableStandaloneSSE: true,
-	}, nil)
+	sess, err := dialMCP(ctx, endpoint, hc)
 	if err != nil {
-		return notifyOut{}, fmt.Errorf("reach lasso's MCP endpoint at %s: %w (is the server running? set LASSO_LISTEN for a non-default port)", endpoint, err)
+		return notifyOut{}, err
 	}
 	defer sess.Close()
 

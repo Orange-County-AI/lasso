@@ -175,6 +175,7 @@ The binary is both the server and its own control surface:
 | `lasso doctor` | check herdr, the socket, the port, and the version |
 | `lasso version` | print the version |
 | `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
+| `lasso mcp [tool] [flags]` | call lasso's MCP tools from a shell; no tool lists them, `<tool> -h` shows its flags |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
 `start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
