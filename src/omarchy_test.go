@@ -35,6 +35,35 @@ func TestOmarchySidebarTextContrast(t *testing.T) {
 	}
 }
 
+// A light theme's dark_background is a contrast colour, not a dimmer surface,
+// and Omarchy's fallback for one (background mixed 25% toward black) lands on a
+// mid-grey. omp paints its pending tool frames and user messages with it, so
+// the grey has to be pulled back to a real recess or the syntax colours on it
+// are unreadable.
+func TestOmarchyLightThemeDimSurfaceStaysNearCanvas(t *testing.T) {
+	bg := "#f8f9fa"
+	p := omarchyPalette{light: true, c: map[string]string{
+		"background": bg, "foreground": "#5c6166",
+		"bright_foreground": "#d1d1d1", "dark_foreground": "#686868",
+		"muted": "#686868", "green": "#6cbf43",
+		"dark_background": "#babbbc", // what fillOmarchyDefaults derives here
+	}}
+	dim := p.themeDef().ui.SurfaceDim
+	if got := contrastRatio(dim, bg); got > recessedSurfaceMax {
+		t.Fatalf("SurfaceDim %s sits %.2f from the canvas, want at most %.2f", dim, got, recessedSurfaceMax)
+	}
+	// The point of the repair: text keeps very nearly the legibility it has on
+	// the canvas itself.
+	if onDim, onBg := contrastRatio("#5c6166", dim), contrastRatio("#5c6166", bg); onDim < onBg*0.85 {
+		t.Fatalf("text on SurfaceDim = %.2f, on canvas = %.2f", onDim, onBg)
+	}
+	// A theme that declares a real recess keeps it.
+	p.c["dark_background"] = "#e6e9ef"
+	if got := p.themeDef().ui.SurfaceDim; got != "#e6e9ef" {
+		t.Fatalf("declared dim surface = %s, want it left alone", got)
+	}
+}
+
 func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 	t.Setenv("LASSO_DIR", t.TempDir())
 	reloadOmarchyThemes()
