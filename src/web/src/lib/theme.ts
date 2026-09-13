@@ -22,9 +22,10 @@ function termFrames(): HTMLIFrameElement[] {
   return out
 }
 
-// The terminal font stack. JetBrainsMono Nerd Font carries the icon glyphs that
-// TUIs (gh-dash, btop, …) draw with — without it xterm renders "tofu" boxes.
-// The face is vendored as woff2 under web/public/fonts and served at /fonts/*.
+// The terminal font stack. JetBrainsMono Nerd Font Mono 3.5.1 carries the icon
+// glyphs that TUIs draw with, including Mattermost U+E927 and Gmail U+F02AB;
+// without it xterm renders "tofu" boxes. The four faces are vendored as woff2
+// under web/public/fonts and served at /fonts/*.
 const TERM_FONT_FAMILY = "JetBrainsMono Nerd Font"
 const TERM_FONT_STACK = `"${TERM_FONT_FAMILY}", ui-monospace, monospace`
 const TERM_FONT_STYLE_ID = "herdr-term-font"
