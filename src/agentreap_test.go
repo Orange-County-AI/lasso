@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -254,4 +255,50 @@ func TestTombstoneKeptForHistoryAndReopen(t *testing.T) {
 	if !liveIDs(t, "local")["hist"] {
 		t.Error("reopening a closed agent did not revive its record")
 	}
+}
+
+// The reaper's contract is that it drives the aggregation with nobody looking:
+// one pass at startup, then one per interval, for as long as the server runs.
+// The aggregation is where reconciliation actually happens (fetchAllPanes'
+// per-host success branch), and panesFetch is the seam that stands in for it
+// here — the reconcile itself is covered by the tests around
+// reconcileHostAgents, which need a database and a fleet rather than a ticker.
+//
+// The second pass has to outlive panesSnapshot's own TTL (panesCacheTTL), which
+// is why the wait below is seconds and not milliseconds: the reaper asks the
+// cached aggregation, so a tick inside the TTL is served from cache and costs
+// no host, exactly as an /api/all-panes caller would see.
+func TestAgentReaperDrivesTheAggregation(t *testing.T) {
+	openTestDB(t)
+	prevEvery, prevFetch := agentReapEvery, panesFetch
+	agentReapEvery = 50 * time.Millisecond
+	passes := make(chan struct{}, 8)
+	panesFetch = func(context.Context) panesPayload {
+		select {
+		case passes <- struct{}{}:
+		default:
+		}
+		return panesPayload{Panes: []hostPane{gp("local", "w1:p1")}}
+	}
+	t.Cleanup(func() {
+		agentReapEvery, panesFetch = prevEvery, prevFetch
+		panesCache.mu.Lock()
+		panesCache.at, panesCache.data = time.Time{}, panesPayload{}
+		panesCache.mu.Unlock()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); startAgentReaper(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			t.Error("reaper did not stop when its context was cancelled")
+		}
+	}()
+
+	waitFor(t, func() bool { return len(passes) >= 1 }) // the startup pass
+	waitFor(t, func() bool { return len(passes) >= 2 }) // and its interval, past the TTL
 }

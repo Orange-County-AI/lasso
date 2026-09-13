@@ -23,7 +23,6 @@ import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewDialog, type NewDialogTab } from "@/components/NewDialog"
-import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
@@ -37,13 +36,11 @@ import {
 } from "@/components/ui/resizable"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
-import { qk, queryClient } from "@/lib/query"
 import {
   beginSidebarDrag,
   markSidebarIntent,
@@ -214,7 +211,6 @@ function Shell() {
     if (!window.matchMedia("(pointer: coarse)").matches) focusHerdrTerminal()
   }, [leftView])
   const [collapsed, setCollapsed] = React.useState(false)
-  const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
@@ -241,18 +237,6 @@ function Shell() {
     } catch {
       return undefined
     }
-  }, [])
-
-  // Warm the pane list in the background on load so the first ⌘K pane-switcher
-  // search is instant instead of waiting on a fresh fetch. Shares qk.panes with
-  // the switcher, so both reuse one cache — the fetch spans every host (that
-  // aggregation is also what reconciles agent records server-side); the switcher
-  // lists the active host's rows out of it.
-  React.useEffect(() => {
-    void queryClient.prefetchQuery({
-      queryKey: qk.panes,
-      queryFn: () => api.allPanes(),
-    })
   }, [])
 
   // Keep the app pinned to the space above the mobile keyboard so the terminal's
@@ -627,15 +611,6 @@ function Shell() {
           tab={newTab}
           onTabChange={setNewTab}
         />
-        {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
-          with herdr-mirror running covers the fleet (other machines' workspaces
-          are mirrored in as local panes), and focuses the chosen one in the
-          herdr terminal. Desktop ⌘K goes to herdr's own search instead; this is
-          what the dial's search command opens, since a prefix chord isn't
-          reachable from a software keyboard. focusPaneInHerdr still pushes the
-          landing host's history entry; same-host now, so pushQueryParam
-          collapses it into a replace rather than a dead Back step. */}
-        <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />

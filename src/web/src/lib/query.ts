@@ -24,12 +24,7 @@ export const qk = {
   workspaces: (host: string) => ["workspaces", host] as const,
   repoBranches: (host: string, path: string) =>
     ["repo-branches", host, path] as const,
-  panes: ["all-panes"] as const,
-  // One pane's agent session as chat rows. Keyed on the host and the pane
-  // together: two hosts can name the same pane id, and the transcript lives on
-  // the host the pane is on.
   chat: (host: string, pane: string) => ["chat", host, pane] as const,
-  agentHistory: ["agent-history"] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.
   diff: (host: string, path: string) => ["diff", host, path] as const,

@@ -288,18 +288,6 @@ type hostPane struct {
 	// Live panes leave both empty/false.
 	AgentID string `json:"agent_id,omitempty"`
 	Closed  bool   `json:"closed,omitempty"`
-	// The Mirror* fields are set when this pane is a herdr-mirror stream of
-	// another machine's pane rather than a pane on Host (see mirror.go). Such a
-	// row IS a real local pane — it focuses and renders like any other — but
-	// everything it shows lives on MirrorHost, so the UI must attribute it
-	// there and must not offer it affordances that only mean something locally.
-	// MirrorHost is herdr-mirror's host key, MirrorLabel the workspace's label as
-	// it reads on the remote (no "<host>: " prefix), and MirrorWorkspace /
-	// MirrorPane the remote herdr's own ids.
-	MirrorHost      string `json:"mirror_host,omitempty"`
-	MirrorLabel     string `json:"mirror_label,omitempty"`
-	MirrorWorkspace string `json:"mirror_workspace,omitempty"`
-	MirrorPane      string `json:"mirror_pane,omitempty"`
 }
 
 type panesPayload struct {
@@ -308,14 +296,14 @@ type panesPayload struct {
 }
 
 // panesCache coalesces the potentially multi-second, multi-host aggregation so
-// overlapping polls and concurrent viewers share one fetch. Herdr state moves,
-// so the frontend refreshes it every few seconds.
+// overlapping callers share one fetch: /api/all-panes, the notification watcher
+// (notifywatch.go) and the agent reaper (agentreap.go) all read through it, and
+// Herdr state moves, so it is refetched rather than persisted.
 //
 // inflight is non-nil while a refresh is running and closes when it lands. The
 // refresh runs with mu released: holding it across aggregation serialized every
-// /api/all-panes caller behind the slowest host. A refresh that outlived the TTL
-// then made each waiter start another one, leaving the ⌘K palette wedged until
-// restart.
+// caller behind the slowest host, so a refresh that outlived the TTL made each
+// waiter start another one and left a client wedged until restart.
 var panesCache struct {
 	mu       sync.Mutex
 	at       time.Time
@@ -1183,10 +1171,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			}
 		}
 	}
-	// Which of these panes are herdr-mirror streams of another machine's panes,
-	// and whose. Free for a host running no mirrors (see hostMirrors).
-	mirrors := hostMirrors(b, pl.Panes)
-
 	out := make([]hostPane, 0, len(pl.Panes))
 	for _, p := range pl.Panes {
 		kind, isAgent := agentKind[p.PaneID]
@@ -1211,7 +1195,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 		if prompt == "" && isAgent {
 			prompt = promptByWS[p.WorkspaceID]
 		}
-		mr, _ := mirrors.lookup(p.WorkspaceID, p.PaneID)
 		out = append(out, hostPane{
 			Host:           host,
 			HostLabel:      hostLabel,
@@ -1228,11 +1211,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			HasAgent:       isAgent,
 			Focused:        p.Focused,
 			Prompt:         prompt,
-
-			MirrorHost:      mr.Host,
-			MirrorLabel:     mr.Label,
-			MirrorWorkspace: mr.Workspace,
-			MirrorPane:      mr.Pane,
 		})
 	}
 	// Newest first: herdr assigns workspaces/tabs monotonically increasing numbers

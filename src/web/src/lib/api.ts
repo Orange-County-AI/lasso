@@ -174,56 +174,6 @@ export interface Workspace {
   focused: boolean
 }
 
-// One herdr pane on a specific host, enriched with workspace/tab labels and
-// whether herdr detects an agent in it — the row shape of /api/all-panes and
-// /api/agent-history. `host` is "local" or an ssh-config alias and is the key
-// for focusing the pane (switching the active host first when it isn't already
-// active).
-export interface HostPane {
-  host: string
-  host_label: string
-  pane_id: string
-  workspace_id?: string
-  workspace_label?: string
-  tab_id?: string
-  tab_label?: string
-  pane_label?: string
-  // The pane's OSC title with the agent's state glyphs stripped — for an agent
-  // pane, what it is currently working on. The only name a session whose
-  // workspace was never labelled has.
-  terminal_title?: string
-  cwd?: string
-  agent?: string
-  agent_status?: string
-  has_agent?: boolean
-  focused?: boolean
-  // The agent's initial prompt (creation description). Carried for search only —
-  // the pane switcher matches against it but doesn't display the full text.
-  prompt?: string
-  // Set only on rows from /api/agent-history (past agents). agent_id identifies the
-  // record for reopenAgent; closed is derived client-side (its pane is no longer
-  // live) so the switcher renders it distinctly and reopens rather than focuses.
-  agent_id?: string
-  closed?: boolean
-  // Set when this pane is a herdr-mirror stream of another machine's pane (the
-  // plugin turns each mirrored remote workspace into a real LOCAL workspace, so
-  // `host` still says "local"). mirror_host is the herdr-mirror host key,
-  // mirror_label the workspace's label as it reads over there — the mirror's
-  // sidebar label minus its "<host>: " prefix — and mirror_workspace /
-  // mirror_pane the remote herdr's own ids. See src/mirror.go.
-  mirror_host?: string
-  mirror_label?: string
-  mirror_workspace?: string
-  mirror_pane?: string
-}
-
-export interface PanesPayload {
-  panes: HostPane[]
-  // host → why its panes couldn't be listed (unreachable, protocol drift, …).
-  // Every other host's panes still come back; the UI reports these separately.
-  errors?: Record<string, string>
-}
-
 // One row of an agent session rendered as conversation (see src/chatview.go).
 // The server has already decided what a row SAYS — subject, truncation, diff
 // excerpt — so the renderer never reads a tool's raw arguments: their shapes
@@ -782,7 +732,7 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
     )
   } catch (e) {
     // A request that never lands must surface as an error, not as a spinner the
-    // user stares at forever — see aggregateTimeout's callers.
+    // user stares at forever.
     if (e instanceof DOMException && e.name === "TimeoutError") {
       throw new Error(`${url} timed out after ${(timeoutMs ?? 0) / 1000}s`)
     }
@@ -791,13 +741,6 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
   if (!r.ok) throw await httpError(r)
   return (await r.json()) as T
 }
-
-// aggregateTimeout caps the two cross-host aggregations (every host's panes and
-// the agent history). They fan out over ssh, so they are the slowest reads in
-// the app and the ones with the most ways to stall; without a client bound, a
-// backend that stops answering leaves the ⌘K palette on "Loading…" indefinitely
-// with nothing to retry and nothing to report.
-const aggregateTimeout = 30_000
 
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const r = await hostFetch(url, {
@@ -1031,29 +974,6 @@ export const api = {
       labels,
       answers,
     }),
-
-  // Every herdr pane across every reachable, protocol-compatible host (local +
-  // remotes), for the ⌘K pane switcher. Aggregated server-side; per-host
-  // failures come back in `errors` rather than failing the whole request.
-  allPanes: () => getJSON<PanesPayload>("/api/all-panes", aggregateTimeout),
-
-  // Every agent lasso ever spawned (across hosts), shaped as HostPane rows so the
-  // ⌘K switcher can list past agents next to live panes. AgentID is set; the
-  // switcher treats a row whose host+pane_id isn't currently live as "closed" and
-  // reopens it via reopenAgent on select.
-  agentHistory: () =>
-    getJSON<{ agents: HostPane[] }>("/api/agent-history", aggregateTimeout),
-
-  // Re-open a past session's workspace: re-creates a herdr workspace at its work
-  // dir and focuses it unless focus:false (does NOT relaunch the agent). Identify
-  // it by agent_id (a recorded agent — also re-points its record at the new pane)
-  // or by work_dir (an orphan worktree/scratch dir with no record). Returns the
-  // new pane so the caller can focus it through the normal pane-focus path.
-  reopenAgent: (
-    host: string,
-    body: { agent_id?: string; work_dir?: string; focus?: boolean }
-  ) => postJSON<HostPane>("/api/agent/reopen", { host, ...body }),
-
   // Persisted UI preferences (sidebar layout, Files tab, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),
   // Patch semantics: send only the changed fields; the server merges into the
