@@ -29,7 +29,6 @@ export const qk = {
   // together: two hosts can name the same pane id, and the transcript lives on
   // the host the pane is on.
   chat: (host: string, pane: string) => ["chat", host, pane] as const,
-  agentHistory: ["agent-history"] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.
   diff: (host: string, path: string) => ["diff", host, path] as const,

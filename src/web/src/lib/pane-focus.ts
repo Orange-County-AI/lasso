@@ -1,8 +1,6 @@
 import * as React from "react"
-import { api, type HostPane } from "@/lib/api"
+import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
-import { focusHerdrTerminal } from "@/lib/terminal"
-import { pushQueryParam } from "@/lib/url"
 
 // In-flight counter for pane focus operations, which can take seconds when
 // they move this tab to another host across the network. Views far from the
@@ -31,32 +29,6 @@ export function usePaneFocusPending(): boolean {
       }
     },
     () => focusInFlight > 0
-  )
-}
-
-// focusPaneInHerdr makes a pane herdr's focused pane and hands the keyboard to
-// the terminal showing it — the ⌘K switcher's open path. If the pane is on
-// another host, move THIS TAB there first (which reloads its herdr terminal onto
-// that host), then focus its tab. The switcher only offers this tab's host's
-// panes now, so that move is a guard for the one window where they can disagree:
-// before the first /api/active answer lands the palette assumes "local", and
-// focusing a local pane's tab through a remote backend would land on the wrong
-// host's herdr entirely.
-//
-// It pushes one browser history entry for the host it lands on, so Back returns
-// to the host the jump started from. The pane id is deliberately absent from
-// that entry (see restoreHost), so a same-host jump — now the normal case —
-// produces an entry identical to the current one, which pushQueryParam collapses
-// into a replace rather than a dead Back step.
-export async function focusPaneInHerdr(p: HostPane, activeHost: string | null) {
-  // Match HostSwitcher's convention of omitting ?host for the local machine.
-  pushQueryParam("host", p.host === "local" ? null : p.host)
-  await trackFocusWork(
-    (async () => {
-      if (p.host !== activeHost) await moveTabToHost(p.host)
-      if (p.workspace_id && p.tab_id) await api.focus(p.workspace_id, p.tab_id)
-      focusHerdrTerminal()
-    })()
   )
 }
 

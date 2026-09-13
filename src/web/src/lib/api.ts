@@ -197,12 +197,13 @@ export interface HostPane {
   agent_status?: string
   has_agent?: boolean
   focused?: boolean
-  // The agent's initial prompt (creation description). Carried for search only —
-  // the pane switcher matches against it but doesn't display the full text.
+  // The agent's initial prompt (creation description). Carried so a client can
+  // search a pane by what it was asked to do; the UI need not display it.
   prompt?: string
-  // Set only on rows from /api/agent-history (past agents). agent_id identifies the
-  // record for reopenAgent; closed is derived client-side (its pane is no longer
-  // live) so the switcher renders it distinctly and reopens rather than focuses.
+  // Set only on rows from /api/agent-history (past agents). Nothing in the web UI
+  // asks for that endpoint any more — it stays for CLI and script callers — but
+  // the fields describe its rows: agent_id is the record /api/agent/reopen
+  // re-creates, and closed marks a row whose herdr pane is no longer live.
   agent_id?: string
   closed?: boolean
 }
@@ -956,26 +957,9 @@ export const api = {
     }),
 
   // Every herdr pane across every reachable, protocol-compatible host (local +
-  // remotes), for the ⌘K pane switcher. Aggregated server-side; per-host
-  // failures come back in `errors` rather than failing the whole request.
+  // remotes). Aggregated server-side; per-host failures come back in `errors`
+  // rather than failing the whole request.
   allPanes: () => getJSON<PanesPayload>("/api/all-panes", aggregateTimeout),
-
-  // Every agent lasso ever spawned (across hosts), shaped as HostPane rows so the
-  // ⌘K switcher can list past agents next to live panes. AgentID is set; the
-  // switcher treats a row whose host+pane_id isn't currently live as "closed" and
-  // reopens it via reopenAgent on select.
-  agentHistory: () =>
-    getJSON<{ agents: HostPane[] }>("/api/agent-history", aggregateTimeout),
-
-  // Re-open a past session's workspace: re-creates a herdr workspace at its work
-  // dir and focuses it unless focus:false (does NOT relaunch the agent). Identify
-  // it by agent_id (a recorded agent — also re-points its record at the new pane)
-  // or by work_dir (an orphan worktree/scratch dir with no record). Returns the
-  // new pane so the caller can focus it through the normal pane-focus path.
-  reopenAgent: (
-    host: string,
-    body: { agent_id?: string; work_dir?: string; focus?: boolean }
-  ) => postJSON<HostPane>("/api/agent/reopen", { host, ...body }),
 
   // Persisted UI preferences (sidebar layout, Files tab, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),

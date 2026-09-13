@@ -23,7 +23,6 @@ import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewDialog, type NewDialogTab } from "@/components/NewDialog"
-import { PaneSwitcher } from "@/components/PaneSwitcher"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
@@ -199,7 +198,6 @@ function Shell() {
     focusHerdrTerminal()
   }, [])
   const [collapsed, setCollapsed] = React.useState(false)
-  const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
@@ -228,11 +226,13 @@ function Shell() {
     }
   }, [])
 
-  // Warm the pane list in the background on load so the first ⌘K pane-switcher
-  // search is instant instead of waiting on a fresh fetch. Shares qk.panes with
-  // the switcher, so both reuse one cache — the fetch spans every host (that
-  // aggregation is also what reconciles agent records server-side); the switcher
-  // lists the active host's rows out of it.
+  // Warm the pane list on load. Nothing the UI renders reads it any more — the
+  // palette that did is gone — but the GET is load-bearing server-side:
+  // /api/all-panes' per-host success branch is what reconciles lasso's agent
+  // records against herdr (fetchAllPanes → reconcileHostAgents), and this is the
+  // only thing in the app that drives it. Dropping it would quietly stop
+  // tombstoning agents whose panes are gone; a server-side interval or a
+  // periodic poll is a better home for that than a request the UI discards.
   React.useEffect(() => {
     void queryClient.prefetchQuery({
       queryKey: qk.panes,
@@ -612,14 +612,6 @@ function Shell() {
           tab={newTab}
           onTabChange={setNewTab}
         />
-        {/* The MOBILE pane palette, kept mounted but not currently opened by
-          anything: both ⌘K and the dial's Search command go to herdr's own
-          search instead (openHerdrGoto), because a software keyboard has no
-          prefix key to chord with. Focusing a row hands the keyboard to that
-          pane's terminal; focusPaneInHerdr pushes the landing host's history
-          entry, and a same-host jump collapses into a replace rather than a
-          dead Back step. */}
-        <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
