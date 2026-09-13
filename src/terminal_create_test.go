@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,6 +118,61 @@ func TestCreateTerminalInExistingWorkspaceRunsCommand(t *testing.T) {
 		t.Fatalf("response = %#v", out)
 	}
 }
+
+// A multi-line command is run as ONE script, not a command per line: the block
+// is fed to the shell already in the pane as a sourced heredoc, so it is parsed
+// whole — a heredoc, an if/then/fi or a quoted string inside it means what it
+// means — and the terminal sees one submission. A single-line command is typed
+// as itself.
+func TestCreateTerminalRunsMultiLineAsOneScript(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "single line stays bare",
+			command: "git status",
+			want:    "\x15git status\n",
+		},
+		{
+			name:    "two commands become one script",
+			command: "echo hello\necho world",
+			want:    "\x15. /dev/stdin <<'LASSO_EOF'\necho hello\necho world\nLASSO_EOF\n",
+		},
+		{
+			name:    "crlf paste folds before wrapping",
+			command: "echo hello\r\necho world\r\n",
+			want:    "\x15. /dev/stdin <<'LASSO_EOF'\necho hello\necho world\nLASSO_EOF\n",
+		},
+		{
+			// A line that IS the delimiter would end the body early, and the
+			// rest of the script would reach the shell as typed input.
+			name:    "delimiter inside the script",
+			command: "echo hello\nLASSO_EOF\necho world",
+			want:    "\x15. /dev/stdin <<'LASSO_EOF_'\necho hello\nLASSO_EOF\necho world\nLASSO_EOF_\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := withTerminalBackend(t)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/create-terminal",
+				strings.NewReader(fmt.Sprintf(`{"workspace_id":"ws","command":%q}`, tc.command)),
+			)
+			res := httptest.NewRecorder()
+			serveCreateTerminal(res, req)
+
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+			}
+			if len(b.sent) != 1 || b.sent[0] != tc.want {
+				t.Fatalf("sent = %#v, want %q", b.sent, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreateTerminalNamesNewWorkspaceRootTab(t *testing.T) {
 	b := withTerminalBackend(t)
 	req := httptest.NewRequest(
