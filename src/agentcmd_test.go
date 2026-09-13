@@ -26,8 +26,9 @@ func TestAgentPrompt(t *testing.T) {
 				Title:       untitledAgent,
 				Notes:       "see thread",
 				Attachments: []string{"a.png"},
+				WorkDir:     "/home/dev/proj",
 			},
-			want: "See NOTES.md for additional notes.\n\nAttachments: a.png",
+			want: "See NOTES.md for additional notes.\n\nAttachments (absolute paths): /home/dev/proj/a.png",
 		},
 		{
 			name: "full prompt verbatim",
@@ -44,8 +45,9 @@ func TestAgentPrompt(t *testing.T) {
 				Description: "Add dark mode",
 				Notes:       "see thread",
 				Attachments: []string{"a.png", "b.png"},
+				WorkDir:     "/home/dev/proj",
 			},
-			want: "Add dark mode\n\nSee NOTES.md for additional notes.\n\nAttachments: a.png, b.png",
+			want: "Add dark mode\n\nSee NOTES.md for additional notes.\n\nAttachments (absolute paths): /home/dev/proj/a.png, /home/dev/proj/b.png",
 		},
 	}
 	for _, c := range cases {

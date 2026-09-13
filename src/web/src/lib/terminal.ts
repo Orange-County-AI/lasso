@@ -33,6 +33,7 @@ interface XTerm {
   paste?: (text: string) => void
   input?: (data: string) => void
   focus?: () => void
+  blur?: () => void
   rows?: number
   buffer?: XTermBuffer
   options?: Record<string, unknown>
@@ -1027,4 +1028,24 @@ export function focusHerdrTerminal(tries = 0) {
     /* same-origin; ignore */
   }
   if (tries < 20) setTimeout(() => focusHerdrTerminal(tries + 1), 100)
+}
+
+// Drop focus out of the terminal iframe. The pair to focusHerdrTerminal, and
+// needed because xterm keeps a hidden textarea focused for as long as it holds
+// the keyboard: on a phone that is the on-screen keyboard staying up over
+// whatever replaced the terminal, and on a desktop it is every keystroke going
+// into a terminal nobody is looking at.
+//
+// Through xterm's own blur() rather than the focused element's, because xterm
+// owns that textarea and refocuses it on its own terms — blurring the element
+// directly is a race with the thing that put focus there.
+export function blurHerdrTerminal() {
+  try {
+    const w = frameWindow("term")
+    if (w?.term && typeof w.term.blur === "function") {
+      w.term.blur()
+    }
+  } catch {
+    /* same-origin; a frame that is not up cannot be holding the keyboard */
+  }
 }

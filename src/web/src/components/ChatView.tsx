@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
   File as FileIcon,
   Globe,
@@ -21,13 +22,13 @@ import {
 import * as React from "react"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
 import { Orb } from "@/components/ui/orb"
-import {
-  newestUserID,
-  reconcileQueued,
-  type QueuedEcho,
-} from "@/lib/chat-queue"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
+import {
+  newestUserID,
+  type QueuedEcho,
+  reconcileQueued,
+} from "@/lib/chat-queue"
 import { qk } from "@/lib/query"
 import { cn } from "@/lib/utils"
 
@@ -37,10 +38,11 @@ import { cn } from "@/lib/utils"
 // excerpted rather than dumped — but the palette is lasso's own, so it inherits
 // whatever theme (and backdrop) the rest of the app is wearing.
 //
-// READ-ONLY, deliberately. Input stays the real TUI: the composer pastes into
-// the herdr terminal and presses Enter, so a tool approval is still answered
-// where the agent asked for it and nothing here can drift from what the pane
-// actually received.
+// Input stays the real TUI, deliberately: the composer pastes into the herdr
+// terminal and presses Enter, and an ask is answered by typing its dialog's own
+// keystrokes (AskCard → POST /api/chat/answer). Nothing here answers an agent
+// out of band — every write lands in the pane, so a card always says what the
+// harness actually received.
 
 // mergeItems folds a freshly-read page into what is already on screen: rows that
 // are already here are UPDATED in place (a tool card completing, an output
@@ -227,6 +229,316 @@ function ToolBody({ tool }: { tool: ChatTool }) {
         </div>
       ) : null}
     </>
+  )
+}
+
+// PickMark is the radio/checkbox of one option, drawn with borders rather than
+// an icon font: lasso's chrome separates by border and a brightness step, and
+// the mark is the only thing on the card that has to read at a glance.
+function PickMark({ multi, chosen }: { multi: boolean; chosen: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "mt-[3px] flex size-3.5 shrink-0 items-center justify-center border",
+        multi ? "rounded-[4px]" : "rounded-full",
+        chosen
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-muted-foreground/50"
+      )}
+    >
+      {chosen && <Check className="size-2.5" strokeWidth={3} />}
+    </span>
+  )
+}
+
+// AskCard is the one card that is not a record of work but a request to the
+// READER: the agent has stopped and will not continue until one of these options
+// is chosen. So it renders the dialog the terminal is showing — the question in
+// full, every option with its description, the agent's own recommendation
+// marked — and a tap answers it, by typing that selection into the dialog the
+// agent asked in (see serveChatAnswer).
+//
+// What a tap sends is an option INDEX, never the rendered label: the dialog
+// selects whichever row its cursor is on, and a label would have to match
+// through however that harness decorates it ("… (Recommended)").
+function AskCard({
+  tool,
+  host,
+  paneID,
+}: {
+  tool: ChatTool
+  host: string
+  paneID: string
+}) {
+  const questions = tool.ask?.questions ?? []
+  // Which option of each question the reader has picked. Local until it is
+  // sent: the transcript cannot know about a choice that has not reached the
+  // pane yet, and the harness will not either until it is submitted.
+  const [picks, setPicks] = React.useState<number[][]>(() =>
+    questions.map(() => [])
+  )
+  const [expanded, setExpanded] = React.useState<number[]>([])
+  const [sending, setSending] = React.useState(false)
+  const [sent, setSent] = React.useState(false)
+  const [notice, setNotice] = React.useState<string | null>(null)
+
+  if (!tool.ask) return null
+
+  const running = tool.state === "running"
+  // A single question that takes a single answer IS the tap: that dialog submits
+  // on the Enter it takes, so a separate confirmation would be a whole extra
+  // gesture for nothing. Every other shape is a form, because the dialog walks
+  // its questions in order and answering them one request at a time would race
+  // the human's own taps.
+  const oneTap = questions.length === 1 && !questions[0]?.multi
+  // A question with no options is the free-text kind: the terminal is where it
+  // is answered, so the card does not offer a form for it.
+  const hasOptions = questions.some((q) => q.options.length > 0)
+  const answerable = running && !sent && !sending && hasOptions
+  const ready = questions.every((_, i) => (picks[i]?.length ?? 0) > 0)
+
+  const send = async (answers: number[][]) => {
+    setSending(true)
+    setNotice(null)
+    try {
+      const res = await api.chatAnswer(
+        host,
+        paneID,
+        // What the card was showing — the server checks it is still the
+        // question on that pane before it types a single key. The option
+        // labels ride along because a short pane scrolls the question itself
+        // off the top while its options stay on screen.
+        questions[0]?.question ?? "",
+        (questions[0]?.options ?? []).map((o) => o.label),
+        answers.map((selected, i) => ({
+          selected,
+          multi: Boolean(questions[i]?.multi),
+          // claude's dialog is left by walking off the end of its option list,
+          // so it needs the length, which the indexes alone do not give.
+          options: questions[i]?.options.length ?? 0,
+        }))
+      )
+      if (res.outcome === "sent") setSent(true)
+      else setNotice(res.detail ?? "the terminal did not take the answer")
+    } catch (e) {
+      setNotice((e as Error).message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const pick = (qi: number, oi: number) => {
+    if (!answerable) return
+    const q = questions[qi]
+    if (!q) return
+    const next = picks.map((p, i) => {
+      if (i !== qi) return p
+      if (!q.multi) return [oi]
+      return p.includes(oi)
+        ? p.filter((x) => x !== oi)
+        : [...p, oi].sort((a, b) => a - b)
+    })
+    setPicks(next)
+    if (oneTap) void send(next)
+  }
+
+  // What reads as chosen. While the ask is running those are the reader's own
+  // picks — the recorded answer cannot exist yet, which is the whole point of
+  // the card being interactive. Once the tool has returned, the record wins:
+  // that is what the agent actually received.
+  const chosenLabels = (qi: number): Set<string> => {
+    const q = questions[qi]
+    if (!running) return new Set(q.selected ?? [])
+    const out = new Set<string>()
+    for (const oi of picks[qi] ?? []) {
+      const opt = q.options[oi]
+      if (opt) out.add(opt.label)
+    }
+    return out
+  }
+
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-lg border bg-card",
+        answerable ? "border-primary/40" : "border-border"
+      )}
+    >
+      <div className="flex items-center gap-2 px-2.5 py-2">
+        <span className="shrink-0 font-semibold text-[12.5px] text-foreground">
+          {tool.title}
+        </span>
+        {questions.length > 1 && (
+          <span className="shrink-0 rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+            {questions.length}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+          {tool.result_line && tool.state === "completed" && (
+            <span className="font-mono text-[10.5px] text-muted-foreground">
+              {tool.result_line}
+            </span>
+          )}
+          <Duration ms={tool.duration_ms} />
+          <StateMark state={tool.state} />
+        </span>
+      </div>
+      <div className="flex flex-col gap-3 border-border/60 border-t px-2.5 py-2.5">
+        {questions.map((q, qi) => {
+          const chosen = chosenLabels(qi)
+          const clipped = q.question.length > 320 && !expanded.includes(qi)
+          return (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a question list is positional and fixed for the ask's life; its text is not unique (a harness may ask the same question twice).
+            <div key={qi} className="flex flex-col gap-1.5">
+              {q.header && (
+                <span className="self-start rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground uppercase tracking-wide">
+                  {q.header}
+                </span>
+              )}
+              <div
+                className={cn(
+                  "whitespace-pre-wrap break-words text-[13.5px] text-foreground leading-snug",
+                  clipped && "line-clamp-6"
+                )}
+              >
+                {q.question}
+              </div>
+              {(q.question.length > 320 || expanded.includes(qi)) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpanded((prev) =>
+                      prev.includes(qi)
+                        ? prev.filter((x) => x !== qi)
+                        : [...prev, qi]
+                    )
+                  }
+                  className="self-start text-[11.5px] text-muted-foreground hover:text-foreground"
+                >
+                  {clipped ? "Show the full question" : "Show less"}
+                </button>
+              )}
+              <div className="mt-0.5 flex flex-col gap-1.5">
+                {q.options.map((o, oi) => {
+                  const isChosen = chosen.has(o.label)
+                  return (
+                    <button
+                      key={o.label}
+                      type="button"
+                      disabled={!answerable}
+                      aria-pressed={isChosen}
+                      onClick={() => pick(qi, oi)}
+                      className={cn(
+                        "flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left",
+                        isChosen
+                          ? "border-primary/50 bg-primary/8"
+                          : "border-border",
+                        answerable && !isChosen && "hover:bg-accent/40"
+                      )}
+                    >
+                      <PickMark multi={Boolean(q.multi)} chosen={isChosen} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                          <span
+                            className={cn(
+                              "text-[13px] text-foreground leading-snug",
+                              isChosen && "font-semibold"
+                            )}
+                          >
+                            {o.label}
+                          </span>
+                          {q.recommended === oi && (
+                            <span className="shrink-0 rounded bg-muted px-1 py-px font-mono text-[9.5px] text-muted-foreground uppercase tracking-wide">
+                              Recommended
+                            </span>
+                          )}
+                        </span>
+                        {o.description && (
+                          <span className="mt-0.5 block text-[12px] text-muted-foreground leading-snug">
+                            {o.description}
+                          </span>
+                        )}
+                        {/* The preview is the consequence of a pick — a diff, a
+                            command — so it appears once one is made, and on an
+                            answered card it shows what was chosen rather than
+                            what was merely offered. */}
+                        {o.preview && isChosen && (
+                          <span className="mt-1.5 block overflow-x-auto whitespace-pre rounded border border-border/60 bg-background/60 px-2 py-1.5 font-mono text-[11px] text-muted-foreground leading-[1.6]">
+                            {o.preview}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  )
+                })}
+                {q.options.length === 0 && (
+                  <div className="text-[11.5px] text-muted-foreground">
+                    This question has no options — answer it in the terminal.
+                  </div>
+                )}
+              </div>
+              {q.custom && (
+                <div className="text-[12px] text-muted-foreground">
+                  Answer: <span className="text-foreground">{q.custom}</span>
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {/* A result whose answers lasso could not read keeps its text: showing
+            nothing would claim the agent was never answered. */}
+        {!running && tool.output && (
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/60 px-2 py-1.5 font-mono text-[11px] text-muted-foreground leading-[1.6]">
+            {tool.output}
+          </pre>
+        )}
+        {/* An ask that was cancelled or interrupted says so here: the options
+            above are then a record of what was offered, not a form. */}
+        {tool.error && (
+          <div className="rounded border border-destructive/40 bg-destructive/8 px-2 py-1.5 font-mono text-[11.5px] text-destructive">
+            {tool.error}
+          </div>
+        )}
+      </div>
+      {notice && (
+        <div className="border-border/60 border-t bg-destructive/8 px-2.5 py-2 text-[11.5px] text-destructive">
+          {notice}
+        </div>
+      )}
+      {/* Only while the ask is genuinely still outstanding: once the harness
+          has recorded an answer, "waiting for the agent" is a lie about a
+          question that is already settled. */}
+      {(sending || (sent && running)) && !notice && (
+        <div className="border-border/60 border-t px-2.5 py-2 text-[11.5px] text-muted-foreground">
+          {sending
+            ? "Answering in the terminal…"
+            : "Answer sent — waiting for the agent…"}
+        </div>
+      )}
+      {!oneTap && running && hasOptions && (
+        <div className="flex items-center gap-2 border-border/60 border-t px-2.5 py-2">
+          <button
+            type="button"
+            disabled={!ready || sending}
+            onClick={() => void send(picks)}
+            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 font-medium text-[12.5px] text-primary-foreground disabled:opacity-40"
+          >
+            {sending ? (
+              <Orb state="working" px={14} on="accent" />
+            ) : (
+              <Send className="size-3.5" />
+            )}
+            {sending ? "Sending…" : "Send answers"}
+          </button>
+          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+            {ready
+              ? "Answers the dialog in the terminal"
+              : "Pick one per question"}
+          </span>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -418,9 +730,15 @@ function ThinkingRow({
 function RowView({
   row,
   resolveImage,
+  host,
+  paneID,
 }: {
   row: Row
   resolveImage?: (src: string | undefined) => string | undefined
+  // Where an answer to an ask must be delivered: the host and pane this
+  // payload came from, not the tab's current host and not herdr's focus.
+  host: string
+  paneID: string
 }) {
   if (row.kind === "group") return <ToolGroup calls={row.calls} />
   const item = row.item
@@ -447,7 +765,15 @@ function RowView({
         </div>
       )
     case "tool":
-      return item.tool ? <ToolCard tool={item.tool} /> : null
+      if (!item.tool) return null
+      // An ask is the one call that is a question rather than a record, so it
+      // gets its own card — and it is never folded into a group: a burst of
+      // reads behind it must not hide the thing the agent is waiting on.
+      return item.tool.ask ? (
+        <AskCard tool={item.tool} host={host} paneID={paneID} />
+      ) : (
+        <ToolCard tool={item.tool} />
+      )
     case "marker":
       if (item.marker === "interrupted") {
         return (
@@ -530,6 +856,24 @@ function Composer({
     setTextState(value)
     draftsByTarget.set(target, value)
   }
+
+  // Grow with the draft, up to the cap the class sets. A textarea stays one row
+  // tall and scrolls its own text instead, which turns a paragraph into a
+  // one-line window — and the message being written is the one thing that has to
+  // be readable while it is typed. The cap is read off the element rather than
+  // repeated here, so the two cannot drift apart.
+  React.useLayoutEffect(() => {
+    const el = ref.current
+    // `text` is the trigger and the guard at once: the height has to be
+    // re-measured after every change, and the measurement belongs to the value
+    // the element actually holds.
+    if (!el || el.value !== text) return
+    el.style.height = "auto"
+    const cap = Number.parseFloat(getComputedStyle(el).maxHeight) || 0
+    const full = el.scrollHeight
+    el.style.height = `${cap > 0 ? Math.min(full, cap) : full}px`
+    el.style.overflowY = cap > 0 && full > cap ? "auto" : "hidden"
+  }, [text])
 
   // A file — a pasted screenshot as much as one picked — goes to the machine the
   // SESSION is on, and the message that follows carries its path. That is the
@@ -643,7 +987,9 @@ function Composer({
               <button
                 type="button"
                 onClick={() =>
-                  setAttachments((prev) => prev.filter((x) => x.path !== a.path))
+                  setAttachments((prev) =>
+                    prev.filter((x) => x.path !== a.path)
+                  )
                 }
                 // A mis-paste has to be undoable without clearing the message.
                 aria-label={`Remove ${a.name}`}
@@ -656,7 +1002,7 @@ function Composer({
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2 px-2 py-2">
+      <div className="flex items-stretch gap-2 px-4 pt-2 pb-1">
         <input
           ref={fileRef}
           type="file"
@@ -668,13 +1014,17 @@ function Composer({
             e.target.value = ""
           }}
         />
+        {/* Three columns: attach, input, submit. Both buttons are square and
+            pinned to the input's top edge, so the input is the only tall thing
+            on the row and neither button sits under the thumb's resting corner
+            — where a stray tap lands on the wrong one. */}
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={attaching || sending}
           title="Attach a file and insert its path"
           aria-label="Attach a file"
-          className="flex size-9 flex-none items-center justify-center rounded-lg border border-input text-muted-foreground disabled:opacity-40"
+          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg border border-input text-muted-foreground disabled:opacity-40"
         >
           {attaching ? (
             <Orb state="working" px={16} />
@@ -684,7 +1034,10 @@ function Composer({
         </button>
         <textarea
           ref={ref}
-          rows={1}
+          // Three rows, not one: a prompt is a paragraph often enough that a
+          // single-line box makes people write blind, and this one grows from
+          // here as the draft fills (see the measure effect above).
+          rows={3}
           value={text}
           disabled={sending}
           onChange={(e) => setText(e.target.value)}
@@ -709,7 +1062,7 @@ function Composer({
           }}
           placeholder="Message the agent…"
           // 16px on touch: iOS zooms the page for a smaller field.
-          className="max-h-32 min-h-9 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:text-[13px]"
+          className="max-h-40 min-w-0 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:text-[13px]"
         />
         <button
           type="button"
@@ -717,15 +1070,15 @@ function Composer({
           disabled={sending || (!text.trim() && attachments.length === 0)}
           title="Send (Enter)"
           aria-label="Send"
-          className="flex size-9 flex-none items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
+          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
         >
           {sending ? (
             // on="accent": this button is filled with the theme's accent, and
             // the orb's own scheme detection reads the DOCUMENT, which is the
             // wrong surface to choose ink for (see ui/orb.tsx).
-            <Orb state="working" px={16} on="accent" />
+            <Orb state="working" px={20} on="accent" />
           ) : (
-            <Send className="size-4" />
+            <Send className="size-5" />
           )}
         </button>
       </div>
@@ -790,7 +1143,12 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
       const path = data.path ?? ""
       if (prev.key !== target || prev.transcript !== path) {
         stick.current = true
-        return { key: target, transcript: path, olderStart: null, items: incoming }
+        return {
+          key: target,
+          transcript: path,
+          olderStart: null,
+          items: incoming,
+        }
       }
       return { ...prev, items: mergeItems(prev.items, incoming) }
     })
@@ -861,6 +1219,18 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
     }
   }, [acc.key, acc.olderStart, data, loadingOlder])
 
+  // Back to the newest row, for a reader who has scrolled up. `stick` is what
+  // makes it STAY there: the poll's re-pin, a landed page and the composer
+  // growing all consult it, so a jump that left it false would be undone by the
+  // next frame of conversation.
+  const jumpToBottom = React.useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    stick.current = true
+    setAtBottom(true)
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+  }, [])
+
   const rows = React.useMemo(() => groupRows(items), [items])
 
   // Follow the newest row, hold the reader's place when a page is prepended,
@@ -883,6 +1253,20 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
       setAtBottom(true)
     }
   }, [rows])
+
+  // The transcript's viewport shrinks when the composer grows into a longer
+  // draft, and when a phone's keyboard opens over it. A reader who is at the
+  // bottom stays there: without this, typing a paragraph scrolls the newest
+  // rows out of sight, and they are the ones being answered.
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (!el || typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // A page shorter than the viewport leaves scrollTop at 0 and fires no further
   // scroll, so a reader parked at the top would have to nudge it. Keep filling
@@ -942,84 +1326,107 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
         </span>
       </div>
 
-      {/* Block layout with margins, not a flex column: a card is
-          `overflow-hidden`, and as a flex item that zeroes its own min-height
-          so the column squashes it to its border — a chat of 2px strips. */}
-      <div
-        ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-          stick.current = near
-          setAtBottom(near)
-          // Reaching the top loads the page above it, which is the whole
-          // gesture: a conversation reads backwards by dragging, not by a
-          // button.
-          if (el.scrollTop < 120 && hasMore && !loadingOlder) void loadOlder()
-        }}
-        className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
-      >
-        {loadingOlder && (
-          <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
-            <Orb state="working" px={16} />
-            loading earlier…
-          </div>
-        )}
-        {isLoading && (
-          <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
-            <Orb state="working" px={16} />
-            loading…
-          </div>
-        )}
-        {error && (
-          <div className="rounded-lg border border-destructive/40 bg-destructive/8 px-3 py-2 text-[12px] text-destructive">
-            could not read the session: {(error as Error).message}
-          </div>
-        )}
-        {!isLoading && !error && rows.length === 0 && !running && (
-          <div className="text-center text-[12px] text-muted-foreground">
-            {data?.note || "No messages yet."}
-          </div>
-        )}
-        {rows.map((row) => (
-          <RowView
-            key={row.kind === "group" ? row.id : row.item.id}
-            row={row}
-            resolveImage={resolveImage}
-          />
-        ))}
-        {/* The message the pane has taken but the transcript has not written
+      {/* The viewport and its corner control share a positioning context:
+          the chevron is ABSOLUTE inside it, so it neither scrolls away with
+          the rows nor takes a row of its own at the end of them (a control
+          that added height would move the very edge it offers to reach). */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {/* Block layout with margins, not a flex column: a card is
+            `overflow-hidden`, and as a flex item that zeroes its own min-height
+            so the column squashes it to its border — a chat of 2px strips. */}
+        <div
+          ref={scrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            stick.current = near
+            setAtBottom(near)
+            // Reaching the top loads the page above it, which is the whole
+            // gesture: a conversation reads backwards by dragging, not by a
+            // button.
+            if (el.scrollTop < 120 && hasMore && !loadingOlder) void loadOlder()
+          }}
+          className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
+        >
+          {loadingOlder && (
+            <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+              <Orb state="working" px={16} />
+              loading earlier…
+            </div>
+          )}
+          {isLoading && (
+            <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+              <Orb state="working" px={16} />
+              loading…
+            </div>
+          )}
+          {error && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/8 px-3 py-2 text-[12px] text-destructive">
+              could not read the session: {(error as Error).message}
+            </div>
+          )}
+          {!isLoading && !error && rows.length === 0 && !running && (
+            <div className="text-center text-[12px] text-muted-foreground">
+              {data?.note || "No messages yet."}
+            </div>
+          )}
+          {rows.map((row) => (
+            <RowView
+              key={row.kind === "group" ? row.id : row.item.id}
+              row={row}
+              resolveImage={resolveImage}
+              host={data?.host ?? ""}
+              paneID={data?.pane_id ?? ""}
+            />
+          ))}
+          {/* The message the pane has taken but the transcript has not written
             yet, drawn exactly where its row will appear and in the user's own
             bubble — a lighter, dashed one, so it reads as "on its way" rather
             than as a message the session recorded. The working indicator below
             it is where the agent's answer will land, which is the order the two
             things actually happen in. */}
-        {queued
-          .filter((q) => q.target === target)
-          .map((q) => (
-            <div key={q.id} className="flex justify-end">
-              <div className="max-w-[85%] rounded-xl rounded-br-sm border border-primary/20 border-dashed bg-primary/8 px-3 py-2 text-[13.5px] text-foreground leading-snug opacity-60">
-                <div className="whitespace-pre-wrap break-words">
-                  {q.text}
-                </div>
-                <div className="mt-1 text-[10.5px] text-muted-foreground">
-                  queued…
+          {queued
+            .filter((q) => q.target === target)
+            .map((q) => (
+              <div key={q.id} className="flex justify-end">
+                <div className="max-w-[85%] rounded-xl rounded-br-sm border border-primary/20 border-dashed bg-primary/8 px-3 py-2 text-[13.5px] text-foreground leading-snug opacity-60">
+                  <div className="whitespace-pre-wrap break-words">
+                    {q.text}
+                  </div>
+                  <div className="mt-1 text-[10.5px] text-muted-foreground">
+                    queued…
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        {/* Where the agent's NEXT message will land. The header says the same
+            ))}
+          {/* Where the agent's NEXT message will land. The header says the same
             thing, but a view waiting on output should say it at the point the
             output will appear — and that gap is seconds long every turn, since
             the harness writes a message only once it is complete (see
             src/chatview.go). Left-aligned like the agent rows it precedes, not
             centred like the page-loading rows above: this one is a placeholder
             in the conversation, not a note about the fetch. */}
-        {!isLoading && !error && running && (
-          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-            <Orb state="working" px={16} />
-            working…
-          </div>
+          {!isLoading && !error && running && (
+            <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+              <Orb state="working" px={16} />
+              working…
+            </div>
+          )}
+        </div>
+        {/* Only when the newest row is out of sight, which is the only time
+            this says anything: a reader at the bottom is already looking at
+            where the next message lands. It is also the state the header names
+            ("working" beside the orb), said where the gesture is. */}
+        {!atBottom && rows.length > 0 && (
+          <button
+            type="button"
+            onClick={jumpToBottom}
+            title="Jump to the newest message"
+            aria-label="Jump to the newest message"
+            className="absolute right-3 bottom-3 flex size-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ChevronDown className="size-4" />
+          </button>
         )}
       </div>
 
