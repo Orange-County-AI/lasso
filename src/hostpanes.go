@@ -288,18 +288,6 @@ type hostPane struct {
 	// Live panes leave both empty/false.
 	AgentID string `json:"agent_id,omitempty"`
 	Closed  bool   `json:"closed,omitempty"`
-	// The Mirror* fields are set when this pane is a herdr-mirror stream of
-	// another machine's pane rather than a pane on Host (see mirror.go). Such a
-	// row IS a real local pane — it focuses and renders like any other — but
-	// everything it shows lives on MirrorHost, so the UI must attribute it
-	// there and must not offer it affordances that only mean something locally.
-	// MirrorHost is herdr-mirror's host key, MirrorLabel the workspace's label as
-	// it reads on the remote (no "<host>: " prefix), and MirrorWorkspace /
-	// MirrorPane the remote herdr's own ids.
-	MirrorHost      string `json:"mirror_host,omitempty"`
-	MirrorLabel     string `json:"mirror_label,omitempty"`
-	MirrorWorkspace string `json:"mirror_workspace,omitempty"`
-	MirrorPane      string `json:"mirror_pane,omitempty"`
 }
 
 type panesPayload struct {
@@ -1183,10 +1171,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			}
 		}
 	}
-	// Which of these panes are herdr-mirror streams of another machine's panes,
-	// and whose. Free for a host running no mirrors (see hostMirrors).
-	mirrors := hostMirrors(b, pl.Panes)
-
 	out := make([]hostPane, 0, len(pl.Panes))
 	for _, p := range pl.Panes {
 		kind, isAgent := agentKind[p.PaneID]
@@ -1211,7 +1195,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 		if prompt == "" && isAgent {
 			prompt = promptByWS[p.WorkspaceID]
 		}
-		mr, _ := mirrors.lookup(p.WorkspaceID, p.PaneID)
 		out = append(out, hostPane{
 			Host:           host,
 			HostLabel:      hostLabel,
@@ -1228,11 +1211,6 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			HasAgent:       isAgent,
 			Focused:        p.Focused,
 			Prompt:         prompt,
-
-			MirrorHost:      mr.Host,
-			MirrorLabel:     mr.Label,
-			MirrorWorkspace: mr.Workspace,
-			MirrorPane:      mr.Pane,
 		})
 	}
 	// Newest first: herdr assigns workspaces/tabs monotonically increasing numbers

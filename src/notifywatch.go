@@ -137,14 +137,8 @@ func (w *blockedWatcher) observe(panes []hostPane, now time.Time) []notification
 	return out
 }
 
-// notifyPaneIdentities keys this poll's panes by the pane they actually ARE.
-//
-// The dedupe matters because of herdr-mirror (mirror.go): a mirrored pane is a
-// real local pane streaming another machine's, so a blocked agent on norm can
-// appear twice in one snapshot — once as norm's own pane, once as titan's
-// mirror of it. Keying a mirror row by the REMOTE host and pane collapses the
-// pair, and the direct row wins when both are present (it is the machine the
-// work is on, and its status came from that machine's own herdr).
+// notifyPaneIdentities keys this poll's panes by the pane they actually ARE:
+// host + pane id, since pane ids are unique only within a host.
 //
 // It also protects the state map from the aggregation's last-good fallback,
 // where a host that failed this poll contributes its previous panes: those keys
@@ -153,16 +147,7 @@ func (w *blockedWatcher) observe(panes []hostPane, now time.Time) []notification
 func notifyPaneIdentities(panes []hostPane) map[string]hostPane {
 	out := make(map[string]hostPane, len(panes))
 	for _, p := range panes {
-		key := p.Host + "\x00" + p.PaneID
-		if p.MirrorHost != "" {
-			key = p.MirrorHost + "\x00" + p.MirrorPane
-			if _, ok := out[key]; ok {
-				continue // the direct row (or an earlier mirror of it) is already in
-			}
-			out[key] = p
-			continue
-		}
-		out[key] = p // a direct row always outranks a mirror of the same pane
+		out[p.Host+"\x00"+p.PaneID] = p
 	}
 	return out
 }
@@ -175,7 +160,7 @@ func notifyPaneIdentities(panes []hostPane) map[string]hostPane {
 // Its own function because the watcher needs the answer twice: once to render,
 // once to find out whether two agents would render the same.
 func blockedTitle(p hostPane) string {
-	if t := firstNonEmpty(p.WorkspaceLabel, p.MirrorLabel, p.PaneLabel, p.TerminalTitle); t != "" {
+	if t := firstNonEmpty(p.WorkspaceLabel, p.PaneLabel, p.TerminalTitle); t != "" {
 		return t
 	}
 	return "Agent"
@@ -188,9 +173,6 @@ func paneDiscriminator(p hostPane) string {
 	if tab := strings.TrimSpace(p.TabLabel); tab != "" {
 		return "tab " + tab
 	}
-	if p.MirrorPane != "" {
-		return p.MirrorPane
-	}
 	return p.PaneID
 }
 
@@ -201,11 +183,7 @@ func paneDiscriminator(p hostPane) string {
 //
 // The body says which harness, on which machine, and what it was last doing.
 func blockedNotification(p hostPane, key string, ambiguous bool) notification {
-	host := p.Host
-	hostLabel := p.HostLabel
-	if p.MirrorHost != "" {
-		host, hostLabel = p.MirrorHost, p.MirrorHost
-	}
+	host, hostLabel := p.Host, p.HostLabel
 	title := blockedTitle(p)
 	if d := paneDiscriminator(p); ambiguous && d != "" {
 		// Clip the shared part, never the discriminator: it is the only thing

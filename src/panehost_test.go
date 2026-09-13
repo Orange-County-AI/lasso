@@ -199,61 +199,37 @@ func TestPaneSSHHopAgentAttachResolverCommand(t *testing.T) {
 	}
 }
 
-// A herdr-mirror streamer is a window onto the far host's pane, so the viewer
-// must follow THAT pane rather than the streamer's own directory (which is
-// herdr-mirror's parking spot and describes nothing).
-func TestPaneSSHHopMirror(t *testing.T) {
-	swapBackend(t, &localBackend{})
-
-	// The live argv, from titan: `herdr-mirror pane <ssh-target> <ws>:<pane>`.
-	mirror := paneProcessInfo{
-		ForegroundProcessGroupID: 60,
+// The resolver's target may be a PANE ID rather than an agent name (the wrapper's
+// charset admits ":"), which is the only production shape that reaches
+// attachedPane's pane-listing fallback: herdr's agent.list carries agents, and a
+// pane an attach named by id need not be among them.
+func TestResolverAttachByPaneIDResolvesFromThePaneListing(t *testing.T) {
+	swapBackend(t, &paneHostNamedBackend{name: "ticket500"})
+	remoteCommand := herdrResolverAttachPrefix + "w5:p1" + herdrResolverAttachOrdinarySuffix
+	attach := paneProcessInfo{
+		ForegroundProcessGroupID: 20,
 		ForegroundProcesses: []paneProcess{
-			{PID: 60, Name: "herdr-mirror", Cwd: "/home/u/.local/state/herdr-mirror/.mirror-pane", Argv: []string{
-				"/home/u/.config/herdr/plugins/github/mirror-0015/target/release/herdr-mirror",
-				"pane", "local", "w5:p1", "--always-control",
-				"--ctl-path", "/home/u/.local/state/herdr-mirror/ocai.ctl",
-			}},
+			{PID: 20, Name: "ssh", Cwd: "/home/stephan", Argv: []string{"ssh", "ticket500", remoteCommand}},
 		},
 	}
-	hop, ok := paneSSHHop(mirror)
-	if !ok || hop.host != "local" || hop.agent != "w5:p1" {
-		t.Fatalf("paneSSHHop(mirror) = (%+v, %v), want host local pane w5:p1", hop, ok)
-	}
 
-	// The daemon and the one-shot subcommands are not windows onto anything.
-	for _, argv := range [][]string{
-		{"herdr-mirror", "daemon"},
-		{"herdr-mirror", "status"},
-		{"herdr-mirror", "pane"},
-		{"herdr-mirror", "pane", "local"},
-		{"herdr-mirror", "pane", "--help", "local"},
-		// A pane argument that isn't a <ws>:<pane> id.
-		{"herdr-mirror", "pane", "local", "w5"},
-	} {
-		pi := paneProcessInfo{
-			ForegroundProcessGroupID: 61,
-			ForegroundProcesses:      []paneProcess{{PID: 61, Name: "herdr-mirror", Argv: argv}},
-		}
-		if hop, ok := paneSSHHop(pi); ok {
-			t.Errorf("paneSSHHop(%q) = (%+v, true), want no hop", argv, hop)
-		}
+	hop, ok := paneSSHHop(attach)
+	if !ok || hop.host != "ticket500" || hop.agent != "w5:p1" {
+		t.Fatalf("paneSSHHop(resolver attach by pane id) = (%+v, %v), want host ticket500 agent w5:p1", hop, ok)
 	}
-
-	// A mirror of a host lasso may not drive keeps the local answer.
-	foreign := paneProcessInfo{
-		ForegroundProcessGroupID: 62,
-		ForegroundProcesses: []paneProcess{
-			{PID: 62, Name: "herdr-mirror", Argv: []string{"herdr-mirror", "pane", "not-a-configured-host", "w5:p1"}},
-		},
-	}
-	if hop, ok := paneSSHHop(foreign); ok {
-		t.Errorf("paneSSHHop(unknown mirror host) = (%+v, true), want no hop", hop)
+	be := &fakeHerdrBackend{res: map[string]string{
+		"agent.list": `{"agents":[{"name":"other","pane_id":"w9:p1","terminal_id":"term_9"}]}`,
+		"pane.list": `{"panes":[
+			{"pane_id":"w5:p1","cwd":"/home/dev/projects/norm","focused":false}]}`,
+	}}
+	p, ok := attachedPane(be, hop.agent)
+	if !ok || p.PaneID != "w5:p1" || paneCwd(p) != "/home/dev/projects/norm" {
+		t.Fatalf("attachedPane(%q) = (%+v, %v), want the named pane from the listing", hop.agent, p, ok)
 	}
 }
 
-// A mirrored pane need not hold an agent — agent.list cannot answer for a
-// mirrored shell — so the far side is resolved from the pane listing too.
+// The far side of an attach named by pane id is resolved from the pane listing,
+// since agent.list carries agents rather than every pane.
 func TestAttachedPaneByPaneID(t *testing.T) {
 	be := &fakeHerdrBackend{res: map[string]string{
 		"agent.list": `{"agents":[{"name":"other","pane_id":"w9:p1","terminal_id":"term_9"}]}`,
@@ -263,7 +239,7 @@ func TestAttachedPaneByPaneID(t *testing.T) {
 	}}
 	p, ok := attachedPane(be, "w5:p1")
 	if !ok || paneCwd(p) != "/home/dev/projects/norm" {
-		t.Fatalf("attachedPane(w5:p1) = (%+v, %v), want the mirrored pane", p, ok)
+		t.Fatalf("attachedPane(w5:p1) = (%+v, %v), want that pane", p, ok)
 	}
 	// Still no substituting: a pane that is gone resolves to nothing, not to
 	// whichever pane the far side happens to have focused.

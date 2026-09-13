@@ -328,13 +328,13 @@ screen in front of you, not a preference to share. Appearance choices made in
 a browser before this moved server-side are not imported; set them once.
 
 A theme change is pushed to **every reachable host**, in parallel — not just the
-one lasso is currently driving — since panes from other machines are on screen
-the whole time through herdr-mirror. Each host gets the same `[theme]` section
-in the config.toml its own herdr reads (resolved from that host's environment,
-not guessed from the socket's directory) — including the generated block for a
-lasso-only theme, so no remote `herdr config check` sees a name it rejects — and
-the agent CLIs' own theme files (Claude Code, OpenCode, Oh My Pi, ghostty), so
-agents render in step with herdr.
+one lasso is currently driving, since an agent on any of them can be on screen
+at any moment and a half-synced fleet shows two palettes. Each host gets the
+same `[theme]` section in the config.toml its own herdr reads (resolved from
+that host's environment, not guessed from the socket's directory) — including
+the generated block for a lasso-only theme, so no remote `herdr config check`
+sees a name it rejects — and the agent CLIs' own theme files (Claude Code,
+OpenCode, Oh My Pi, ghostty), so agents render in step with herdr.
 
 **Reachable over ssh is the only requirement.** A theme write is file I/O, so a
 host running a herdr this lasso can't drive — one a release behind, or stopped —

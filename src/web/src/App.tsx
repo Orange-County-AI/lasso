@@ -612,14 +612,13 @@ function Shell() {
           tab={newTab}
           onTabChange={setNewTab}
         />
-        {/* The MOBILE pane switcher — searches the ACTIVE host's panes, which
-          with herdr-mirror running covers the fleet (other machines' workspaces
-          are mirrored in as local panes), and focuses the chosen one in the
-          herdr terminal. Desktop ⌘K goes to herdr's own search instead; this is
-          what the dial's search command opens, since a prefix chord isn't
-          reachable from a software keyboard. focusPaneInHerdr still pushes the
-          landing host's history entry; same-host now, so pushQueryParam
-          collapses it into a replace rather than a dead Back step. */}
+        {/* The MOBILE pane palette, kept mounted but not currently opened by
+          anything: both ⌘K and the dial's Search command go to herdr's own
+          search instead (openHerdrGoto), because a software keyboard has no
+          prefix key to chord with. Focusing a row hands the keyboard to that
+          pane's terminal; focusPaneInHerdr pushes the landing host's history
+          entry, and a same-host jump collapses into a replace rather than a
+          dead Back step. */}
         <PaneSwitcher open={paletteOpen} onOpenChange={setPaletteOpen} />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
