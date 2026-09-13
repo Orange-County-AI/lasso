@@ -13,6 +13,14 @@ import { qk } from "@/lib/query"
 const NEW_WORKSPACE = "__new_workspace__"
 const MAX_COMMAND_LENGTH = 512
 
+// The shadcn <Input>'s own field classes, worn by the native <textarea> that
+// holds the command, so it reads as one set with the Inputs below it. An
+// <input> cannot hold a newline, and the point of this field is a multi-line
+// block: h-8 becomes a box that starts at a few lines and can be dragged
+// taller.
+const commandClass =
+  "min-h-[4.5rem] w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-1 font-mono text-base shadow-well outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80"
+
 const labelClass = "font-medium text-muted-foreground text-xs"
 
 function Field({
@@ -61,7 +69,7 @@ export function NewTerminalForm({
   const [workspace, setWorkspace] = React.useState("")
   const [workspaceName, setWorkspaceName] = React.useState("~")
   const [tabName, setTabName] = React.useState("1")
-  const commandRef = React.useRef<HTMLInputElement>(null)
+  const commandRef = React.useRef<HTMLTextAreaElement>(null)
   const selectionTouchedRef = React.useRef(false)
   const tabNameTouchedRef = React.useRef(false)
 
@@ -191,17 +199,18 @@ export function NewTerminalForm({
         <Field
           label="Command (optional)"
           htmlFor="terminal-command"
-          hint="Leave blank to open an interactive shell."
+          hint="Leave blank to open an interactive shell. A multi-line command runs as one script in the new shell."
         >
-          <Input
+          <textarea
             ref={commandRef}
             id="terminal-command"
+            className={commandClass}
+            rows={3}
             value={command}
             maxLength={MAX_COMMAND_LENGTH}
             disabled={creating}
-            className="font-mono"
             onChange={(event) => setCommand(event.target.value)}
-            placeholder="git status"
+            placeholder={"git status\nbun test"}
           />
         </Field>
 

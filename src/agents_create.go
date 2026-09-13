@@ -1131,8 +1131,12 @@ func waitPaneReady(b Backend, paneID string) {
 // paneRun sends a command line into a pane's shell (text + Enter) — the
 // pane.send_text behind `herdr pane run`. Targets a cooked-mode shell, where a
 // trailing "\n" ends the line. The bytes land on the PTY raw, so the command
-// must be short and single-line (see needsPromptFile) — embedded newlines
-// submit fragments, and anything past the kernel TTY input queue is dropped.
+// must be short — anything past the kernel TTY input queue is dropped (see
+// needsPromptFile). A LAUNCH command must also be single-line: an embedded
+// newline is an accept-line, so a multi-line prompt would run as fragments.
+// The New-terminal path sends a multi-line block as a heredoc body instead
+// (terminalScript) — one command line for the shell, which reads the body as a
+// script, so none of it is submitted line by line.
 // The leading "\x15" (^U — VKILL in cooked mode, unix-line-discard in
 // readline/zsh/fish, a no-op on an empty line) discards whatever is already
 // pending on the line: the pane is focused in the UI for a boot window that can

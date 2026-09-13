@@ -10,7 +10,8 @@ import (
 // POST /api/create-terminal creates a bare Herdr terminal, either as a new tab
 // in an existing workspace or as the root tab of a new workspace. A non-empty
 // command is typed into the shell only after it has settled, so shell startup
-// cannot eat the leading bytes.
+// cannot eat the leading bytes. It may span several lines — those run as one
+// script (see terminalScript), not one command per line.
 type createTerminalReq struct {
 	Command       string `json:"command"`
 	WorkspaceID   string `json:"workspace_id"`
@@ -84,14 +85,7 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	command := req.Command
-	if strings.TrimSpace(command) == "" {
-		command = ""
-	}
-	if strings.ContainsAny(command, "\r\n") {
-		http.Error(w, "command must be a single line", http.StatusBadRequest)
-		return
-	}
+	command := normalizeTerminalCommand(req.Command)
 	if len(command) > maxTypedLaunch {
 		http.Error(w, fmt.Sprintf("command is too long (maximum %d bytes)", maxTypedLaunch), http.StatusBadRequest)
 		return
@@ -179,12 +173,76 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	if command != "" {
 		waitPaneReady(b, paneID)
-		if err := paneRun(b, paneID, command); err != nil {
+		if err := paneRun(b, paneID, terminalScript(command)); err != nil {
 			out.CommandError = fmt.Sprintf("submit command: %v", err)
 		}
 	}
 	writeJSON(w, out)
 }
+
+// normalizeTerminalCommand turns the New-terminal dialog's text into the script
+// typed at the new shell (see terminalScript for how a multi-line one is
+// delivered). Line breaks are kept: they are the script's own.
+//
+// A CRLF is folded to LF first. The browser sends "\n", but a paste from another
+// platform can carry a CR — and at a cooked-mode PTY a CR is an accept-line of
+// its own, which inside a heredoc body would both submit early and leave the CR
+// in the script. Trailing newlines are dropped so a block ending on a blank line
+// does not add an empty command; interior ones are the user's. Blank input
+// reduces to "" — the "open a bare interactive shell" the empty field means.
+func normalizeTerminalCommand(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.TrimRight(s, "\n")
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return s
+}
+
+// terminalScript is what is actually typed at the new shell for a command: a
+// multi-line one is wrapped in a heredoc sourced by the shell already in the
+// pane, so the whole block is ONE command — parsed as a script before any of it
+// runs, so a heredoc, an if/then/fi or a quoted string inside it means what it
+// means, and the terminal shows one submission rather than a prompt per line.
+//
+// Sourcing it rather than handing the body to a child shell keeps the pane's own
+// state: a "cd" in the block leaves the terminal there, and the pane's aliases,
+// functions and exported vars apply. "." is POSIX — checked on bash, dash, sh
+// and macOS zsh — and /dev/stdin is the heredoc's own body. The delimiter is
+// quoted so the body reaches the script verbatim, its expansions happening when
+// it runs rather than while it is read.
+//
+// A single-line command is typed as itself. It is already one command, and
+// wrapping it would put three lines in the shell's history for one.
+func terminalScript(command string) string {
+	if !strings.Contains(command, "\n") {
+		return command
+	}
+	delim := scriptDelimiter(command)
+	return ". /dev/stdin <<'" + delim + "'\n" + command + "\n" + delim
+}
+
+// scriptDelimiter picks a heredoc delimiter the script cannot contain: a line
+// matching it ends the body early, and the rest of the script then reaches the
+// shell as typed input. Underscores are appended until no line matches.
+func scriptDelimiter(script string) string {
+	delim := "LASSO_EOF"
+	for {
+		clash := false
+		for _, line := range strings.Split(script, "\n") {
+			if line == delim {
+				clash = true
+				break
+			}
+		}
+		if !clash {
+			return delim
+		}
+		delim += "_"
+	}
+}
+
 func terminalWorkspaceIDByLabel(b Backend, label string) string {
 	res, err := b.HerdrCall("workspace.list", map[string]any{})
 	if err != nil {
