@@ -74,6 +74,7 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     id: "claude",
     label: "Claude Code",
     supports_plan_mode: true,
+    supports_advisor: false,
     effort_levels: ["low", "medium", "high", "xhigh", "max"],
     model_suggestions: [],
   },
@@ -81,6 +82,7 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     id: "codex",
     label: "Codex",
     supports_plan_mode: false,
+    supports_advisor: false,
     effort_levels: ["minimal", "low", "medium", "high", "xhigh"],
     model_suggestions: [],
   },
@@ -88,12 +90,15 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     id: "opencode",
     label: "OpenCode",
     supports_plan_mode: true,
+    supports_advisor: false,
     model_suggestions: [],
   },
   {
     id: "omp",
     label: "Oh My Pi",
     supports_plan_mode: true,
+    // The only harness whose CLI has an advisor runtime (omp --advisor).
+    supports_advisor: true,
     effort_levels: [
       "off",
       "minimal",
@@ -110,6 +115,7 @@ const FALLBACK_HARNESSES: HarnessDef[] = [
     id: "pi",
     label: "Pi",
     supports_plan_mode: false,
+    supports_advisor: false,
     effort_levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     model_suggestions: [],
   },
@@ -152,6 +158,7 @@ type CreatorDraft = {
   effort: string
   extraArgs: string
   planMode: boolean
+  advisor: boolean
   prefix: string
   advanced: boolean
 }
@@ -430,6 +437,7 @@ export function NewDialog({
   const [extraArgs, setExtraArgs] = React.useState("")
   const [pastingImage, setPastingImage] = React.useState(false)
   const [planMode, setPlanMode] = React.useState(false)
+  const [advisor, setAdvisor] = React.useState(false)
   const [files, setFiles] = React.useState<File[]>([])
   // Screenshots pasted into the Prompt are written to a host *immediately* (so a
   // path can be inserted), but the agent runs on the host chosen at create time —
@@ -566,6 +574,7 @@ export function NewDialog({
     setEffort(draftAgentMatches ? (draft.effort ?? "") : "")
     setExtraArgs(draftAgentMatches ? (draft.extraArgs ?? "") : "")
     setPlanMode(draftAgentMatches ? (draft.planMode ?? false) : false)
+    setAdvisor(draftAgentMatches ? (draft.advisor ?? false) : false)
     setShowAdvanced(draft.advanced ?? false)
     const remembered =
       draft.repo && repos.some((r) => r.path === draft.repo) ? draft.repo : ""
@@ -600,6 +609,7 @@ export function NewDialog({
       effort,
       extraArgs,
       planMode,
+      advisor,
       prefix,
       advanced: showAdvanced,
     })
@@ -613,6 +623,7 @@ export function NewDialog({
     effort,
     extraArgs,
     planMode,
+    advisor,
     prefix,
     showAdvanced,
   ])
@@ -739,9 +750,9 @@ export function NewDialog({
   )
 
   // Clears only what belongs to the create that just happened. The remembered
-  // params (type, repo, harness, model, effort, args, plan mode, prefix) are
-  // deliberately left alone — the draft governs them, and the next open re-seeds
-  // from it.
+  // params (type, repo, harness, model, effort, args, plan mode, advisor,
+  // prefix) are deliberately left alone — the draft governs them, and the next
+  // open re-seeds from it.
   const reset = () => {
     setPrompt("")
     setPastingImage(false)
@@ -781,6 +792,9 @@ export function NewDialog({
         // state survives harness switches — gate it so a codex agent never
         // records plan_mode.
         plan_mode: planMode && harness.supports_plan_mode,
+        // Same gate as plan mode: the toggle is omp-only, and a switch to
+        // another harness leaves its state behind for the next omp agent.
+        advisor: advisor && harness.supports_advisor,
         attachments,
         upload_dir: uploadDir,
       }
@@ -1202,6 +1216,30 @@ export function NewDialog({
                           className="cursor-pointer text-sm"
                         >
                           Start in plan mode
+                        </label>
+                      </div>
+                    )}
+                    {/* omp's advisor runtime: a background pass that reviews each
+                    turn and injects notes. Same hide-where-unsupported rule as
+                    plan mode — lasso maps it to omp's --advisor. */}
+                    {harness.supports_advisor && (
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="agent-advisor"
+                          checked={advisor}
+                          onCheckedChange={(v) => setAdvisor(v === true)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              setAdvisor((v) => !v)
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor="agent-advisor"
+                          className="cursor-pointer text-sm"
+                        >
+                          Advisor
                         </label>
                       </div>
                     )}

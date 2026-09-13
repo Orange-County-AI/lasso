@@ -47,14 +47,7 @@ func (b *ompPlanBootFake) launchLine(t *testing.T) string {
 
 func bootOmpAgent(t *testing.T, id string, planMode bool) (*ompPlanBootFake, AgentRecord) {
 	t.Helper()
-	t.Setenv("LASSO_DIR", t.TempDir())
-	if err := openDB(); err != nil {
-		t.Fatalf("openDB: %v", err)
-	}
-	t.Cleanup(closeTestDB)
-
-	b := &ompPlanBootFake{memBackend: newMemBackend()}
-	rec := AgentRecord{
+	return bootOmpRecord(t, AgentRecord{
 		ID:          id,
 		Host:        "local",
 		Type:        "scratch",
@@ -64,9 +57,54 @@ func bootOmpAgent(t *testing.T, id string, planMode bool) (*ompPlanBootFake, Age
 		PlanMode:    planMode,
 		WorkDir:     "/work",
 		RootPane:    "p1",
+	})
+}
+
+// bootOmpRecord boots one omp record through the real bootAgent against the
+// capturing fake, so a test can assert on the launch line that got typed.
+func bootOmpRecord(t *testing.T, rec AgentRecord) (*ompPlanBootFake, AgentRecord) {
+	t.Helper()
+	t.Setenv("LASSO_DIR", t.TempDir())
+	if err := openDB(); err != nil {
+		t.Fatalf("openDB: %v", err)
 	}
+	t.Cleanup(closeTestDB)
+
+	b := &ompPlanBootFake{memBackend: newMemBackend()}
 	bootAgent(b, "local", rec, "")
 	return b, rec
+}
+
+// The advisor toggle is a launch FLAG (omp's --advisor), not an overlay setting,
+// so the only place it can take effect is the line bootAgent types into the
+// pane — and a record without it must leave the flag off entirely. The theme
+// overlay still rides either way: --advisor is a per-run switch omp parses, not
+// a replacement for the settings lasso stages.
+func TestBootAgentOmpAdvisorFlag(t *testing.T) {
+	b, rec := bootOmpRecord(t, AgentRecord{
+		ID: "ompadv1", Host: "local", Type: "scratch", Agent: "omp",
+		Title: "Advise me", Description: "review the thing",
+		Advisor: true, WorkDir: "/work", RootPane: "p1",
+	})
+	launch := b.launchLine(t)
+	if !strings.Contains(launch, "--advisor") {
+		t.Errorf("an advisor agent's launch line is missing --advisor: %q", launch)
+	}
+	if !strings.HasSuffix(launch, "-- 'review the thing'") {
+		t.Errorf("the prompt must stay the final operand with the advisor on: %q", launch)
+	}
+	if _, ok := b.files[ompConfigPath(b, rec.ID)]; !ok {
+		t.Errorf("an advisor agent still needs its theme overlay staged")
+	}
+
+	plain, _ := bootOmpRecord(t, AgentRecord{
+		ID: "ompadv2", Host: "local", Type: "scratch", Agent: "omp",
+		Title: "No advisor", Description: "just work",
+		WorkDir: "/work", RootPane: "p1",
+	})
+	if line := plain.launchLine(t); strings.Contains(line, "--advisor") {
+		t.Errorf("a record without the advisor must not emit --advisor: %q", line)
+	}
 }
 
 // End to end through bootAgent: a plan-mode omp agent must get lasso's own

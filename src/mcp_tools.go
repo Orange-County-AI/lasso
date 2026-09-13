@@ -45,7 +45,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Spawn a coding agent (claude, codex, opencode, omp, or pi) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
+		Description: "Spawn a coding agent (claude, codex, opencode, omp, or pi) in its own herdr workspace. type=git creates a fresh git worktree off base_branch (default the repo's HEAD) under a new branch; type=scratch creates an empty workspace. The optional prompt becomes the agent's initial task; `model` picks the CLI's model and `effort` its thinking/reasoning level (omit either for the CLI's default), and `extra_args` appends verbatim CLI flags; `advisor` turns on omp's per-turn advisor runtime. Set plan_mode to have it plan before acting — it then blocks for approval when it is ready to execute (see the field description). Returns immediately with the agent's id, workspace, and root pane; the agent boots asynchronously. By default it does NOT switch the herdr view to the new pane (so it won't yank a watching user away); pass focus:true to land on it. To bring many repos up to date, call this once per repo.",
 	}, createAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -121,11 +121,12 @@ type agentInfo struct {
 	// can see whether it actually took, which is the whole failure mode that
 	// made create_agent's missing effort parameter invisible.
 	Effort string `json:"effort,omitempty"`
-	// ExtraArgs and PlanMode complete the "how was this agent configured" set
-	// alongside Agent/Model/Effort: every knob create_agent accepts reads back,
-	// so a caller can confirm what actually took.
+	// ExtraArgs, PlanMode and Advisor complete the "how was this agent
+	// configured" set alongside Agent/Model/Effort: every knob create_agent
+	// accepts reads back, so a caller can confirm what actually took.
 	ExtraArgs   string `json:"extra_args,omitempty"`
 	PlanMode    bool   `json:"plan_mode"`
+	Advisor     bool   `json:"advisor"`
 	Repo        string `json:"repo,omitempty"`
 	Branch      string `json:"branch,omitempty"`
 	BaseBranch  string `json:"base_branch,omitempty"`
@@ -150,7 +151,8 @@ func agentInfoFrom(host string, rec AgentRecord, status string) agentInfo {
 	return agentInfo{
 		ID: rec.ID, Host: host, Title: rec.Title, Type: rec.Type, Agent: rec.Agent,
 		Model: rec.Model, Effort: rec.Effort, ExtraArgs: rec.ExtraArgs, PlanMode: rec.PlanMode,
-		Repo: rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
+		Advisor: rec.Advisor,
+		Repo:    rec.Repo, Branch: rec.Branch, BaseBranch: rec.BaseBranch,
 		WorkDir: rec.WorkDir, WorkspaceID: rec.WorkspaceID, RootPane: rec.RootPane,
 		Status: surfacedStatus(rec, status), BootStatus: rec.BootStatus, BootError: rec.BootError,
 		CreatedAt: rec.CreatedAt.Format(time.RFC3339), LassoCreated: true,
@@ -702,6 +704,7 @@ type createAgentIn struct {
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
 	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web all-panes listing still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
+	Advisor      bool   `json:"advisor,omitempty" jsonschema:"Turn on the harness's per-turn advisor runtime: a background pass that reviews each turn and injects notes into the session (omp's --advisor). omp only — DROPPED for every other harness rather than silently recorded, since none of them has the flag. Use it when you want a second opinion woven into the agent's context; it does not change what the agent is allowed to do."`
 }
 
 // toCreateReq maps the MCP tool's input onto the HTTP create payload. Split out
@@ -734,6 +737,9 @@ func (in createAgentIn) toCreateReq() createAgentReq {
 		// createAgent drops this for a harness with no plan mode (normalizePlanMode),
 		// so an MCP caller can't record planning that never happened either.
 		PlanMode: in.PlanMode,
+		// Same rule for the advisor runtime (normalizeAdvisor): omp is the only
+		// harness with the flag, and the record must not claim one otherwise.
+		Advisor: in.Advisor,
 	}
 }
 

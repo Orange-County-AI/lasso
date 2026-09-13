@@ -49,6 +49,7 @@ var agentInfoParams = map[string]agentInfoParam{
 	"Effort":      {Info: "Effort"},
 	"ExtraArgs":   {Info: "ExtraArgs"},
 	"PlanMode":    {Info: "PlanMode"},
+	"Advisor":     {Info: "Advisor"},
 	"WorkDir":     {Info: "WorkDir"},
 	"WorkspaceID": {Info: "WorkspaceID"},
 	"RootPane":    {Info: "RootPane"},

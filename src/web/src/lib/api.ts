@@ -609,6 +609,7 @@ export interface AgentRecord {
   notes?: string
   attachments?: string[]
   plan_mode: boolean
+  advisor: boolean
   work_dir: string
   workspace_id?: string
   root_pane?: string
@@ -641,6 +642,9 @@ export interface HarnessDef {
   id: string
   label: string
   supports_plan_mode: boolean
+  // Whether this harness's CLI takes an advisor flag (omp's --advisor); the
+  // creator hides its Advisor toggle when false.
+  supports_advisor: boolean
   // Thinking/reasoning-effort levels this harness's CLI accepts, cheapest
   // first. Absent/empty = no effort knob, so the creator hides the select.
   effort_levels?: string[] | null
@@ -686,6 +690,9 @@ export interface CreateAgentPayload {
   extra_args?: string
   notes?: string
   plan_mode: boolean
+  // Turn on the harness's advisor runtime (omp's --advisor); the server drops it
+  // for a harness that has no such flag.
+  advisor: boolean
   attachments?: string[]
   upload_dir?: string
 }
