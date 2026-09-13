@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -151,8 +152,11 @@ type chatPayload struct {
 	// context meter: the window size is the model's, and lasso does not guess
 	// it.
 	Tokens int `json:"tokens,omitempty"`
-	// Running is true while the newest turn has produced no stop, so the view
-	// can show a working indicator without inferring it from a clock.
+	// Running is true while the agent is still working on the newest turn, so
+	// the view can show a working indicator without inferring one from a clock.
+	// Two sources, because neither covers the whole turn: herdr's own pane
+	// status is authoritative and current, and the transcript's newest turn says
+	// whether a call it made is still outstanding.
 	Running bool `json:"running,omitempty"`
 	// More is set when the read window cut older rows off.
 	More bool `json:"more,omitempty"`
@@ -250,27 +254,62 @@ type ompBlock struct {
 // transcript location
 // ---------------------------------------------------------------------------
 
-// paneTranscriptPath returns the pane's agent transcript, from herdr's own
-// agent_session. kind="path" is the whole contract: herdr resolved the file for
-// its harness (that is how it resumes a pane), and the value is the absolute
-// path lasso reads. Harnesses that report an id instead — claude, so far — are
-// not chat-viewable, and answer "" rather than sending the reader to a guess.
-func paneTranscriptPath(p pane) string {
+// chatTranscript is where a pane's conversation is read from, and which reader
+// understands it.
+type chatTranscript struct {
+	Path string
+	// Harness selects the record reader. Every harness writes its own shape —
+	// omp logs `message` records with toolCall blocks, claude logs `user` and
+	// `assistant` records with tool_use ones — so the file alone does not say
+	// how to read it.
+	Harness string
+	// Note explains an unreadable session to the person looking at the empty
+	// view.
+	Note string
+}
+
+// paneTranscript resolves the pane's agent transcript from herdr's own
+// agent_session — the handle herdr itself resumes the pane with.
+//
+// Two shapes, and the difference is not cosmetic. kind="path" is a file herdr
+// named outright. kind="id" is a session IDENTIFIER, and only the harness that
+// minted it can say where its log lives: for claude that is
+// ~/.claude/projects/<slug>/<id>.jsonl, which lasso already resolves for the
+// file viewer's cwd (findClaudeTranscript). Refusing the id outright is what
+// left Claude Code panes unreadable while their transcripts sat on disk.
+func paneTranscript(b Backend, p pane) chatTranscript {
 	s := p.AgentSession
-	if s == nil || s.Kind != "path" {
-		return ""
+	if s == nil {
+		return chatTranscript{Note: "No agent session in this pane."}
 	}
 	// An agent_session outlives the agent (herdr keeps it to resume the pane),
 	// so the pane must still be running one — otherwise a plain shell sitting in
 	// the directory of an exited agent would keep showing that session.
 	if !paneHasLiveAgent(p) {
-		return ""
+		return chatTranscript{Note: "No agent session in this pane."}
 	}
+	agent := strings.ToLower(strings.TrimSpace(s.Agent))
 	v := strings.TrimSpace(s.Value)
-	if !filepath.IsAbs(v) || !strings.HasSuffix(v, ".jsonl") {
-		return ""
+	switch s.Kind {
+	case "path":
+		if !filepath.IsAbs(v) || !strings.HasSuffix(v, ".jsonl") {
+			return chatTranscript{Note: "This agent's transcript is not readable by lasso yet."}
+		}
+		return chatTranscript{Path: v, Harness: agent}
+	case "id":
+		if agent == "claude" {
+			if id := safeSessionID(v); id != "" {
+				if path := findClaudeTranscript(b, id, "", p); path != "" {
+					return chatTranscript{Path: path, Harness: agent}
+				}
+			}
+			// The id is real but its log is not on this machine yet — the session
+			// has not written one, or it lives on the other side of an ssh hop.
+			return chatTranscript{Note: "This session's transcript is not on this host yet."}
+		}
+		return chatTranscript{Note: "This agent's transcript is not readable by lasso yet."}
 	}
-	return v
+	return chatTranscript{Note: "No agent session in this pane."}
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +562,303 @@ func appendMarker(out *chatParse, it chatItem) {
 	}
 	it.Count = 1
 	out.items = append(out.items, it)
+}
+
+// ---------------------------------------------------------------------------
+// claude code transcripts
+// ---------------------------------------------------------------------------
+
+// Claude Code logs a DIFFERENT shape from omp's, in a different place, and the
+// differences are all load-bearing:
+//
+//   - the record type is the role ("user" / "assistant"), and the log also
+//     carries bookkeeping records that are not conversation at all (mode,
+//     permission-mode, file-history-snapshot, ai-title, queue-operation, ...)
+//   - a message's content is a bare STRING on a plain user turn and an array of
+//     blocks everywhere else
+//   - a tool result is not a message of its own: it arrives as a `tool_result`
+//     block on a USER record, keyed by the call's tool_use_id
+//   - subagent traffic shares the parent's log, flagged isSidechain
+//
+// The item model, the cards, paging and everything downstream are shared; only
+// the record reader differs.
+type claudeRecord struct {
+	Type        string         `json:"type"`
+	UUID        string         `json:"uuid"`
+	Timestamp   string         `json:"timestamp"`
+	AITitle     string         `json:"aiTitle"`
+	IsSidechain bool           `json:"isSidechain"`
+	IsMeta      bool           `json:"isMeta"`
+	Message     *claudeMessage `json:"message"`
+}
+
+type claudeMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	Model      string          `json:"model"`
+	StopReason string          `json:"stop_reason"`
+	Usage      json.RawMessage `json:"usage"`
+}
+
+// claudeBlock covers every block claude writes into a content array: text and
+// thinking on the assistant side, tool_use for a call, tool_result for an
+// answer. One struct because they are mutually exclusive per block.
+type claudeBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	ID        string          `json:"id"`          // tool_use
+	Name      string          `json:"name"`        // tool_use
+	Input     json.RawMessage `json:"input"`       // tool_use
+	ToolUseID string          `json:"tool_use_id"` // tool_result
+	Content   json.RawMessage `json:"content"`     // tool_result: string or blocks
+	IsError   json.RawMessage `json:"is_error"`
+}
+
+// claudeBlocks normalizes a message's content, which claude writes as a bare
+// string on a plain user turn and as an array of blocks everywhere else. A blank
+// string is not a row — claude emits empty text and thinking blocks (a thinking
+// block can carry a signature with no prose).
+func claudeBlocks(raw json.RawMessage) []claudeBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if strings.TrimSpace(s) == "" {
+			return nil
+		}
+		return []claudeBlock{{Type: "text", Text: s}}
+	}
+	var blocks []claudeBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	return blocks
+}
+
+// claudeResultBody reads a tool_result's content, which is a string for text and
+// an array when the tool returned images alongside it.
+func claudeResultBody(raw json.RawMessage) (body string, images int) {
+	if len(raw) == 0 {
+		return "", 0
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, 0
+	}
+	var blocks []claudeBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return "", 0
+	}
+	var parts []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			parts = append(parts, b.Text)
+		case "image":
+			images++
+		}
+	}
+	return strings.Join(parts, "\n"), images
+}
+
+// parseClaudeTranscript reads a window of a Claude Code session log.
+//
+// Sidechain records are skipped rather than shown: they are a subagent's own
+// conversation, interleaved into the parent's log by timestamp, and rendering
+// them inline would put one agent's turns inside another's. The parent's Task
+// card still carries the call and its result, which is the part the parent's
+// conversation is actually about.
+func parseClaudeTranscript(data []byte, base int64) chatParse {
+	var out chatParse
+	byCall := map[string]*chatTool{}
+	type pendingResult struct {
+		body    string
+		isError bool
+		images  int
+	}
+	pending := map[string]pendingResult{}
+	lastStop := ""
+
+	off := int64(0)
+	for _, raw := range bytes.Split(data, []byte("\n")) {
+		lineStart := base + off
+		off += int64(len(raw)) + 1 // the newline bytes.Split took away
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var rec claudeRecord
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		// Claude titles its own sessions; the header reads better for it.
+		if rec.Type == "ai-title" {
+			if strings.TrimSpace(rec.AITitle) != "" {
+				out.title = strings.TrimSpace(rec.AITitle)
+			}
+			continue
+		}
+		if rec.Type != "user" && rec.Type != "assistant" {
+			continue
+		}
+		if rec.IsSidechain || rec.IsMeta || rec.Message == nil {
+			continue
+		}
+		first := len(out.items)
+		id := rec.UUID
+		role := rec.Message.Role
+		if role == "" {
+			role = rec.Type
+		}
+		// Counted so a turn that was ONLY a pasted screenshot is not a gap in the
+		// conversation: claude writes the image as a block with no text beside
+		// it, and a record that contributes no row at all reads as a message that
+		// never happened.
+		recordImages := 0
+		if role == "assistant" {
+			if rec.Message.Model != "" {
+				out.model = rec.Message.Model
+			}
+			// The prompt size is the whole context sent: fresh tokens plus both
+			// cache directions, which is what claude itself counts against the
+			// window.
+			if n := rawNumber(rec.Message.Usage, "input_tokens") +
+				rawNumber(rec.Message.Usage, "cache_read_input_tokens") +
+				rawNumber(rec.Message.Usage, "cache_creation_input_tokens"); n > 0 {
+				out.tokens = n
+			}
+			if rec.Message.StopReason != "" {
+				lastStop = rec.Message.StopReason
+			}
+		}
+		for i, b := range claudeBlocks(rec.Message.Content) {
+			switch b.Type {
+			case "text":
+				if strings.TrimSpace(b.Text) == "" {
+					continue
+				}
+				kind := "user"
+				if role == "assistant" {
+					kind = "agent"
+				}
+				out.items = append(out.items, chatItem{
+					Kind: kind, ID: rowID(id, i), At: rec.Timestamp,
+					Text: strings.TrimSpace(b.Text),
+				})
+			case "thinking":
+				if strings.TrimSpace(b.Thinking) == "" {
+					continue
+				}
+				out.items = append(out.items, chatItem{
+					Kind: "agent", ID: rowID(id, i), At: rec.Timestamp,
+					Text: strings.TrimSpace(b.Thinking), Thinking: true,
+				})
+			case "tool_use":
+				t := claudeTool(b)
+				byCall[callKey(t.CallID)] = t
+				out.items = append(out.items, chatItem{Kind: "tool", ID: t.CallID, Tool: t})
+				if res, ok := pending[callKey(t.CallID)]; ok {
+					delete(pending, callKey(t.CallID))
+					finishTool(t, res.body, res.isError, res.images)
+				}
+			case "tool_result":
+				body, images := claudeResultBody(b.Content)
+				key := callKey(b.ToolUseID)
+				if t, ok := byCall[key]; ok {
+					finishTool(t, body, rawTrue(b.IsError), images)
+					continue
+				}
+				pending[key] = pendingResult{body: body, isError: rawTrue(b.IsError), images: images}
+			case "image":
+				recordImages++
+			}
+		}
+		// A user turn that carried an image and nothing else still happened, and
+		// says so rather than vanishing. Deliberately not attributed to the
+		// tool-card path: this is the human's own paste, not a tool's output.
+		if role == "user" && recordImages > 0 && len(out.items) == first {
+			word := "images"
+			if recordImages == 1 {
+				word = "image"
+			}
+			out.items = append(out.items, chatItem{
+				Kind: "user", ID: rowID(id, 0), At: rec.Timestamp,
+				Text: fmt.Sprintf("[%d %s attached]", recordImages, word),
+			})
+		}
+		for i := first; i < len(out.items); i++ {
+			out.items[i].off = lineStart
+		}
+	}
+
+	if len(out.items) > chatMaxItems {
+		keep := len(out.items) - chatMaxItems
+		for keep > 0 && out.items[keep].off == out.items[keep-1].off {
+			keep--
+		}
+		out.items = out.items[keep:]
+		out.more = true
+	}
+	out.pendingResults = len(pending)
+	out.running = map[string]*chatTool{}
+	for key, t := range byCall {
+		if t.State == "running" {
+			out.running[key] = t
+		}
+	}
+	if len(out.items) > 0 {
+		out.startOffset = out.items[0].off
+	}
+	// A turn that ended by calling a tool is still going; one that ended
+	// anywhere else is not.
+	out.run = lastStop == "tool_use"
+	for i := range out.items {
+		if out.items[i].Tool != nil && out.items[i].Tool.State == "running" {
+			out.run = true
+		}
+	}
+	if len(out.items) == 0 && out.note == "" {
+		out.note = "No messages yet."
+	}
+	return out
+}
+
+// claudeTool builds a card from a tool_use block. The argument names are the
+// same ideas omp uses (a shell command, a file path, a pattern), which is what
+// lets describeTool serve both.
+func claudeTool(b claudeBlock) *chatTool {
+	name := b.Name
+	if name == "" {
+		name = "tool"
+	}
+	t := &chatTool{
+		CallID: b.ID,
+		Name:   name,
+		Title:  toolTitle(name),
+		Family: toolFamily(name),
+		Group:  toolGroups[strings.ToLower(name)],
+		State:  "running",
+	}
+	if len(b.Input) > 0 {
+		var args map[string]json.RawMessage
+		if json.Unmarshal(b.Input, &args) == nil {
+			describeTool(t, args)
+		}
+	}
+	return t
+}
+
+// parseTranscript dispatches on the harness that wrote the log. The harness
+// comes from herdr's own agent_session rather than from sniffing the bytes, so a
+// log that cannot be parsed is reported as such instead of being read as some
+// other harness's format.
+func parseTranscript(harness string, data []byte, base int64) chatParse {
+	if strings.ToLower(strings.TrimSpace(harness)) == "claude" {
+		return parseClaudeTranscript(data, base)
+	}
+	return parseChatTranscript(data, base)
 }
 
 // ---------------------------------------------------------------------------
@@ -823,22 +1159,19 @@ func capStrings(in []string, n int) []string {
 
 var wallTimeRe = regexp.MustCompile(`wallTimeMs['"]?\s*:\s*([0-9.]+)`)
 
-// applyToolResult folds a result into its card.
-func applyToolResult(t *chatTool, m *ompMessage) {
+// finishTool folds a finished tool into its card. Shape-neutral on purpose: omp
+// and claude report the same facts — a body, an error flag, images, a wall time
+// — inside different envelopes, and this is the one place that decides what a
+// finished card says.
+func finishTool(t *chatTool, body string, isError bool, images int) {
 	t.State = "completed"
-	if rawTrue(m.IsError) {
+	if isError {
 		t.State = "error"
 	}
-	var texts []string
-	for _, b := range decodeBlocks(m.Content) {
-		switch b.Type {
-		case "text":
-			texts = append(texts, b.Text)
-		case "image":
-			t.Images++
-		}
+	if images > 0 {
+		t.Images += images
 	}
-	body := strings.TrimSpace(strings.Join(texts, "\n"))
+	body = strings.TrimSpace(body)
 	if t.State == "error" {
 		// An errored call shows the failure, not the whole output: the first
 		// line is what a reader needs on a phone.
@@ -846,12 +1179,27 @@ func applyToolResult(t *chatTool, m *ompMessage) {
 		if t.Error == "" {
 			t.Error = "failed"
 		}
-	} else {
-		t.Output = clipBlock(body, chatOutputCap)
+		return
 	}
+	t.Output = clipBlock(body, chatOutputCap)
 	if n := lineCount(body); n > 0 && t.Output != "" {
 		t.ResultLine = strconv.Itoa(n) + " lines"
 	}
+}
+
+// applyToolResult is the omp envelope around finishTool.
+func applyToolResult(t *chatTool, m *ompMessage) {
+	var texts []string
+	images := 0
+	for _, b := range decodeBlocks(m.Content) {
+		switch b.Type {
+		case "text":
+			texts = append(texts, b.Text)
+		case "image":
+			images++
+		}
+	}
+	finishTool(t, strings.Join(texts, "\n"), rawTrue(m.IsError), images)
 	if raw := m.Details; len(raw) > 0 {
 		t.DurationMS = detailsWallMS(raw)
 	}
@@ -910,6 +1258,14 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := panes[idx]
+	// herdr's own view of the pane is what answers "is it generating right now",
+	// and it answers BEFORE the transcript can. Both harnesses write a COMPLETE
+	// assistant message, so the first seconds of every turn have no record at
+	// all: the file's newest assistant record is still the previous turn's, and
+	// a stop-reason read alone reports an idle agent for exactly the stretch a
+	// human is staring at the view waiting for an answer. paneAgentPresence also
+	// recovers a status herdr left empty, from the pane's own title.
+	_, paneStatus := paneAgentPresence(p)
 
 	out := chatPayload{
 		PaneID: p.PaneID,
@@ -918,19 +1274,16 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		Cwd:    paneCwd(p),
 		Title:  cleanPaneTitle(p.TerminalTitleStripped),
 	}
-	path := paneTranscriptPath(p)
-	if path == "" {
-		// Two different situations, and the difference matters to whoever is
-		// looking at the empty view: an agent that has never run here, and one
-		// whose harness lasso cannot read yet.
-		if p.AgentSession != nil && p.AgentSession.Kind == "id" {
-			out.Note = "This agent's transcript is not readable by lasso yet."
-		} else {
-			out.Note = "No agent session in this pane."
-		}
+	tx := paneTranscript(be, p)
+	if tx.Path == "" {
+		// The note distinguishes the situations that matter to whoever is
+		// looking at the empty view: an agent that never ran here, a harness
+		// lasso cannot read, and a session whose log is not on this host yet.
+		out.Note = tx.Note
 		writeChat(w, out)
 		return
 	}
+	path := tx.Path
 	info, err := be.Stat(path)
 	if err != nil || info.IsDir() {
 		out.Note = "The agent's transcript is not readable yet."
@@ -958,7 +1311,7 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	// covers them, and the loop stops at the start of the file regardless.
 	var parsed chatParse
 	for tries := 0; ; tries++ {
-		parsed = parseChatTranscript(readChatRange(be, path, start, end), start)
+		parsed = parseTranscript(tx.Harness, readChatRange(be, path, start, end), start)
 		if parsed.pendingResults == 0 || start == 0 || tries >= chatPageExtendTries {
 			break
 		}
@@ -969,11 +1322,18 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// A page whose end is a cursor can split a call from its answer; the window
 	// above already holds that answer, but this page owns the row.
-	resolveForwardResults(be, path, end, info.Size(), parsed.running)
+	resolveForwardResults(be, path, tx.Harness, end, info.Size(), parsed.running)
 	out.Items = parsed.items
 	out.Model = parsed.model
 	out.Tokens = parsed.tokens
-	out.Running = parsed.run
+	// Either source is enough to say the agent is working: herdr because it
+	// watches the pane, the transcript because a call it recorded is still
+	// unanswered. herdr's "idle" deliberately does not override an outstanding
+	// call — the result record is written only once the call returns, so there
+	// is a window where the file still shows the call and the agent is done with
+	// it, and a card that flickers back to finished reads worse than a spare
+	// "working" beat.
+	out.Running = parsed.run || paneStatus == "working"
 	out.More = parsed.more || parsed.startOffset > 0
 	out.StartOffset = parsed.startOffset
 	// The transcript itself, so a client accumulating pages can tell "more of
@@ -1280,7 +1640,7 @@ func shortPath(p string) string {
 //
 // Bounded by one window, and skipped entirely when the end IS the end of the
 // file, which is the case for every live poll.
-func resolveForwardResults(b Backend, path string, from, size int64, running map[string]*chatTool) {
+func resolveForwardResults(b Backend, path, harness string, from, size int64, running map[string]*chatTool) {
 	if len(running) == 0 || from >= size {
 		return
 	}
@@ -1289,22 +1649,71 @@ func resolveForwardResults(b Backend, path string, from, size int64, running map
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
-		var rec ompRecord
-		if json.Unmarshal(line, &rec) != nil || rec.Message == nil {
-			continue
-		}
-		if rec.Message.Role != "toolResult" {
-			continue
-		}
-		key := callKey(rec.Message.ToolCallID)
-		t, ok := running[key]
+		res, ok := forwardResult(harness, line)
 		if !ok {
 			continue
 		}
-		applyToolResult(t, rec.Message)
-		delete(running, key)
+		t, hit := running[res.key]
+		if !hit {
+			continue
+		}
+		finishTool(t, res.body, res.isError, res.images)
+		t.DurationMS = res.durationMS
+		delete(running, res.key)
 		if len(running) == 0 {
 			return
 		}
 	}
+}
+
+// forwardResult pulls one tool result out of a single log line, in whichever
+// shape the harness that wrote it uses. ok is false for anything else — most
+// lines are not results.
+func forwardResult(harness string, line []byte) (res struct {
+	key        string
+	body       string
+	isError    bool
+	images     int
+	durationMS int
+}, ok bool) {
+	if strings.ToLower(strings.TrimSpace(harness)) == "claude" {
+		var rec claudeRecord
+		if json.Unmarshal(line, &rec) != nil || rec.Type != "user" || rec.IsSidechain || rec.Message == nil {
+			return res, false
+		}
+		for _, b := range claudeBlocks(rec.Message.Content) {
+			if b.Type != "tool_result" || b.ToolUseID == "" {
+				continue
+			}
+			body, images := claudeResultBody(b.Content)
+			res.key, res.body, res.images = callKey(b.ToolUseID), body, images
+			res.isError = rawTrue(b.IsError)
+			return res, true
+		}
+		return res, false
+	}
+	var rec ompRecord
+	if json.Unmarshal(line, &rec) != nil || rec.Message == nil {
+		return res, false
+	}
+	m := rec.Message
+	if m.Role != "toolResult" || m.ToolCallID == "" {
+		return res, false
+	}
+	var texts []string
+	for _, b := range decodeBlocks(m.Content) {
+		switch b.Type {
+		case "text":
+			texts = append(texts, b.Text)
+		case "image":
+			res.images++
+		}
+	}
+	res.key = callKey(m.ToolCallID)
+	res.body = strings.Join(texts, "\n")
+	res.isError = rawTrue(m.IsError)
+	if raw := m.Details; len(raw) > 0 {
+		res.durationMS = detailsWallMS(raw)
+	}
+	return res, true
 }

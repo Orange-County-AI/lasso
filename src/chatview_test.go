@@ -11,13 +11,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// chatTranscript joins fixture lines the way the file stores them: one JSON
-// record per line, newline-terminated.
-func chatTranscript(lines ...string) []byte {
+// chatLog joins fixture lines the way the file stores them: one JSON record per
+// line, newline-terminated. (Named for the log, not the transcript: the latter
+// is the production type that says where a session is read from.)
+func chatLog(lines ...string) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
@@ -30,7 +32,7 @@ const (
 )
 
 func TestParseChatTranscriptShapes(t *testing.T) {
-	parsed := parseChatTranscript(chatTranscript(
+	parsed := parseChatTranscript(chatLog(
 		recHeader,
 		recUser,
 		`{"type":"message","id":"a1","timestamp":"2026-09-13T03:43:11.000Z","message":{"role":"assistant","model":"gpt-5","stopReason":"toolUse","contextSnapshot":{"promptTokens":1234},"content":[`+
@@ -101,7 +103,7 @@ func TestParseChatTranscriptShapes(t *testing.T) {
 // A running card is the only thing that should light the working indicator when
 // the turn never stopped.
 func TestParseChatTranscriptRunning(t *testing.T) {
-	parsed := parseChatTranscript(chatTranscript(
+	parsed := parseChatTranscript(chatLog(
 		recUser,
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"sleep 90"}}]}}`,
 	), 0)
@@ -119,7 +121,7 @@ func TestParseChatTranscriptDiffs(t *testing.T) {
 	content := strings.Join([]string{"1", "2", "3", "4", "5"}, "\n")
 	write := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"/home/x/proj/src/main.go","content":` +
 		jsonString(content) + `}}]}}`
-	parsed := parseChatTranscript(chatTranscript(write), 0)
+	parsed := parseChatTranscript(chatLog(write), 0)
 	tool := parsed.items[0].Tool
 	if tool.Subject != "…/proj/src/main.go" {
 		t.Errorf("subject = %q, want the abbreviated path", tool.Subject)
@@ -138,7 +140,7 @@ func TestParseChatTranscriptDiffs(t *testing.T) {
 	// blocks each followed by the lines to write at that range.
 	edit := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c2","name":"edit","arguments":{"i":"Fixing the header","input":` +
 		jsonString("[AGENTS.md#CB11]\nPUT 57.=58:\n+first new line\n+second new line\n") + `}}]}}`
-	parsed = parseChatTranscript(chatTranscript(edit), 0)
+	parsed = parseChatTranscript(chatLog(edit), 0)
 	tool = parsed.items[0].Tool
 	if tool.Subject != "AGENTS.md" {
 		t.Errorf("subject = %q, want the path parsed out of the patch header", tool.Subject)
@@ -163,7 +165,7 @@ func TestParseChatTranscriptCapsDiff(t *testing.T) {
 	}
 	edit := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"stop","content":[{"type":"toolCall","id":"c1","name":"edit","arguments":{"input":` +
 		jsonString(strings.Join(body, "\n")) + `}}]}}`
-	parsed := parseChatTranscript(chatTranscript(edit), 0)
+	parsed := parseChatTranscript(chatLog(edit), 0)
 	diff := parsed.items[0].Tool.Diff
 	if len(diff) != chatDiffLines+1 {
 		t.Fatalf("diff rows = %d, want %d kept plus the overflow marker", len(diff), chatDiffLines)
@@ -179,7 +181,7 @@ func TestParseChatTranscriptCapsDiff(t *testing.T) {
 // card stuck at "running" — which is how the unfixed reader rendered a whole
 // live session.
 func TestParseChatTranscriptPipedCallIDs(t *testing.T) {
-	parsed := parseChatTranscript(chatTranscript(
+	parsed := parseChatTranscript(chatLog(
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"call_01_ET_abc|fc_0bb1cbfe","name":"bash","arguments":{"command":"ls","i":"Listing"}}]}}`,
 		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"call_01_ET_abc","toolName":"bash","content":[{"type":"text","text":"a.go\nb.go"}]}}`,
 	), 0)
@@ -212,7 +214,7 @@ func TestParseChatTranscriptDetailsShapes(t *testing.T) {
 			if tc.details == "" {
 				details = ""
 			}
-			parsed := parseChatTranscript(chatTranscript(
+			parsed := parseChatTranscript(chatLog(
 				`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}`,
 				`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1",`+details+`"content":[{"type":"text","text":"ok"}]}}`,
 			), 0)
@@ -229,7 +231,7 @@ func TestParseChatTranscriptDetailsShapes(t *testing.T) {
 
 // An errored call reports the failure itself, and marks the card.
 func TestParseChatTranscriptErrorResult(t *testing.T) {
-	parsed := parseChatTranscript(chatTranscript(
+	parsed := parseChatTranscript(chatLog(
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}]}}`,
 		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1","isError":true,"content":[{"type":"text","text":"boom\nstack line"}]}}`,
 	), 0)
@@ -244,7 +246,7 @@ func TestParseChatTranscriptCollapsesRepeatedMarkers(t *testing.T) {
 	rec := func(id string) string {
 		return `{"type":"message","id":"` + id + `","message":{"role":"assistant","stopReason":"error","errorMessage":"No API key for provider: anthropic","content":[]}}`
 	}
-	parsed := parseChatTranscript(chatTranscript(recUser, rec("e1"), rec("e2"), rec("e3")), 0)
+	parsed := parseChatTranscript(chatLog(recUser, rec("e1"), rec("e2"), rec("e3")), 0)
 	var markers []chatItem
 	for _, it := range parsed.items {
 		if it.Kind == "marker" {
@@ -265,11 +267,11 @@ func TestParseChatTranscriptAbortMarkers(t *testing.T) {
 	loud := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"aborted","content":[]}}`
 	silent := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"aborted","errorMessage":"__omp.silent_abort__","content":[]}}`
 
-	parsed := parseChatTranscript(chatTranscript(loud), 0)
+	parsed := parseChatTranscript(chatLog(loud), 0)
 	if n := len(parsed.items); n != 1 || parsed.items[0].Marker != "interrupted" {
 		t.Errorf("items = %+v, want one interrupted marker", parsed.items)
 	}
-	parsed = parseChatTranscript(chatTranscript(silent), 0)
+	parsed = parseChatTranscript(chatLog(silent), 0)
 	if len(parsed.items) != 0 {
 		t.Errorf("items = %+v, want nothing for a silent abort", parsed.items)
 	}
@@ -280,7 +282,7 @@ func TestParseChatTranscriptCapsHistory(t *testing.T) {
 	for i := 0; i < chatMaxItems+20; i++ {
 		lines = append(lines, `{"type":"message","id":"m`+itoa(i)+`","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"line `+itoa(i)+`"}]}}`)
 	}
-	parsed := parseChatTranscript(chatTranscript(lines...), 0)
+	parsed := parseChatTranscript(chatLog(lines...), 0)
 	if len(parsed.items) != chatMaxItems {
 		t.Errorf("items = %d, want the cap of %d", len(parsed.items), chatMaxItems)
 	}
@@ -296,35 +298,68 @@ func TestParseChatTranscriptCapsHistory(t *testing.T) {
 
 // Only a pane that is actually running a harness whose transcript herdr named
 // outright is chat-viewable.
-func TestPaneTranscriptPath(t *testing.T) {
+func TestPaneTranscript(t *testing.T) {
+	home := t.TempDir()
+	// claude keeps its logs under the home it ran with, keyed by the directory
+	// the session was started in.
+	proj := filepath.Join(home, ".claude", "projects", claudeProjectSlug("/home/u/proj"))
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const claudeID = "24a7c912-71da-4a1f-9d3b-000000000000"
+	if err := os.WriteFile(filepath.Join(proj, claudeID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	be := &chatFakeBackend{home: home}
+
 	base := pane{
 		PaneID: "w1:p1",
 		Agent:  "omp",
+		Cwd:    "/home/u/proj",
 		AgentSession: &agentSession{
 			Source: "herdr:omp", Agent: "omp", Kind: "path",
 			Value: "/home/u/.omp/agent/sessions/-proj/2026-09-13T03-43-04-614Z_01a0.jsonl",
 		},
 	}
-	if got := paneTranscriptPath(base); got == "" {
-		t.Error("a live omp pane with a path session should resolve")
+	if got := paneTranscript(be, base); got.Path == "" || got.Harness != "omp" {
+		t.Errorf("omp path session = %+v, want the file and its reader", got)
 	}
 
+	// herdr keeps agent_session after the agent exits.
 	exited := base
-	exited.Agent = "" // herdr keeps agent_session after the agent exits
-	if got := paneTranscriptPath(exited); got != "" {
-		t.Errorf("exited pane = %q, want no transcript", got)
+	exited.Agent = ""
+	if got := paneTranscript(be, exited); got.Path != "" {
+		t.Errorf("exited pane = %+v, want no transcript", got)
 	}
 
+	// Claude reports an ID. Its log is on disk, so the pane is readable —
+	// refusing the id is what left these panes empty while their transcripts sat
+	// there.
 	byID := base
-	byID.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: "24a7c912-71da"}
-	if got := paneTranscriptPath(byID); got != "" {
-		t.Errorf("id-only session = %q, want no transcript", got)
+	byID.Agent = "claude"
+	byID.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: claudeID}
+	if got := paneTranscript(be, byID); got.Path == "" || got.Harness != "claude" {
+		t.Errorf("claude id session = %+v, want the log it resolves to", got)
+	}
+
+	// An id whose log is not here says so, rather than claiming no session.
+	missing := byID
+	missing.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: "00000000-0000-4000-8000-000000000000"}
+	if got := paneTranscript(be, missing); got.Path != "" || got.Note == "" {
+		t.Errorf("unresolvable id = %+v, want a note", got)
+	}
+
+	// A harness that reports only an id and that lasso cannot resolve.
+	unknown := base
+	unknown.AgentSession = &agentSession{Agent: "codex", Kind: "id", Value: "abc"}
+	if got := paneTranscript(be, unknown); got.Path != "" || got.Note == "" {
+		t.Errorf("id-only session = %+v, want a note", got)
 	}
 
 	nosession := base
 	nosession.AgentSession = nil
-	if got := paneTranscriptPath(nosession); got != "" {
-		t.Errorf("session-less pane = %q, want no transcript", got)
+	if got := paneTranscript(be, nosession); got.Path != "" || got.Note == "" {
+		t.Errorf("session-less pane = %+v, want a note", got)
 	}
 
 	// The value reaches a filesystem read, so anything but an absolute .jsonl
@@ -332,8 +367,8 @@ func TestPaneTranscriptPath(t *testing.T) {
 	for _, bad := range []string{"../../etc/passwd", "/etc/passwd", "relative.jsonl", ""} {
 		p := base
 		p.AgentSession = &agentSession{Agent: "omp", Kind: "path", Value: bad}
-		if got := paneTranscriptPath(p); got != "" {
-			t.Errorf("value %q = %q, want refused", bad, got)
+		if got := paneTranscript(be, p); got.Path != "" {
+			t.Errorf("value %q = %+v, want refused", bad, got)
 		}
 	}
 }
@@ -389,15 +424,52 @@ func useFakeHost(t *testing.T, be Backend) {
 	})
 }
 
+// fakeHostSeq numbers the chat fakes' private pane.list cache keys.
+var fakeHostSeq atomic.Int64
+
+// privateHostName is why these fakes are not called "local". That cache is keyed
+// by host NAME, and the rest of this suite has several backends claiming
+// "local" — including a goroutine a hostfeed test leaks past its own end. A fake
+// sharing that key gets served the other backend's result: seen as a 502 here
+// carrying "dial unix: missing address", intermittently and only in a full run.
+// Nothing on these paths reads the name; only the cache key does.
+func privateHostName(p *string, prefix string) string {
+	if *p == "" {
+		*p = fmt.Sprintf("%s-%d", prefix, fakeHostSeq.Add(1))
+	}
+	return *p
+}
+
 // chatFakeBackend stands up the herdr surface serveChat reads: pane.list
 // carrying an omp agent_session, and a real filesystem for the transcript, so
 // the Stat/Open path the handler uses is exercised rather than stubbed.
 type chatFakeBackend struct {
 	Backend
+	// name is a per-instance cache key, assigned by useFakeHost.
+	name  string
 	panes []string // pane.list bodies, pre-encoded
+	// home is what a harness that keeps its logs under $HOME resolves against
+	// (claude's ~/.claude/projects). Empty for tests that never ask.
+	home string
 }
 
-func (b *chatFakeBackend) Name() string { return "local" }
+func (b *chatFakeBackend) Name() string { return privateHostName(&b.name, "chatfake") }
+
+func (b *chatFakeBackend) HomeDir() (string, error) { return b.home, nil }
+
+// ReadDir backs the fallback scan of ~/.claude/projects for an id whose project
+// slug cannot be guessed from the pane's cwd.
+func (b *chatFakeBackend) ReadDir(p string) ([]fileEntry, error) {
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]fileEntry, 0, len(ents))
+	for _, e := range ents {
+		out = append(out, fileEntry{Name: e.Name(), Dir: e.IsDir()})
+	}
+	return out, nil
+}
 
 func (b *chatFakeBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
 	if method != "pane.list" {
@@ -413,16 +485,22 @@ func (b *chatFakeBackend) Open(p string) (io.ReadSeekCloser, error) {
 
 // chatPane renders one pane.list entry with an omp path session.
 func chatPane(id, path string, focused bool) string {
+	return chatPaneStatus(id, path, focused, "idle")
+}
+
+// chatPaneStatus is chatPane with herdr's own agent_status spelled out, which is
+// what the working indicator reads when the transcript cannot say.
+func chatPaneStatus(id, path string, focused bool, status string) string {
 	return fmt.Sprintf(
-		`{"pane_id":%q,"focused":%t,"agent":"omp","agent_status":"idle","terminal_title_stripped":"Fix the tests",`+
+		`{"pane_id":%q,"focused":%t,"agent":"omp","agent_status":%q,"terminal_title_stripped":"Fix the tests",`+
 			`"agent_session":{"source":"herdr:omp","agent":"omp","kind":"path","value":%q}}`,
-		id, focused, path)
+		id, focused, status, path)
 }
 
 func TestServeChat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2026-09-13T03-43-04-614Z_abc.jsonl")
-	body := chatTranscript(recHeader, recUser,
+	body := chatLog(recHeader, recUser,
 		`{"type":"message","id":"a1","message":{"role":"assistant","model":"gpt-5","stopReason":"stop","content":[{"type":"text","text":"All green."}]}}`)
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
@@ -456,8 +534,8 @@ func TestServeChat(t *testing.T) {
 	}
 	// The host rides with the rows: the composer addresses a submission back to
 	// the machine they came from, and pane ids are unique per host only.
-	if out.Host != "local" {
-		t.Errorf("host = %q, want the resolved backend's name", out.Host)
+	if out.Host != be.Name() {
+		t.Errorf("host = %q, want the resolved backend's name (%q)", out.Host, be.Name())
 	}
 	if out.Title != "Fix the tests" {
 		t.Errorf("title = %q, want the session's own title", out.Title)
@@ -534,6 +612,7 @@ func TestCleanPaneTitle(t *testing.T) {
 // write, and one that swallows it without ever drawing it.
 type chatSendBackend struct {
 	Backend
+	name   string // private pane.list cache key; see privateHostName
 	paneID string
 	agent  string
 	screen string // the composer line as currently drawn
@@ -550,7 +629,7 @@ type chatSendBackend struct {
 	writes      []string
 }
 
-func (b *chatSendBackend) Name() string { return "local" }
+func (b *chatSendBackend) Name() string { return privateHostName(&b.name, "chatsend") }
 
 // ompComposer draws a real omp composer footer, which is what detectComposer
 // parses: "╰─ <text> ─╯". An EMPTY composer is the bare footer — a wrapped body
@@ -759,7 +838,7 @@ func TestServeChatPaging(t *testing.T) {
 		rec := httptest.NewRecorder()
 		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("status %d for %q", rec.Code, query)
+			t.Fatalf("status %d for %q: %s", rec.Code, query, strings.TrimSpace(rec.Body.String()))
 		}
 		var out chatPayload
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -863,7 +942,7 @@ func TestServeChatPagingAcrossRecordBoundaries(t *testing.T) {
 		rec := httptest.NewRecorder()
 		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("status %d for %q", rec.Code, query)
+			t.Fatalf("status %d for %q: %s", rec.Code, query, strings.TrimSpace(rec.Body.String()))
 		}
 		var out chatPayload
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -964,7 +1043,7 @@ func TestServeChatPageEndSplitsCallFromResult(t *testing.T) {
 		rec := httptest.NewRecorder()
 		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("status %d for %q", rec.Code, query)
+			t.Fatalf("status %d for %q: %s", rec.Code, query, strings.TrimSpace(rec.Body.String()))
 		}
 		var out chatPayload
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -1000,5 +1079,180 @@ func TestServeChatPageEndSplitsCallFromResult(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no page carried the split call")
+	}
+}
+
+// Claude Code's log, in the shapes a real one uses: the record type IS the role,
+// content is a bare string on a plain user turn, a tool result is a block on a
+// USER record rather than a message of its own, and subagent traffic shares the
+// same file flagged isSidechain.
+func TestParseClaudeTranscript(t *testing.T) {
+	data := chatLog(
+		`{"type":"mode","mode":"normal"}`,
+		`{"type":"ai-title","aiTitle":"Lasso MCP with uvx mcp2cli testing","sessionId":"s1"}`,
+		`{"type":"system","subtype":"stop_hook_summary","uuid":"sys1"}`,
+		`{"type":"user","uuid":"u1","parentUuid":null,"timestamp":"2026-09-11T16:49:39.653Z","isSidechain":false,"message":{"role":"user","content":"are we running the lasso mcp locally?"}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-09-11T16:49:44.373Z","isSidechain":false,"message":{"role":"assistant","model":"claude-sonnet-4-5","stop_reason":"tool_use","usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":50},"content":[`+
+			`{"type":"thinking","thinking":""},`+
+			`{"type":"thinking","thinking":"**Considering the local server**"},`+
+			`{"type":"text","text":"Checking the service."},`+
+			`{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"systemctl --user is-active lasso.service"}}]}}`,
+		`{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-09-11T16:49:45.036Z","isSidechain":false,"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"active\n---\nLISTEN 0 4096 127.0.0.1:8090","is_error":false}]}}`,
+		// A subagent's own conversation, interleaved into the parent's log.
+		`{"type":"user","uuid":"sc1","parentUuid":"a1","timestamp":"2026-09-11T16:49:46.000Z","isSidechain":true,"message":{"role":"user","content":"sidechain traffic that is not this conversation"}}`,
+		`{"type":"assistant","uuid":"a2","parentUuid":"r1","timestamp":"2026-09-11T16:49:50.000Z","isSidechain":false,"message":{"role":"assistant","model":"claude-sonnet-4-5","stop_reason":"end_turn","content":[{"type":"text","text":"Yes — it is running."}]}}`,
+		`{"type":"user","uuid":"m1","isMeta":true,"message":{"role":"user","content":"meta noise"}}`,
+	)
+
+	got := parseTranscript("claude", data, 0)
+	if got.title != "Lasso MCP with uvx mcp2cli testing" {
+		t.Errorf("title = %q, want the session's own ai-title", got.title)
+	}
+	if got.model != "claude-sonnet-4-5" {
+		t.Errorf("model = %q", got.model)
+	}
+	// Fresh tokens plus both cache directions: what claude counts against the
+	// window.
+	if got.tokens != 152 {
+		t.Errorf("tokens = %d, want 2+100+50", got.tokens)
+	}
+	if got.run {
+		t.Error("run = true after an end_turn with no call outstanding")
+	}
+	// Nothing was capped, so there is no earlier ROW to fetch. startOffset
+	// still points at the first row's record (not 0: claude writes bookkeeping
+	// records above it that produce no rows), which is what makes the page
+	// above this one empty rather than wrong.
+	if got.more {
+		t.Error("more = true without any rows dropped")
+	}
+	if got.startOffset != int64(strings.Index(string(data), `{"type":"user","uuid":"u1"`)) {
+		t.Errorf("startOffset = %d, want the offset of the first row's record", got.startOffset)
+	}
+
+	var kinds []string
+	var tool *chatTool
+	for _, it := range got.items {
+		kinds = append(kinds, it.Kind)
+		if it.Tool != nil {
+			tool = it.Tool
+		}
+		if strings.Contains(it.Text, "sidechain traffic") {
+			t.Error("a sidechain record was rendered as part of the parent conversation")
+		}
+		if strings.Contains(it.Text, "meta noise") {
+			t.Error("an isMeta record was rendered")
+		}
+	}
+	want := []string{"user", "agent", "agent", "tool", "agent"}
+	if strings.Join(kinds, ",") != strings.Join(want, ",") {
+		t.Fatalf("rows = %v, want %v", kinds, want)
+	}
+	// The blank thinking block is not a row; the one with prose is.
+	if !got.items[1].Thinking || !strings.Contains(got.items[1].Text, "Considering") {
+		t.Errorf("row 1 = %+v, want the thinking block that had prose", got.items[1])
+	}
+	if tool == nil {
+		t.Fatal("no tool card for the Bash call")
+	}
+	if tool.Title != "Bash" || tool.Family != "shell" {
+		t.Errorf("tool = %s/%s, want Bash/shell", tool.Title, tool.Family)
+	}
+	// The call is answered by a block on a LATER, differently-typed record.
+	if tool.State != "completed" {
+		t.Fatalf("state = %q — the tool_result block did not reach its call", tool.State)
+	}
+	if !strings.Contains(tool.Output, "127.0.0.1:8090") {
+		t.Errorf("output = %q", tool.Output)
+	}
+}
+
+// A turn that ended by calling a tool is still going.
+func TestParseClaudeTranscriptRunning(t *testing.T) {
+	got := parseTranscript("claude", chatLog(
+		`{"type":"assistant","uuid":"a1","timestamp":"T","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_9","name":"Read","input":{"file_path":"/tmp/x"}}]}}`,
+	), 0)
+	if !got.run {
+		t.Error("run = false with a tool call outstanding")
+	}
+	if len(got.items) != 1 || got.items[0].Tool == nil || got.items[0].Tool.State != "running" {
+		t.Fatalf("items = %+v, want one running tool card", got.items)
+	}
+}
+
+// A tool_result whose call is in a LATER window still has to be able to answer
+// it: that is the page-end split, in claude's shape.
+func TestParseClaudeTranscriptResultBeforeCall(t *testing.T) {
+	got := parseTranscript("claude", chatLog(
+		`{"type":"user","uuid":"r1","timestamp":"T","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_5","content":"the answer"}]}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"T","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_5","name":"Bash","input":{"command":"ls"}}]}}`,
+	), 0)
+	if got.pendingResults != 0 {
+		t.Errorf("pendingResults = %d, want the buffered result to have been applied", got.pendingResults)
+	}
+	var tool *chatTool
+	for _, it := range got.items {
+		if it.Tool != nil {
+			tool = it.Tool
+		}
+	}
+	if tool == nil || tool.State != "completed" || !strings.Contains(tool.Output, "the answer") {
+		t.Fatalf("tool = %+v, want the earlier result applied", tool)
+	}
+}
+
+// A user turn that was only a pasted screenshot carries no text, so without this
+// it contributed no row and the conversation read as if the message — and the
+// reply to it — came from nowhere.
+func TestParseClaudeTranscriptImageOnlyTurn(t *testing.T) {
+	got := parseTranscript("claude", chatLog(
+		`{"type":"user","uuid":"u1","timestamp":"T","isSidechain":false,"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}}`,
+	), 0)
+	if len(got.items) != 1 {
+		t.Fatalf("rows = %d, want the image turn to still be a row: %+v", len(got.items), got.items)
+	}
+	if got.items[0].Kind != "user" || !strings.Contains(got.items[0].Text, "image") {
+		t.Errorf("row = %+v, want a user row saying an image was attached", got.items[0])
+	}
+}
+
+// A turn's first seconds have no record at all: both harnesses write a COMPLETE
+// assistant message, so while the agent generates its reply the file's newest
+// assistant record is still the PREVIOUS turn's, which ended cleanly. A
+// stop-reason read therefore says "not running" for exactly the stretch a human
+// sits looking at the view waiting for an answer — the one moment the indicator
+// matters most. herdr's own pane status covers it.
+func TestServeChatRunningFromHerdrStatus(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settled.jsonl")
+	body := chatLog(recHeader, recUser,
+		`{"type":"message","id":"a1","message":{"role":"assistant","model":"gpt-5","stopReason":"stop","content":[{"type":"text","text":"Done."}]}}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The transcript on its own says the agent is idle; herdr says it is working.
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{"working", true},
+		{"idle", false},
+		// A human's turn to answer, not the agent's: not "generating".
+		{"blocked", false},
+	} {
+		be := &chatFakeBackend{panes: []string{chatPaneStatus("w1:p1", path, true, tc.status)}}
+		useFakeHost(t, be)
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d for %s: %s", rec.Code, tc.status, strings.TrimSpace(rec.Body.String()))
+		}
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Running != tc.want {
+			t.Errorf("herdr status %q -> running=%v, want %v", tc.status, out.Running, tc.want)
+		}
 	}
 }

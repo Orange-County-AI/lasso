@@ -170,6 +170,7 @@ function DiffLines({ lines }: { lines: ChatDiffLine[] }) {
     <div className="border-border/60 border-t py-1 font-mono text-[11.5px] leading-[1.7]">
       {lines.map((l, i) => (
         <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: a hunk's lines are positional and never reorder; the index is the identity, and a repeated line ("  }") has no other one.
           key={`${i}-${l.kind}`}
           className={cn(
             "flex",
