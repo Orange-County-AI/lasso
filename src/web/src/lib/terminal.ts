@@ -744,8 +744,9 @@ export function wireTerminalIframe(
   doc.addEventListener(
     "paste",
     async (e: ClipboardEvent) => {
-      // The dial's input buffer takes its own files (it inserts the path into
-      // the buffer text, not into xterm), so a paste aimed at it is not ours.
+      // The dial is a control surface, not a text field: a paste aimed at one of
+      // its buttons must not be hijacked into xterm as if it had been aimed at
+      // the terminal underneath.
       const target = e.target as Element | null
       if (target?.closest?.(`#${DIAL_ID}`)) return
       const clipboard = e.clipboardData
@@ -792,7 +793,7 @@ export function bootTermFrame(
   // Exactly one live dial mount per frame. A reload builds a new document, so
   // the old dial is gone with it — but its capability listener and its observer
   // on the parent's <html> are not, hence the release before remounting.
-  let releaseDial = mountTerminalInputDial(id, pasteHost) // in case it already loaded
+  let releaseDial = mountTerminalInputDial(id) // in case it already loaded
   const onLoad = () => {
     applyTermTheme(0)
     applyTermFont(0)
@@ -800,7 +801,7 @@ export function bootTermFrame(
     applyTermAtmosphere(0)
     wireTerminalIframe(id, suppressContext, inputMode, pasteHost)
     releaseDial()
-    releaseDial = mountTerminalInputDial(id, pasteHost)
+    releaseDial = mountTerminalInputDial(id)
   }
   el.addEventListener("load", onLoad)
   // A ttyd WebSocket reconnect rebuilds xterm with its default theme without

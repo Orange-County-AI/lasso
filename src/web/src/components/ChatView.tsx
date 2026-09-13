@@ -33,9 +33,9 @@ import { cn } from "@/lib/utils"
 // whatever theme (and backdrop) the rest of the app is wearing.
 //
 // READ-ONLY, deliberately. Input stays the real TUI: the composer pastes into
-// the herdr terminal and presses Enter, exactly as the mobile input buffer
-// does, so a tool approval is still answered where the agent asked for it and
-// nothing here can drift from what the pane actually received.
+// the herdr terminal and presses Enter, so a tool approval is still answered
+// where the agent asked for it and nothing here can drift from what the pane
+// actually received.
 
 // mergeItems folds a freshly-read page into what is already on screen: rows that
 // are already here are UPDATED in place (a tool card completing, an output
