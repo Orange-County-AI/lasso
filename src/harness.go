@@ -24,6 +24,12 @@ type harnessDef struct {
 	// dropped by normalizePlanMode rather than persisted, so the record can't
 	// claim an agent planned when it didn't.
 	SupportsPlanMode bool `json:"supports_plan_mode"`
+	// SupportsAdvisor gates the creator's "Advisor" toggle — today only omp,
+	// whose --advisor turns on a runtime that reviews each turn and injects
+	// notes into the session. Like SupportsPlanMode it is the server-side gate as
+	// well as the UI's: normalizeAdvisor drops the request for a harness with no
+	// such flag, so a record never claims an advisor that did not run.
+	SupportsAdvisor bool `json:"supports_advisor"`
 	// stagesConfigOverlay marks a harness lasso must reach through a CONFIG
 	// OVERLAY rather than flags, so bootAgent materializes lasso's own overlay on
 	// the target host before it can build the launch line: today just omp, whose
@@ -53,7 +59,11 @@ type harnessDef struct {
 // setup script, which already runs arbitrary shell in the same pane).
 type launchOpts struct {
 	planMode bool
-	model    string
+	// advisor turns on the harness's advisor runtime, where it has one (omp's
+	// --advisor). A harness without the flag never sees it — normalizeAdvisor
+	// drops the request before it reaches a record, and no other builder emits it.
+	advisor bool
+	model   string
 	// effort is the thinking/reasoning-effort level, one of the harness's
 	// EffortLevels; empty means "don't pass one" (the CLI's own default).
 	effort    string
@@ -108,6 +118,7 @@ var harnesses = []harnessDef{
 		ID:                  "omp",
 		Label:               "Oh My Pi",
 		SupportsPlanMode:    true,
+		SupportsAdvisor:     true,
 		stagesConfigOverlay: true,
 		// omp's --thinking ladder is pi-catalog's Effort enum plus two selectors
 		// that aren't rungs on it: "off" disables reasoning outright, and "auto"
@@ -190,6 +201,15 @@ func normalizeEffort(agent, effort string) string {
 // actually ran.
 func normalizePlanMode(agent string, planMode bool) bool {
 	return planMode && harnessByID(agent).SupportsPlanMode
+}
+
+// normalizeAdvisor keeps an advisor request only when the harness actually has
+// the flag. Same rule as normalizePlanMode and for the same reason: the record
+// is what get_agent/list_agents read back, so an advisor persisted for a harness
+// that can't take one would claim an extra model was reviewing every turn when
+// the launch line carried nothing.
+func normalizeAdvisor(agent string, advisor bool) bool {
+	return advisor && harnessByID(agent).SupportsAdvisor
 }
 
 // agentCommand builds the shell command that launches the chosen agent. A
@@ -337,6 +357,14 @@ func ompCommand(o launchOpts) string {
 	}
 	if e := strings.TrimSpace(o.effort); e != "" {
 		cmd += " --thinking " + shellQuote(e)
+	}
+	// --advisor is a plain boolean flag (there is no value to pass), so it sits
+	// with the other flags rather than in the config overlay: unlike plan mode,
+	// whose plan.defaultOnStartup is a setting omp reads out of config.yml, this
+	// runtime is a switch it parses from argv — the same day-one flag the CLI
+	// documents, with no config key to reach it through.
+	if o.advisor {
+		cmd += " --advisor"
 	}
 	if e := strings.TrimSpace(o.extraArgs); e != "" {
 		cmd += " " + e

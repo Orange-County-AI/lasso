@@ -76,20 +76,25 @@ type AgentRecord struct {
 	// the wrong host's backend (closeAgentRecord enforces the match). Pane and
 	// workspace ids are only unique per host, so a record without its host is
 	// ambiguous.
-	Host        string    `yaml:"-" json:"host,omitempty"`
-	Title       string    `yaml:"title" json:"title"`
-	Type        string    `yaml:"type" json:"type"` // "git" | "scratch"
-	Repo        string    `yaml:"repo,omitempty" json:"repo,omitempty"`
-	BaseBranch  string    `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
-	Branch      string    `yaml:"branch,omitempty" json:"branch,omitempty"`
-	Agent       string    `yaml:"agent" json:"agent"`
-	Model       string    `yaml:"model,omitempty" json:"model,omitempty"`
-	Effort      string    `yaml:"effort,omitempty" json:"effort,omitempty"`
-	ExtraArgs   string    `yaml:"extra_args,omitempty" json:"extra_args,omitempty"`
-	Description string    `yaml:"description,omitempty" json:"description,omitempty"`
-	Notes       string    `yaml:"notes,omitempty" json:"notes,omitempty"`
-	Attachments []string  `yaml:"attachments,omitempty" json:"attachments,omitempty"`
-	PlanMode    bool      `yaml:"plan_mode" json:"plan_mode"`
+	Host        string   `yaml:"-" json:"host,omitempty"`
+	Title       string   `yaml:"title" json:"title"`
+	Type        string   `yaml:"type" json:"type"` // "git" | "scratch"
+	Repo        string   `yaml:"repo,omitempty" json:"repo,omitempty"`
+	BaseBranch  string   `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	Branch      string   `yaml:"branch,omitempty" json:"branch,omitempty"`
+	Agent       string   `yaml:"agent" json:"agent"`
+	Model       string   `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort      string   `yaml:"effort,omitempty" json:"effort,omitempty"`
+	ExtraArgs   string   `yaml:"extra_args,omitempty" json:"extra_args,omitempty"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Notes       string   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Attachments []string `yaml:"attachments,omitempty" json:"attachments,omitempty"`
+	PlanMode    bool     `yaml:"plan_mode" json:"plan_mode"`
+	// Advisor records that the agent launched with its harness's advisor runtime
+	// on (omp's --advisor), after normalizeAdvisor dropped it for any harness
+	// without the flag — so reading it back tells you what actually ran. False
+	// for every agent launched before this existed.
+	Advisor     bool      `yaml:"advisor" json:"advisor"`
 	WorkDir     string    `yaml:"work_dir" json:"work_dir"`
 	WorkspaceID string    `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty"`
 	RootPane    string    `yaml:"root_pane,omitempty" json:"root_pane,omitempty"`

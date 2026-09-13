@@ -353,9 +353,14 @@ type createAgentReq struct {
 	// ExtraArgs are free-form CLI flags appended verbatim to the launch
 	// command, after the flags lasso builds and before the prompt. The escape
 	// hatch for any harness knob lasso doesn't model.
-	ExtraArgs   string   `json:"extra_args"`
-	Notes       string   `json:"notes"`
-	PlanMode    bool     `json:"plan_mode"`
+	ExtraArgs string `json:"extra_args"`
+	Notes     string `json:"notes"`
+	PlanMode  bool   `json:"plan_mode"`
+	// Advisor turns on the harness's per-turn advisor runtime (omp's --advisor).
+	// Only omp offers one; like PlanMode it is dropped for a harness that can't
+	// take the flag (normalizeAdvisor) rather than persisted as an advisor that
+	// never ran.
+	Advisor     bool     `json:"advisor"`
 	Attachments []string `json:"attachments"` // filenames staged under UploadDir
 	UploadDir   string   `json:"upload_dir"`  // staging dir returned by /api/agent-upload
 	// NoFocus suppresses focusing the new agent's herdr pane. The web "New Agent"
@@ -469,6 +474,7 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 		Notes:       strings.TrimSpace(req.Notes),
 		Attachments: req.Attachments,
 		PlanMode:    normalizePlanMode(req.Agent, req.PlanMode),
+		Advisor:     normalizeAdvisor(req.Agent, req.Advisor),
 		CreatedAt:   time.Now(),
 		// The agent's CLI is launched asynchronously by bootAgent after we return,
 		// so the record starts life "booting"; bootAgent flips it to ready/failed.
@@ -695,6 +701,7 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 
 	opts := launchOpts{
 		planMode:  rec.PlanMode,
+		advisor:   rec.Advisor,
 		model:     rec.Model,
 		effort:    rec.Effort,
 		extraArgs: rec.ExtraArgs,

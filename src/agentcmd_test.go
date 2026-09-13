@@ -246,6 +246,34 @@ func TestNormalizePlanMode(t *testing.T) {
 	}
 }
 
+// Same rule for the advisor runtime: omp is the only harness whose CLI takes
+// the flag, so a request for any other harness is dropped rather than persisted
+// — an advisor recorded for an agent whose launch line carried no --advisor
+// would have get_agent/list_agents reporting a second model reviewing turns
+// that never happened.
+func TestNormalizeAdvisor(t *testing.T) {
+	cases := []struct {
+		agent string
+		in    bool
+		want  bool
+	}{
+		{"omp", true, true},
+		{"omp", false, false},
+		{"claude", true, false},
+		{"opencode", true, false},
+		{"codex", true, false},
+		{"pi", true, false},
+		// Unknown ids default to claude (harnessByID), which has no advisor.
+		{"", true, false},
+		{"nonesuch", true, false},
+	}
+	for _, c := range cases {
+		if got := normalizeAdvisor(c.agent, c.in); got != c.want {
+			t.Errorf("normalizeAdvisor(%q, %v) = %v, want %v", c.agent, c.in, got, c.want)
+		}
+	}
+}
+
 // The drop has to happen where the record is built, not just in the helper —
 // otherwise the launch is right and the persisted row still lies.
 func TestCreateAgentDropsPlanModeForHarnessWithoutOne(t *testing.T) {

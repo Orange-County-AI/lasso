@@ -97,6 +97,11 @@ var createParams = map[string]createParam{
 	// see the jsonschema description on createAgentIn.PlanMode, which spells out
 	// where omp's gate differs from claude's and opencode's.
 	"PlanMode": {MCP: "PlanMode", TS: "plan_mode"},
+	// Same shape as PlanMode, and for the same reason it is exposed to MCP: it
+	// is a launch knob whose effect a caller may want, and extra_args would let
+	// them pass it anyway. createAgent drops it for a harness without the flag
+	// (normalizeAdvisor), so an omp-only field is safe to advertise.
+	"Advisor": {MCP: "Advisor", TS: "advisor"},
 	"Attachments": {
 		MCPSkip: "part of the browser upload-staging flow (/api/agent-upload), which has no MCP equivalent",
 		TS:      "attachments",

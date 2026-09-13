@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS agents (
   notes        TEXT NOT NULL DEFAULT '',
   attachments  TEXT NOT NULL DEFAULT '[]',
   plan_mode    INTEGER NOT NULL DEFAULT 0,
+  advisor      INTEGER NOT NULL DEFAULT 0,
   work_dir     TEXT NOT NULL DEFAULT '',
   workspace_id TEXT NOT NULL DEFAULT '',
   root_pane    TEXT NOT NULL DEFAULT '',
@@ -164,6 +165,7 @@ func openDB() error {
 		`ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN extra_args TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN advisor INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agents ADD COLUMN boot_status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN boot_error TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''`,
@@ -535,11 +537,12 @@ func appendAgent(host string, rec AgentRecord) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO agents(id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args,
-			description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at,
+			description, notes, attachments, plan_mode, advisor, work_dir, workspace_id, root_pane, created_at,
 			boot_status, boot_error)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.ID, host, rec.Title, rec.Type, rec.Repo, rec.BaseBranch, rec.Branch, rec.Agent,
 		rec.Model, rec.Effort, rec.ExtraArgs, rec.Description, rec.Notes, string(att), boolToInt(rec.PlanMode),
+		boolToInt(rec.Advisor),
 		rec.WorkDir, rec.WorkspaceID, rec.RootPane, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.BootStatus, rec.BootError)
 	return err
@@ -619,22 +622,23 @@ func updateAgentBootStatus(id, host, status, bootErr string) error {
 // order. Named explicitly (never SELECT *) so an older lasso reading a newer
 // db's table keeps working.
 const agentCols = `id, host, title, type, repo, base_branch, branch, agent, model, effort, extra_args,
-	description, notes, attachments, plan_mode, work_dir, workspace_id, root_pane, created_at,
+	description, notes, attachments, plan_mode, advisor, work_dir, workspace_id, root_pane, created_at,
 	boot_status, boot_error, closed_at`
 
 // scanAgentRow reads one agentCols row into an AgentRecord (Host included).
 func scanAgentRow(rows *sql.Rows) (AgentRecord, error) {
 	var rec AgentRecord
 	var att, created string
-	var plan int
+	var plan, advisor int
 	if err := rows.Scan(&rec.ID, &rec.Host, &rec.Title, &rec.Type, &rec.Repo, &rec.BaseBranch,
 		&rec.Branch, &rec.Agent, &rec.Model, &rec.Effort, &rec.ExtraArgs, &rec.Description, &rec.Notes,
-		&att, &plan, &rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created,
+		&att, &plan, &advisor, &rec.WorkDir, &rec.WorkspaceID, &rec.RootPane, &created,
 		&rec.BootStatus, &rec.BootError, &rec.ClosedAt); err != nil {
 		return AgentRecord{}, err
 	}
 	_ = json.Unmarshal([]byte(att), &rec.Attachments)
 	rec.PlanMode = plan != 0
+	rec.Advisor = advisor != 0
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	return rec, nil
 }
