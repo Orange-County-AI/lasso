@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react"
 import * as React from "react"
-
+import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -319,8 +319,17 @@ function ToolGroup({ calls }: { calls: ChatTool[] }) {
 
 // ThinkingRow is folded by default with its first line as the preview — the
 // reasoning is worth having and not worth reading first.
-function ThinkingRow({ text }: { text: string }) {
+function ThinkingRow({
+  text,
+  resolveImage,
+}: {
+  text: string
+  resolveImage?: (src: string | undefined) => string | undefined
+}) {
   const [open, setOpen] = React.useState(false)
+  // The preview is the plan text's opening words, so it has to be the SOURCE
+  // line rather than a rendered one — markdown has no "first line" once it is
+  // elements.
   const preview = text.split("\n")[0]?.slice(0, 140) ?? ""
   return (
     <div>
@@ -343,15 +352,23 @@ function ThinkingRow({ text }: { text: string }) {
         )}
       </button>
       {open && (
-        <div className="mt-1.5 whitespace-pre-wrap border-border border-l-2 pl-3 text-[12.5px] text-muted-foreground leading-relaxed">
-          {text}
+        <div className="mt-1.5 border-border border-l-2 pl-3">
+          <div className="md-body md-chat md-chat-soft">
+            <Markdown source={text} resolveImageSrc={resolveImage} />
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function RowView({ row }: { row: Row }) {
+function RowView({
+  row,
+  resolveImage,
+}: {
+  row: Row
+  resolveImage?: (src: string | undefined) => string | undefined
+}) {
   if (row.kind === "group") return <ToolGroup calls={row.calls} />
   const item = row.item
   switch (item.kind) {
@@ -365,10 +382,15 @@ function RowView({ row }: { row: Row }) {
       )
     case "agent":
       return item.thinking ? (
-        <ThinkingRow text={item.text ?? ""} />
+        <ThinkingRow text={item.text ?? ""} resolveImage={resolveImage} />
       ) : (
-        <div className="whitespace-pre-wrap break-words text-[13.5px] text-foreground leading-relaxed">
-          {item.text}
+        // Rendered, not printed: an agent writes headings, lists, tables and
+        // fenced code, and showing the source of those is showing the wrong
+        // thing. md-chat drops the document chrome (page padding, max-width,
+        // centring) and steps the type down to the conversation's size; every
+        // inner rule is shared with the file viewer's preview.
+        <div className="md-body md-chat">
+          <Markdown source={item.text ?? ""} resolveImageSrc={resolveImage} />
         </div>
       )
     case "tool":
@@ -443,7 +465,10 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
         setText("")
       } else if (res.outcome === "refused") {
         // Nothing reached the pane, so the draft is exactly as unsent as it was.
-        setNotice({ tone: "bad", text: res.detail || "the message was refused" })
+        setNotice({
+          tone: "bad",
+          text: res.detail || "the message was refused",
+        })
       } else {
         setNotice({
           tone: "warn",
@@ -537,6 +562,20 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
   }, [rows])
 
   const running = data?.running ?? false
+
+  // A relative path in an agent's prose is relative to WHERE IT IS WORKING, on
+  // the machine it is working on — so resolve it the same way the file viewer
+  // resolves one in a README, through /api/file on the session's own host. A
+  // stable identity matters: it decides the markdown components map, and a new
+  // one per render would rebuild every diagram on every poll.
+  const cwd = data?.cwd
+  const dataHost = data?.host
+  const resolveImage = React.useCallback(
+    (src: string | undefined) =>
+      cwd ? resolveMarkdownSrc(src, `${cwd}/`, dataHost ?? null) : src,
+    [cwd, dataHost]
+  )
+
   return (
     // vsurface: this overlay COVERS the terminal, and under the atmosphere
     // --background is a 62% wash — so herdr's tab bar, its status line and the
@@ -603,6 +642,7 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           <RowView
             key={row.kind === "group" ? row.id : row.item.id}
             row={row}
+            resolveImage={resolveImage}
           />
         ))}
       </div>

@@ -279,6 +279,9 @@ export interface ChatPayload {
   host: string
   title?: string
   model?: string
+  // The directory the session works in, so a relative image in an agent's prose
+  // resolves against the folder it meant.
+  cwd?: string
   items: ChatItem[]
   // The newest turn's prompt size. A count and not a percentage: the window is
   // the model's, and lasso does not guess it.

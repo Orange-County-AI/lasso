@@ -123,9 +123,13 @@ type chatPayload struct {
 	// address a submission back to THAT host rather than to whichever host its
 	// tab has since moved to: pane ids are unique per host only, so a message
 	// aimed at "w1:p1" from the wrong host lands in a different agent's pane.
-	Host  string     `json:"host"`
-	Title string     `json:"title,omitempty"`
-	Model string     `json:"model,omitempty"`
+	Host  string `json:"host"`
+	Title string `json:"title,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Cwd is the directory the session is working in, so a relative image an
+	// agent wrote into its prose ("![](docs/arch.png)") resolves against the
+	// machine and folder it MEANT rather than against lasso's own origin.
+	Cwd   string     `json:"cwd,omitempty"`
 	Items []chatItem `json:"items"`
 	// Tokens is the newest assistant turn's prompt size, the honest half of a
 	// context meter: the window size is the model's, and lasso does not guess
@@ -848,6 +852,7 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		PaneID: p.PaneID,
 		Agent:  p.Agent,
 		Host:   be.Name(),
+		Cwd:    paneCwd(p),
 		Title:  cleanPaneTitle(p.TerminalTitleStripped),
 	}
 	path := paneTranscriptPath(p)
