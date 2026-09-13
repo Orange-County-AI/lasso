@@ -1,0 +1,715 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// chatTranscript joins fixture lines the way the file stores them: one JSON
+// record per line, newline-terminated.
+func chatTranscript(lines ...string) []byte {
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// The shapes here are copied from real omp transcripts: the tool call is a
+// block inside an assistant message, and its result is a separate later record
+// keyed by toolCallId.
+const (
+	recUser   = `{"type":"message","id":"u1","timestamp":"2026-09-13T03:43:10.000Z","message":{"role":"user","content":[{"type":"text","text":"make the tests pass"}]}}`
+	recHeader = `{"type":"session","version":3,"id":"s1","cwd":"/w","title":"Fix the tests"}`
+)
+
+func TestParseChatTranscriptShapes(t *testing.T) {
+	parsed := parseChatTranscript(chatTranscript(
+		recHeader,
+		recUser,
+		`{"type":"message","id":"a1","timestamp":"2026-09-13T03:43:11.000Z","message":{"role":"assistant","model":"gpt-5","stopReason":"toolUse","contextSnapshot":{"promptTokens":1234},"content":[`+
+			`{"type":"thinking","thinking":"**Considering the failing case**"},`+
+			`{"type":"text","text":"Running the suite."},`+
+			`{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"go test ./...","i":"Running the test suite","timeout":300}}]}}`,
+		// The result lands before the call in some sessions; it must still reach
+		// the same card rather than reading as an orphan.
+		`{"type":"message","id":"r1","timestamp":"2026-09-13T03:43:14.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","isError":false,"details":"{'timeoutSeconds': 300, 'wallTimeMs': 117.5}","content":[{"type":"text","text":"ok  \tlasso\t1.2s\nPASS"}]}}`,
+		`{"type":"message","id":"e1","timestamp":"2026-09-13T03:43:20.000Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Done."}]}}`,
+	))
+
+	if parsed.title != "Fix the tests" {
+		t.Errorf("title = %q, want the session title", parsed.title)
+	}
+	if parsed.model != "gpt-5" || parsed.tokens != 1234 {
+		t.Errorf("model/tokens = %q/%d, want gpt-5/1234", parsed.model, parsed.tokens)
+	}
+	if parsed.run {
+		t.Error("run = true after a clean stop, want false")
+	}
+
+	var user, thinking, tool *chatItem
+	for i := range parsed.items {
+		switch {
+		case parsed.items[i].Kind == "user":
+			user = &parsed.items[i]
+		case parsed.items[i].Thinking:
+			thinking = &parsed.items[i]
+		case parsed.items[i].Tool != nil:
+			tool = &parsed.items[i]
+		}
+	}
+	if user == nil || user.Text != "make the tests pass" {
+		t.Fatalf("user item = %+v, want the prompt", user)
+	}
+	if thinking == nil || !strings.Contains(thinking.Text, "Considering") {
+		t.Fatalf("thinking item = %+v, want the thinking block", thinking)
+	}
+	if tool == nil {
+		t.Fatal("no tool card for the bash call")
+	}
+	// The model's own intent is the better label, and the command survives for
+	// the expanded body.
+	if tool.Tool.Subject != "Running the test suite" {
+		t.Errorf("subject = %q, want the call intent", tool.Tool.Subject)
+	}
+	if tool.Tool.Command != "go test ./..." {
+		t.Errorf("command = %q, want the raw command", tool.Tool.Command)
+	}
+	if tool.Tool.Title != "Bash" {
+		t.Errorf("title = %q, want the card heading", tool.Tool.Title)
+	}
+	if tool.Tool.State != "completed" {
+		t.Errorf("state = %q, want completed — the out-of-order result did not bind", tool.Tool.State)
+	}
+	if !strings.Contains(tool.Tool.Output, "PASS") {
+		t.Errorf("output = %q, want the command output", tool.Tool.Output)
+	}
+	if tool.Tool.ResultLine != "2 lines" {
+		t.Errorf("result line = %q, want a line count", tool.Tool.ResultLine)
+	}
+	if tool.Tool.DurationMS != 117 {
+		t.Errorf("duration = %d, want 117ms read out of the details blob", tool.Tool.DurationMS)
+	}
+}
+
+// A running card is the only thing that should light the working indicator when
+// the turn never stopped.
+func TestParseChatTranscriptRunning(t *testing.T) {
+	parsed := parseChatTranscript(chatTranscript(
+		recUser,
+		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"sleep 90"}}]}}`,
+	))
+	if !parsed.run {
+		t.Error("run = false with an unsettled tool call, want true")
+	}
+	if got := parsed.items[len(parsed.items)-1].Tool.State; got != "running" {
+		t.Errorf("tool state = %q, want running", got)
+	}
+}
+
+func TestParseChatTranscriptDiffs(t *testing.T) {
+	// A write is excerpted to the head of the file plus a marker saying how much
+	// was dropped, so a card can never become the file.
+	content := strings.Join([]string{"1", "2", "3", "4", "5"}, "\n")
+	write := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"/home/x/proj/src/main.go","content":` +
+		jsonString(content) + `}}]}}`
+	parsed := parseChatTranscript(chatTranscript(write))
+	tool := parsed.items[0].Tool
+	if tool.Subject != "…/proj/src/main.go" {
+		t.Errorf("subject = %q, want the abbreviated path", tool.Subject)
+	}
+	if tool.Family != "write" {
+		t.Errorf("family = %q, want write", tool.Family)
+	}
+	if got := len(tool.Diff); got != 5 {
+		t.Fatalf("diff rows = %d, want one per line", got)
+	}
+	if tool.Diff[0].Kind != "add" {
+		t.Errorf("diff row kind = %q, want add", tool.Diff[0].Kind)
+	}
+
+	// omp's older single-string patch: a bracketed header, then "PUT <range>:"
+	// blocks each followed by the lines to write at that range.
+	edit := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c2","name":"edit","arguments":{"i":"Fixing the header","input":` +
+		jsonString("[AGENTS.md#CB11]\nPUT 57.=58:\n+first new line\n+second new line\n") + `}}]}}`
+	parsed = parseChatTranscript(chatTranscript(edit))
+	tool = parsed.items[0].Tool
+	if tool.Subject != "AGENTS.md" {
+		t.Errorf("subject = %q, want the path parsed out of the patch header", tool.Subject)
+	}
+	if len(tool.Diff) != 3 {
+		t.Fatalf("diff = %+v, want the two added lines under their operation", tool.Diff)
+	}
+	if tool.Diff[0].Kind != "context" || tool.Diff[0].Text != "PUT 57.=58" {
+		t.Errorf("first row = %+v, want the operation as context", tool.Diff[0])
+	}
+	if tool.Diff[1].Kind != "add" || tool.Diff[1].Text != "first new line" {
+		t.Errorf("added row = %+v, want the body line without its marker", tool.Diff[1])
+	}
+}
+
+// A long patch is excerpted, and says that it was.
+func TestParseChatTranscriptCapsDiff(t *testing.T) {
+	var body []string
+	body = append(body, "[a/b.md#1]", "PUT 1.=40:")
+	for i := 0; i < 40; i++ {
+		body = append(body, "+line "+itoa(i))
+	}
+	edit := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"stop","content":[{"type":"toolCall","id":"c1","name":"edit","arguments":{"input":` +
+		jsonString(strings.Join(body, "\n")) + `}}]}}`
+	parsed := parseChatTranscript(chatTranscript(edit))
+	diff := parsed.items[0].Tool.Diff
+	if len(diff) != chatDiffLines+1 {
+		t.Fatalf("diff rows = %d, want %d kept plus the overflow marker", len(diff), chatDiffLines)
+	}
+	last := diff[len(diff)-1]
+	if last.Kind != "context" || !strings.Contains(last.Text, "more lines") {
+		t.Errorf("last row = %+v, want an overflow marker", last)
+	}
+}
+
+// A provider-backed call is stored as "<call id>|<response item id>" but its
+// result names only the call id, so matching on the raw id leaves every such
+// card stuck at "running" — which is how the unfixed reader rendered a whole
+// live session.
+func TestParseChatTranscriptPipedCallIDs(t *testing.T) {
+	parsed := parseChatTranscript(chatTranscript(
+		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"call_01_ET_abc|fc_0bb1cbfe","name":"bash","arguments":{"command":"ls","i":"Listing"}}]}}`,
+		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"call_01_ET_abc","toolName":"bash","content":[{"type":"text","text":"a.go\nb.go"}]}}`,
+	))
+	tool := parsed.items[len(parsed.items)-1].Tool
+	if tool.State != "completed" {
+		t.Fatalf("state = %q, want completed — the piped id did not match its result", tool.State)
+	}
+	if !strings.Contains(tool.Output, "b.go") {
+		t.Errorf("output = %q, want the result body", tool.Output)
+	}
+}
+
+// omp writes a tool's details as a JSON object for some tools and a Python-repr
+// string for others. A typed field threw the entire record away on the shape it
+// did not expect, which dropped every tool result in a live session.
+func TestParseChatTranscriptDetailsShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		details string
+		wantMS  int
+	}{
+		{"object", `{"timeoutSeconds":300,"wallTimeMs":117.5}`, 117},
+		{"python repr string", `"{'timeoutSeconds': 300, 'wallTimeMs': 42.9}"`, 42},
+		{"absent", ``, 0},
+		{"unreadable", `"not a dict at all"`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			details := `"details":` + tc.details + `,`
+			if tc.details == "" {
+				details = ""
+			}
+			parsed := parseChatTranscript(chatTranscript(
+				`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}`,
+				`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1",`+details+`"content":[{"type":"text","text":"ok"}]}}`,
+			))
+			tool := parsed.items[len(parsed.items)-1].Tool
+			if tool.State != "completed" {
+				t.Fatalf("state = %q, want completed — record dropped over its details shape", tool.State)
+			}
+			if tool.DurationMS != tc.wantMS {
+				t.Errorf("duration = %d, want %d", tool.DurationMS, tc.wantMS)
+			}
+		})
+	}
+}
+
+// An errored call reports the failure itself, and marks the card.
+func TestParseChatTranscriptErrorResult(t *testing.T) {
+	parsed := parseChatTranscript(chatTranscript(
+		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}]}}`,
+		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1","isError":true,"content":[{"type":"text","text":"boom\nstack line"}]}}`,
+	))
+	tool := parsed.items[len(parsed.items)-1].Tool
+	if tool.State != "error" || tool.Error != "boom" {
+		t.Errorf("state/error = %q/%q, want error with the first output line", tool.State, tool.Error)
+	}
+}
+
+// The same failure repeated is one row, not two hundred.
+func TestParseChatTranscriptCollapsesRepeatedMarkers(t *testing.T) {
+	rec := func(id string) string {
+		return `{"type":"message","id":"` + id + `","message":{"role":"assistant","stopReason":"error","errorMessage":"No API key for provider: anthropic","content":[]}}`
+	}
+	parsed := parseChatTranscript(chatTranscript(recUser, rec("e1"), rec("e2"), rec("e3")))
+	var markers []chatItem
+	for _, it := range parsed.items {
+		if it.Kind == "marker" {
+			markers = append(markers, it)
+		}
+	}
+	if len(markers) != 1 {
+		t.Fatalf("markers = %d, want the run collapsed to one", len(markers))
+	}
+	if markers[0].Count != 3 {
+		t.Errorf("count = %d, want 3", markers[0].Count)
+	}
+}
+
+// An interruption is worth a row; omp's own silent-abort sentinel is not — that
+// one is how a turn ends when the user simply stopped it.
+func TestParseChatTranscriptAbortMarkers(t *testing.T) {
+	loud := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"aborted","content":[]}}`
+	silent := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"aborted","errorMessage":"__omp.silent_abort__","content":[]}}`
+
+	parsed := parseChatTranscript(chatTranscript(loud))
+	if n := len(parsed.items); n != 1 || parsed.items[0].Marker != "interrupted" {
+		t.Errorf("items = %+v, want one interrupted marker", parsed.items)
+	}
+	parsed = parseChatTranscript(chatTranscript(silent))
+	if len(parsed.items) != 0 {
+		t.Errorf("items = %+v, want nothing for a silent abort", parsed.items)
+	}
+}
+
+func TestParseChatTranscriptCapsHistory(t *testing.T) {
+	lines := []string{recUser}
+	for i := 0; i < chatMaxItems+20; i++ {
+		lines = append(lines, `{"type":"message","id":"m`+itoa(i)+`","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"line `+itoa(i)+`"}]}}`)
+	}
+	parsed := parseChatTranscript(chatTranscript(lines...))
+	if len(parsed.items) != chatMaxItems {
+		t.Errorf("items = %d, want the cap of %d", len(parsed.items), chatMaxItems)
+	}
+	if !parsed.more {
+		t.Error("more = false after dropping history, want true")
+	}
+	// The newest rows are the ones kept.
+	last := parsed.items[len(parsed.items)-1]
+	if last.Text != "line 139" {
+		t.Errorf("newest item = %q, want the last line", last.Text)
+	}
+}
+
+// Only a pane that is actually running a harness whose transcript herdr named
+// outright is chat-viewable.
+func TestPaneTranscriptPath(t *testing.T) {
+	base := pane{
+		PaneID: "w1:p1",
+		Agent:  "omp",
+		AgentSession: &agentSession{
+			Source: "herdr:omp", Agent: "omp", Kind: "path",
+			Value: "/home/u/.omp/agent/sessions/-proj/2026-09-13T03-43-04-614Z_01a0.jsonl",
+		},
+	}
+	if got := paneTranscriptPath(base); got == "" {
+		t.Error("a live omp pane with a path session should resolve")
+	}
+
+	exited := base
+	exited.Agent = "" // herdr keeps agent_session after the agent exits
+	if got := paneTranscriptPath(exited); got != "" {
+		t.Errorf("exited pane = %q, want no transcript", got)
+	}
+
+	byID := base
+	byID.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: "24a7c912-71da"}
+	if got := paneTranscriptPath(byID); got != "" {
+		t.Errorf("id-only session = %q, want no transcript", got)
+	}
+
+	nosession := base
+	nosession.AgentSession = nil
+	if got := paneTranscriptPath(nosession); got != "" {
+		t.Errorf("session-less pane = %q, want no transcript", got)
+	}
+
+	// The value reaches a filesystem read, so anything but an absolute .jsonl
+	// is refused rather than joined into a path.
+	for _, bad := range []string{"../../etc/passwd", "/etc/passwd", "relative.jsonl", ""} {
+		p := base
+		p.AgentSession = &agentSession{Agent: "omp", Kind: "path", Value: bad}
+		if got := paneTranscriptPath(p); got != "" {
+			t.Errorf("value %q = %q, want refused", bad, got)
+		}
+	}
+}
+
+// jsonString renders a Go string as a JSON string literal for a fixture.
+func jsonString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var d []byte
+	for i > 0 {
+		d = append([]byte{byte('0' + i%10)}, d...)
+		i /= 10
+	}
+	return string(d)
+}
+
+// chatFakeBackend stands up the herdr surface serveChat reads: pane.list
+// carrying an omp agent_session, and a real filesystem for the transcript, so
+// the Stat/Open path the handler uses is exercised rather than stubbed.
+type chatFakeBackend struct {
+	Backend
+	panes []string // pane.list bodies, pre-encoded
+}
+
+func (b *chatFakeBackend) Name() string { return "local" }
+
+func (b *chatFakeBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	if method != "pane.list" {
+		return nil, fmt.Errorf("unexpected herdr method %q", method)
+	}
+	return json.RawMessage(`{"panes":[` + strings.Join(b.panes, ",") + `]}`), nil
+}
+
+func (b *chatFakeBackend) Stat(p string) (fs.FileInfo, error) { return os.Stat(p) }
+func (b *chatFakeBackend) Open(p string) (io.ReadSeekCloser, error) {
+	return os.Open(p)
+}
+
+// chatPane renders one pane.list entry with an omp path session.
+func chatPane(id, path string, focused bool) string {
+	return fmt.Sprintf(
+		`{"pane_id":%q,"focused":%t,"agent":"omp","agent_status":"idle","terminal_title_stripped":"Fix the tests",`+
+			`"agent_session":{"source":"herdr:omp","agent":"omp","kind":"path","value":%q}}`,
+		id, focused, path)
+}
+
+func TestServeChat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-09-13T03-43-04-614Z_abc.jsonl")
+	body := chatTranscript(recHeader, recUser,
+		`{"type":"message","id":"a1","message":{"role":"assistant","model":"gpt-5","stopReason":"stop","content":[{"type":"text","text":"All green."}]}}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	be := &chatFakeBackend{panes: []string{
+		chatPane("w1:p1", path, false),
+		chatPane("w1:p2", filepath.Join(dir, "missing.jsonl"), true),
+	}}
+	prev := defaultBackend()
+	setDefaultBackend(be)
+	t.Cleanup(func() { setDefaultBackend(prev) })
+
+	get := func(query string) (*httptest.ResponseRecorder, chatPayload) {
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
+		var out chatPayload
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode %q: %v", rec.Body.String(), err)
+			}
+		}
+		return rec, out
+	}
+
+	// An explicit pane reads that pane's transcript.
+	rec, out := get("?pane=w1:p1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	if out.PaneID != "w1:p1" || out.Agent != "omp" {
+		t.Errorf("pane/agent = %q/%q, want w1:p1/omp", out.PaneID, out.Agent)
+	}
+	// The host rides with the rows: the composer addresses a submission back to
+	// the machine they came from, and pane ids are unique per host only.
+	if out.Host != "local" {
+		t.Errorf("host = %q, want the resolved backend's name", out.Host)
+	}
+	if out.Title != "Fix the tests" {
+		t.Errorf("title = %q, want the session's own title", out.Title)
+	}
+	if out.Model != "gpt-5" {
+		t.Errorf("model = %q, want the model off the assistant record", out.Model)
+	}
+	if len(out.Items) != 2 || out.Items[0].Kind != "user" || out.Items[1].Text != "All green." {
+		t.Errorf("items = %+v, want the prompt and the reply", out.Items)
+	}
+	if out.Running {
+		t.Error("running = true after a clean stop")
+	}
+
+	// With no pane named it follows the focused one, and a transcript that is
+	// not there yet is a note, not an error — the panel is open on a pane whose
+	// agent has not written anything.
+	rec, out = get("")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("focused status = %d, want 200", rec.Code)
+	}
+	if out.PaneID != "w1:p2" || out.Note == "" || len(out.Items) != 0 {
+		t.Errorf("focused = %+v, want the focus pane with a note and no items", out)
+	}
+
+	rec, _ = get("?pane=nope")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown pane status = %d, want 404", rec.Code)
+	}
+}
+
+// A pane running a harness lasso cannot read yet says so, rather than showing
+// an empty conversation that looks like a broken view.
+func TestServeChatUnreadableSession(t *testing.T) {
+	be := &chatFakeBackend{panes: []string{
+		`{"pane_id":"w1:p1","focused":true,"agent":"claude","agent_status":"idle",` +
+			`"agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"24a7c912"}}`,
+	}}
+	prev := defaultBackend()
+	setDefaultBackend(be)
+	t.Cleanup(func() { setDefaultBackend(prev) })
+
+	rec := httptest.NewRecorder()
+	serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
+	var out chatPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Note == "" {
+		t.Error("note is empty for an id-only session, want an explanation")
+	}
+}
+
+// A pane title carries the agent's live status glyphs, one of which is an
+// animation frame — a header built from the raw title flickers and rewrites
+// itself on every poll.
+func TestCleanPaneTitle(t *testing.T) {
+	cases := map[string]string{
+		"π ⠴ Implement chat transcript backend": "Implement chat transcript backend",
+		"✳ Check Norm outline wiki connection":  "Check Norm outline wiki connection",
+		"Go 1.22 upgrade":                       "Go 1.22 upgrade",
+		"dev@norm: ~/projects/norm":             "dev@norm: ~/projects/norm",
+		"⠋ ⠙":                                   "",
+		"":                                      "",
+	}
+	for in, want := range cases {
+		if got := cleanPaneTitle(in); got != want {
+			t.Errorf("cleanPaneTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// chatSendBackend emulates a pane's composer the way msgPaneBackend does: the
+// pasted text is drawn into the harness's composer box, and Enter clears it.
+// The knobs reproduce the two failures that matter — a pane that refuses the
+// write, and one that swallows it without ever drawing it.
+type chatSendBackend struct {
+	Backend
+	paneID string
+	agent  string
+	screen string // the composer line as currently drawn
+	// failSend stands in for a pane that never saw the bytes: the RPC fails.
+	failSend bool
+	// applyThenFail models the case the sender must not confuse with the one
+	// above — herdrCallSock writes the request BEFORE reading the reply, so a
+	// timeout or an unreadable answer can arrive after the pane has already
+	// been typed into. The screen changes and THEN the call errors.
+	applyThenFail bool
+	// ignorePaste accepts the bytes and never draws them — the case where a
+	// "sent" report would be a lie.
+	ignorePaste bool
+	writes      []string
+}
+
+func (b *chatSendBackend) Name() string { return "local" }
+
+// ompComposer draws a real omp composer footer, which is what detectComposer
+// parses: "╰─ <text> ─╯". An EMPTY composer is the bare footer — a wrapped body
+// row ("│ … │") above it is what the detector reads as content, so it must not
+// be drawn when there is none.
+func (b *chatSendBackend) ompComposer(text string) string {
+	if text == "" {
+		return "some transcript\n╰─  ─╯"
+	}
+	return "some transcript\n╰─ " + text + " ─╯"
+}
+
+func (b *chatSendBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	p, _ := params.(map[string]any)
+	switch method {
+	case "pane.list":
+		return json.RawMessage(fmt.Sprintf(
+			`{"panes":[{"pane_id":%q,"focused":true,"agent":%q,"agent_status":"idle"}]}`,
+			b.paneID, b.agent)), nil
+	case "pane.read":
+		return json.RawMessage(fmt.Sprintf(`{"read":{"text":%q}}`, b.screen)), nil
+	case "pane.send_text":
+		text, _ := p["text"].(string)
+		if b.failSend {
+			return nil, fmt.Errorf("pane is gone")
+		}
+		b.writes = append(b.writes, text)
+		if text == "\r" {
+			b.screen = b.ompComposer("")
+		} else if !b.ignorePaste {
+			b.screen = b.ompComposer(text)
+		}
+		if b.applyThenFail {
+			return nil, fmt.Errorf("i/o timeout reading reply")
+		}
+		return json.RawMessage(`{}`), nil
+	}
+	return nil, fmt.Errorf("unexpected herdr method %q", method)
+}
+
+func withFastSubmit(t *testing.T) {
+	t.Helper()
+	paste, enter, poll := chatPasteWait, chatEnterWait, chatPollWait
+	chatPasteWait, chatEnterWait, chatPollWait = 300*time.Millisecond, 400*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { chatPasteWait, chatEnterWait, chatPollWait = paste, enter, poll })
+}
+
+// A pasted message that appears in the composer and then clears it is the only
+// thing this can call delivered — and it must be addressable without touching
+// herdr's focus.
+func TestChatSubmitConfirmed(t *testing.T) {
+	withFastSubmit(t)
+	b := &chatSendBackend{paneID: "w1:p1", agent: "omp"}
+	b.screen = b.ompComposer("")
+	if outcome, detail := chatSubmit(b, "w1:p1", "omp", "hello agent"); outcome != chatSent {
+		t.Fatalf("outcome = %q (%s), want confirmed", outcome, detail)
+	}
+	if len(b.writes) < 2 || b.writes[0] != "hello agent" {
+		t.Errorf("writes = %q, want the message then Enter", b.writes)
+	}
+}
+
+// A pane holding a human's unsent input is refused before any byte is written.
+func TestChatSubmitRefusesOverDraft(t *testing.T) {
+	withFastSubmit(t)
+	b := &chatSendBackend{paneID: "w1:p1", agent: "omp"}
+	b.screen = b.ompComposer("half a thought the human is still typing")
+	outcome, _ := chatSubmit(b, "w1:p1", "omp", "hello agent")
+	if outcome != chatRefused {
+		t.Fatalf("outcome = %q, want refused", outcome)
+	}
+	if len(b.writes) != 0 {
+		t.Errorf("writes = %q, want none — a draft must not be clobbered", b.writes)
+	}
+}
+
+// A send RPC that fails is NOT proof the pane never saw the bytes: the request
+// goes out before the reply is read, so a timeout can hide a paste that landed.
+// The only safe report is "may have been sent".
+func TestChatSubmitTreatsSendErrorsAsUncertain(t *testing.T) {
+	withFastSubmit(t)
+	b := &chatSendBackend{paneID: "w1:p1", agent: "omp", failSend: true}
+	b.screen = b.ompComposer("")
+	outcome, detail := chatSubmit(b, "w1:p1", "omp", "hello agent")
+	if outcome != chatUncertain {
+		t.Fatalf("outcome = %q, want uncertain — a failed RPC is not a safe-to-retry answer", outcome)
+	}
+	if detail == "" {
+		t.Error("uncertain outcome carries no detail")
+	}
+}
+
+// The case that makes the rule above load-bearing: the pane APPLIES the paste
+// and the call still errors (herdrCallSock's read timeout / decode failure).
+// The message is really in the composer, so a "refused / nothing was written"
+// answer would be a lie a human could act on by resending.
+func TestChatSubmitNeverClaimsUnsentWhenPasteAppliedThenFailed(t *testing.T) {
+	withFastSubmit(t)
+	b := &chatSendBackend{paneID: "w1:p1", agent: "omp", applyThenFail: true}
+	b.screen = b.ompComposer("")
+	outcome, _ := chatSubmit(b, "w1:p1", "omp", "hello agent")
+	if outcome != chatUncertain {
+		t.Fatalf("outcome = %q, want uncertain", outcome)
+	}
+	// The delivery that the error hid is really there — this is what a wrong
+	// "refused" would have caused to be sent twice.
+	if !strings.Contains(b.screen, "hello agent") {
+		t.Fatalf("fixture is not exercising the case: %q", b.screen)
+	}
+}
+
+// Bytes accepted but never drawn are neither delivered nor safe to resend: the
+// message may be sitting in the pane, and a retry would duplicate the turn.
+// Crucially, Enter is NOT pressed in this case — an unconfirmed paste must not
+// be followed by a stream of returns into someone's agent.
+func TestChatSubmitUncertainWhenPasteNeverLands(t *testing.T) {
+	withFastSubmit(t)
+	b := &chatSendBackend{paneID: "w1:p1", agent: "omp", ignorePaste: true}
+	b.screen = b.ompComposer("")
+	outcome, detail := chatSubmit(b, "w1:p1", "omp", "hello agent")
+	if outcome != chatUncertain {
+		t.Fatalf("outcome = %q, want uncertain", outcome)
+	}
+	if detail == "" {
+		t.Error("uncertain outcome carries no detail")
+	}
+	for _, wr := range b.writes {
+		if wr == "\r" {
+			t.Fatalf("writes = %q, want no Enter after a paste that never landed", b.writes)
+		}
+	}
+}
+
+// The endpoint takes the harness from herdr's own pane metadata, never from the
+// caller, and refuses a pane this host does not have.
+func TestServeChatSendPaneResolution(t *testing.T) {
+	be := &chatSendBackend{paneID: "w1:p1", agent: "omp"}
+	be.screen = be.ompComposer("")
+	prev := defaultBackend()
+	setDefaultBackend(be)
+	t.Cleanup(func() { setDefaultBackend(prev) })
+	withFastSubmit(t)
+
+	post := func(body string) (*httptest.ResponseRecorder, map[string]string) {
+		rec := httptest.NewRecorder()
+		serveChatSend(rec, httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(body)))
+		var out map[string]string
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode %q: %v", rec.Body.String(), err)
+			}
+		}
+		return rec, out
+	}
+
+	rec, out := post(`{"pane_id":"w1:p1","text":"hello"}`)
+	if rec.Code != http.StatusOK || out["outcome"] != chatSent {
+		t.Fatalf("status/outcome = %d/%q, want 200/confirmed", rec.Code, out["outcome"])
+	}
+
+	rec, _ = post(`{"pane_id":"w9:p9","text":"hello"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown pane status = %d, want 404", rec.Code)
+	}
+
+	rec, _ = post(`{"pane_id":"w1:p1","text":"   "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("blank text status = %d, want 400", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	serveChatSend(rec, httptest.NewRequest(http.MethodGet, "/api/chat/send", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET status = %d, want 405", rec.Code)
+	}
+}

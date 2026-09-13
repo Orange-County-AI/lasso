@@ -38,14 +38,28 @@ type DialTarget = {
   command?: MobileCommand
 }
 
+// Five targets on one arc from straight up to straight left, evenly spaced at
+// r=220. Adding a target re-spaces the arc rather than crowding one end: the
+// points are close enough together that a 6th would overlap, and the labels are
+// drawn, so the geometry is read as much as it is remembered.
 const ROOT_TARGETS: readonly DialTarget[] = [
+  {
+    id: "chat",
+    label: "Chat",
+    glyph: "☰",
+    kind: "command",
+    command: "chat",
+    x: -6,
+    y: -219,
+    width: 78,
+  },
   {
     id: "input",
     label: "Input",
     glyph: "⌨︎",
     kind: "input",
-    x: -23,
-    y: -219,
+    x: -84,
+    y: -203,
   },
   {
     id: "new",
@@ -53,8 +67,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "+",
     kind: "command",
     command: "new",
-    x: -110,
-    y: -191,
+    x: -156,
+    y: -156,
     width: 78,
   },
   {
@@ -63,8 +77,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "◆",
     kind: "branch",
     branch: "app",
-    x: -180,
-    y: -126,
+    x: -203,
+    y: -84,
     width: 96,
   },
   {
@@ -74,7 +88,7 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     kind: "branch",
     branch: "keys",
     x: -219,
-    y: -23,
+    y: -6,
     width: 116,
   },
 ]

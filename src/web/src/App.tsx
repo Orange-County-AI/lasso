@@ -4,6 +4,7 @@ import {
   Globe,
   Keyboard,
   type LucideIcon,
+  MessageSquare,
   NotebookPen,
   PanelRightClose,
   PanelRightOpen,
@@ -17,6 +18,7 @@ import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { BrowserTab } from "@/components/BrowserTab"
+import { ChatView } from "@/components/ChatView"
 import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
@@ -61,6 +63,11 @@ type RightView =
   | "terminal"
   | "usage"
   | "settings"
+
+// The left column's two faces: the terminal, and the same session read as a
+// conversation (ChatView). Not a RightView — the sidebar and the left column
+// answer different questions, and the chat is about the pane, not the files.
+type LeftView = "terminal" | "chat"
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -178,6 +185,19 @@ export function App() {
 
 function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
+  // Which face of the focused pane the left column shows: the herdr terminal,
+  // or the agent session as a conversation. The terminal iframe stays MOUNTED
+  // and sized underneath either way — the chat is an overlay, not a swap — so
+  // the shared herdr pty keeps its width (and every other pane keeps its
+  // layout) while the chat is up, exactly as the mobile sidebar overlay does.
+  const [leftView, setLeftView] = React.useState<LeftView>("terminal")
+  const toggleLeftView = React.useCallback(() => {
+    setLeftView((v) => (v === "chat" ? "terminal" : "chat"))
+    // The dial lives inside the terminal iframe, so a command from it arrives
+    // while xterm holds focus; hand it back on the way out or the next
+    // keystroke lands in a terminal nobody is looking at.
+    focusHerdrTerminal()
+  }, [])
   const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newOpen, setNewOpen] = React.useState(false)
@@ -325,6 +345,10 @@ function Shell() {
         toggleSidebar()
       } else if (command === "host") {
         openHostMenu()
+      } else if (command === "chat") {
+        // The dial's only route to the chat: on a phone the footer that carries
+        // this control on the desktop is hidden, and the dial is the chrome.
+        toggleLeftView()
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
         // chord a software keyboard can't type, and openHerdrGoto hands the
@@ -335,7 +359,7 @@ function Shell() {
     window.addEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
     return () =>
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
-  }, [toggleSidebar, openNew, openHostMenu])
+  }, [toggleSidebar, openNew, openHostMenu, toggleLeftView])
 
   // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
   // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
@@ -443,6 +467,18 @@ function Shell() {
                 inputMode="herdr"
                 hidden={false}
               />
+              {/* The chat covers the terminal without unmounting it. That is
+                  what keeps the shared pty's size (a hidden iframe would refit
+                  it to nothing and reflow every other pane), and it is also
+                  what "replaces" the mobile input dial: the dial lives inside
+                  that iframe's document, so an overlay puts it out of both
+                  sight and reach while the chat's own composer is the way to
+                  type. */}
+              {leftView === "chat" && (
+                <div className="absolute inset-0 z-20">
+                  <ChatView onShowTerminal={() => setLeftView("terminal")} />
+                </div>
+              )}
             </div>
           </ResizablePanel>
 
@@ -630,6 +666,23 @@ function Shell() {
         </div>
         <UsageFooter />
         <div className="ml-auto flex flex-none items-center gap-1">
+          {/* The label names where it goes, not where you are: one glance says
+              what the click does. Phones get this from the input dial's Chat
+              target instead — the footer is md+ only. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={leftView === "chat"}
+            title={
+              leftView === "chat"
+                ? "Back to the terminal"
+                : "Read this session as chat"
+            }
+            onClick={toggleLeftView}
+          >
+            {leftView === "chat" ? <SquareTerminal /> : <MessageSquare />}
+            {leftView === "chat" ? "Terminal" : "Chat"}
+          </Button>
           <Button
             variant="ghost"
             size="sm"

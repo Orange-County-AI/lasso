@@ -265,6 +265,8 @@ func runServer() {
 	mux.HandleFunc("/api/file-write", serveFileWrite)
 	mux.HandleFunc("/api/file-upload", serveFileUpload)
 	mux.HandleFunc("/api/panes", servePanes)
+	mux.HandleFunc("/api/chat", serveChat)
+	mux.HandleFunc("/api/chat/send", serveChatSend)
 	mux.HandleFunc("/api/all-panes", serveAllPanes)
 	mux.HandleFunc("/api/ui-state", serveUIState)
 	mux.HandleFunc("/api/clients", serveClients)
