@@ -21,6 +21,11 @@ import {
 import * as React from "react"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
 import { Orb } from "@/components/ui/orb"
+import {
+  newestUserID,
+  reconcileQueued,
+  type QueuedEcho,
+} from "@/lib/chat-queue"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -485,7 +490,20 @@ const draftsByTarget = new Map<string, string>()
 // whenever the iframe is not ready, and there is no way for the human to tell
 // that happened. Nothing here ever retries by itself; an uncertain send may
 // already have landed, and a second attempt would duplicate a turn.
-function Composer({ host, paneID }: { host: string; paneID: string }) {
+function Composer({
+  host,
+  paneID,
+  newestUser,
+  onQueued,
+}: {
+  host: string
+  paneID: string
+  // The transcript's newest user turn as of this render, captured when a send
+  // STARTS: a poll can land mid-send and see the row this send just created, and
+  // a snapshot taken after that would never match again.
+  newestUser: string
+  onQueued: (text: string, after: string) => void
+}) {
   const target = `${host}\u0000${paneID}`
   const ref = React.useRef<HTMLTextAreaElement>(null)
   const [text, setTextState] = React.useState(
@@ -554,6 +572,9 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
     // The paths go WITH the message, space-separated like the terminal's own
     // paste: the agent has to be told which file to open.
     const message = [body, ...paths].filter(Boolean).join(" ")
+    // Captured before the round trip: the transcript this send is about to add
+    // to is the one on screen NOW.
+    const after = newestUser
     setSending(true)
     setNotice(null)
     try {
@@ -561,6 +582,9 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
       if (res.outcome === "confirmed") {
         setText("")
         setAttachments([])
+        // The pane has it and the transcript does not yet: the echo is the only
+        // thing standing between "sent" and the row appearing.
+        onQueued(message, after)
       } else if (res.outcome === "refused") {
         // Nothing reached the pane, so the draft is exactly as unsent as it was
         // — attachments included, since their paths were never delivered.
@@ -696,7 +720,10 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
           className="flex size-9 flex-none items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
         >
           {sending ? (
-            <Loader2 className="size-4 animate-spin" />
+            // on="accent": this button is filled with the theme's accent, and
+            // the orb's own scheme detection reads the DOCUMENT, which is the
+            // wrong surface to choose ink for (see ui/orb.tsx).
+            <Orb state="working" px={16} on="accent" />
           ) : (
             <Send className="size-4" />
           )}
@@ -723,6 +750,11 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const stick = React.useRef(true)
+  // The reader's own position, as state rather than only the `stick` ref, because
+  // the header draws from it: the inline indicator sits at the END of the
+  // conversation, so a reader who has scrolled up cannot see it, and that is
+  // exactly when the header has to say the same thing. See `atBottom`'s use.
+  const [atBottom, setAtBottom] = React.useState(true)
 
   // Everything read so far, TAGGED with the target it was read from (host +
   // pane) and the transcript that answered. Tagged rather than cleared in an
@@ -769,6 +801,26 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
   const items = acc.items
   const hasMore =
     acc.olderStart === null ? (data?.more ?? false) : acc.olderStart > 0
+
+  // Messages the pane has ACCEPTED but whose row the transcript has not written
+  // yet. The composer clears its draft the moment a send is confirmed, and the
+  // row exists only once the harness records it — so without an echo the message
+  // vanishes for the seconds in between, which reads as "my prompt didn't send".
+  //
+  // Reconciled on the transcript's newest USER TURN rather than on the text (see
+  // newestUserID). The transcript is append-only, so once that id is no longer
+  // the one captured as the send started, a message has landed. The echoes that
+  // remain are re-pointed at it, so sending twice before either lands retires
+  // them one apiece instead of both at once.
+  const [queued, setQueued] = React.useState<QueuedEcho[]>([])
+  // A queued message has no transcript id to be keyed by — that is the whole
+  // point of it — so the tab numbers them.
+  const echoSeq = React.useRef(0)
+  const newestUser = React.useMemo(() => newestUserID(items), [items])
+  React.useEffect(() => {
+    if (!target) return
+    setQueued((prev) => reconcileQueued(prev, target, newestUser))
+  }, [newestUser, target])
 
   const loadOlder = React.useCallback(async () => {
     const before = acc.olderStart ?? data?.start_offset
@@ -824,7 +876,12 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
       restoreHeight.current = null
       return
     }
-    if (stick.current) el.scrollTop = el.scrollHeight
+    if (stick.current) {
+      el.scrollTop = el.scrollHeight
+      // Set here rather than waiting for the scroll event this queues: the
+      // header must not flash an indicator for a frame it is at the bottom for.
+      setAtBottom(true)
+    }
   }, [rows])
 
   // A page shorter than the viewport leaves scrollTop at 0 and fires no further
@@ -871,9 +928,13 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           {data?.title || data?.agent || "Chat"}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
-          {running && (
+          {/* Only when the reader is NOT at the bottom. At the bottom the
+              conversation carries the indicator itself, at the point the next
+              message will land, which is where someone waiting on output is
+              already looking — the header would just be the same orb twice. */}
+          {running && !atBottom && (
             <span className="flex items-center gap-1 text-primary">
-              <Loader2 className="size-3 animate-spin" />
+              <Orb state="working" px={14} />
               working
             </span>
           )}
@@ -888,7 +949,9 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          stick.current = near
+          setAtBottom(near)
           // Reaching the top loads the page above it, which is the whole
           // gesture: a conversation reads backwards by dragging, not by a
           // button.
@@ -913,7 +976,7 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
             could not read the session: {(error as Error).message}
           </div>
         )}
-        {!isLoading && !error && rows.length === 0 && (
+        {!isLoading && !error && rows.length === 0 && !running && (
           <div className="text-center text-[12px] text-muted-foreground">
             {data?.note || "No messages yet."}
           </div>
@@ -925,6 +988,39 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
             resolveImage={resolveImage}
           />
         ))}
+        {/* The message the pane has taken but the transcript has not written
+            yet, drawn exactly where its row will appear and in the user's own
+            bubble — a lighter, dashed one, so it reads as "on its way" rather
+            than as a message the session recorded. The working indicator below
+            it is where the agent's answer will land, which is the order the two
+            things actually happen in. */}
+        {queued
+          .filter((q) => q.target === target)
+          .map((q) => (
+            <div key={q.id} className="flex justify-end">
+              <div className="max-w-[85%] rounded-xl rounded-br-sm border border-primary/20 border-dashed bg-primary/8 px-3 py-2 text-[13.5px] text-foreground leading-snug opacity-60">
+                <div className="whitespace-pre-wrap break-words">
+                  {q.text}
+                </div>
+                <div className="mt-1 text-[10.5px] text-muted-foreground">
+                  queued…
+                </div>
+              </div>
+            </div>
+          ))}
+        {/* Where the agent's NEXT message will land. The header says the same
+            thing, but a view waiting on output should say it at the point the
+            output will appear — and that gap is seconds long every turn, since
+            the harness writes a message only once it is complete (see
+            src/chatview.go). Left-aligned like the agent rows it precedes, not
+            centred like the page-loading rows above: this one is a placeholder
+            in the conversation, not a note about the fetch. */}
+        {!isLoading && !error && running && (
+          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+            <Orb state="working" px={16} />
+            working…
+          </div>
+        )}
       </div>
 
       {/* The composer addresses the HOST and PANE this payload came from, not
@@ -938,6 +1034,13 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           key={`${data.host}\u0000${data.pane_id}`}
           host={data.host}
           paneID={data.pane_id}
+          newestUser={newestUser}
+          onQueued={(text, after) =>
+            setQueued((prev) => [
+              ...prev,
+              { id: echoSeq.current++, target, text, after },
+            ])
+          }
         />
       )}
     </div>
