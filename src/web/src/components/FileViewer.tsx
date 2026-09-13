@@ -1,13 +1,8 @@
 import { EditorView } from "@codemirror/view"
 import CodeMirror from "@uiw/react-codemirror"
-import type { ElementContent } from "hast"
 import { Eye, Pencil, Save, X } from "lucide-react"
 import * as React from "react"
-import ReactMarkdown, { type Components } from "react-markdown"
-import rehypeHighlight from "rehype-highlight"
-import rehypeRaw from "rehype-raw"
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
-import remarkGfm from "remark-gfm"
+import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
 import { Button } from "@/components/ui/button"
 import { Orb } from "@/components/ui/orb"
 import { api } from "@/lib/api"
@@ -265,10 +260,13 @@ export function FileViewer({
     return () => document.removeEventListener("keydown", onKey)
   }, [binary, save, requestClose])
 
-  // Rebuilt only when the file or its host moves: a new components object on
-  // every render would remount the entire preview tree (and every mermaid
+  // Rebuilt only when the file or its host moves: a new resolver identity on
+  // every render would rebuild the preview's components map (and every mermaid
   // diagram in it) on each keystroke in the raw editor.
-  const mdComps = React.useMemo(() => mdComponents(path, host), [path, host])
+  const resolveImage = React.useMemo(
+    () => (src: string | undefined) => resolveMarkdownSrc(src, path, host),
+    [path, host]
+  )
 
   // The binary preview URL, with a cache-bust suffix once the file has changed
   // on disk so the browser refetches instead of reusing the cached bytes.
@@ -363,17 +361,7 @@ export function FileViewer({
           </div>
         ) : markdown && preview ? (
           <div className="md-body">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[
-                rehypeRaw,
-                [rehypeSanitize, MD_SCHEMA],
-                rehypeHighlight,
-              ]}
-              components={mdComps}
-            >
-              {draft}
-            </ReactMarkdown>
+            <Markdown source={draft} resolveImageSrc={resolveImage} />
           </div>
         ) : (
           <CodeEditor
@@ -385,192 +373,6 @@ export function FileViewer({
         )}
       </div>
     </div>
-  )
-}
-
-// Recursively collect the text of a hast subtree. rehype-highlight has already
-// run by the time components render, so a fence's <code> may hold a tree of
-// tokenized <span>s rather than a single text node — we want the source back.
-function hastText(nodes: ElementContent[] | undefined): string {
-  if (!nodes) return ""
-  let out = ""
-  for (const n of nodes) {
-    if (n.type === "text") out += n.value
-    else if (n.type === "element") out += hastText(n.children)
-  }
-  return out
-}
-
-// A README is mostly HTML in practice -- <div align="center">, <img width=…>,
-// <picture> for theme-aware art -- and react-markdown drops raw HTML unless
-// rehype-raw puts it back. That means rendering markup out of whatever file the
-// user opened, so sanitizing is not optional: this origin holds /api/file (read
-// AND write, on any host lasso can drive) and an open /mcp, so one <script> in
-// someone's README would be running with all of it.
-//
-// Order matters. rehype-raw first (parse the HTML), sanitize second (drop
-// anything dangerous), rehype-highlight LAST -- highlighting after the
-// sanitizer means its <span class=hljs-*> survive instead of being stripped.
-const MD_SCHEMA = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    // Sizing and alignment are the whole reason a README reaches for HTML.
-    img: [
-      ...(defaultSchema.attributes?.img ?? []),
-      "width",
-      "height",
-      "loading",
-    ],
-    div: [...(defaultSchema.attributes?.div ?? []), "align"],
-    p: [...(defaultSchema.attributes?.p ?? []), "align"],
-    h1: [...(defaultSchema.attributes?.h1 ?? []), "align"],
-    h2: [...(defaultSchema.attributes?.h2 ?? []), "align"],
-    table: [...(defaultSchema.attributes?.table ?? []), "align"],
-  },
-  tagNames: [...(defaultSchema.tagNames ?? []), "picture", "source"],
-}
-
-// Resolve a markdown image against the FILE, not the browser.
-//
-// `docs/screenshots/diff.png` in a README is relative to that README's
-// directory on that README's machine. Left alone the browser resolves it
-// against lasso's own origin and asks the app for /docs/screenshots/diff.png,
-// which is a 404 and renders as a broken image -- so every relative image in
-// every repo silently failed to load. Route it through /api/file on the file's
-// own host instead, the same way the binary preview already does.
-function resolveMarkdownSrc(
-  src: string | undefined,
-  filePath: string,
-  host: string | null
-): string | undefined {
-  if (!src) return src
-  // Absolute URLs and inline data stay exactly as written.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//")) return src
-  const dir = filePath.slice(0, filePath.lastIndexOf("/")) || "/"
-  const joined = src.startsWith("/") ? src : `${dir}/${src}`
-  // Collapse . and .. so ../assets/x.png from a nested doc lands correctly;
-  // the backend takes an absolute path and does not resolve traversal for us.
-  const parts: string[] = []
-  for (const seg of joined.split("/")) {
-    if (!seg || seg === ".") continue
-    if (seg === "..") parts.pop()
-    else parts.push(seg)
-  }
-  return api.fileURL(`/${parts.join("/")}`, host ?? undefined)
-}
-
-// The only markdown component override: a ```mermaid fence renders as a diagram,
-// every other fence falls through to the untouched <pre> that rehype-highlight
-// produced. We hook <pre> rather than <code> so the diagram replaces the whole
-// block (a <div>/<svg> inside a <pre> is invalid nesting, and the code panel's
-// background would frame the diagram).
-function mdComponents(path: string, host: string | null) {
-  return {
-    pre({ node, children, ...rest }) {
-      const code = node?.children?.[0]
-      if (code?.type === "element" && code.tagName === "code") {
-        const cls = code.properties?.className
-        const langs = Array.isArray(cls) ? cls.map(String) : []
-        if (langs.includes("language-mermaid"))
-          return <MermaidDiagram chart={hastText(code.children)} />
-      }
-      return <pre {...rest}>{children}</pre>
-    },
-    // Covers both ![](x) and a raw <img> from rehype-raw: react-markdown routes
-    // the reconstructed HTML through this same components map.
-    img({ node, src, alt, ...rest }) {
-      return (
-        <img
-          {...rest}
-          // An <img> in a README often carries no alt; empty marks it decorative
-          // rather than leaving assistive tech to read out the file name.
-          alt={alt ?? ""}
-          src={resolveMarkdownSrc(
-            typeof src === "string" ? src : undefined,
-            path,
-            host
-          )}
-        />
-      )
-    },
-  } satisfies Components
-}
-
-// The resolved light/dark chrome, read off the html class that lib/mode.ts owns
-// (the single chokepoint for the OS-, user- and herdr-driven answers alike) and
-// kept live with an observer, since nothing publishes it to React.
-function useDarkChrome(): boolean {
-  const [dark, setDark] = React.useState(() =>
-    document.documentElement.classList.contains("dark")
-  )
-  React.useEffect(() => {
-    const el = document.documentElement
-    const obs = new MutationObserver(() =>
-      setDark(el.classList.contains("dark"))
-    )
-    obs.observe(el, { attributes: true, attributeFilter: ["class"] })
-    return () => obs.disconnect()
-  }, [])
-  return dark
-}
-
-// A rendered mermaid diagram. mermaid is a ~2.5MB parser+renderer, so it's
-// pulled in by a dynamic import inside the effect — a markdown file with no
-// mermaid in it never loads it. securityLevel "strict" is load-bearing: the
-// returned SVG is injected into the DOM and the markdown is untrusted repo
-// content, so labels are escaped and click/script directives are dropped.
-// suppressErrorRendering keeps mermaid from appending its own error graphic to
-// the document body when a diagram doesn't parse — we show the message
-// alongside the original source instead, so a bad block stays readable and
-// doesn't take the rest of the preview down.
-function MermaidDiagram({ chart }: { chart: string }) {
-  const dark = useDarkChrome()
-  const [svg, setSvg] = React.useState<string | null>(null)
-  const [err, setErr] = React.useState<string | null>(null)
-  // mermaid.render needs a DOM-id-safe, unique id; useId's own value contains
-  // colons, which break the selectors mermaid builds from it.
-  const id = `mmd-${React.useId().replace(/[^a-zA-Z0-9]/g, "")}`
-
-  React.useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const mermaid = (await import("mermaid")).default
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          suppressErrorRendering: true,
-          theme: dark ? "dark" : "default",
-        })
-        const { svg } = await mermaid.render(id, chart)
-        if (cancelled) return
-        setSvg(svg)
-        setErr(null)
-      } catch (e) {
-        if (cancelled) return
-        setSvg(null)
-        setErr(e instanceof Error ? e.message : String(e))
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [chart, dark, id])
-
-  if (err != null)
-    return (
-      <div className="md-mermaid-error">
-        <div className="md-mermaid-msg">mermaid: {err}</div>
-        <pre>
-          <code>{chart}</code>
-        </pre>
-      </div>
-    )
-  if (svg == null) return <div className="md-mermaid md-mermaid-loading" />
-  return (
-    // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid emits an SVG string, sanitized by its own securityLevel "strict"
-    <div className="md-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />
   )
 }
 

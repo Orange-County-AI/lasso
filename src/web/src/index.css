@@ -676,6 +676,25 @@
   margin-bottom: 0.4em;
 }
 
+/* The same rendered markdown, sized for a CONVERSATION rather than a document:
+   the reader is scrolling past it, not reading a page of it. Only the container
+   changes — padding, measure, centring and type size — so every inner rule
+   above (code, tables, lists, blockquotes, mermaid) is shared with the file
+   preview rather than restated here. */
+.md-body.md-chat {
+  padding: 0;
+  max-width: none;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+/* An agent's reasoning: context, not the answer. Steps down the container's own
+   colour and leaves headings, code and links their own rules, so the block
+   still reads as markdown with its syntax intact. */
+.md-body.md-chat-soft {
+  color: var(--h-muted);
+}
+
 /* diff viewer */
 .difflist {
   flex: 1 1 auto;

@@ -224,6 +224,91 @@ export interface PanesPayload {
   errors?: Record<string, string>
 }
 
+// One row of an agent session rendered as conversation (see src/chatview.go).
+// The server has already decided what a row SAYS — subject, truncation, diff
+// excerpt — so the renderer never reads a tool's raw arguments: their shapes
+// differ per harness and per tool, and a raw read is how a card ends up showing
+// a wall of JSON.
+export interface ChatTool {
+  call_id: string
+  name: string
+  // The card heading ("Bash", "Edit").
+  title: string
+  // Icon and colour family: shell | eval | read | write | edit | search | web |
+  // todo | task | image | generic.
+  family: string
+  // Collapse key. Consecutive calls sharing one become a single card; absent
+  // means the call always renders on its own.
+  group?: string
+  subject?: string
+  // The shell line, shown only in the expanded body — subject prefers the
+  // model's own written intent where there is one.
+  command?: string
+  state: "running" | "completed" | "error"
+  result_line?: string
+  output?: string
+  diff?: ChatDiffLine[]
+  error?: string
+  images?: number
+  duration_ms?: number
+}
+
+export interface ChatDiffLine {
+  kind: "add" | "del" | "context"
+  text: string
+}
+
+export interface ChatItem {
+  kind: "user" | "agent" | "tool" | "marker"
+  id: string
+  at?: string
+  text?: string
+  // Agent prose the model wrote to itself; folded behind a disclosure.
+  thinking?: boolean
+  marker?: "interrupted" | "error"
+  // How many identical markers a run collapsed into.
+  count?: number
+  tool?: ChatTool
+}
+
+export interface ChatPayload {
+  pane_id: string
+  agent: string
+  // The machine these rows were read from — the host a submission must be
+  // addressed back to, not whichever host this tab is on when it clicks send.
+  host: string
+  title?: string
+  model?: string
+  // The directory the session works in, so a relative image in an agent's prose
+  // resolves against the folder it meant.
+  cwd?: string
+  // The transcript these rows came from. A client accumulating pages uses it to
+  // notice the pane has started a DIFFERENT session and start over, rather than
+  // splicing two conversations into one list.
+  path?: string
+  // Where this window begins in that transcript; fetch the page above it with
+  // api.chat(pane, start_offset).
+  start_offset: number
+  items: ChatItem[]
+  // The newest turn's prompt size. A count and not a percentage: the window is
+  // the model's, and lasso does not guess it.
+  tokens?: number
+  running?: boolean
+  // Older rows exist beyond the read window.
+  more?: boolean
+  // Why items is empty, when it is.
+  note?: string
+}
+
+// What became of a submitted message. `uncertain` means bytes may have reached
+// the pane without the harness confirming a submitted turn — the composer keeps
+// the draft and says so rather than pretending either way, and nothing retries
+// on its own.
+export interface ChatSendResult {
+  outcome: "confirmed" | "refused" | "uncertain"
+  detail?: string
+}
+
 // One theme's backdrop as the server stores it. Every field is optional:
 // an absent one means the frontend's default for that theme (see
 // lib/wallpaper.ts), which is what lets a patch set the dimming without
@@ -836,6 +921,42 @@ export const api = {
     ),
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
+
+  // One pane's agent session as chat rows — the mobile-friendly half of the
+  // terminal. Server-side (chatview.go), because the transcript is a file on
+  // the pane's host and the host is the tab's. Read-only: input still goes to
+  // the real TUI, so a tool approval is answered where the agent asked for it.
+  chat: (pane?: string, before?: number, host?: string) => {
+    const q = new URLSearchParams()
+    if (pane) q.set("pane", pane)
+    // `before` asks for the window ENDING at that transcript offset — the page
+    // above the one on screen. Absent means the tail, which is what a view
+    // opens on.
+    if (before) q.set("before", String(before))
+    const qs = q.toString()
+    // `host` addresses the request to the machine the rows came FROM. A page is
+    // more of the conversation already on screen, so it must not follow a tab
+    // that has since moved to another machine — pane ids are unique per host
+    // only. Omitted for the opening fetch, which is precisely the question
+    // "what is this tab looking at".
+    return getJSON<ChatPayload>(
+      withHost(qs ? `/api/chat?${qs}` : "/api/chat", host)
+    )
+  },
+
+  // Type a message into one ADDRESSED pane and report how far it got. Both the
+  // host and the pane are explicit, and both come from the payload on screen:
+  // hostFetch would otherwise attach whichever host the tab is on at click
+  // time, and pane ids are unique per host only — so a tab that moved host
+  // while a transcript was still displayed could deliver its message to a
+  // different machine's pane of the same id. `?host=` outranks the header
+  // (requestHost), which is the same carrier the sidebar uses for its own
+  // focused-pane host.
+  chatSend: (host: string, pane: string, text: string) =>
+    postJSON<ChatSendResult>(withHost("/api/chat/send", host), {
+      pane_id: pane,
+      text,
+    }),
 
   // Every herdr pane across every reachable, protocol-compatible host (local +
   // remotes), for the ⌘K pane switcher. Aggregated server-side; per-host

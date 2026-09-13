@@ -1,11 +1,5 @@
-import { api } from "@/lib/api"
 import { emitMobileCommand, type MobileCommand } from "@/lib/mobile-command"
-import {
-  pasteAndSubmitTerminal,
-  pasteIntoTerminal,
-  sendKeyToTerminal,
-  type VirtualKey,
-} from "@/lib/terminal"
+import { sendKeyToTerminal, type VirtualKey } from "@/lib/terminal"
 
 // Touch-only input controls injected inside each same-origin terminal iframe.
 // Keeping the dial beside xterm's textarea is intentional: preventDefault on a
@@ -23,7 +17,7 @@ const BACK_RADIUS = 44
 const TERMINAL_BOTTOM_GAP = 24
 
 type DialLevel = "root" | "keys" | "app"
-type TargetKind = "branch" | "command" | "input" | "key"
+type TargetKind = "branch" | "command" | "key"
 
 type DialTarget = {
   id: string
@@ -38,14 +32,21 @@ type DialTarget = {
   command?: MobileCommand
 }
 
+// Four targets on one arc from straight up to straight left, evenly spaced at
+// r=220 — the arc is re-spaced rather than crowded at one end, so the points sit
+// 30.5° apart (the endpoints keep the 1.5° pull-in that keeps a label pill
+// inside the frame). Adding one more would overlap: the labels are drawn, so the
+// geometry is read as much as it is remembered.
 const ROOT_TARGETS: readonly DialTarget[] = [
   {
-    id: "input",
-    label: "Input",
-    glyph: "⌨︎",
-    kind: "input",
-    x: -23,
+    id: "chat",
+    label: "Chat",
+    glyph: "☰",
+    kind: "command",
+    command: "chat",
+    x: -6,
     y: -219,
+    width: 78,
   },
   {
     id: "new",
@@ -53,8 +54,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "+",
     kind: "command",
     command: "new",
-    x: -110,
-    y: -191,
+    x: -112,
+    y: -190,
     width: 78,
   },
   {
@@ -63,8 +64,8 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     glyph: "◆",
     kind: "branch",
     branch: "app",
-    x: -180,
-    y: -126,
+    x: -190,
+    y: -112,
     width: 96,
   },
   {
@@ -74,7 +75,7 @@ const ROOT_TARGETS: readonly DialTarget[] = [
     kind: "branch",
     branch: "keys",
     x: -219,
-    y: -23,
+    y: -6,
     width: 116,
   },
 ]
@@ -376,95 +377,6 @@ html.${TRACKING_CLASS} .xterm-screen {
 #terminal-container {
   height: calc(100% - ${TERMINAL_BOTTOM_GAP}px) !important;
 }
-${sel} .input-picker {
-  display: none;
-}
-/* The parent visual-viewport pin shrinks this iframe above the keyboard.
-   Fit the buffer to that height instead of pushing its top outside the frame;
-   the textarea gives up space first, while the commit buttons stay visible. */
-${sel} .input-panel {
-  position: fixed;
-  right: 14px;
-  bottom: max(12px, env(safe-area-inset-bottom, 0px));
-  left: 14px;
-  z-index: 6;
-  display: flex;
-  box-sizing: border-box;
-  height: min(320px, calc(100% - 24px - env(safe-area-inset-bottom, 0px)));
-  max-width: 440px;
-  margin: 0 auto;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--dial-edge);
-  border-radius: 18px;
-  background: var(--h-panel, #111);
-  color: var(--h-fg, #ededed);
-  overflow: auto;
-  pointer-events: auto;
-}
-${sel} .input-header,
-${sel} .input-actions {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 8px;
-}
-${sel} .input-header {
-  justify-content: space-between;
-  font: 600 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-${sel} .input-status {
-  color: var(--h-muted, #8a8a8a);
-  font-size: 11px;
-  font-weight: 500;
-}
-${sel} .input-buffer {
-  box-sizing: border-box;
-  width: 100%;
-  flex: 1 1 auto;
-  min-height: 44px;
-  resize: none;
-  overflow: auto;
-  border: 1px solid var(--h-border, #262626);
-  border-radius: 12px;
-  background: var(--h-bg, #000);
-  color: var(--h-fg, #ededed);
-  padding: 10px 11px;
-  font: 400 16px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-  outline: none;
-}
-${sel} .input-buffer:focus {
-  border-color: var(--h-accent, #fff);
-}
-${sel} .input-buffer::placeholder {
-  color: var(--h-muted, #8a8a8a);
-}
-${sel} .input-actions {
-  justify-content: flex-end;
-}
-/* The attach action belongs to the buffer, not to the commit trio, so it holds
-   the left edge while Cancel/Insert/Enter stay grouped at the right. */
-${sel} .input-action.attach {
-  margin-right: auto;
-}
-${sel} .input-action {
-  min-height: 38px;
-  padding: 0 13px;
-  border: 1px solid var(--dial-edge);
-  border-radius: 999px;
-  background: var(--h-hover, #1a1a1a);
-  color: var(--h-fg, #ededed);
-  font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-${sel} .input-action.primary {
-  border-color: var(--h-accent, #fff);
-  background: var(--h-accent, #fff);
-  color: var(--h-bg, #000);
-}
-${sel} .input-action:disabled {
-  opacity: .42;
-}
 @media (prefers-reduced-motion: reduce) {
   ${sel} .dial-root,
   ${sel} .dial-item { transition: none; }
@@ -490,13 +402,8 @@ function targetCenter(target: DialTarget): { x: number; y: number } {
 // exactly one per iframe: it releases the previous document's mount on every
 // `load` (a reload builds a new document, so the dial in the old one is already
 // gone, but its listeners on the parent's <html> observer are not) and on hook
-// cleanup. `pasteHost` names the host an attached image must be written to — the
-// focused pane's filesystem, resolved fresh on every use because focus moves
-// without remounting anything.
-export function mountTerminalInputDial(
-  id: string,
-  pasteHost: () => string | undefined
-): () => void {
+// cleanup.
+export function mountTerminalInputDial(id: string): () => void {
   const frame = document.getElementById(id) as HTMLIFrameElement | null
   const win = frame?.contentWindow as Window | null
   const coarse = win?.matchMedia?.("(pointer: coarse)")
@@ -508,7 +415,7 @@ export function mountTerminalInputDial(
   const sync = () => {
     if (disposed) return
     if (coarse.matches && !release)
-      release = attachTerminalInputDial(win, id, pasteHost)
+      release = attachTerminalInputDial(win, id)
     else if (!coarse.matches && release) {
       release()
       release = null
@@ -529,11 +436,7 @@ export function mountTerminalInputDial(
 // fires, so mounting retries briefly just like the old key bar did. The retry
 // has to be cancellable now: a capability flip or an unmount landing inside that
 // window would otherwise build a dial nobody is holding a teardown for.
-function attachTerminalInputDial(
-  win: Window,
-  id: string,
-  pasteHost: () => string | undefined
-): () => void {
+function attachTerminalInputDial(win: Window, id: string): () => void {
   const doc = win.document
   let cancelled = false
   let release: (() => void) | null = null
@@ -544,7 +447,7 @@ function attachTerminalInputDial(
       if (tries < 20) win.setTimeout(() => attempt(tries + 1), 150)
       return
     }
-    release = buildTerminalInputDial(win, id, pasteHost)
+    release = buildTerminalInputDial(win, id)
   }
   attempt(0)
 
@@ -555,11 +458,7 @@ function attachTerminalInputDial(
   }
 }
 
-function buildTerminalInputDial(
-  win: Window,
-  id: string,
-  pasteHost: () => string | undefined
-): () => void {
+function buildTerminalInputDial(win: Window, id: string): () => void {
   const doc = win.document
   // A hot reload or a double `load` must leave one dial, not two.
   doc.getElementById(DIAL_ID)?.remove()
@@ -716,175 +615,6 @@ function buildTerminalInputDial(
     root.setAttribute("aria-expanded", "false")
   }
 
-  let inputPanel: HTMLDivElement | null = null
-
-  const closeInputPanel = () => {
-    inputPanel?.remove()
-    inputPanel = null
-    root.style.visibility = ""
-  }
-
-  const openInputPanel = () => {
-    close()
-    closeInputPanel()
-    root.style.visibility = "hidden"
-
-    const panel = doc.createElement("div")
-    panel.className = "input-panel"
-    panel.setAttribute("role", "dialog")
-    panel.setAttribute("aria-label", "Terminal input buffer")
-
-    const header = doc.createElement("div")
-    header.className = "input-header"
-    const title = doc.createElement("span")
-    title.textContent = "Input buffer"
-    const status = doc.createElement("span")
-    status.className = "input-status"
-    status.textContent = "Type, dictate, or attach a file"
-    header.append(title, status)
-
-    const buffer = doc.createElement("textarea")
-    buffer.className = "input-buffer"
-    buffer.placeholder =
-      "Type, dictate, or attach a file, then insert or submit."
-    buffer.spellcheck = true
-    buffer.inputMode = "text"
-    buffer.autocapitalize = "sentences"
-    buffer.enterKeyHint = "done"
-    buffer.setAttribute("aria-label", "Buffered terminal input")
-
-    // A phone has no drag-and-drop and no file manager worth the name, so the
-    // picker is the whole story: with no `accept` filter iOS offers Photo
-    // Library / Take Photo / Choose File from this one input, which covers a
-    // screenshot, a camera shot, and anything in Files or iCloud Drive alike.
-    // Pasting into the buffer lands in the same handler (terminal.ts leaves
-    // dial-targeted pastes alone for it).
-    const picker = doc.createElement("input")
-    picker.type = "file"
-    picker.multiple = true
-    picker.className = "input-picker"
-    picker.tabIndex = -1
-
-    const actions = doc.createElement("div")
-    actions.className = "input-actions"
-    const attach = doc.createElement("button")
-    attach.type = "button"
-    attach.className = "input-action attach"
-    attach.textContent = "Attach"
-    attach.title = "Attach a file and insert its path"
-    attach.setAttribute("aria-label", "Attach a file")
-    const cancel = doc.createElement("button")
-    cancel.type = "button"
-    cancel.className = "input-action"
-    cancel.textContent = "Cancel"
-    const insert = doc.createElement("button")
-    insert.type = "button"
-    insert.className = "input-action"
-    insert.textContent = "Insert"
-    insert.disabled = true
-    const enter = doc.createElement("button")
-    enter.type = "button"
-    enter.className = "input-action primary"
-    enter.textContent = "Enter"
-    enter.title = "Insert and submit"
-    enter.setAttribute("aria-label", "Insert and submit")
-    enter.disabled = true
-    actions.append(attach, cancel, insert, enter)
-    panel.append(header, buffer, actions, picker)
-    dial.appendChild(panel)
-    inputPanel = panel
-
-    const updateActions = () => {
-      const disabled = !buffer.value.trim()
-      insert.disabled = disabled
-      enter.disabled = disabled
-    }
-
-    // Insert at the caret, space-separated, so a path can be dropped into the
-    // middle of a sentence the way it reads in the composer afterwards.
-    const insertAtCursor = (text: string) => {
-      const start = buffer.selectionStart ?? buffer.value.length
-      const end = buffer.selectionEnd ?? start
-      const before = buffer.value.slice(0, start)
-      const lead = before && !/\s$/.test(before) ? " " : ""
-      const chunk = `${lead}${text} `
-      buffer.value = before + chunk + buffer.value.slice(end)
-      const caret = start + chunk.length
-      buffer.setSelectionRange(caret, caret)
-      updateActions()
-    }
-
-    // The file goes to the host the FOCUSED PANE's filesystem lives on (the
-    // same target the terminal's own paste uses), because the path we insert is
-    // read by the agent in that pane, not by the browser.
-    let attaching = false
-    const attachFiles = async (picked: ArrayLike<File> | null) => {
-      const files = Array.from(picked ?? [])
-      if (!files.length || attaching) return
-      attaching = true
-      attach.disabled = true
-      status.textContent =
-        files.length > 1 ? `Attaching ${files.length} files…` : "Attaching…"
-      for (const file of files) {
-        try {
-          const { path } = await api.pasteFile(file, pasteHost(), file.name)
-          // The panel can be cancelled mid-upload; the file is on the host
-          // either way, but there is no buffer left to insert it into.
-          if (!panel.isConnected) return
-          insertAtCursor(path)
-          status.textContent = path.split("/").pop() ?? "Attached"
-        } catch (err) {
-          if (!panel.isConnected) return
-          status.textContent = `Attach failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        }
-      }
-      attaching = false
-      attach.disabled = false
-    }
-    const commit = (submit: boolean) => {
-      const text = buffer.value.trim()
-      if (!text) return
-      // Typing and dictation both edit a normal textarea. Only these explicit
-      // actions cross into xterm, as one paste and optionally one Enter.
-      closeInputPanel()
-      if (submit) pasteAndSubmitTerminal(id, text)
-      else pasteIntoTerminal(id, text)
-    }
-    buffer.addEventListener("input", updateActions)
-    cancel.addEventListener("click", closeInputPanel)
-    insert.addEventListener("click", () => commit(false))
-    enter.addEventListener("click", () => commit(true))
-    attach.addEventListener("click", () => picker.click())
-    picker.addEventListener("change", () => {
-      // The selection must be reset or picking the same file twice fires no
-      // second change event — but only after the upload has read the File,
-      // which is backed by that selection.
-      void attachFiles(picker.files).finally(() => {
-        picker.value = ""
-      })
-    })
-    buffer.addEventListener("paste", (event: ClipboardEvent) => {
-      const clipboard = event.clipboardData
-      // Text wins whenever the clipboard carries any: a rich copy hands over
-      // both, and the buffer is a text field first.
-      if (!clipboard || clipboard.getData("text/plain")) return
-      const files = Array.from(clipboard.items)
-        .filter((item) => item.kind === "file")
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => file !== null)
-      if (!files.length) return
-      event.preventDefault()
-      void attachFiles(files)
-    })
-
-    // Focusing synchronously from the dial gesture opens the software keyboard
-    // with its microphone available, isolating buffered input from xterm.
-    buffer.focus({ preventScroll: true })
-    buffer.setSelectionRange(buffer.value.length, buffer.value.length)
-  }
-
   const activate = (target: DialTarget) => {
     if (target.kind === "branch") {
       show(target.branch ?? "root")
@@ -893,10 +623,6 @@ function buildTerminalInputDial(
     if (target.kind === "command" && target.command) {
       close()
       emitMobileCommand(target.command)
-      return
-    }
-    if (target.kind === "input") {
-      openInputPanel()
       return
     }
     if (target.key) sendKeyToTerminal(id, target.key)
@@ -1194,8 +920,7 @@ function buildTerminalInputDial(
   )
   on(doc, "keydown", (event: Event) => {
     if ((event as KeyboardEvent).key !== "Escape") return
-    if (inputPanel) closeInputPanel()
-    else if (open) close()
+    if (open) close()
   })
 
   return () => {
@@ -1204,7 +929,6 @@ function buildTerminalInputDial(
     // from <html> — neither of which lives inside the dial.
     clearGesture()
     endSwallow()
-    closeInputPanel()
     close()
     for (const undo of cleanups.reverse()) undo()
     cleanups.length = 0
