@@ -1002,7 +1002,7 @@ function Composer({
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2 px-2 pt-2 pb-1">
+      <div className="flex items-stretch gap-2 px-4 pt-2 pb-1">
         <input
           ref={fileRef}
           type="file"
@@ -1014,6 +1014,24 @@ function Composer({
             e.target.value = ""
           }}
         />
+        {/* Three columns: attach, input, submit. Both buttons are square and
+            pinned to the input's top edge, so the input is the only tall thing
+            on the row and neither button sits under the thumb's resting corner
+            — where a stray tap lands on the wrong one. */}
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={attaching || sending}
+          title="Attach a file and insert its path"
+          aria-label="Attach a file"
+          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg border border-input text-muted-foreground disabled:opacity-40"
+        >
+          {attaching ? (
+            <Orb state="working" px={16} />
+          ) : (
+            <Paperclip className="size-4" />
+          )}
+        </button>
         <textarea
           ref={ref}
           // Three rows, not one: a prompt is a paragraph often enough that a
@@ -1044,46 +1062,25 @@ function Composer({
           }}
           placeholder="Message the agent…"
           // 16px on touch: iOS zooms the page for a smaller field.
-          className="max-h-40 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:text-[13px]"
+          className="max-h-40 min-w-0 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:text-[13px]"
         />
-        {/* Attachment above submit, and submit the taller of the two. The
-            bottom-right corner is where a thumb already rests and Send is the
-            button a prompt reaches for constantly, so the big one goes there —
-            and the smaller attach above it is the one that should take a
-            deliberate aim. */}
-        <div className="flex w-10 flex-none flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={attaching || sending}
-            title="Attach a file and insert its path"
-            aria-label="Attach a file"
-            className="flex h-8 items-center justify-center rounded-lg border border-input text-muted-foreground disabled:opacity-40"
-          >
-            {attaching ? (
-              <Orb state="working" px={14} />
-            ) : (
-              <Paperclip className="size-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => void send()}
-            disabled={sending || (!text.trim() && attachments.length === 0)}
-            title="Send (Enter)"
-            aria-label="Send"
-            className="flex h-12 items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
-          >
-            {sending ? (
-              // on="accent": this button is filled with the theme's accent, and
-              // the orb's own scheme detection reads the DOCUMENT, which is the
-              // wrong surface to choose ink for (see ui/orb.tsx).
-              <Orb state="working" px={18} on="accent" />
-            ) : (
-              <Send className="size-[18px]" />
-            )}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => void send()}
+          disabled={sending || (!text.trim() && attachments.length === 0)}
+          title="Send (Enter)"
+          aria-label="Send"
+          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
+        >
+          {sending ? (
+            // on="accent": this button is filled with the theme's accent, and
+            // the orb's own scheme detection reads the DOCUMENT, which is the
+            // wrong surface to choose ink for (see ui/orb.tsx).
+            <Orb state="working" px={20} on="accent" />
+          ) : (
+            <Send className="size-5" />
+          )}
+        </button>
       </div>
     </div>
   )

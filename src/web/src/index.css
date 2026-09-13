@@ -295,12 +295,11 @@
    * curve is the surface's edge, which the system's number does not describe.
    * A device reporting a larger top inset still gets it. */
   :root {
-    /* Bottom: 56px puts the surface's edge — and every rounded corner on it —
-     * above where the display starts to curve. The inputs sit 4px above that
-     * edge (pb-1 in the composer), so if the strip ever needs to be bigger,
-     * raise THIS rather than the composer's own padding: vertical space is the
-     * scarcest thing on a phone. */
-    --safe-bottom: 56px;
+    /* Bottom: a sliver — just enough that the backdrop peeks in at the screen's
+     * edge rather than being cut off square by the app. What keeps the controls
+     * clear of the display's corner curve is their own horizontal inset (px-4
+     * in ChatView), so this no longer has to carry that job. */
+    --safe-bottom: 16px;
     /* Top: left to the device's own inset. Insetting the app further pushes the
      * header down out of the notch, which looks like a gap rather than
      * symmetry. */
