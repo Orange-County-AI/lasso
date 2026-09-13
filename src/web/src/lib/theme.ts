@@ -27,20 +27,22 @@ function termFrames(): HTMLIFrameElement[] {
 // without it xterm renders "tofu" boxes. The four faces are vendored as woff2
 // under web/public/fonts and served at /fonts/*.
 const TERM_FONT_FAMILY = "JetBrainsMono Nerd Font"
+const TERM_FONT_VERSION = "3.5.1"
 const TERM_FONT_STACK = `"${TERM_FONT_FAMILY}", ui-monospace, monospace`
 const TERM_FONT_STYLE_ID = "herdr-term-font"
 
 // The @font-face must live in the *terminal iframe's* document — a parent
 // stylesheet doesn't cross the iframe boundary. We mirror index.css here so the
 // same family resolves inside ttyd's xterm. Same-origin proxying lets us reach
-// in (see applyTermTheme); /fonts/* is the embedded build's stable URL.
+// in (see applyTermTheme); TERM_FONT_VERSION invalidates a browser's cached
+// stable /fonts/* URL whenever the vendored font changes.
 const TERM_FONT_FACE_CSS = (
   ["Regular", "Bold", "Italic", "BoldItalic"] as const
 )
   .map((variant) => {
     const weight = variant.startsWith("Bold") ? 700 : 400
     const style = variant.endsWith("Italic") ? "italic" : "normal"
-    return `@font-face{font-family:"${TERM_FONT_FAMILY}";font-style:${style};font-weight:${weight};font-display:swap;src:url("/fonts/JetBrainsMonoNerdFontMono-${variant}.woff2") format("woff2")}`
+    return `@font-face{font-family:"${TERM_FONT_FAMILY}";font-style:${style};font-weight:${weight};font-display:swap;src:url("/fonts/JetBrainsMonoNerdFontMono-${variant}.woff2?v=${TERM_FONT_VERSION}") format("woff2")}`
   })
   .join("")
 
