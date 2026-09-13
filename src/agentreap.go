@@ -53,6 +53,7 @@ package main
 // appear and disappear with the panes they are.
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
@@ -103,6 +104,46 @@ func agentReapMissed(host, id string) bool {
 	}
 	agentReapMiss.n[k] = n
 	return false
+}
+
+// agentReapEvery is how often the server reconciles the fleet on its own,
+// without waiting for a reader to ask. A var, not a const, so a test can shrink
+// the wait.
+//
+// It is hygiene rather than correctness — every MCP reader reconciles on its own
+// enumeration (list_agents), so what this bounds is how long a record whose agent
+// has exited can sit un-tombstoned when nobody has asked lately. Two passes are
+// needed to condemn a record (rule 6), so a pane that is gone is stamped within
+// twice this.
+var agentReapEvery = 5 * time.Minute
+
+// startAgentReaper drives the aggregation on a timer so reconciliation happens
+// whether or not anyone is looking.
+//
+// The aggregation (fetchAllPanes) reconciles each host from its own SUCCESS
+// branch — that is where lasso already knows whether herdr answered, which is the
+// distinction rule 1 turns on — so this does not reconcile anything itself: it
+// asks panesSnapshot for a fresh listing, the same entry the /api/all-panes
+// endpoint serves, and the side effect is the point. Nothing else does it on a
+// schedule: the browser used to, as a side effect of the pane palette it fetched
+// for (deleted), which left an MCP list_agents as the only remaining caller.
+//
+// One pass runs immediately, because a lasso that has just come up has no idea
+// what became of its agents while it was down; the floor under the interval means
+// such a pass can condemn nothing on its own (rule 6 needs two misses).
+func startAgentReaper(ctx context.Context) {
+	log.Printf("agents:   reconciling records against herdr every %v", agentReapEvery)
+	panesSnapshot(ctx)
+	t := time.NewTicker(agentReapEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		panesSnapshot(ctx)
+	}
 }
 
 // reconcileHostAgents tombstones records on host whose herdr pane is gone,

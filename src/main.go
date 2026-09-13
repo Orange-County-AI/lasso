@@ -229,6 +229,10 @@ func runServer() {
 	registerNotifTransport(webPushChannel{})
 	go startBlockedWatcher(ctx)
 
+	// Agent records: keep them reconciled against herdr's panes without a reader
+	// (see agentreap.go — the aggregation used to be driven by a browser).
+	go startAgentReaper(ctx)
+
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {

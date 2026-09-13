@@ -296,14 +296,14 @@ type panesPayload struct {
 }
 
 // panesCache coalesces the potentially multi-second, multi-host aggregation so
-// overlapping polls and concurrent viewers share one fetch. Herdr state moves,
-// so the frontend refreshes it every few seconds.
+// overlapping callers share one fetch: /api/all-panes, the notification watcher
+// (notifywatch.go) and the agent reaper (agentreap.go) all read through it, and
+// Herdr state moves, so it is refetched rather than persisted.
 //
 // inflight is non-nil while a refresh is running and closes when it lands. The
 // refresh runs with mu released: holding it across aggregation serialized every
-// /api/all-panes caller behind the slowest host. A refresh that outlived the TTL
-// then made each waiter start another one, leaving the ⌘K palette wedged until
-// restart.
+// caller behind the slowest host, so a refresh that outlived the TTL made each
+// waiter start another one and left a client wedged until restart.
 var panesCache struct {
 	mu       sync.Mutex
 	at       time.Time

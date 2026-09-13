@@ -36,13 +36,11 @@ import {
 } from "@/components/ui/resizable"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
-import { qk, queryClient } from "@/lib/query"
 import {
   beginSidebarDrag,
   markSidebarIntent,
@@ -224,20 +222,6 @@ function Shell() {
     } catch {
       return undefined
     }
-  }, [])
-
-  // Warm the pane list on load. Nothing the UI renders reads it any more — the
-  // palette that did is gone — but the GET is load-bearing server-side:
-  // /api/all-panes' per-host success branch is what reconciles lasso's agent
-  // records against herdr (fetchAllPanes → reconcileHostAgents), and this is the
-  // only thing in the app that drives it. Dropping it would quietly stop
-  // tombstoning agents whose panes are gone; a server-side interval or a
-  // periodic poll is a better home for that than a request the UI discards.
-  React.useEffect(() => {
-    void queryClient.prefetchQuery({
-      queryKey: qk.panes,
-      queryFn: () => api.allPanes(),
-    })
   }, [])
 
   // Keep the app pinned to the space above the mobile keyboard so the terminal's

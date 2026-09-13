@@ -174,47 +174,6 @@ export interface Workspace {
   focused: boolean
 }
 
-// One herdr pane on a specific host, enriched with workspace/tab labels and
-// whether herdr detects an agent in it — the row shape of /api/all-panes and
-// /api/agent-history. `host` is "local" or an ssh-config alias and is the key
-// for focusing the pane (switching the active host first when it isn't already
-// active).
-export interface HostPane {
-  host: string
-  host_label: string
-  pane_id: string
-  workspace_id?: string
-  workspace_label?: string
-  tab_id?: string
-  tab_label?: string
-  pane_label?: string
-  // The pane's OSC title with the agent's state glyphs stripped — for an agent
-  // pane, what it is currently working on. The only name a session whose
-  // workspace was never labelled has.
-  terminal_title?: string
-  cwd?: string
-  agent?: string
-  agent_status?: string
-  has_agent?: boolean
-  focused?: boolean
-  // The agent's initial prompt (creation description). Carried so a client can
-  // search a pane by what it was asked to do; the UI need not display it.
-  prompt?: string
-  // Set only on rows from /api/agent-history (past agents). Nothing in the web UI
-  // asks for that endpoint any more — it stays for CLI and script callers — but
-  // the fields describe its rows: agent_id is the record /api/agent/reopen
-  // re-creates, and closed marks a row whose herdr pane is no longer live.
-  agent_id?: string
-  closed?: boolean
-}
-
-export interface PanesPayload {
-  panes: HostPane[]
-  // host → why its panes couldn't be listed (unreachable, protocol drift, …).
-  // Every other host's panes still come back; the UI reports these separately.
-  errors?: Record<string, string>
-}
-
 // One row of an agent session rendered as conversation (see src/chatview.go).
 // The server has already decided what a row SAYS — subject, truncation, diff
 // excerpt — so the renderer never reads a tool's raw arguments: their shapes
@@ -730,7 +689,7 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
     )
   } catch (e) {
     // A request that never lands must surface as an error, not as a spinner the
-    // user stares at forever — see aggregateTimeout's callers.
+    // user stares at forever.
     if (e instanceof DOMException && e.name === "TimeoutError") {
       throw new Error(`${url} timed out after ${(timeoutMs ?? 0) / 1000}s`)
     }
@@ -739,13 +698,6 @@ async function getJSON<T>(url: string, timeoutMs?: number): Promise<T> {
   if (!r.ok) throw await httpError(r)
   return (await r.json()) as T
 }
-
-// aggregateTimeout caps the two cross-host aggregations (every host's panes and
-// the agent history). They fan out over ssh, so they are the slowest reads in
-// the app and the ones with the most ways to stall; without a client bound, a
-// backend that stops answering leaves the ⌘K palette on "Loading…" indefinitely
-// with nothing to retry and nothing to report.
-const aggregateTimeout = 30_000
 
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const r = await hostFetch(url, {
@@ -955,11 +907,6 @@ export const api = {
       pane_id: pane,
       text,
     }),
-
-  // Every herdr pane across every reachable, protocol-compatible host (local +
-  // remotes). Aggregated server-side; per-host failures come back in `errors`
-  // rather than failing the whole request.
-  allPanes: () => getJSON<PanesPayload>("/api/all-panes", aggregateTimeout),
 
   // Persisted UI preferences (sidebar layout, Files tab, and usage footer).
   uiState: () => getJSON<UIState>("/api/ui-state"),
