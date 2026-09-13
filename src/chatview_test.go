@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestParseChatTranscriptShapes(t *testing.T) {
 		// the same card rather than reading as an orphan.
 		`{"type":"message","id":"r1","timestamp":"2026-09-13T03:43:14.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","isError":false,"details":"{'timeoutSeconds': 300, 'wallTimeMs': 117.5}","content":[{"type":"text","text":"ok  \tlasso\t1.2s\nPASS"}]}}`,
 		`{"type":"message","id":"e1","timestamp":"2026-09-13T03:43:20.000Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Done."}]}}`,
-	))
+	), 0)
 
 	if parsed.title != "Fix the tests" {
 		t.Errorf("title = %q, want the session title", parsed.title)
@@ -103,7 +104,7 @@ func TestParseChatTranscriptRunning(t *testing.T) {
 	parsed := parseChatTranscript(chatTranscript(
 		recUser,
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"sleep 90"}}]}}`,
-	))
+	), 0)
 	if !parsed.run {
 		t.Error("run = false with an unsettled tool call, want true")
 	}
@@ -118,7 +119,7 @@ func TestParseChatTranscriptDiffs(t *testing.T) {
 	content := strings.Join([]string{"1", "2", "3", "4", "5"}, "\n")
 	write := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"/home/x/proj/src/main.go","content":` +
 		jsonString(content) + `}}]}}`
-	parsed := parseChatTranscript(chatTranscript(write))
+	parsed := parseChatTranscript(chatTranscript(write), 0)
 	tool := parsed.items[0].Tool
 	if tool.Subject != "…/proj/src/main.go" {
 		t.Errorf("subject = %q, want the abbreviated path", tool.Subject)
@@ -137,7 +138,7 @@ func TestParseChatTranscriptDiffs(t *testing.T) {
 	// blocks each followed by the lines to write at that range.
 	edit := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c2","name":"edit","arguments":{"i":"Fixing the header","input":` +
 		jsonString("[AGENTS.md#CB11]\nPUT 57.=58:\n+first new line\n+second new line\n") + `}}]}}`
-	parsed = parseChatTranscript(chatTranscript(edit))
+	parsed = parseChatTranscript(chatTranscript(edit), 0)
 	tool = parsed.items[0].Tool
 	if tool.Subject != "AGENTS.md" {
 		t.Errorf("subject = %q, want the path parsed out of the patch header", tool.Subject)
@@ -162,7 +163,7 @@ func TestParseChatTranscriptCapsDiff(t *testing.T) {
 	}
 	edit := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"stop","content":[{"type":"toolCall","id":"c1","name":"edit","arguments":{"input":` +
 		jsonString(strings.Join(body, "\n")) + `}}]}}`
-	parsed := parseChatTranscript(chatTranscript(edit))
+	parsed := parseChatTranscript(chatTranscript(edit), 0)
 	diff := parsed.items[0].Tool.Diff
 	if len(diff) != chatDiffLines+1 {
 		t.Fatalf("diff rows = %d, want %d kept plus the overflow marker", len(diff), chatDiffLines)
@@ -181,7 +182,7 @@ func TestParseChatTranscriptPipedCallIDs(t *testing.T) {
 	parsed := parseChatTranscript(chatTranscript(
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"call_01_ET_abc|fc_0bb1cbfe","name":"bash","arguments":{"command":"ls","i":"Listing"}}]}}`,
 		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"call_01_ET_abc","toolName":"bash","content":[{"type":"text","text":"a.go\nb.go"}]}}`,
-	))
+	), 0)
 	tool := parsed.items[len(parsed.items)-1].Tool
 	if tool.State != "completed" {
 		t.Fatalf("state = %q, want completed — the piped id did not match its result", tool.State)
@@ -214,7 +215,7 @@ func TestParseChatTranscriptDetailsShapes(t *testing.T) {
 			parsed := parseChatTranscript(chatTranscript(
 				`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}`,
 				`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1",`+details+`"content":[{"type":"text","text":"ok"}]}}`,
-			))
+			), 0)
 			tool := parsed.items[len(parsed.items)-1].Tool
 			if tool.State != "completed" {
 				t.Fatalf("state = %q, want completed — record dropped over its details shape", tool.State)
@@ -231,7 +232,7 @@ func TestParseChatTranscriptErrorResult(t *testing.T) {
 	parsed := parseChatTranscript(chatTranscript(
 		`{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}]}}`,
 		`{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"c1","isError":true,"content":[{"type":"text","text":"boom\nstack line"}]}}`,
-	))
+	), 0)
 	tool := parsed.items[len(parsed.items)-1].Tool
 	if tool.State != "error" || tool.Error != "boom" {
 		t.Errorf("state/error = %q/%q, want error with the first output line", tool.State, tool.Error)
@@ -243,7 +244,7 @@ func TestParseChatTranscriptCollapsesRepeatedMarkers(t *testing.T) {
 	rec := func(id string) string {
 		return `{"type":"message","id":"` + id + `","message":{"role":"assistant","stopReason":"error","errorMessage":"No API key for provider: anthropic","content":[]}}`
 	}
-	parsed := parseChatTranscript(chatTranscript(recUser, rec("e1"), rec("e2"), rec("e3")))
+	parsed := parseChatTranscript(chatTranscript(recUser, rec("e1"), rec("e2"), rec("e3")), 0)
 	var markers []chatItem
 	for _, it := range parsed.items {
 		if it.Kind == "marker" {
@@ -264,11 +265,11 @@ func TestParseChatTranscriptAbortMarkers(t *testing.T) {
 	loud := `{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"aborted","content":[]}}`
 	silent := `{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"aborted","errorMessage":"__omp.silent_abort__","content":[]}}`
 
-	parsed := parseChatTranscript(chatTranscript(loud))
+	parsed := parseChatTranscript(chatTranscript(loud), 0)
 	if n := len(parsed.items); n != 1 || parsed.items[0].Marker != "interrupted" {
 		t.Errorf("items = %+v, want one interrupted marker", parsed.items)
 	}
-	parsed = parseChatTranscript(chatTranscript(silent))
+	parsed = parseChatTranscript(chatTranscript(silent), 0)
 	if len(parsed.items) != 0 {
 		t.Errorf("items = %+v, want nothing for a silent abort", parsed.items)
 	}
@@ -279,7 +280,7 @@ func TestParseChatTranscriptCapsHistory(t *testing.T) {
 	for i := 0; i < chatMaxItems+20; i++ {
 		lines = append(lines, `{"type":"message","id":"m`+itoa(i)+`","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"line `+itoa(i)+`"}]}}`)
 	}
-	parsed := parseChatTranscript(chatTranscript(lines...))
+	parsed := parseChatTranscript(chatTranscript(lines...), 0)
 	if len(parsed.items) != chatMaxItems {
 		t.Errorf("items = %d, want the cap of %d", len(parsed.items), chatMaxItems)
 	}
@@ -371,6 +372,23 @@ func itoa(i int) string {
 	return string(d)
 }
 
+// useFakeHost installs a fake host as the default backend AND clears the
+// pane-list cache for its name. That cache is keyed by HOST and lives 400ms, so
+// two fakes both claiming "local" hand the second test the first one's pane
+// list — which points into a temp directory that has already been removed, and
+// reads as "the transcript is not readable yet" in a test that never touched a
+// transcript. panefocus_test.go guards the same hazard the same way.
+func useFakeHost(t *testing.T, be Backend) {
+	t.Helper()
+	prev := defaultBackend()
+	setDefaultBackend(be)
+	invalidatePaneList(be.Name())
+	t.Cleanup(func() {
+		setDefaultBackend(prev)
+		invalidatePaneList(be.Name())
+	})
+}
+
 // chatFakeBackend stands up the herdr surface serveChat reads: pane.list
 // carrying an omp agent_session, and a real filesystem for the transcript, so
 // the Stat/Open path the handler uses is exercised rather than stubbed.
@@ -414,9 +432,7 @@ func TestServeChat(t *testing.T) {
 		chatPane("w1:p1", path, false),
 		chatPane("w1:p2", filepath.Join(dir, "missing.jsonl"), true),
 	}}
-	prev := defaultBackend()
-	setDefaultBackend(be)
-	t.Cleanup(func() { setDefaultBackend(prev) })
+	useFakeHost(t, be)
 
 	get := func(query string) (*httptest.ResponseRecorder, chatPayload) {
 		rec := httptest.NewRecorder()
@@ -480,9 +496,7 @@ func TestServeChatUnreadableSession(t *testing.T) {
 		`{"pane_id":"w1:p1","focused":true,"agent":"claude","agent_status":"idle",` +
 			`"agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"24a7c912"}}`,
 	}}
-	prev := defaultBackend()
-	setDefaultBackend(be)
-	t.Cleanup(func() { setDefaultBackend(prev) })
+	useFakeHost(t, be)
 
 	rec := httptest.NewRecorder()
 	serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
@@ -675,9 +689,7 @@ func TestChatSubmitUncertainWhenPasteNeverLands(t *testing.T) {
 func TestServeChatSendPaneResolution(t *testing.T) {
 	be := &chatSendBackend{paneID: "w1:p1", agent: "omp"}
 	be.screen = be.ompComposer("")
-	prev := defaultBackend()
-	setDefaultBackend(be)
-	t.Cleanup(func() { setDefaultBackend(prev) })
+	useFakeHost(t, be)
 	withFastSubmit(t)
 
 	post := func(body string) (*httptest.ResponseRecorder, map[string]string) {
@@ -711,5 +723,282 @@ func TestServeChatSendPaneResolution(t *testing.T) {
 	serveChatSend(rec, httptest.NewRequest(http.MethodGet, "/api/chat/send", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET status = %d, want 405", rec.Code)
+	}
+}
+
+// Paging is the one thing here that can silently lose history, and it has two
+// ways to: a cursor that names the window's start rather than the oldest row it
+// actually returned skips everything the per-read cap dropped, and a wrong
+// boundary repeats or drops a row. So: walk the transcript back to the
+// beginning and assert the pages TILE it — every message exactly once, in
+// order, ending at the newest.
+func TestServeChatPaging(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.jsonl")
+	var sb strings.Builder
+	// Comfortably past chatReadBytes, so the first page is a real window rather
+	// than the whole file.
+	const n = 3000
+	for i := 0; i < n; i++ {
+		sb.WriteString(fmt.Sprintf(
+			`{"type":"message","id":"m%06d","timestamp":"2026-09-13T03:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"message %06d %s"}]}}`,
+			i, i, strings.Repeat("padding ", 12)))
+		sb.WriteString("\n")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(path); fi.Size() < chatReadBytes {
+		t.Fatalf("fixture is only %d bytes; it has to exceed the %d-byte window", fi.Size(), chatReadBytes)
+	}
+
+	be := &chatFakeBackend{panes: []string{chatPane("w1:p1", path, true)}}
+	useFakeHost(t, be)
+
+	get := func(query string) chatPayload {
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d for %q", rec.Code, query)
+		}
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	page := get("?pane=w1:p1")
+	if !page.More || page.StartOffset <= 0 {
+		t.Fatalf("tail page: more=%v start_offset=%d, want a windowed page", page.More, page.StartOffset)
+	}
+
+	// Walk back to the start of the transcript.
+	seen := []int{}
+	record := func(items []chatItem) {
+		for _, it := range items {
+			var idx int
+			if _, err := fmt.Sscanf(it.Text, "message %06d", &idx); err == nil {
+				seen = append(seen, idx)
+			}
+		}
+	}
+	record(page.Items)
+	offset, pages := page.StartOffset, 1
+	for offset > 0 {
+		p := get(fmt.Sprintf("?pane=w1:p1&before=%d", offset))
+		if len(p.Items) == 0 {
+			t.Fatalf("page at before=%d came back empty", offset)
+		}
+		if p.StartOffset >= offset {
+			t.Fatalf("page at before=%d reported start_offset=%d, want strictly earlier", offset, p.StartOffset)
+		}
+		record(p.Items)
+		offset = p.StartOffset
+		pages++
+		if pages > 100 {
+			t.Fatal("paging did not terminate")
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("pages covered %d messages over %d pages, want all %d", len(seen), pages, n)
+	}
+	// Each page arrives oldest-first, and each is older than the one before it,
+	// so the union has to be exactly every message once — no repeat at a page
+	// boundary, no hole where the per-read cap dropped rows.
+	sort.Ints(seen)
+	for i, idx := range seen {
+		if idx != i {
+			t.Fatalf("message %d of the union = %06d (repeat or gap)", i, idx)
+		}
+	}
+	// And the page a view opens on ends at the newest message.
+	if last := page.Items[len(page.Items)-1].Text; !strings.HasPrefix(last, "message 002999") {
+		t.Errorf("tail page ends at %q, want the newest message", last)
+	}
+
+	// And the oldest page says there is nothing before it.
+	first := get(fmt.Sprintf("?pane=w1:p1&before=%d", 1))
+	if first.StartOffset != 0 {
+		t.Errorf("first page start_offset = %d, want 0", first.StartOffset)
+	}
+}
+
+// The fixture that catches what single-block records hide: an assistant turn is
+// SEVERAL rows (thinking, text, a tool call) sharing one record, so a page
+// boundary can fall inside a turn rather than between two of them — and the
+// call's result is a separate record again.
+//
+// Two losses are possible there and both are silent. A cap that cuts mid-record
+// reports a cursor naming that record's start, so the next page skips the record
+// entirely and the rows above the cut can never be asked for again. And a window
+// that starts between a call and its result parses the result with nothing to
+// attach it to, leaving the card that owns the call running for good.
+func TestServeChatPagingAcrossRecordBoundaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.jsonl")
+	var sb strings.Builder
+	const n = 2200
+	for i := 0; i < n; i++ {
+		sb.WriteString(fmt.Sprintf(
+			`{"type":"message","id":"a%06d","timestamp":"2026-09-13T03:00:00.000Z","message":{"role":"assistant","model":"m","stopReason":"toolUse","content":[`+
+				`{"type":"thinking","thinking":"consider %06d %s"},`+
+				`{"type":"text","text":"say %06d"},`+
+				`{"type":"toolCall","id":"c%06d","name":"bash","arguments":{"command":"echo %06d","i":"intent %06d"}}]}}`,
+			i, i, strings.Repeat("pad ", 20), i, i, i, i))
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf(
+			`{"type":"message","id":"r%06d","timestamp":"2026-09-13T03:00:01.000Z","message":{"role":"toolResult","toolCallId":"c%06d","toolName":"bash","content":[{"type":"text","text":"out %06d"}]}}`,
+			i, i, i))
+		sb.WriteString("\n")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	be := &chatFakeBackend{panes: []string{chatPane("w1:p1", path, true)}}
+	useFakeHost(t, be)
+
+	get := func(query string) chatPayload {
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d for %q", rec.Code, query)
+		}
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// id -> whether some page rendered it finished. A call with a result must
+	// reach "completed" on at least one page; "only ever running" is the bug.
+	seen := map[string]bool{}
+	completed := map[string]bool{}
+	total := 0
+	page := get("?pane=w1:p1")
+	offset, pages := page.StartOffset, 1
+	absorb := func(items []chatItem) {
+		for _, it := range items {
+			total++
+			if _, dup := seen[it.ID]; dup {
+				t.Fatalf("row %s appeared on two pages", it.ID)
+			}
+			seen[it.ID] = true
+			if it.Tool != nil && it.Tool.State != "running" {
+				completed[it.ID] = true
+			}
+		}
+	}
+	absorb(page.Items)
+	for offset > 0 {
+		p := get(fmt.Sprintf("?pane=w1:p1&before=%d", offset))
+		if len(p.Items) == 0 {
+			t.Fatalf("page at before=%d came back empty", offset)
+		}
+		absorb(p.Items)
+		offset = p.StartOffset
+		pages++
+		if pages > 200 {
+			t.Fatal("paging did not terminate")
+		}
+	}
+
+	// Every row of every turn is reachable: 3 rows per turn, no gaps, no repeats.
+	if total != n*3 {
+		t.Errorf("pages carried %d rows over %d pages, want %d", total, pages, n*3)
+	}
+	for i := 0; i < n; i++ {
+		for _, id := range []string{fmt.Sprintf("a%06d", i), fmt.Sprintf("a%06d:1", i), fmt.Sprintf("c%06d", i)} {
+			if !seen[id] {
+				t.Fatalf("row %s is on no page at all", id)
+			}
+		}
+	}
+	// And no call is left running on the only page that shows it.
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("c%06d", i)
+		if !completed[id] {
+			t.Fatalf("tool call %s is still running on every page that has it", id)
+		}
+	}
+}
+
+// The regression that defeats both other mechanisms. One call and its result at
+// the TOP of the transcript, then enough later rows that the item cap pushes the
+// call off the tail page: the tail parses the pair correctly and then CAPS THE
+// CALL OUT, its result emits no row of its own, and the page below — which ends
+// at the tail's cursor — holds the call with the answer on the far side of that
+// cursor. Reading the tail's window wider cannot help (the call is inside it and
+// still capped); refusing state regressions cannot help (no completed row
+// survives to refuse anything). Only looking FORWARDS from the page's end can,
+// which is why the call is asserted through a fetch of the tail alone.
+func TestServeChatPageEndSplitsCallFromResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "split.jsonl")
+	var sb strings.Builder
+	sb.WriteString(`{"type":"message","id":"a1","timestamp":"2026-09-13T03:00:00.000Z","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"slow","i":"the split call"}}]}}`)
+	sb.WriteString("\n")
+	// chatMaxItems later rows, so the cap has to drop the call...
+	for i := 0; i < chatMaxItems; i++ {
+		sb.WriteString(fmt.Sprintf(
+			`{"type":"message","id":"z%06d","timestamp":"2026-09-13T03:01:00.000Z","message":{"role":"user","content":[{"type":"text","text":"later %06d %s"}]}}`,
+			i, i, strings.Repeat("pad ", 16)))
+		sb.WriteString("\n")
+	}
+	// ...and the answer arriving AFTER them, which is what a backgrounded tool
+	// does (omp's bash takes an `async` flag, and its result lands whenever it
+	// finishes). That is the part that makes this unfixable by reading wider:
+	// the page owning the call now ends before the result exists.
+	sb.WriteString(`{"type":"message","id":"r1","timestamp":"2026-09-13T03:02:00.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"split call output"}]}}`)
+	sb.WriteString("\n")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	be := &chatFakeBackend{panes: []string{chatPane("w1:p1", path, true)}}
+	useFakeHost(t, be)
+
+	get := func(query string) chatPayload {
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d for %q", rec.Code, query)
+		}
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// The tail alone: the call is past the cap here, so this page must not claim
+	// it at all — and must not claim it running either.
+	tail := get("?pane=w1:p1")
+	for _, it := range tail.Items {
+		if it.ID == "c1" && it.Tool != nil && it.Tool.State == "running" {
+			t.Fatalf("the tail returned the split call as running")
+		}
+	}
+
+	// The page that OWNS the call ends where the answer begins; it has to come
+	// back finished.
+	prev := get(fmt.Sprintf("?pane=w1:p1&before=%d", tail.StartOffset))
+	found := false
+	for _, it := range prev.Items {
+		if it.ID != "c1" {
+			continue
+		}
+		found = true
+		if it.Tool == nil || it.Tool.State != "completed" {
+			t.Fatalf("the page owning the split call returned it as %+v", it.Tool)
+		}
+		if !strings.Contains(it.Tool.Output, "split call output") {
+			t.Errorf("output = %q, want the result that lives past the page end", it.Tool.Output)
+		}
+	}
+	if !found {
+		t.Fatal("no page carried the split call")
 	}
 }

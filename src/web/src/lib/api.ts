@@ -282,6 +282,13 @@ export interface ChatPayload {
   // The directory the session works in, so a relative image in an agent's prose
   // resolves against the folder it meant.
   cwd?: string
+  // The transcript these rows came from. A client accumulating pages uses it to
+  // notice the pane has started a DIFFERENT session and start over, rather than
+  // splicing two conversations into one list.
+  path?: string
+  // Where this window begins in that transcript; fetch the page above it with
+  // api.chat(pane, start_offset).
+  start_offset: number
   items: ChatItem[]
   // The newest turn's prompt size. A count and not a percentage: the window is
   // the model's, and lasso does not guess it.
@@ -919,10 +926,23 @@ export const api = {
   // terminal. Server-side (chatview.go), because the transcript is a file on
   // the pane's host and the host is the tab's. Read-only: input still goes to
   // the real TUI, so a tool approval is answered where the agent asked for it.
-  chat: (pane?: string) =>
-    getJSON<ChatPayload>(
-      pane ? `/api/chat?pane=${encodeURIComponent(pane)}` : "/api/chat"
-    ),
+  chat: (pane?: string, before?: number, host?: string) => {
+    const q = new URLSearchParams()
+    if (pane) q.set("pane", pane)
+    // `before` asks for the window ENDING at that transcript offset — the page
+    // above the one on screen. Absent means the tail, which is what a view
+    // opens on.
+    if (before) q.set("before", String(before))
+    const qs = q.toString()
+    // `host` addresses the request to the machine the rows came FROM. A page is
+    // more of the conversation already on screen, so it must not follow a tab
+    // that has since moved to another machine — pane ids are unique per host
+    // only. Omitted for the opening fetch, which is precisely the question
+    // "what is this tab looking at".
+    return getJSON<ChatPayload>(
+      withHost(qs ? `/api/chat?${qs}` : "/api/chat", host)
+    )
+  },
 
   // Type a message into one ADDRESSED pane and report how far it got. Both the
   // host and the pane are explicit, and both come from the payload on screen:

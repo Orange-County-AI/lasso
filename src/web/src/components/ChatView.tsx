@@ -4,10 +4,12 @@ import {
   ArrowUp,
   Check,
   ChevronRight,
+  File as FileIcon,
   Globe,
   Image as ImageIcon,
   ListTodo,
   Loader2,
+  Paperclip,
   Pencil,
   Search,
   Send,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react"
 import * as React from "react"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
+import { Orb } from "@/components/ui/orb"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -34,7 +37,51 @@ import { cn } from "@/lib/utils"
 // does, so a tool approval is still answered where the agent asked for it and
 // nothing here can drift from what the pane actually received.
 
-// One rendered row: a lone item, or a run of calls collapsed into one card.
+// mergeItems folds a freshly-read page into what is already on screen: rows that
+// are already here are UPDATED in place (a tool card completing, an output
+// growing) and rows that are new are APPENDED — the transcript is append-only,
+// so anything unseen is newer than everything seen.
+//
+// Replacing the list instead, which is what a single-page view does, is what
+// makes a conversation develop a hole: the live window is the last N kilobytes,
+// so once the file grows past it the rows at its start fall out, and they are
+// exactly the history someone scrolls up to find.
+//
+// A page is parsed INDEPENDENTLY of its neighbours, so an older page can hold a
+// call whose result landed in a newer one and parse it as still running. Letting
+// that version through would flip a finished card back to "running" for good, so
+// a state regression is refused and the newer parse stands. That is also what
+// makes the result independent of the order the pages arrived in, which is not
+// something a fetch loop can promise.
+function mergeItems(prev: ChatItem[], incoming: ChatItem[]): ChatItem[] {
+  if (prev.length === 0) return incoming
+  const at = new Map<string, number>()
+  for (let i = 0; i < prev.length; i++) at.set(prev[i].id, i)
+  let changed = false
+  const out = prev.slice()
+  for (const item of incoming) {
+    const i = at.get(item.id)
+    if (i === undefined) {
+      at.set(item.id, out.length)
+      out.push(item)
+      changed = true
+    } else if (out[i] !== item && !regresses(item, out[i])) {
+      out[i] = item
+      changed = true
+    }
+  }
+  return changed ? out : prev
+}
+
+// regresses reports whether an incoming row says LESS than the one on screen: a
+// tool that has finished cannot become a tool that is running again.
+function regresses(incoming: ChatItem, current: ChatItem): boolean {
+  const a = incoming.tool
+  const b = current.tool
+  return Boolean(a && b && b.state !== "running" && a.state === "running")
+}
+
+// Row is one rendered row: a lone item, or a run of calls collapsed into one card.
 type Row =
   | { kind: "single"; item: ChatItem }
   | { kind: "group"; id: string; calls: ChatTool[] }
@@ -444,27 +491,78 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
     () => draftsByTarget.get(target) ?? ""
   )
   const [sending, setSending] = React.useState(false)
+  const [attaching, setAttaching] = React.useState(false)
+  const fileRef = React.useRef<HTMLInputElement>(null)
   const [notice, setNotice] = React.useState<{
     tone: "bad" | "warn"
     text: string
   } | null>(null)
+
+  // Files attached to this message. Shown as chips — a thumbnail for an image,
+  // a name for anything else — NOT spliced into the text as a path: the path is
+  // what the agent needs, but a wall of them is not what the human meant to
+  // write, and one pasted by accident has to be removable. The paths are
+  // appended to the message when it is sent.
+  const [attachments, setAttachments] = React.useState<
+    { path: string; name: string; image: boolean }[]
+  >([])
 
   const setText = (value: string) => {
     setTextState(value)
     draftsByTarget.set(target, value)
   }
 
+  // A file — a pasted screenshot as much as one picked — goes to the machine the
+  // SESSION is on, and the message that follows carries its path. That is the
+  // contract the terminal's own paste has always had, for the same reason: the
+  // agent reads the file from its own filesystem, and a browser-only blob URL
+  // would be meaningless to it.
+  const attachFiles = async (files: File[]) => {
+    if (files.length === 0 || attaching || sending) return
+    setAttaching(true)
+    setNotice(null)
+    try {
+      for (const file of files) {
+        const { path } = await api.pasteFile(file, host, file.name)
+        setAttachments((prev) =>
+          prev.some((a) => a.path === path)
+            ? prev
+            : [
+                ...prev,
+                {
+                  path,
+                  name: file.name || (path.split("/").pop() ?? "file"),
+                  image: file.type.startsWith("image/"),
+                },
+              ]
+        )
+      }
+    } catch (e) {
+      setNotice({ tone: "bad", text: `attach failed: ${(e as Error).message}` })
+    } finally {
+      setAttaching(false)
+    }
+  }
+
   const send = async () => {
     const body = text.trim()
-    if (!body || sending) return
+    const paths = attachments.map((a) => a.path)
+    // An attachment on its own is a complete message ("here is the screenshot"),
+    // so the text is not required when there is one.
+    if ((!body && paths.length === 0) || sending) return
+    // The paths go WITH the message, space-separated like the terminal's own
+    // paste: the agent has to be told which file to open.
+    const message = [body, ...paths].filter(Boolean).join(" ")
     setSending(true)
     setNotice(null)
     try {
-      const res = await api.chatSend(host, paneID, body)
+      const res = await api.chatSend(host, paneID, message)
       if (res.outcome === "confirmed") {
         setText("")
+        setAttachments([])
       } else if (res.outcome === "refused") {
-        // Nothing reached the pane, so the draft is exactly as unsent as it was.
+        // Nothing reached the pane, so the draft is exactly as unsent as it was
+        // — attachments included, since their paths were never delivered.
         setNotice({
           tone: "bad",
           text: res.detail || "the message was refused",
@@ -497,13 +595,87 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
           {notice.text}
         </div>
       )}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+          {attachments.map((a) => (
+            <span
+              key={a.path}
+              className="flex max-w-[14rem] items-center gap-1.5 rounded-lg border border-border bg-card py-1 pr-1 pl-1.5 text-[11.5px] text-muted-foreground"
+              // The chip shows the NAME; the path is what is actually sent, and
+              // the only place it needs to be legible is a hover.
+              title={a.path}
+            >
+              {a.image ? (
+                <img
+                  src={api.fileURL(a.path, host)}
+                  alt=""
+                  className="size-6 shrink-0 rounded object-cover"
+                />
+              ) : (
+                <FileIcon className="size-3.5 shrink-0" />
+              )}
+              <span className="truncate">{a.name}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setAttachments((prev) => prev.filter((x) => x.path !== a.path))
+                }
+                // A mis-paste has to be undoable without clearing the message.
+                aria-label={`Remove ${a.name}`}
+                title="Remove attachment"
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="flex items-end gap-2 px-2 py-2">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            void attachFiles(Array.from(e.target.files ?? []))
+            // Clearing lets the same file be attached twice in a row.
+            e.target.value = ""
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={attaching || sending}
+          title="Attach a file and insert its path"
+          aria-label="Attach a file"
+          className="flex size-9 flex-none items-center justify-center rounded-lg border border-input text-muted-foreground disabled:opacity-40"
+        >
+          {attaching ? (
+            <Orb state="working" px={16} />
+          ) : (
+            <Paperclip className="size-4" />
+          )}
+        </button>
         <textarea
           ref={ref}
           rows={1}
           value={text}
           disabled={sending}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // A clipboard routinely holds text AND a file (copying an image off
+            // a page carries its URL too). Text wins, exactly as it does for the
+            // terminal's own paste: someone pasting a screenshot of their own
+            // text means the text.
+            if (e.clipboardData.getData("text/plain")) return
+            const file = Array.from(e.clipboardData.items)
+              .find((it) => it.kind === "file")
+              ?.getAsFile()
+            if (!file) return
+            e.preventDefault()
+            void attachFiles([file])
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
@@ -517,7 +689,7 @@ function Composer({ host, paneID }: { host: string; paneID: string }) {
         <button
           type="button"
           onClick={() => void send()}
-          disabled={sending || !text.trim()}
+          disabled={sending || (!text.trim() && attachments.length === 0)}
           title="Send (Enter)"
           aria-label="Send"
           className="flex size-9 flex-none items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
@@ -550,16 +722,117 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const stick = React.useRef(true)
-  const rows = React.useMemo(() => groupRows(data?.items ?? []), [data?.items])
 
-  // Follow the newest row, but stop fighting a reader who scrolled up. The
-  // whole `rows` identity is the trigger, not its length: a poll that only
-  // extends the last card's output must re-pin too.
+  // Everything read so far, TAGGED with the target it was read from (host +
+  // pane) and the transcript that answered. Tagged rather than cleared in an
+  // effect, because the answer can arrive after the target has moved: a page
+  // request still in flight would otherwise prepend one conversation's rows into
+  // another's. `transcript` is part of the identity too, and is compared with
+  // its absent value: a pane that starts a NEW session, and a pane that has none
+  // at all (a shell), are both different conversations from the one before.
+  type Accumulated = {
+    key: string
+    transcript: string
+    olderStart: number | null
+    items: ChatItem[]
+  }
+  const [acc, setAcc] = React.useState<Accumulated>({
+    key: "",
+    transcript: "",
+    olderStart: null,
+    items: [],
+  })
+  const target = data ? `${data.host}\u0000${data.pane_id}` : ""
+
+  const [loadingOlder, setLoadingOlder] = React.useState(false)
+  // Height to hold the reader's place by when a page lands above them.
+  const restoreHeight = React.useRef<number | null>(null)
+
+  React.useEffect(() => {
+    if (!data || !target) return
+    // `?? []` because a payload with no rows is a payload about a pane with no
+    // session — a reason to show the note, never a reason to crash the view.
+    const incoming = data.items ?? []
+    setAcc((prev) => {
+      const path = data.path ?? ""
+      if (prev.key !== target || prev.transcript !== path) {
+        stick.current = true
+        return { key: target, transcript: path, olderStart: null, items: incoming }
+      }
+      return { ...prev, items: mergeItems(prev.items, incoming) }
+    })
+    // `data` alone: `incoming` is derived from it, and listing a value declared
+    // inside the effect is not a dependency, it is a name error.
+  }, [data, target])
+
+  const items = acc.items
+  const hasMore =
+    acc.olderStart === null ? (data?.more ?? false) : acc.olderStart > 0
+
+  const loadOlder = React.useCallback(async () => {
+    const before = acc.olderStart ?? data?.start_offset
+    if (!before || before <= 0 || loadingOlder || !data) return
+    // Captured, not read later: the response is only this conversation's if the
+    // view is still showing it when the page lands.
+    const key = acc.key
+    const pane = data.pane_id
+    const pageHost = data.host
+    setLoadingOlder(true)
+    // Measure before the prepend: the list is about to grow above the viewport,
+    // and the reader is looking at the bottom of it.
+    restoreHeight.current = scrollRef.current?.scrollHeight ?? null
+    try {
+      // The page belongs to the transcript on screen, so it is addressed to that
+      // record's host — not to whichever host this tab has moved to since.
+      const page = await api.chat(pane, before, pageHost)
+      setAcc((prev) => {
+        if (prev.key !== key) return prev
+        const have = new Set(prev.items.map((it) => it.id))
+        return {
+          ...prev,
+          items: [
+            ...(page.items ?? []).filter((it) => !have.has(it.id)),
+            ...prev.items,
+          ],
+          // A page with nothing older to give must not leave the cursor where it
+          // was, or the loader would ask for the same empty page forever.
+          olderStart: page.start_offset,
+        }
+      })
+    } catch {
+      // A page that will not load leaves the reader where they were; the loader
+      // goes away and scrolling up tries again.
+      restoreHeight.current = null
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [acc.key, acc.olderStart, data, loadingOlder])
+
+  const rows = React.useMemo(() => groupRows(items), [items])
+
+  // Follow the newest row, hold the reader's place when a page is prepended,
+  // and stop fighting either of them when they have scrolled up. `rows` as the
+  // trigger rather than its length: a poll that only extends the last card's
+  // output has to re-pin too.
   React.useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el || rows.length === 0) return
+    const restore = restoreHeight.current
+    if (restore != null) {
+      el.scrollTop += el.scrollHeight - restore
+      restoreHeight.current = null
+      return
+    }
     if (stick.current) el.scrollTop = el.scrollHeight
   }, [rows])
+
+  // A page shorter than the viewport leaves scrollTop at 0 and fires no further
+  // scroll, so a reader parked at the top would have to nudge it. Keep filling
+  // until the viewport is covered or the history runs out.
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (el && hasMore && !loadingOlder && el.scrollTop < 120) void loadOlder()
+  }, [hasMore, loadingOlder, loadOlder])
 
   const running = data?.running ?? false
 
@@ -615,16 +888,22 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
         onScroll={(e) => {
           const el = e.currentTarget
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          // Reaching the top loads the page above it, which is the whole
+          // gesture: a conversation reads backwards by dragging, not by a
+          // button.
+          if (el.scrollTop < 120 && hasMore && !loadingOlder) void loadOlder()
         }}
         className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
       >
-        {data?.more && (
-          <div className="text-center font-mono text-[11px] text-muted-foreground">
-            earlier messages not loaded
+        {loadingOlder && (
+          <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+            <Orb state="working" px={16} />
+            loading earlier…
           </div>
         )}
         {isLoading && (
-          <div className="text-center text-[12px] text-muted-foreground">
+          <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+            <Orb state="working" px={16} />
             loading…
           </div>
         )}

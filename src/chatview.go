@@ -48,6 +48,10 @@ const (
 	// does: two hunks of a patch, or a first-N-lines excerpt of a whole file.
 	chatDiffHunks = 2
 	chatDiffLines = 20
+	// chatPageExtendTries bounds how far a page may grow backwards to keep a
+	// tool call with its result. Three doublings is 4 MiB, far past the
+	// adjacent records this exists for.
+	chatPageExtendTries = 3
 )
 
 // chatItem is one renderable row. Exactly one of Text / Tool / Marker carries
@@ -67,6 +71,11 @@ type chatItem struct {
 	// hundred times is a chat nobody can read.
 	Count int       `json:"count,omitempty"`
 	Tool  *chatTool `json:"tool,omitempty"`
+	// off is where in the transcript this row's record begins. Not on the wire:
+	// it is what makes paging exact (the oldest KEPT row is the cursor the next
+	// page is fetched before), and a row dropped by the per-read cap must not
+	// silently take the rows beneath it out of reach.
+	off int64
 }
 
 // chatTool is a tool call plus the presentation the client renders, already
@@ -129,8 +138,15 @@ type chatPayload struct {
 	// Cwd is the directory the session is working in, so a relative image an
 	// agent wrote into its prose ("![](docs/arch.png)") resolves against the
 	// machine and folder it MEANT rather than against lasso's own origin.
-	Cwd   string     `json:"cwd,omitempty"`
-	Items []chatItem `json:"items"`
+	Cwd string `json:"cwd,omitempty"`
+	// Path is the transcript these rows came from. A client accumulating pages
+	// uses it to notice the pane has started a DIFFERENT session and start over,
+	// rather than splicing two conversations into one list.
+	Path string `json:"path,omitempty"`
+	// StartOffset is where this window begins in that transcript. Fetch the page
+	// above it with ?before=<StartOffset>.
+	StartOffset int64      `json:"start_offset"`
+	Items       []chatItem `json:"items"`
 	// Tokens is the newest assistant turn's prompt size, the honest half of a
 	// context meter: the window size is the model's, and lasso does not guess
 	// it.
@@ -263,19 +279,35 @@ func paneTranscriptPath(p pane) string {
 
 // chatParse is the result of reading one transcript.
 type chatParse struct {
-	items  []chatItem
-	title  string
-	model  string
-	tokens int
-	run    bool
-	more   bool
-	note   string
+	items []chatItem
+	// startOffset is the transcript offset of the OLDEST row returned. The next
+	// page is "everything before this", so it stays exact even when this read
+	// dropped rows to fit chatMaxItems.
+	startOffset int64
+	title       string
+	model       string
+	tokens      int
+	run         bool
+	more        bool
+	note        string
+	// pendingResults is how many tool results this window could not pair with
+	// their call. Non-zero means the window's start fell between a call and its
+	// answer.
+	pendingResults int
+	// running maps a call this window left unfinished to the card that owns it,
+	// so the answer can be looked for PAST the window's end. A call and its
+	// result are separate records and the window ends between them whenever the
+	// end is a page cursor: reading further back cannot help, because the result
+	// is forwards. The map holds the same *chatTool the item does, so applying a
+	// result through it updates the row on screen.
+	running map[string]*chatTool
 }
 
-// parseChatTranscript turns a tail of an omp session transcript into chat rows.
-// The first line of a tail read is usually a fragment; it simply fails to parse,
-// like any other line that isn't a JSON object.
-func parseChatTranscript(data []byte) chatParse {
+// parseChatTranscript turns a window of an omp session transcript into chat
+// rows. base is where that window starts in the file, so every row can say
+// where it came from. The first line of a window is usually a fragment; it
+// simply fails to parse, like any other line that isn't a JSON object.
+func parseChatTranscript(data []byte, base int64) chatParse {
 	var out chatParse
 	lines := bytes.Split(data, []byte("\n"))
 
@@ -295,11 +327,18 @@ func parseChatTranscript(data []byte) chatParse {
 		out.items = append(out.items, chatItem{Kind: "tool", ID: t.CallID, Tool: t})
 	}
 
+	off := int64(0)
 	for _, raw := range lines {
+		lineStart := base + off
+		off += int64(len(raw)) + 1 // the newline bytes.Split took away
 		line := bytes.TrimSpace(raw)
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
+		// Stamped once for the whole record, after the switch below: every row
+		// a record produces starts where that record does, and one place is one
+		// chance to forget it rather than five.
+		first := len(out.items)
 		var rec ompRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
@@ -392,13 +431,37 @@ func parseChatTranscript(data []byte) chatParse {
 				pending[callKey(m.ToolCallID)] = m
 			}
 		}
+		for i := first; i < len(out.items); i++ {
+			out.items[i].off = lineStart
+		}
 	}
 
-	// Cap by dropping the oldest rows, and say so — the view offers no paging,
-	// so a silent truncation would look like a short session.
+	// Cap by dropping the oldest rows — but never inside a RECORD. Rows from one
+	// record share its offset, so a cut mid-record would report a cursor naming
+	// that record's start, and the next page (everything BEFORE the cursor)
+	// would exclude the record entirely: the blocks above the cut would be
+	// unreachable, not merely deferred.
 	if len(out.items) > chatMaxItems {
-		out.items = out.items[len(out.items)-chatMaxItems:]
+		keep := len(out.items) - chatMaxItems
+		for keep > 0 && out.items[keep].off == out.items[keep-1].off {
+			keep--
+		}
+		out.items = out.items[keep:]
 		out.more = true
+	}
+	// Leftovers are results whose call was NOT in this window. The next page
+	// (or the tail before it) holds that call, and would render its card as
+	// still running forever, so serveChat reads a bigger window rather than
+	// shipping a page that cannot be completed.
+	out.pendingResults = len(pending)
+	out.running = map[string]*chatTool{}
+	for key, t := range byCall {
+		if t.State == "running" {
+			out.running[key] = t
+		}
+	}
+	if len(out.items) > 0 {
+		out.startOffset = out.items[0].off
 	}
 	for i := range out.items {
 		if out.items[i].Tool != nil && out.items[i].Tool.State == "running" {
@@ -865,28 +928,76 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out.Note = "No agent session in this pane."
 		}
-		writeJSON(w, out)
+		writeChat(w, out)
 		return
 	}
 	info, err := be.Stat(path)
 	if err != nil || info.IsDir() {
 		out.Note = "The agent's transcript is not readable yet."
-		writeJSON(w, out)
+		writeChat(w, out)
 		return
 	}
-	data, windowed := readChatTail(be, path, info.Size())
-	parsed := parseChatTranscript(data)
+	// `before` asks for the window ENDING at that transcript offset — the page
+	// above the one already on screen. Absent (or out of range) means the tail,
+	// which is what a view opens on.
+	end := info.Size()
+	if v := r.URL.Query().Get("before"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && n < end {
+			end = n
+		}
+	}
+	start := end - chatReadBytes
+	if start < 0 {
+		start = 0
+	}
+	// A window that starts between a tool call and the result that answers it
+	// parses the result with no call to attach it to, and that result is then
+	// gone: the call is in the page below, which renders as still running
+	// forever. So read wider until the window can be parsed whole. Bounded —
+	// a call and its answer are adjacent records, so one or two windows always
+	// covers them, and the loop stops at the start of the file regardless.
+	var parsed chatParse
+	for tries := 0; ; tries++ {
+		parsed = parseChatTranscript(readChatRange(be, path, start, end), start)
+		if parsed.pendingResults == 0 || start == 0 || tries >= chatPageExtendTries {
+			break
+		}
+		start -= chatReadBytes
+		if start < 0 {
+			start = 0
+		}
+	}
+	// A page whose end is a cursor can split a call from its answer; the window
+	// above already holds that answer, but this page owns the row.
+	resolveForwardResults(be, path, end, info.Size(), parsed.running)
 	out.Items = parsed.items
 	out.Model = parsed.model
 	out.Tokens = parsed.tokens
 	out.Running = parsed.run
-	out.More = windowed || parsed.more
+	out.More = parsed.more || parsed.startOffset > 0
+	out.StartOffset = parsed.startOffset
+	// The transcript itself, so a client accumulating pages can tell "more of
+	// this session" from "a different session in the same pane" and start over
+	// instead of splicing two conversations together.
+	out.Path = path
 	out.Note = parsed.note
 	if parsed.title != "" {
 		out.Title = parsed.title
 	}
 	if out.Agent == "" {
 		out.Agent = "agent"
+	}
+	writeChat(w, out)
+}
+
+// writeChat answers a chat request. Every path funnels through here so that
+// `items` is always a LIST: a nil slice marshals to null, the no-transcript
+// paths return before anything fills it, and a client that treats the field as
+// a list then dies on "not iterable" instead of showing the note explaining why
+// there is nothing to show.
+func writeChat(w http.ResponseWriter, out chatPayload) {
+	if out.Items == nil {
+		out.Items = []chatItem{}
 	}
 	writeJSON(w, out)
 }
@@ -908,28 +1019,36 @@ func panesRaw(be Backend) ([]pane, error) {
 	return pl.Panes, nil
 }
 
-// readChatTail reads the newest window of a transcript. windowed reports that
-// the file is larger than the window, so the reader knows it is looking at a
-// session's tail rather than its whole history.
-func readChatTail(b Backend, path string, size int64) (data []byte, windowed bool) {
+// readChatRange reads [start, end) of a transcript. end comes from a Stat, and
+// the file grows while this runs, so the read is capped rather than trusted to
+// be exactly the window that was measured.
+func readChatRange(b Backend, path string, start, end int64) []byte {
 	f, err := b.Open(path)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 	defer f.Close()
-	if off := size - chatReadBytes; off > 0 {
-		windowed = true
-		if _, err := f.Seek(off, io.SeekStart); err != nil {
-			return nil, false
+	if start > 0 {
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			return nil
 		}
 	}
-	// The file grows while it is read; cap it so a busy session cannot turn
-	// this into an unbounded slurp.
-	data, err = io.ReadAll(io.LimitReader(f, 2*chatReadBytes))
-	if err != nil {
-		return nil, false
+	n := end - start
+	if n <= 0 {
+		return nil
 	}
-	return data, windowed
+	// The window is already bounded by construction (chatReadBytes, grown by
+	// chatPageExtendTries); this only guards against a caller that isn't. A
+	// tighter cap here would silently TRUNCATE a widened window, which is the
+	// very loss it was widened to avoid.
+	if max := int64(chatReadBytes) * (chatPageExtendTries + 1); n > max {
+		n = max
+	}
+	data, err := io.ReadAll(io.LimitReader(f, n))
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,4 +1267,44 @@ func shortPath(p string) string {
 		return p
 	}
 	return "…/" + strings.Join(parts[len(parts)-3:], "/")
+}
+
+// resolveForwardResults looks for the answers to calls a window left running,
+// in the records AFTER that window's end.
+//
+// This is what makes a page self-contained. A tool's call and its result are
+// separate records, and a page ends at a cursor, so the end lands between them
+// routinely: the call parses as still running and the row stays that way for
+// good, because every later page only ever looks further back. Reading the
+// window wider does not help — the answer is forwards.
+//
+// Bounded by one window, and skipped entirely when the end IS the end of the
+// file, which is the case for every live poll.
+func resolveForwardResults(b Backend, path string, from, size int64, running map[string]*chatTool) {
+	if len(running) == 0 || from >= size {
+		return
+	}
+	for _, raw := range bytes.Split(readChatRange(b, path, from, from+chatReadBytes), []byte("\n")) {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var rec ompRecord
+		if json.Unmarshal(line, &rec) != nil || rec.Message == nil {
+			continue
+		}
+		if rec.Message.Role != "toolResult" {
+			continue
+		}
+		key := callKey(rec.Message.ToolCallID)
+		t, ok := running[key]
+		if !ok {
+			continue
+		}
+		applyToolResult(t, rec.Message)
+		delete(running, key)
+		if len(running) == 0 {
+			return
+		}
+	}
 }
