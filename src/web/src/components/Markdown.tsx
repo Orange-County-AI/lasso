@@ -91,6 +91,48 @@ export function resolveMarkdownSrc(
   return api.fileURL(`/${parts.join("/")}`, host ?? undefined)
 }
 
+// A URL a model wrote inside a code span. Deliberately the same two forms GFM
+// autolinks in prose — an explicit scheme, or a www. host — so a URL reads the
+// same whether or not it was wrapped in backticks, which is exactly the case
+// that made them untappable: agents routinely write `https://…` as code, and on
+// a phone a code chip is a string you cannot open.
+//
+// Not a bare-domain rule, on purpose: `README.md`, `go.mod` and `src/web/src`
+// are code, and a false positive turns a filename into a link.
+const codeURLRe = /(?:https?:\/\/|www\.)[^\s<>"'`\\]+/gi
+
+// linkifyCode returns a code span's text with any URLs in it wrapped in links.
+// The characters are untouched — only the parts that are addresses become
+// anchors — so `curl http://x/y` stays a command whose URL happens to be
+// tappable.
+function linkifyCode(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = []
+  let last = 0
+  for (const m of text.matchAll(codeURLRe)) {
+    const start = m.index ?? 0
+    // Trailing sentence punctuation is not part of the address, and a closing
+    // paren only belongs to it when the URL opened one.
+    let url = m[0].replace(/[.,;:!?]+$/, "")
+    if (url.endsWith(")") && !url.includes("(")) url = url.slice(0, -1)
+    if (url.length === 0) continue
+    if (start > last) out.push(text.slice(last, start))
+    out.push(
+      <a
+        key={`${start}-${url}`}
+        href={/^www\./i.test(url) ? `http://${url}` : url}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {url}
+      </a>
+    )
+    last = start + url.length
+  }
+  if (out.length === 0) return [text]
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
 // The only markdown component override: a ```mermaid fence renders as a diagram,
 // every other fence falls through to the untouched <pre> that rehype-highlight
 // produced. We hook <pre> rather than <code> so the diagram replaces the whole
@@ -106,13 +148,51 @@ function mdComponents(
   return {
     pre({ node, children, ...rest }) {
       const code = node?.children?.[0]
-      if (code?.type === "element" && code.tagName === "code") {
+      const isCode = code?.type === "element" && code.tagName === "code"
+      if (isCode) {
         const cls = code.properties?.className
         const langs = Array.isArray(cls) ? cls.map(String) : []
         if (langs.includes("language-mermaid"))
           return <MermaidDiagram chart={hastText(code.children)} />
       }
+      // A fence's own <code> is rebuilt here rather than passed through (which
+      // would dispatch to the `code` override below). That override linkifies
+      // inline code, and a BLOCK is where a tap has to place a caret and select
+      // text — a config, a patch — so an anchor there would swallow it. This is
+      // also the only place that knows a fence is around the element, so it is
+      // where the two are kept apart; no hook, since these renderers are called
+      // while the tree is built rather than as components.
+      const inner = isCode ? React.Children.toArray(children)[0] : undefined
+      if (
+        React.isValidElement<{
+          className?: string
+          children?: React.ReactNode
+        }>(inner)
+      ) {
+        return (
+          <pre {...rest}>
+            <code className={inner.props.className}>
+              {inner.props.children}
+            </code>
+          </pre>
+        )
+      }
       return <pre {...rest}>{children}</pre>
+    },
+    // Inline code, where a URL the model wrote is a REFERENCE and not code.
+    code({ node: _node, className, children, ...rest }) {
+      if (typeof children !== "string") {
+        return (
+          <code className={className} {...rest}>
+            {children}
+          </code>
+        )
+      }
+      return (
+        <code className={className} {...rest}>
+          {linkifyCode(children)}
+        </code>
+      )
     },
     // Covers both ![](x) and a raw <img> from rehype-raw: react-markdown routes
     // the reconstructed HTML through this same components map.
@@ -123,10 +203,30 @@ function mdComponents(
           // An <img> in a README often carries no alt; empty marks it decorative
           // rather than leaving assistive tech to read out the file name.
           alt={alt ?? ""}
-          src={resolveImageSrc?.(
-            typeof src === "string" ? src : undefined
-          ) as string}
+          src={
+            resolveImageSrc?.(
+              typeof src === "string" ? src : undefined
+            ) as string
+          }
         />
+      )
+    },
+    // Links LEAVE lasso, and a link followed in the app takes the app with it:
+    // this is a single-page chat served to a phone, often as the installed PWA
+    // where there is no back button to return with, so a tap on a URL an agent
+    // printed would replace the session someone was reading. Handing it to the
+    // browser keeps the conversation — and `noopener` is not ceremony: without
+    // it the opened document gets a handle on this window.
+    //
+    // Set HERE rather than in the sanitize schema deliberately. This override
+    // runs AFTER sanitizing, so the untrusted HTML rehype-raw parses back in
+    // (a README's own markup, an agent's output) can never ask for these two
+    // attributes itself — which is exactly what the sanitizer is for.
+    a({ node: _node, children, ...rest }) {
+      return (
+        <a {...rest} target="_blank" rel="noopener noreferrer">
+          {children}
+        </a>
       )
     },
   } satisfies Components

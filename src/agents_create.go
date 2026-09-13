@@ -1022,7 +1022,14 @@ func agentPrompt(rec AgentRecord) string {
 		parts = append(parts, "See NOTES.md for additional notes.")
 	}
 	if len(rec.Attachments) > 0 {
-		parts = append(parts, "Attachments: "+strings.Join(rec.Attachments, ", "))
+		// Absolute paths, not the staged names: they are what the agent must
+		// open, and a bare filename left it hunting the filesystem for a file
+		// already sitting in its own work dir.
+		paths := make([]string, len(rec.Attachments))
+		for i, name := range rec.Attachments {
+			paths[i] = filepath.Join(rec.WorkDir, filepath.Base(name))
+		}
+		parts = append(parts, "Attachments (absolute paths): "+strings.Join(paths, ", "))
 	}
 	return strings.Join(parts, "\n\n")
 }

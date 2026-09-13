@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +24,12 @@ import (
 // per-harness integration: the file the agent already writes is the whole
 // thing, and it works for any host lasso can drive.
 //
-// Nothing here writes. INPUT stays the real TUI — the composer pastes into the
-// same pane (see ChatView.tsx) — which is also why a card can honestly say its
-// approval is answered in the terminal.
+// Reading never writes, and answering does so only through the pane's own
+// dialog. The composer pastes into the same pane (see ChatView.tsx), and an ask
+// is answered by typing the keystrokes a human would at the question the agent
+// is showing (see serveChatAnswer) — so nothing here can put words in an
+// agent's mouth that its own TUI did not accept, and a card still says what the
+// pane actually received.
 //
 // This mirrors the shape Moshi's app renders (see the design notes in
 // ChatView.tsx), but the labels are better than Moshi can have: omp stamps a
@@ -114,7 +118,59 @@ type chatTool struct {
 	Images int `json:"images,omitempty"`
 	// DurationMS is the wall time omp recorded for the call.
 	DurationMS int `json:"duration_ms,omitempty"`
+	// Ask is set when the call is a question put TO the human — omp's `ask`,
+	// claude's AskUserQuestion — and carries the choices themselves instead of a
+	// one-line subject. Without it a phone read "ask · Confirming provisioning
+	// path for th…" and had to open the terminal to find out what it was being
+	// asked, let alone answer it.
+	Ask *chatAsk `json:"ask,omitempty"`
 }
+
+// chatAsk is a question an agent stopped to ask: the choices it offered and,
+// once it has them, what was picked.
+type chatAsk struct {
+	Questions []chatAskQuestion `json:"questions"`
+}
+
+// chatAskQuestion is one question. Both harnesses spell these almost the same
+// way — omp writes `multi`/`recommended`, claude `multiSelect` — so one reader
+// serves both and the renderer sees one shape.
+type chatAskQuestion struct {
+	Header   string          `json:"header,omitempty"`
+	Question string          `json:"question"`
+	Options  []chatAskOption `json:"options"`
+	// Multi allows several of the options to be picked at once.
+	Multi bool `json:"multi,omitempty"`
+	// Recommended is the option the agent proposes, absent when it named none. A
+	// pointer because the first option is the commonest recommendation, and 0 is
+	// not the same answer as "none".
+	Recommended *int `json:"recommended,omitempty"`
+	// Selected is what the human picked, by label — the form the harness
+	// records it in. An index would have to be read back through the option
+	// list, and the answered card is worth reading from the record itself.
+	Selected []string `json:"selected,omitempty"`
+	// Custom is a free-text answer typed into the dialog's "Other".
+	Custom string `json:"custom,omitempty"`
+}
+
+// chatAskOption is one choice. Label and description are shown as the agent
+// wrote them — they ARE the question — while a preview is the detail behind a
+// pick, which the client keeps folded until one is made.
+type chatAskOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Preview     string `json:"preview,omitempty"`
+}
+
+// Caps on one ask's prose. An ask is a few paragraphs of argument from the
+// model, and the chat is not the place to ship a novel; the description is what
+// a pick is made on, so it gets the room, and a preview is a code excerpt the
+// client shows only once an option is chosen.
+const (
+	chatAskQuestionCap = 1200
+	chatAskDescCap     = 700
+	chatAskPreviewCap  = 900
+)
 
 // chatDiffLine is one row of a diff excerpt. There is deliberately no line
 // number: omp's older patch format states its range once in the "PUT 57.=58"
@@ -590,6 +646,11 @@ type claudeRecord struct {
 	IsSidechain bool           `json:"isSidechain"`
 	IsMeta      bool           `json:"isMeta"`
 	Message     *claudeMessage `json:"message"`
+	// ToolUseResult is the record-level payload claude writes beside a tool
+	// result. For an ask it is where the ANSWERS live: the tool_result block
+	// itself carries only a sentence of prose ("Your questions have been
+	// answered: …"), while this holds them keyed by question.
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
 }
 
 type claudeMessage struct {
@@ -677,6 +738,9 @@ func parseClaudeTranscript(data []byte, base int64) chatParse {
 		body    string
 		isError bool
 		images  int
+		// The ask's own answers ride along: they come off the same record as the
+		// result, and are lost if only the body is held.
+		ask []chatAskAnswer
 	}
 	pending := map[string]pendingResult{}
 	lastStop := ""
@@ -762,15 +826,18 @@ func parseClaudeTranscript(data []byte, base int64) chatParse {
 				if res, ok := pending[callKey(t.CallID)]; ok {
 					delete(pending, callKey(t.CallID))
 					finishTool(t, res.body, res.isError, res.images)
+					applyAskAnswers(t, res.ask)
 				}
 			case "tool_result":
 				body, images := claudeResultBody(b.Content)
+				ask := claudeAskAnswers(rec.ToolUseResult)
 				key := callKey(b.ToolUseID)
 				if t, ok := byCall[key]; ok {
 					finishTool(t, body, rawTrue(b.IsError), images)
+					applyAskAnswers(t, ask)
 					continue
 				}
-				pending[key] = pendingResult{body: body, isError: rawTrue(b.IsError), images: images}
+				pending[key] = pendingResult{body: body, isError: rawTrue(b.IsError), images: images, ask: ask}
 			case "image":
 				recordImages++
 			}
@@ -882,6 +949,9 @@ var toolFamilies = map[string]string{
 	"task": "task", "agent": "task",
 	"view_image": "image", "imagegen": "image", "generate_image": "image",
 	"edit_image": "image",
+	// An ask is its own family: it is the one call in the conversation that is
+	// waiting on the READER, and it must not scan as another tool row.
+	"ask": "ask", "askuserquestion": "ask",
 }
 
 // toolGroups is the collapse key for a run of consecutive calls. Two names
@@ -917,6 +987,7 @@ var toolTitles = map[string]string{
 	"task": "Task", "agent": "Agent",
 	"view_image": "Image", "imagegen": "Image", "generate_image": "Image",
 	"edit_image": "Image", "hub": "Hub",
+	"ask": "Ask", "askuserquestion": "Ask",
 }
 
 func toolFamily(name string) string {
@@ -978,6 +1049,18 @@ func describeTool(t *chatTool, args map[string]json.RawMessage) {
 	intent := str("i", "intent", "description")
 	path := str("path", "file_path", "filePath")
 
+	// An ask is not a call to summarise: it is a QUESTION, and its card is built
+	// from the questions themselves. Both harnesses put them under `questions`,
+	// so one reader serves both — and a shape it does not recognise falls
+	// through to the ordinary subject below rather than to an empty form.
+	if t.Family == "ask" {
+		t.Ask = parseAskQuestions(args["questions"])
+		if t.Ask != nil && len(t.Ask.Questions) > 0 {
+			t.Subject = clipLine(t.Ask.Questions[0].Question, chatSubjectCap)
+			return
+		}
+	}
+
 	switch t.Family {
 	case "shell":
 		t.Command = str("command", "cmd")
@@ -1035,6 +1118,219 @@ func describeTool(t *chatTool, args map[string]json.RawMessage) {
 // chatSubjectCap is the collapsed card's one line. Wide enough for a real
 // command, narrow enough that the card never wraps on a phone.
 const chatSubjectCap = 88
+
+// parseAskQuestions reads an ask's questions out of a call's arguments. Lenient
+// by design: the two harnesses differ only in how they spell the multi-select
+// flag (omp `multi`, claude `multiSelect`), and anything else it does not
+// understand must leave the card as the plain tool row it has always been
+// rather than inventing a form with nothing in it.
+func parseAskQuestions(raw json.RawMessage) *chatAsk {
+	if len(raw) == 0 {
+		return nil
+	}
+	var wire []struct {
+		Header      string `json:"header"`
+		Question    string `json:"question"`
+		Multi       bool   `json:"multi"`
+		MultiSelect bool   `json:"multiSelect"`
+		Recommended *int   `json:"recommended"`
+		Options     []struct {
+			Label       string `json:"label"`
+			Description string `json:"description"`
+			Preview     string `json:"preview"`
+		} `json:"options"`
+	}
+	if json.Unmarshal(raw, &wire) != nil {
+		return nil
+	}
+	ask := &chatAsk{}
+	for _, q := range wire {
+		question := clipBlock(strings.TrimSpace(q.Question), chatAskQuestionCap)
+		if question == "" {
+			continue
+		}
+		options := make([]chatAskOption, 0, len(q.Options))
+		for _, o := range q.Options {
+			label := strings.TrimSpace(o.Label)
+			if label == "" {
+				continue
+			}
+			options = append(options, chatAskOption{
+				Label:       label,
+				Description: clipBlock(strings.TrimSpace(o.Description), chatAskDescCap),
+				Preview:     clipBlock(strings.TrimSpace(o.Preview), chatAskPreviewCap),
+			})
+		}
+		rec := q.Recommended
+		if rec != nil && (*rec < 0 || *rec >= len(options)) {
+			// An index naming no option would mark nothing, or mark the wrong
+			// row after the empty-label filter above dropped one.
+			rec = nil
+		}
+		// A question with no options is the free-text kind: still a thing the
+		// human has to answer, but with nothing here to pick, so the terminal
+		// stays the place that answers it.
+		ask.Questions = append(ask.Questions, chatAskQuestion{
+			Header:      strings.TrimSpace(q.Header),
+			Question:    question,
+			Options:     options,
+			Multi:       q.Multi || q.MultiSelect,
+			Recommended: rec,
+		})
+	}
+	if len(ask.Questions) == 0 {
+		return nil
+	}
+	return ask
+}
+
+// ---------------------------------------------------------------------------
+// ask answers
+// ---------------------------------------------------------------------------
+
+// chatAskAnswer is one question's answer reduced to the shape both harnesses
+// carry the same facts in: which question it answers, and the labels the human
+// picked out of it. omp reports this in the tool result's `details.results`,
+// claude in a record-level `toolUseResult.answers` keyed by the question text.
+type chatAskAnswer struct {
+	Question string
+	Selected []string
+	Custom   string
+}
+
+// applyAskAnswers marks an ask as answered. Answers are matched to questions by
+// their TEXT, which both harnesses echo verbatim, so the result is read from the
+// record rather than reconstructed from a positional guess.
+//
+// The raw "User answers: …" text is then dropped: the answers render as marks on
+// the options themselves, and printing the same thing twice reads as two
+// different facts. A result whose answers could not be read keeps the text — the
+// fallback is the honest one, not a silent blank.
+func applyAskAnswers(t *chatTool, answers []chatAskAnswer) {
+	if t.Ask == nil || len(answers) == 0 {
+		return
+	}
+	matched := false
+	for i := range t.Ask.Questions {
+		q := &t.Ask.Questions[i]
+		for _, a := range answers {
+			if strings.TrimSpace(a.Question) != strings.TrimSpace(q.Question) {
+				continue
+			}
+			q.Selected = matchAskLabels(q.Options, a.Selected)
+			q.Custom = strings.TrimSpace(a.Custom)
+			if len(q.Selected) > 0 || q.Custom != "" {
+				matched = true
+			}
+			break
+		}
+	}
+	if matched {
+		t.Output = ""
+		t.ResultLine = "answered"
+	}
+}
+
+// matchAskLabels maps an answer's labels onto the options they name — the
+// matching that makes an answered card mark the right rows.
+//
+// A value that names no option is retried as a comma-joined list, because that
+// is how claude records a multi-select answer: a live session wrote
+// `"Which colours do you want?": "Red, Green"` for two ticked boxes. Splitting
+// is safe precisely because the option list is here to check against — only
+// real labels survive, and a label that itself contains a comma still matches
+// whole, first.
+func matchAskLabels(options []chatAskOption, values []string) []string {
+	known := make(map[string]bool, len(options))
+	for _, o := range options {
+		known[o.Label] = true
+	}
+	var out []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if known[v] {
+			out = append(out, v)
+			continue
+		}
+		for _, part := range strings.Split(v, ", ") {
+			if part = strings.TrimSpace(part); part != "" && known[part] {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
+}
+
+// ompAskAnswers takes the omp envelope apart. Which shape arrives depends on how
+// many questions were asked: a single question's result IS the entry
+// (`{question, options, selectedOptions}`), while several are wrapped in
+// `results`. Both are real sessions, so both are read here — a live probe of a
+// one-question ask is what turned the second one up.
+func ompAskAnswers(details json.RawMessage) []chatAskAnswer {
+	if len(details) == 0 {
+		return nil
+	}
+	type result struct {
+		Question        string   `json:"question"`
+		SelectedOptions []string `json:"selectedOptions"`
+		CustomInput     string   `json:"customInput"`
+	}
+	var d struct {
+		result
+		Results []result `json:"results"`
+	}
+	if json.Unmarshal(details, &d) != nil {
+		return nil
+	}
+	if len(d.Results) == 0 {
+		if d.Question == "" && len(d.SelectedOptions) == 0 && d.CustomInput == "" {
+			return nil
+		}
+		return []chatAskAnswer{{Question: d.Question, Selected: d.SelectedOptions, Custom: d.CustomInput}}
+	}
+	out := make([]chatAskAnswer, 0, len(d.Results))
+	for _, r := range d.Results {
+		out = append(out, chatAskAnswer{
+			Question: r.Question,
+			Selected: r.SelectedOptions,
+			Custom:   r.CustomInput,
+		})
+	}
+	return out
+}
+
+// claudeAskAnswers reads claude's record-level `toolUseResult`: `answers` maps
+// the question TEXT to the label picked, or to a list of them when the question
+// allows several.
+func claudeAskAnswers(raw json.RawMessage) []chatAskAnswer {
+	if len(raw) == 0 {
+		return nil
+	}
+	var r struct {
+		Answers map[string]json.RawMessage `json:"answers"`
+	}
+	if json.Unmarshal(raw, &r) != nil || len(r.Answers) == 0 {
+		return nil
+	}
+	out := make([]chatAskAnswer, 0, len(r.Answers))
+	for question, v := range r.Answers {
+		a := chatAskAnswer{Question: question}
+		var one string
+		if json.Unmarshal(v, &one) == nil {
+			a.Selected = []string{one}
+		} else {
+			var many []string
+			if json.Unmarshal(v, &many) == nil {
+				a.Selected = many
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // diffs
@@ -1202,6 +1498,11 @@ func applyToolResult(t *chatTool, m *ompMessage) {
 	finishTool(t, strings.Join(texts, "\n"), rawTrue(m.IsError), images)
 	if raw := m.Details; len(raw) > 0 {
 		t.DurationMS = detailsWallMS(raw)
+		// An ask answers with the questions it was given back, not with prose:
+		// the picks belong against the options they were chosen from.
+		if t.Ask != nil {
+			applyAskAnswers(t, ompAskAnswers(raw))
+		}
 	}
 }
 
@@ -1553,6 +1854,307 @@ func serveChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome, detail := chatSubmit(be, req.PaneID, kind, req.Text)
 	writeJSON(w, map[string]any{"outcome": outcome, "detail": detail})
+}
+
+// ---------------------------------------------------------------------------
+// answering an ask
+// ---------------------------------------------------------------------------
+
+// chatAskPick is one question's selection as a client sends it: option INDICES,
+// in the order the card displayed them, plus what the dialog needs to walk to
+// them.
+type chatAskPick struct {
+	Selected []int `json:"selected"`
+	Multi    bool  `json:"multi"`
+	// Options is how many options the question offered, not counting the
+	// dialog's own "Other" row. claude's dialog is left by walking the cursor
+	// off the end of that list, so the walk needs its length, and the selected
+	// indexes alone do not give it.
+	Options int `json:"options"`
+}
+
+// chatAskClampUps is how many ↑ presses reset an omp dialog's cursor to its
+// first row. That dialog clamps the cursor rather than wrapping it (its index
+// runs through hF(cursorIndex ± 1, 0, len-1)), so one run longer than any real
+// option list lands on the first row whatever a human left behind — which is
+// what lets a tap be answered without reading the dialog's state off the screen
+// first. claude's dialog does NOT behave this way and must never be sent an ↑
+// (see claudeAskKeystrokes).
+const chatAskClampUps = 24
+
+// chatAskMaxPicks bounds what a caller can make lasso type: an ask offers a
+// handful of options, and a request naming dozens is not one.
+const chatAskMaxPicks = 64
+
+// chatAskKeystrokes is the byte sequence that answers an ask, in whichever
+// keyboard language the pane's harness speaks. Doing this from a phone is only
+// safe because each language is exact rather than approximate — both builders
+// below were read out of their harness's own source, not guessed from the
+// dialog's footer.
+func chatAskKeystrokes(agentKind string, answers []chatAskPick) string {
+	if strings.EqualFold(strings.TrimSpace(agentKind), "claude") {
+		return claudeAskKeystrokes(answers)
+	}
+	return ompAskKeystrokes(answers)
+}
+
+// ompAskKeystrokes answers omp's ask dialog: ↑ to the first row, ↓ to the chosen
+// one, Enter to select. Two details of that flow are load-bearing:
+//
+//   - a single-question ask submits on its Enter, while with more than one
+//     question the last Enter only reaches the dialog's review screen, so
+//     submitting takes one more press;
+//   - a multi-select question has no Enter-to-select. Space toggles the row the
+//     cursor is on and Enter only advances, so its picks are toggled on the way
+//     down and Enter is pressed after them.
+//
+// Everything is addressed by option INDEX, never by label: the dialog selects
+// whichever row the cursor is on, and a label would have to match through
+// however that harness decorates it on screen ("… (Recommended)").
+func ompAskKeystrokes(answers []chatAskPick) string {
+	var b strings.Builder
+	for _, a := range answers {
+		b.WriteString(strings.Repeat("\x1b[A", chatAskClampUps))
+		picks := append([]int(nil), a.Selected...)
+		sort.Ints(picks)
+		if len(picks) == 0 {
+			continue
+		}
+		if a.Multi {
+			at := 0
+			for _, idx := range picks {
+				if idx < at {
+					continue
+				}
+				b.WriteString(strings.Repeat("\x1b[B", idx-at))
+				b.WriteString(" ")
+				at = idx
+			}
+		} else {
+			b.WriteString(strings.Repeat("\x1b[B", picks[0]))
+		}
+		b.WriteString("\r")
+	}
+	if len(answers) > 1 {
+		b.WriteString("\r") // the review screen: Enter submits it
+	}
+	return b.String()
+}
+
+// claudeAskKeystrokes answers claude's AskUserQuestion, whose dialog is the one
+// omp's was modelled on but has since diverged from. Two differences are
+// load-bearing, and both were read out of the 2.1.270 bundle:
+//
+//   - ↑ on the first row is not a no-op there: it walks back to the previous
+//     question. So nothing here resets the cursor with arrows. Each question's
+//     cursor starts on its first row (the dialog passes no initial focus), and
+//     a walk therefore only ever goes DOWN.
+//   - Enter on a multi-select question TOGGLES the focused row instead of
+//     selecting and advancing, and the question is left by walking past its
+//     last row onto a Submit/Next row. (A digit toggles directly — but only up
+//     to 9, and the walk has to happen anyway to reach that row, so the arrow
+//     is used for both.)
+//
+// A single-select question is answered by moving to the row and pressing Enter.
+// A single-question ask submits right there; every other shape lands on a
+// review screen afterwards, where one more Enter submits.
+func claudeAskKeystrokes(answers []chatAskPick) string {
+	var b strings.Builder
+	for _, a := range answers {
+		picks := append([]int(nil), a.Selected...)
+		sort.Ints(picks)
+		if len(picks) == 0 {
+			continue
+		}
+		if !a.Multi {
+			b.WriteString(strings.Repeat("\x1b[B", picks[0]))
+			b.WriteString("\r")
+			continue
+		}
+		at := 0
+		for _, idx := range picks {
+			if idx < at {
+				continue
+			}
+			b.WriteString(strings.Repeat("\x1b[B", idx-at))
+			b.WriteString(" ")
+			at = idx
+		}
+		// Off the end of the option list, past the dialog's own "Other" row,
+		// and onto Submit/Next.
+		b.WriteString(strings.Repeat("\x1b[B", a.Options-at+1))
+		b.WriteString("\r")
+	}
+	last := answers[len(answers)-1]
+	if len(answers) > 1 || last.Multi {
+		b.WriteString("\r") // the review screen: Enter submits it
+	}
+	return b.String()
+}
+
+// serveChatAnswer answers the ask dialog the chat is showing, by typing the
+// keystrokes a human would.
+//
+// This is the one place lasso drives another program's dialog on someone's
+// behalf, so the rules are deliberately narrow: the pane is addressed
+// explicitly and checked against this host's own pane list rather than herdr's
+// focus, the dialog must still be showing the question the answer was chosen
+// for, and nothing is ever retried — the keystrokes either reach the dialog or
+// they do not, and a second attempt at a dialog that already advanced would
+// answer a question nobody asked.
+func serveChatAnswer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	be, err := reqHostBackend(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	var req struct {
+		PaneID string `json:"pane_id"`
+		// Expect is the question those answers were picked for — what the card
+		// had on screen, and the first of the two things the dialog is checked
+		// against. Labels is the second: the question's own options, which stay
+		// on screen when a short pane has scrolled the question itself off it.
+		Expect  string        `json:"expect"`
+		Labels  []string      `json:"labels"`
+		Answers []chatAskPick `json:"answers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.PaneID) == "" || len(req.Answers) == 0 {
+		http.Error(w, "pane_id and answers are required", http.StatusBadRequest)
+		return
+	}
+	for _, a := range req.Answers {
+		if len(a.Selected) == 0 || len(a.Selected) > chatAskMaxPicks {
+			http.Error(w, "every answer needs at least one option", http.StatusBadRequest)
+			return
+		}
+		if a.Options < 0 || a.Options > chatAskMaxPicks {
+			http.Error(w, "option count out of range", http.StatusBadRequest)
+			return
+		}
+		// The indexes index the keystroke sequence built below, so a negative
+		// one is not a wrong answer, it is a panic in strings.Repeat.
+		for _, idx := range a.Selected {
+			if idx < 0 || idx >= chatAskMaxPicks {
+				http.Error(w, "option index out of range", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	panes, err := panesRaw(be)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	// Which keyboard the dialog speaks is herdr's answer, never the caller's —
+	// the two harnesses take different keys for the same question, so a wrong
+	// one types into a dialog that is reading something else.
+	kind := ""
+	found := false
+	for _, p := range panes {
+		if p.PaneID == req.PaneID {
+			kind, _ = paneAgentPresence(p)
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "pane not found", http.StatusNotFound)
+		return
+	}
+	refuse := func(detail string) {
+		writeJSON(w, map[string]any{"outcome": "refused", "detail": detail})
+	}
+	screen, ok := paneVisibleText(be, req.PaneID)
+	if !ok {
+		refuse("could not read the pane to check the question is still up")
+		return
+	}
+	if !askScreenHolds(screen, req.Expect, req.Labels) {
+		refuse("that question is no longer on the pane's screen — answer it in the terminal")
+		return
+	}
+	if _, err := be.HerdrCall("pane.send_text", map[string]any{
+		"pane_id": req.PaneID,
+		"text":    chatAskKeystrokes(kind, req.Answers),
+	}); err != nil {
+		refuse("the pane stopped answering: " + err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"outcome": "sent"})
+}
+
+// chatAskProbeLen is how much of a question or option is looked for on the
+// screen. Long enough to be that text rather than another, short enough to sit
+// on a rendered line whatever the pane's width — the dialog wraps and
+// ellipsises everything past it.
+const chatAskProbeLen = 24
+
+// askScreenHolds reports whether the pane's visible screen still shows the ask
+// an answer was picked for.
+//
+// Two things have to hold, and the second is why this is not one text search.
+// The screen must carry the dialog's own footer — the line naming select and
+// cancel — which is what says a dialog is up at all rather than the transcript
+// having scrolled; and it must carry either the question or one of the options
+// that belong to it, which is what says the dialog is still on THAT question
+// rather than on one the human has since moved on to in the terminal.
+//
+// The options are checked because a pane is routinely shorter than the dialog.
+// At seven rows — a split, a phone, a small window — the question is scrolled
+// off the top while the options and the footer are exactly what fills the
+// screen, and a question-only check would refuse there: the case this feature
+// exists for.
+func askScreenHolds(screen, question string, options []string) bool {
+	if !askFooterVisible(screen) {
+		return false
+	}
+	flat := collapseSpace(screen)
+	if probe := askProbe(question); probe != "" && strings.Contains(flat, probe) {
+		return true
+	}
+	for _, opt := range options {
+		if probe := askProbe(opt); probe != "" && strings.Contains(flat, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// askFooterVisible reports whether the screen carries the dialog's key legend.
+// Both harnesses render one and both name the same two actions in it, which is
+// what makes it a harness-independent "an ask is on screen" signal.
+//
+// Checked against the COLLAPSED screen rather than line by line: a narrow pane
+// wraps the legend ("Enter to select · ↑/↓ to navigate · Esc to" / "cancel"),
+// and a per-line test refused a dialog that was plainly up.
+func askFooterVisible(screen string) bool {
+	flat := strings.ToLower(collapseSpace(screen))
+	return strings.Contains(flat, "cancel") &&
+		(strings.Contains(flat, "select") || strings.Contains(flat, "toggle"))
+}
+
+// askProbe is the prefix of a question or an option that the screen is searched
+// for. Runes, not bytes, so a shortened probe cannot split one.
+func askProbe(s string) string {
+	r := []rune(collapseSpace(s))
+	if len(r) > chatAskProbeLen {
+		r = r[:chatAskProbeLen]
+	}
+	return strings.TrimSpace(string(r))
+}
+
+// collapseSpace folds every whitespace run to a single space, so the same text
+// compares equal however it was wrapped.
+func collapseSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // ---------------------------------------------------------------------------

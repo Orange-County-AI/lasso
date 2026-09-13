@@ -51,7 +51,11 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
-import { focusHerdrTerminal, openHerdrGoto } from "@/lib/terminal"
+import {
+  blurHerdrTerminal,
+  focusHerdrTerminal,
+  openHerdrGoto,
+} from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
@@ -192,12 +196,23 @@ function Shell() {
   // layout) while the chat is up, exactly as the mobile sidebar overlay does.
   const [leftView, setLeftView] = React.useState<LeftView>("terminal")
   const toggleLeftView = React.useCallback(() => {
-    setLeftView((v) => (v === "chat" ? "terminal" : "chat"))
-    // The dial lives inside the terminal iframe, so a command from it arrives
-    // while xterm holds focus; hand it back on the way out or the next
-    // keystroke lands in a terminal nobody is looking at.
-    focusHerdrTerminal()
-  }, [])
+    const next = leftView === "chat" ? "terminal" : "chat"
+    setLeftView(next)
+    if (next === "chat") {
+      // The composer is the input surface now, so focus LEAVES the terminal —
+      // the dial hands it back on its way out, and a view opened to be READ
+      // must not pop a keyboard over itself. xterm holding focus behind the
+      // chat is also what sent a desktop's keystrokes into a terminal nobody
+      // was looking at.
+      blurHerdrTerminal()
+      return
+    }
+    // The other way hands focus back, but only where there is a hardware
+    // keyboard to use it: focusing xterm on a phone raises the on-screen
+    // keyboard over a terminal the reader had not asked to type into yet. They
+    // type through the dial, which focuses itself when it is used.
+    if (!window.matchMedia("(pointer: coarse)").matches) focusHerdrTerminal()
+  }, [leftView])
   const [collapsed, setCollapsed] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [newOpen, setNewOpen] = React.useState(false)
@@ -475,7 +490,7 @@ function Shell() {
                   sight and reach while the chat's own composer is the way to
                   type. */}
               {leftView === "chat" && (
-                <div className="absolute inset-0 z-20">
+                <div className="chat-overlay absolute inset-0 z-20">
                   <ChatView onShowTerminal={() => setLeftView("terminal")} />
                 </div>
               )}

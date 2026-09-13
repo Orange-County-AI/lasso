@@ -251,6 +251,40 @@ export interface ChatTool {
   error?: string
   images?: number
   duration_ms?: number
+  // A question the agent stopped to ask — omp's `ask`, claude's
+  // AskUserQuestion — with the choices it offered. Absent on every other call,
+  // and on an ask whose payload lasso could not read (that one stays a plain
+  // tool row rather than an empty form).
+  ask?: ChatAsk
+}
+
+// A question an agent is waiting on. The options are the content: a chat that
+// renders only the question's first line sends the reader to the terminal to
+// find out what they are being asked.
+export interface ChatAsk {
+  questions: ChatAskQuestion[]
+}
+
+export interface ChatAskQuestion {
+  header?: string
+  question: string
+  options: ChatAskOption[]
+  // Several options may be picked at once.
+  multi?: boolean
+  // The option the agent proposes; absent when it named none. An index, and 0
+  // is a real recommendation.
+  recommended?: number
+  // What was picked, by label, once the ask has been answered.
+  selected?: string[]
+  // A free-text answer typed into the dialog's "Other".
+  custom?: string
+}
+
+export interface ChatAskOption {
+  label: string
+  description?: string
+  // The detail behind a pick (a diff, a command), shown once one is made.
+  preview?: string
 }
 
 export interface ChatDiffLine {
@@ -306,6 +340,15 @@ export interface ChatPayload {
 // on its own.
 export interface ChatSendResult {
   outcome: "confirmed" | "refused" | "uncertain"
+  detail?: string
+}
+
+// What became of an ask answered from the chat. `refused` means nothing was
+// typed — the dialog had already moved on, or the pane could not be read — and
+// `detail` says which. There is no `uncertain` here: the keystrokes go out as
+// one write, and the transcript is what says whether they landed.
+export interface ChatAnswerResult {
+  outcome: "sent" | "refused"
   detail?: string
 }
 
@@ -963,6 +1006,30 @@ export const api = {
     postJSON<ChatSendResult>(withHost("/api/chat/send", host), {
       pane_id: pane,
       text,
+    }),
+
+  // Answer the ask the chat is showing by typing the keystrokes a human would
+  // into its dialog — the options are picked on the card, and the dialog is
+  // what receives the selection, so an approval still lands where the agent
+  // asked for it.
+  //
+  // Host and pane are explicit for the same reason chatSend's are, and `expect`
+  // is the question those picks were made against: the server checks it — or,
+  // on a pane too short to show the question, its `labels` — is still on the
+  // screen before typing, so a dialog that has already moved on is refused
+  // instead of being answered with the wrong row.
+  chatAnswer: (
+    host: string,
+    pane: string,
+    expect: string,
+    labels: string[],
+    answers: { selected: number[]; multi: boolean; options: number }[]
+  ) =>
+    postJSON<ChatAnswerResult>(withHost("/api/chat/answer", host), {
+      pane_id: pane,
+      expect,
+      labels,
+      answers,
     }),
 
   // Every herdr pane across every reachable, protocol-compatible host (local +

@@ -626,7 +626,10 @@ type chatSendBackend struct {
 	// ignorePaste accepts the bytes and never draws them — the case where a
 	// "sent" report would be a lie.
 	ignorePaste bool
-	writes      []string
+	// failRead stands in for a pane whose screen cannot be read at all: callers
+	// that scan it for a dialog must say "no", never invent one.
+	failRead bool
+	writes   []string
 }
 
 func (b *chatSendBackend) Name() string { return privateHostName(&b.name, "chatsend") }
@@ -650,6 +653,9 @@ func (b *chatSendBackend) HerdrCall(method string, params any) (json.RawMessage,
 			`{"panes":[{"pane_id":%q,"focused":true,"agent":%q,"agent_status":"idle"}]}`,
 			b.paneID, b.agent)), nil
 	case "pane.read":
+		if b.failRead {
+			return nil, fmt.Errorf("pane is gone")
+		}
 		return json.RawMessage(fmt.Sprintf(`{"read":{"text":%q}}`, b.screen)), nil
 	case "pane.send_text":
 		text, _ := p["text"].(string)
@@ -1254,5 +1260,404 @@ func TestServeChatRunningFromHerdrStatus(t *testing.T) {
 		if out.Running != tc.want {
 			t.Errorf("herdr status %q -> running=%v, want %v", tc.status, out.Running, tc.want)
 		}
+	}
+}
+
+// The ask shapes are copied from real transcripts. omp carries the questions on
+// the call's arguments and the picks in the result's `details.results`; claude
+// puts the questions in the tool_use input and the picks — keyed by question
+// text — in a record-level `toolUseResult`.
+const (
+	recAskOMP = `{"type":"message","id":"a9","timestamp":"2026-09-13T04:00:00.000Z","message":{"role":"assistant","stopReason":"toolUse","content":[` +
+		`{"type":"toolCall","id":"call_ask","name":"ask","arguments":{"i":"Choosing a strategy","questions":[` +
+		`{"id":"cap","header":"Capacity","question":"What should the plan do about capacity?","options":[` +
+		`{"label":"Reclaim only","description":"Free ~90G now.","preview":"prune -> 25.0G"},` +
+		`{"label":"Grow the disk","description":"Needs a support ticket."}],"recommended":1},` +
+		`{"id":"lh","header":"Longhorn","question":"Is a second node actually on the roadmap?","multi":true,"options":[` +
+		`{"label":"No second node"},{"label":"Soon"}]}]}}]}}`
+	recAskOMPSomeReplies = `{"type":"message","id":"r9","timestamp":"2026-09-13T04:02:00.000Z","message":{"role":"toolResult","toolCallId":"call_ask","toolName":"ask","content":[{"type":"text","text":"User answers:\ncap: Grow the disk"}],"details":{"results":[` +
+		`{"id":"cap","question":"What should the plan do about capacity?","options":["Reclaim only","Grow the disk"],"multi":false,"selectedOptions":["Grow the disk"]},` +
+		`{"id":"lh","question":"Is a second node actually on the roadmap?","options":["No second node","Soon"],"multi":true,"selectedOptions":["Soon"]}]}}}`
+
+	recAskClaude = `{"type":"assistant","uuid":"ca1","timestamp":"2026-09-13T04:00:00.000Z","message":{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_q","name":"AskUserQuestion","input":{"questions":[{"question":"Which way should the port be republished?","header":"neko port","multiSelect":false,"options":[` +
+		`{"label":"Reproduce it as-is (Recommended)","description":"An incus proxy device forwards it.","preview":"incus config device add ..."},` +
+		`{"label":"Leave it where it is"}]}]}}]}}`
+	recAskClaudeResult = `{"type":"user","uuid":"cu1","timestamp":"2026-09-13T04:03:00.000Z","toolUseResult":{"questions":[{"question":"Which way should the port be republished?","header":"neko port","multiSelect":false,"options":[{"label":"Reproduce it as-is (Recommended)"},{"label":"Leave it where it is"}]}],"answers":{"Which way should the port be republished?":"Reproduce it as-is (Recommended)"}},` +
+		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_q","content":"Your questions have been answered: \"Which way should the port be republished?\"=\"Reproduce it as-is (Recommended)\""}]}}`
+)
+
+// askOf returns the ask card from a parse, failing the test if there is none.
+func askOf(t *testing.T, parsed chatParse) *chatAsk {
+	t.Helper()
+	for i := range parsed.items {
+		if tool := parsed.items[i].Tool; tool != nil && tool.Ask != nil {
+			return tool.Ask
+		}
+	}
+	t.Fatal("no ask card in the parse")
+	return nil
+}
+
+func TestParseChatTranscriptAsk(t *testing.T) {
+	// The call alone: the questions and their options are the card's content,
+	// and there is nothing to have answered yet.
+	ask := askOf(t, parseChatTranscript(chatLog(recAskOMP), 0))
+	if len(ask.Questions) != 2 {
+		t.Fatalf("questions = %d, want 2", len(ask.Questions))
+	}
+	first := ask.Questions[0]
+	if first.Header != "Capacity" || first.Question != "What should the plan do about capacity?" {
+		t.Errorf("first question = %q/%q", first.Header, first.Question)
+	}
+	if len(first.Options) != 2 {
+		t.Fatalf("options = %d, want 2", len(first.Options))
+	}
+	if first.Options[0].Preview != "prune -> 25.0G" || first.Options[0].Description != "Free ~90G now." {
+		t.Errorf("first option = %+v, want its description and preview", first.Options[0])
+	}
+	if first.Recommended == nil || *first.Recommended != 1 {
+		t.Errorf("recommended = %v, want the index omp named", first.Recommended)
+	}
+	if first.Multi || !ask.Questions[1].Multi {
+		t.Error("multi did not survive the parse")
+	}
+	if len(first.Selected) != 0 {
+		t.Errorf("selected = %v on an unanswered ask", first.Selected)
+	}
+
+	// With the result: the picks land on the questions they were made for, and
+	// the raw "User answers" prose is dropped so the card does not say the same
+	// thing twice.
+	parsed := parseChatTranscript(chatLog(recAskOMP, recAskOMPSomeReplies), 0)
+	ask = askOf(t, parsed)
+	for _, q := range ask.Questions {
+		want := []string{"Grow the disk"}
+		if q.Header == "Longhorn" {
+			want = []string{"Soon"}
+		}
+		if strings.Join(q.Selected, ",") != strings.Join(want, ",") {
+			t.Errorf("%s selected = %v, want %v", q.Header, q.Selected, want)
+		}
+	}
+	for i := range parsed.items {
+		tool := parsed.items[i].Tool
+		if tool == nil || tool.Ask == nil {
+			continue
+		}
+		if tool.Output != "" || tool.ResultLine != "answered" {
+			t.Errorf("answered card = output %q / %q, want the picks instead of the prose", tool.Output, tool.ResultLine)
+		}
+	}
+}
+
+func TestParseClaudeTranscriptAsk(t *testing.T) {
+	ask := askOf(t, parseClaudeTranscript(chatLog(recAskClaude), 0))
+	if len(ask.Questions) != 1 {
+		t.Fatalf("questions = %d, want 1", len(ask.Questions))
+	}
+	q := ask.Questions[0]
+	if q.Header != "neko port" || len(q.Options) != 2 {
+		t.Fatalf("question = %+v", q)
+	}
+	// claude names its recommendation in the label rather than in a field, and
+	// an index lasso invented here would mark the wrong option.
+	if q.Recommended != nil {
+		t.Errorf("recommended = %v, want none — claude does not send one", *q.Recommended)
+	}
+	if q.Options[0].Preview != "incus config device add ..." {
+		t.Errorf("preview = %q", q.Options[0].Preview)
+	}
+
+	ask = askOf(t, parseClaudeTranscript(chatLog(recAskClaude, recAskClaudeResult), 0))
+	if len(ask.Questions[0].Selected) != 1 || ask.Questions[0].Selected[0] != "Reproduce it as-is (Recommended)" {
+		t.Errorf("selected = %v, want the answer claude recorded", ask.Questions[0].Selected)
+	}
+}
+
+// A multi-select answer arrives as a list rather than a string.
+func TestClaudeAskAnswersList(t *testing.T) {
+	got := claudeAskAnswers(json.RawMessage(`{"answers":{"Pick some":["a","b"]}}`))
+	if len(got) != 1 || strings.Join(got[0].Selected, ",") != "a,b" {
+		t.Fatalf("answers = %+v, want both labels", got)
+	}
+}
+
+// A ONE-question ask reports its answer flat rather than under `results`, which
+// a live probe of omp 18.1.19 is where this shape came from. Reading only the
+// wrapped shape left the answered card showing its raw text instead of the pick.
+func TestOmpAskAnswersShapes(t *testing.T) {
+	flat := ompAskAnswers(json.RawMessage(
+		`{"question":"Which?","options":["a","b"],"multi":false,"selectedOptions":["b"]}`))
+	if len(flat) != 1 || flat[0].Question != "Which?" || strings.Join(flat[0].Selected, ",") != "b" {
+		t.Errorf("flat details = %+v, want the single entry", flat)
+	}
+	wrapped := ompAskAnswers(json.RawMessage(
+		`{"results":[{"question":"One","selectedOptions":["x"]},{"question":"Two","multi":true,"selectedOptions":["y","z"]}]}`))
+	if len(wrapped) != 2 || wrapped[1].Question != "Two" || strings.Join(wrapped[1].Selected, ",") != "y,z" {
+		t.Errorf("wrapped details = %+v, want both entries", wrapped)
+	}
+	// A details blob that is not an object at all (omp writes Python-repr
+	// strings for some tools) yields nothing rather than a half-read answer.
+	if got := ompAskAnswers(json.RawMessage(`"{'wallTimeMs': 12}"`)); got != nil {
+		t.Errorf("non-object details = %+v, want nothing", got)
+	}
+	if got := ompAskAnswers(json.RawMessage(`{"options":["a"]}`)); got != nil {
+		t.Errorf("details with no question = %+v, want nothing", got)
+	}
+}
+
+// The keystrokes are the whole feature: a human cannot see the dialog lasso is
+// typing into, so the sequence has to be right by construction.
+func TestChatAskKeystrokes(t *testing.T) {
+	up := strings.Repeat("\x1b[A", chatAskClampUps)
+	down := func(n int) string { return strings.Repeat("\x1b[B", n) }
+	for _, tc := range []struct {
+		name    string
+		agent   string
+		answers []chatAskPick
+		want    string
+	}{
+		{
+			// One question submits on its Enter — no review screen to walk past.
+			name:    "omp single question, one answer",
+			agent:   "omp",
+			answers: []chatAskPick{{Selected: []int{0}, Options: 3}},
+			want:    up + "\r",
+		},
+		{
+			// The cursor is reset first, so the count is the option's index and
+			// not a delta from wherever a human left it.
+			name:    "omp: the index is the row distance",
+			agent:   "omp",
+			answers: []chatAskPick{{Selected: []int{2}, Options: 3}},
+			want:    up + down(2) + "\r",
+		},
+		{
+			// A multi question toggles with Space (Enter would only advance), so
+			// the picks are toggled on the way down.
+			name:    "omp multi picks toggle",
+			agent:   "omp",
+			answers: []chatAskPick{{Selected: []int{2, 0}, Multi: true, Options: 4}},
+			want:    up + " " + down(2) + " " + "\r",
+		},
+		{
+			// Several questions: each Enter advances, the last lands on the
+			// review screen, and one more press submits it.
+			name:    "omp: several questions submit from the review screen",
+			agent:   "omp",
+			answers: []chatAskPick{{Selected: []int{1}, Options: 3}, {Selected: []int{0}, Options: 2}},
+			want:    up + down(1) + "\r" + up + "\r" + "\r",
+		},
+		{
+			// claude must never be sent an ↑: there it walks back to the
+			// previous question, so this one goes straight down from row 1.
+			name:    "claude never presses up",
+			agent:   "claude",
+			answers: []chatAskPick{{Selected: []int{2}, Options: 3}},
+			want:    down(2) + "\r",
+		},
+		{
+			// A single-question claude ask submits on the pick, so nothing
+			// follows it.
+			name:    "claude single question, single answer",
+			agent:   "claude",
+			answers: []chatAskPick{{Selected: []int{0}, Options: 2}},
+			want:    "\r",
+		},
+		{
+			// claude's Enter toggles a multi row rather than advancing, so the
+			// question is left by walking past the options and the "Other" row
+			// onto Submit — and a single multi question still has a review
+			// screen behind it.
+			name:    "claude multi walks to Submit",
+			agent:   "claude",
+			answers: []chatAskPick{{Selected: []int{1}, Multi: true, Options: 3}},
+			want:    down(1) + " " + down(3) + "\r" + "\r",
+		},
+		{
+			name:    "claude two questions drive on to the review screen",
+			agent:   "claude",
+			answers: []chatAskPick{{Selected: []int{1}, Options: 2}, {Selected: []int{0}, Options: 2}},
+			want:    down(1) + "\r" + "\r" + "\r",
+		},
+	} {
+		if got := chatAskKeystrokes(tc.agent, tc.answers); got != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// askScreenHolds is the drift check: the keystrokes only mean what the card said
+// they mean while the question the answer was picked for is still the one on
+// screen.
+func TestAskScreenHolds(t *testing.T) {
+	const question = "What should the plan do about capacity beyond that?"
+	options := []string{"Reclaim only", "Grow the disk"}
+	tall := "  ╭─ Ask ─────────────────────────╮\n" +
+		"  │ What should the plan do about\n" +
+		"  │ capacity beyond that?\n" +
+		"  ❯ ○ Reclaim only\n" +
+		"  │ Enter select · ↑/↓ move · Esc cancel"
+	// The shape a short pane actually produces: the question is off the top of
+	// the viewport and only the dialog's lower half is on screen. Refusing here
+	// would refuse the case the feature exists for.
+	short := "  │   ○ Reclaim only\n" +
+		"  │   ○ Grow the disk\n" +
+		"  │   ○ Other (type your own)\n" +
+		"  │ Enter select · n note · ↑/↓ move · Esc cancel"
+	// The transcript alone — an agent's prose quoting the question back — is not
+	// a dialog, and must never be typed into.
+	prose := "  And the plan should answer: What should the plan do about capacity\n  beyond that? — I will ask."
+
+	if !askScreenHolds(tall, question, options) {
+		t.Error("a wrapped question did not match the dialog on screen")
+	}
+	if !askScreenHolds(short, question, options) {
+		t.Error("options alone did not match — a short pane must still be answerable")
+	}
+	if askScreenHolds(prose, question, options) {
+		t.Error("prose quoting the question passed for a dialog")
+	}
+	if askScreenHolds(tall, "Is a second node actually on the roadmap?", []string{"No second node"}) {
+		t.Error("a different question and its options matched")
+	}
+	if askScreenHolds(short, "", nil) {
+		t.Error("nothing to check against claimed to match")
+	}
+	// A narrow pane wraps the legend across two lines. A per-line footer test
+	// refused a dialog that was plainly up (seen live, at 55 columns).
+	wrapped := "  1. [ ] Red\n  2. [ ] Blue\n" +
+		"  Enter to select · ↑/↓ to navigate · Esc to\n  cancel"
+	if !askScreenHolds(wrapped, "Which colours do you want?", []string{"Red", "Blue"}) {
+		t.Error("a wrapped footer was not recognised as a dialog")
+	}
+}
+
+// claude records a multi-select answer as ONE comma-joined string, not a list —
+// a live session wrote "Red, Green" for two ticked boxes, which marked nothing
+// on the card until this matched it back against the options.
+func TestApplyAskAnswersJoinedMulti(t *testing.T) {
+	tool := &chatTool{Ask: &chatAsk{Questions: []chatAskQuestion{{
+		Question: "Which colours do you want?",
+		Multi:    true,
+		Options: []chatAskOption{
+			{Label: "Red"}, {Label: "Blue"}, {Label: "Green"},
+			// A label that contains a comma must still match whole, first.
+			{Label: "Red, White and Blue"},
+		},
+	}}}, Output: "Your questions have been answered: …", ResultLine: "1 lines"}
+	applyAskAnswers(tool, []chatAskAnswer{{Question: "Which colours do you want?", Selected: []string{"Red, Green"}}})
+	got := strings.Join(tool.Ask.Questions[0].Selected, "|")
+	if got != "Red|Green" {
+		t.Errorf("selected = %q, want the two boxes that were ticked", got)
+	}
+	if tool.Output != "" || tool.ResultLine != "answered" {
+		t.Errorf("verdict = %q / %q, want the picks instead of the prose", tool.Output, tool.ResultLine)
+	}
+
+	// An answer naming no option stays as it came: a wrong mark is worse than a
+	// card that simply does not claim one.
+	other := &chatTool{Ask: &chatAsk{Questions: []chatAskQuestion{{
+		Question: "Q", Options: []chatAskOption{{Label: "Red"}},
+	}}}}
+	applyAskAnswers(other, []chatAskAnswer{{Question: "Q", Selected: []string{"Purple, Orange"}}})
+	if len(other.Ask.Questions[0].Selected) != 0 {
+		t.Errorf("selected = %v, want nothing matched", other.Ask.Questions[0].Selected)
+	}
+}
+
+func TestServeChatAnswer(t *testing.T) {
+	be := &chatSendBackend{paneID: "w1:p1", agent: "omp"}
+	question := "What should the plan do about capacity?"
+	footer := "\n  Enter select · ↑/↓ move · Esc cancel"
+	be.screen = "  ╭─ Ask ───────────╮\n  │ " + question + "\n  ❯ ○ Reclaim only" + footer
+	useFakeHost(t, be)
+
+	post := func(body string) (*httptest.ResponseRecorder, map[string]string) {
+		rec := httptest.NewRecorder()
+		serveChatAnswer(rec, httptest.NewRequest(http.MethodPost, "/api/chat/answer", strings.NewReader(body)))
+		var out map[string]string
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode %q: %v", rec.Body.String(), err)
+			}
+		}
+		return rec, out
+	}
+
+	rec, out := post(`{"pane_id":"w1:p1","expect":"` + question + `","answers":[{"selected":[1],"multi":false,"options":2}]}`)
+	if rec.Code != http.StatusOK || out["outcome"] != "sent" {
+		t.Fatalf("status/outcome = %d/%q, want 200/sent", rec.Code, out["outcome"])
+	}
+	if len(be.writes) != 1 || be.writes[0] != chatAskKeystrokes("omp", []chatAskPick{{Selected: []int{1}, Options: 2}}) {
+		t.Errorf("writes = %q, want the answer sequence", be.writes)
+	}
+
+	// The harness decides which keys those are, and it is herdr's answer: a
+	// claude pane must not be sent omp's ↑-clamp, which there means "previous
+	// question".
+	be.writes = nil
+	be.screen = "  ╭─ Ask ───────────╮\n  │ " + question + "\n  ❯ ○ Reclaim only" + footer
+	be.agent = "claude"
+	// The host's pane listing is cached for a beat, and this changes what that
+	// host reports — the way a pane's harness changing would.
+	invalidatePaneList(be.Name())
+	rec, out = post(`{"pane_id":"w1:p1","expect":"` + question + `","labels":["Reclaim only"],"answers":[{"selected":[1],"multi":false,"options":2}]}`)
+	if rec.Code != http.StatusOK || out["outcome"] != "sent" {
+		t.Fatalf("claude status/outcome = %d/%q, want 200/sent", rec.Code, out["outcome"])
+	}
+	if len(be.writes) != 1 || be.writes[0] != chatAskKeystrokes("claude", []chatAskPick{{Selected: []int{1}, Options: 2}}) {
+		t.Errorf("claude writes = %q, want the claude sequence", be.writes)
+	}
+	be.agent = "omp"
+	be.writes = nil
+
+	// A short pane: the question has scrolled off the top, and the options and
+	// the footer are the whole screen. That is still the dialog, and still
+	// answerable.
+	be.screen = "  │   ○ Reclaim only\n  │   ○ Grow the disk\n" +
+		"  │   ○ Other (type your own)" + footer
+	rec, out = post(`{"pane_id":"w1:p1","expect":"` + question + `","labels":["Reclaim only"],"answers":[{"selected":[1],"multi":false,"options":2}]}`)
+	if rec.Code != http.StatusOK || out["outcome"] != "sent" {
+		t.Fatalf("short pane status/outcome = %d/%q, want 200/sent", rec.Code, out["outcome"])
+	}
+
+	// The dialog has moved on — a different question is on screen — so nothing
+	// may be typed: those keystrokes would land on whatever it shows now.
+	be.writes = nil
+	be.screen = "  ╭─ Ask ───────────╮\n  │ Is a second node planned?" + footer
+	rec, out = post(`{"pane_id":"w1:p1","expect":"` + question + `","labels":["Reclaim only"],"answers":[{"selected":[1],"multi":false,"options":2}]}`)
+	if rec.Code != http.StatusOK || out["outcome"] != "refused" {
+		t.Fatalf("status/outcome = %d/%q, want 200/refused", rec.Code, out["outcome"])
+	}
+	if len(be.writes) != 0 {
+		t.Errorf("writes = %q, want none when the question is gone", be.writes)
+	}
+
+	// An unreadable pane is refused for the same reason.
+	be.failRead = true
+	rec, out = post(`{"pane_id":"w1:p1","expect":"` + question + `","answers":[{"selected":[1],"multi":false}]}`)
+	if rec.Code != http.StatusOK || out["outcome"] != "refused" {
+		t.Errorf("unreadable pane = %d/%q, want 200/refused", rec.Code, out["outcome"])
+	}
+	be.failRead = false
+
+	// A negative index is not a wrong answer, it is a panic in the repeat that
+	// builds the sequence.
+	rec, _ = post(`{"pane_id":"w1:p1","expect":"` + question + `","answers":[{"selected":[-1],"multi":false}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("negative index status = %d, want 400", rec.Code)
+	}
+
+	rec, _ = post(`{"pane_id":"w9:p9","expect":"` + question + `","answers":[{"selected":[0],"multi":false}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown pane status = %d, want 404", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	serveChatAnswer(rec, httptest.NewRequest(http.MethodGet, "/api/chat/answer", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET status = %d, want 405", rec.Code)
 	}
 }
