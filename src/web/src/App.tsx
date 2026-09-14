@@ -365,8 +365,10 @@ function Shell() {
       } else if (command === "host") {
         openHostMenu()
       } else if (command === "chat") {
-        // The dial's only route to the chat: on a phone the footer that carries
-        // this control on the desktop is hidden, and the dial is the chrome.
+        // The phone's own way into the chat: the footer that carries this
+        // control on the desktop is hidden below md, so the chrome there is the
+        // dial — and this command comes from the dedicated button it holds above
+        // its root, not from an arc target (see lib/mobile-input-dial.ts).
         toggleLeftView()
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
