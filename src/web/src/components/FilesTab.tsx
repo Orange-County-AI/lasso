@@ -507,8 +507,6 @@ export function FilesTab({
         <Input
           ref={inputRef}
           value={pathValue}
-          spellCheck={false}
-          autoComplete="off"
           placeholder="go to path…  (Enter)"
           className="h-7 flex-1 text-[13px]"
           onChange={(e) => {
@@ -624,8 +622,6 @@ export function FilesTab({
           <Input
             autoFocus
             value={renameValue}
-            spellCheck={false}
-            autoComplete="off"
             onChange={(e) => setRenameValue(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") submitRename()

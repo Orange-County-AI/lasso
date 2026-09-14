@@ -166,6 +166,37 @@ export interface Pane {
   agent?: string
   agent_status?: string
 }
+
+// One pane as the FLEET aggregation reports it (/api/all-panes): the same pane
+// enrichment as above, plus the machine it lives on. Pane ids are unique only
+// within a host, so anything holding one across this list holds `host` with it.
+export interface HostPane {
+  host: string
+  host_label: string
+  pane_id: string
+  workspace_id?: string
+  workspace_label?: string
+  pane_label?: string
+  tab_id?: string
+  tab_label?: string
+  // The pane's title with the agent's state glyphs stripped — what it is working
+  // on, and the only name left when nothing along the way was ever labelled.
+  terminal_title?: string
+  cwd?: string
+  agent?: string
+  agent_status?: string
+  // Whether an agent is running here. `agent` names the harness when herdr's
+  // detection found one; these two are not the same question.
+  has_agent?: boolean
+  focused?: boolean
+}
+
+export interface PanesPayload {
+  panes?: HostPane[]
+  // host → why it could not be listed. A host here has no last-good panes to
+  // fall back on, which is what makes its absence from `panes` explicable.
+  errors?: Record<string, string>
+}
 export interface Workspace {
   workspace_id: string
   label: string
@@ -282,6 +313,9 @@ export interface ChatPayload {
   more?: boolean
   // Why items is empty, when it is.
   note?: string
+  // That emptiness is a pane still coming up — a live agent whose session or
+  // log has not landed yet — so the view shows progress rather than a verdict.
+  starting?: boolean
 }
 
 // What became of a submitted message. `uncertain` means bytes may have reached
@@ -914,6 +948,16 @@ export const api = {
     ),
 
   panes: () => getJSON<{ panes?: Pane[] }>("/api/panes"),
+
+  // Every pane across every machine lasso can reach, each with the host it lives
+  // on. The chat's agent list reads this rather than the per-host /api/panes:
+  // the agents worth showing are the fleet's, and one that only exists on
+  // another machine is exactly the one you cannot reach any other way.
+  //
+  // It is the server's cached aggregation (panesSnapshot), so a poll landing
+  // near another caller's costs nothing — but it fans out to every host, so it
+  // is not a thing to fetch per row or per keystroke.
+  allPanes: () => getJSON<PanesPayload>("/api/all-panes"),
 
   // One pane's agent session as chat rows — the mobile-friendly half of the
   // terminal. Server-side (chatview.go), because the transcript is a file on

@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { EditableCombobox } from "@/components/ui/editable-combobox"
-import { Input } from "@/components/ui/input"
+import { Input, NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -29,7 +29,7 @@ import { moveTabToHost, useApp } from "@/lib/app-store"
 import { groupHosts, memberLabel } from "@/lib/hosts"
 import { focusCreatedAgent } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
-import { focusHerdrTerminal } from "@/lib/terminal"
+import { blurHerdrTerminal, focusHerdrTerminal } from "@/lib/terminal"
 import { patchUIState, uiStateNow } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
@@ -302,11 +302,19 @@ export function NewDialog({
   onOpenChange,
   tab,
   onTabChange,
+  agentsOnly = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   tab: NewDialogTab
   onTabChange: (tab: NewDialogTab) => void
+  // Chat mode's creator. Agents are the only thing the chat can act on — it
+  // reads a pane's agent session, and a bare shell has none — so the mode tabs
+  // go away entirely rather than offering a Terminal tab whose create would
+  // leave the view behind. The created agent is focused like any other
+  // (focusCreatedAgent), which is what puts its conversation on screen without
+  // anyone switching views.
+  agentsOnly?: boolean
 }) {
   const [showAdvanced, setShowAdvanced] = React.useState(false)
   const [terminalCreating, setTerminalCreating] = React.useState(false)
@@ -317,6 +325,9 @@ export function NewDialog({
   const promptRef = React.useRef<HTMLTextAreaElement>(null)
   const gitTypeTabRef = React.useRef<HTMLButtonElement>(null)
   const scratchTypeTabRef = React.useRef<HTMLButtonElement>(null)
+  // The tab actually shown. agentsOnly pins it, so a caller that left `tab` on
+  // "terminal" cannot render a form this mode does not have.
+  const shownTab: NewDialogTab = agentsOnly ? "agent" : tab
 
   // Pick a fresh random Prompt placeholder each time the dialog opens — a little
   // personality on the blank canvas, without the distraction of it animating.
@@ -330,7 +341,7 @@ export function NewDialog({
   React.useEffect(() => {
     if (!open) return
     const frame = requestAnimationFrame(() => {
-      if (tab === "agent") {
+      if (shownTab === "agent") {
         promptRef.current?.focus()
       } else {
         modeTabsRef.current
@@ -339,7 +350,7 @@ export function NewDialog({
       }
     })
     return () => cancelAnimationFrame(frame)
-  }, [open, tab])
+  }, [open, shownTab])
 
   // The form targets a host the user picks (defaults to the active host). Each
   // host's config/repos live in its own lasso.db, so the queries are keyed and
@@ -949,7 +960,7 @@ export function NewDialog({
         aria-describedby={undefined}
         onOpenAutoFocus={(e) => {
           e.preventDefault()
-          if (tab === "agent") {
+          if (shownTab === "agent") {
             promptRef.current?.focus()
           } else {
             modeTabsRef.current
@@ -960,34 +971,50 @@ export function NewDialog({
         onCloseAutoFocus={(e) => {
           // There is no header trigger to restore anymore: every dismissal
           // returns the keyboard to the terminal, including Cancel and Close.
+          //
+          // EXCEPT from the chat, where that terminal is a hidden iframe under
+          // the conversation: focusing it pops a phone's keyboard over the view
+          // the user just came back to, and on a desktop it aims their next
+          // keystrokes at a terminal nobody is looking at (the same reason
+          // entering the chat blurs it). So the chat's creator drops focus
+          // instead — the composer takes it on the next tap, as it does after a
+          // pick in the agent sheet.
           e.preventDefault()
-          focusHerdrTerminal()
+          if (agentsOnly) blurHerdrTerminal()
+          else focusHerdrTerminal()
         }}
       >
         <Tabs
-          value={tab}
-          onValueChange={(value) => onTabChange(value as NewDialogTab)}
+          value={shownTab}
+          onValueChange={(value) => {
+            // No tabs to switch with in agentsOnly — there is nothing to change to.
+            if (!agentsOnly) onTabChange(value as NewDialogTab)
+          }}
           className="min-h-0 flex-1 gap-4 overflow-hidden"
         >
           <DialogHeader className="flex-row items-center gap-3">
-            <DialogTitle className="shrink-0">New</DialogTitle>
-            <TabsList
-              ref={modeTabsRef}
-              className="grid min-w-0 flex-1 grid-cols-2"
-            >
-              <TabsTrigger value="agent">
-                Agent
-                <kbd className="font-mono text-[10px] text-muted-foreground">
-                  ⌘O
-                </kbd>
-              </TabsTrigger>
-              <TabsTrigger value="terminal">
-                Terminal
-                <kbd className="font-mono text-[10px] text-muted-foreground">
-                  ⌘I
-                </kbd>
-              </TabsTrigger>
-            </TabsList>
+            <DialogTitle className={cn("shrink-0", agentsOnly && "flex-1")}>
+              {agentsOnly ? "New agent" : "New"}
+            </DialogTitle>
+            {!agentsOnly && (
+              <TabsList
+                ref={modeTabsRef}
+                className="grid min-w-0 flex-1 grid-cols-2"
+              >
+                <TabsTrigger value="agent">
+                  Agent
+                  <kbd className="font-mono text-[10px] text-muted-foreground">
+                    ⌘O
+                  </kbd>
+                </TabsTrigger>
+                <TabsTrigger value="terminal">
+                  Terminal
+                  <kbd className="font-mono text-[10px] text-muted-foreground">
+                    ⌘I
+                  </kbd>
+                </TabsTrigger>
+              </TabsList>
+            )}
             <DialogClose asChild>
               <Button variant="ghost" size="icon-sm" className="shrink-0">
                 <X />
@@ -1043,6 +1070,7 @@ export function NewDialog({
                     <div className="relative">
                       <textarea
                         ref={promptRef}
+                        {...NO_AUTOCORRECT}
                         id="agent-prompt"
                         className={cn(
                           fieldClass,
@@ -1363,7 +1391,7 @@ export function NewDialog({
               key={selectedHost}
               open={open}
               footerLead={footerLead()}
-              active={tab === "terminal"}
+              active={shownTab === "terminal"}
               selectedHost={selectedHost}
               creating={terminalCreating}
               setCreating={setTerminalCreating}

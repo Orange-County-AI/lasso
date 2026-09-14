@@ -1,6 +1,7 @@
 import { Check, ChevronsUpDown } from "lucide-react"
 import { Popover } from "radix-ui"
 import * as React from "react"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import {
   Tooltip,
   TooltipContent,
@@ -146,6 +147,7 @@ export function Combobox({
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={filterPlaceholder}
+          {...NO_AUTOCORRECT}
           className="mb-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring"
         />
         <div ref={listRef} className="max-h-60 overflow-y-auto">

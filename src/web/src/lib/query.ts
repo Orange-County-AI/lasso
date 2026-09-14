@@ -25,6 +25,10 @@ export const qk = {
   repoBranches: (host: string, path: string) =>
     ["repo-branches", host, path] as const,
   chat: (host: string, pane: string) => ["chat", host, pane] as const,
+  // The FLEET pane aggregation (the chat's agent list): every host's panes, keyed
+  // on this tab's pane-list revision so a create, a close or a rename on the host
+  // you are looking at lands on the SSE bump rather than at the next poll.
+  allPanes: (rev: number) => ["all-panes", rev] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.
   diff: (host: string, path: string) => ["diff", host, path] as const,

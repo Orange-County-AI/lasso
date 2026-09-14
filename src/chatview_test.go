@@ -321,15 +321,16 @@ func TestPaneTranscript(t *testing.T) {
 			Value: "/home/u/.omp/agent/sessions/-proj/2026-09-13T03-43-04-614Z_01a0.jsonl",
 		},
 	}
-	if got := paneTranscript(be, base); got.Path == "" || got.Harness != "omp" {
+	if got := paneTranscript(be, base, false); got.Path == "" || got.Harness != "omp" {
 		t.Errorf("omp path session = %+v, want the file and its reader", got)
 	}
 
-	// herdr keeps agent_session after the agent exits.
+	// herdr keeps agent_session after the agent exits. Nothing is coming, so
+	// this is not a wait — the view must not spin an orb over a finished pane.
 	exited := base
 	exited.Agent = ""
-	if got := paneTranscript(be, exited); got.Path != "" {
-		t.Errorf("exited pane = %+v, want no transcript", got)
+	if got := paneTranscript(be, exited, false); got.Path != "" || got.Starting {
+		t.Errorf("exited pane = %+v, want no transcript and no wait", got)
 	}
 
 	// Claude reports an ID. Its log is on disk, so the pane is readable —
@@ -338,37 +339,125 @@ func TestPaneTranscript(t *testing.T) {
 	byID := base
 	byID.Agent = "claude"
 	byID.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: claudeID}
-	if got := paneTranscript(be, byID); got.Path == "" || got.Harness != "claude" {
+	if got := paneTranscript(be, byID, false); got.Path == "" || got.Harness != "claude" {
 		t.Errorf("claude id session = %+v, want the log it resolves to", got)
 	}
 
-	// An id whose log is not here says so, rather than claiming no session.
+	// An id whose log is not here says so, rather than claiming no session. The
+	// agent is running, so its log is expected: this is a wait, not a verdict.
 	missing := byID
 	missing.AgentSession = &agentSession{Agent: "claude", Kind: "id", Value: "00000000-0000-4000-8000-000000000000"}
-	if got := paneTranscript(be, missing); got.Path != "" || got.Note == "" {
-		t.Errorf("unresolvable id = %+v, want a note", got)
+	if got := paneTranscript(be, missing, false); got.Path != "" || got.Note == "" || !got.Starting {
+		t.Errorf("unresolvable id = %+v, want a note and a wait", got)
 	}
 
-	// A harness that reports only an id and that lasso cannot resolve.
+	// A harness that reports only an id and that lasso cannot resolve. Nothing
+	// is going to arrive for it, so it is a verdict rather than a wait.
 	unknown := base
 	unknown.AgentSession = &agentSession{Agent: "codex", Kind: "id", Value: "abc"}
-	if got := paneTranscript(be, unknown); got.Path != "" || got.Note == "" {
-		t.Errorf("id-only session = %+v, want a note", got)
+	if got := paneTranscript(be, unknown, false); got.Path != "" || got.Note == "" || got.Starting {
+		t.Errorf("id-only session = %+v, want a note and no wait", got)
 	}
 
+	// A live agent whose session herdr has not reported. For a pane lasso did not
+	// create, herdr has no session for it and never will: the plain note, and no
+	// wait — the view must not promise a transcript that cannot arrive.
 	nosession := base
 	nosession.AgentSession = nil
-	if got := paneTranscript(be, nosession); got.Path != "" || got.Note == "" {
-		t.Errorf("session-less pane = %+v, want a note", got)
+	if got := paneTranscript(be, nosession, false); got.Path != "" || got.Note == "" || got.Starting {
+		t.Errorf("session-less pane = %+v, want a note and no wait", got)
+	}
+	// The same pane mid-create is the case that used to read "no agent session in
+	// this pane" about an agent visibly running in front of the reader.
+	if got := paneTranscript(be, nosession, true); got.Path != "" || got.Note == "" || !got.Starting {
+		t.Errorf("booting pane = %+v, want a note and a wait", got)
+	}
+	// And the earliest second of that boot, where herdr cannot even see the CLI in
+	// the pane yet: no agent AND no session. The wait must win over the liveness
+	// check, or the window the reader watches their new agent arrive in — pane
+	// created, CLI still starting — reads as an empty pane. This is the note that
+	// started all of this: a create's first two seconds.
+	empty := base
+	empty.Agent = ""
+	empty.AgentSession = nil
+	if got := paneTranscript(be, empty, true); got.Note == "" || !got.Starting {
+		t.Errorf("booting pane with no agent visible yet = %+v, want a wait", got)
+	}
+	// The boot claim covers the session-less pane and nothing else: if herdr still
+	// holds a session for the pane, an exited agent's, the record's boot does not
+	// make that session readable and the plain note stands.
+	if got := paneTranscript(be, exited, true); got.Starting {
+		t.Errorf("booting pane carrying an exited session = %+v, want no wait", got)
 	}
 
 	// The value reaches a filesystem read, so anything but an absolute .jsonl
-	// is refused rather than joined into a path.
+	// is refused rather than joined into a path — and a refusal is a verdict.
 	for _, bad := range []string{"../../etc/passwd", "/etc/passwd", "relative.jsonl", ""} {
 		p := base
 		p.AgentSession = &agentSession{Agent: "omp", Kind: "path", Value: bad}
-		if got := paneTranscript(be, p); got.Path != "" {
+		if got := paneTranscript(be, p, false); got.Path != "" || got.Starting {
 			t.Errorf("value %q = %+v, want refused", bad, got)
+		}
+	}
+}
+
+// Which panes lasso counts as still starting. The distinction decides whether an
+// empty chat view shows progress or a verdict, and it rests entirely on lasso's
+// own record — herdr reports an agent in the pane either way.
+func TestPaneBooting(t *testing.T) {
+	const pane = "w1:p1"
+	cases := []struct {
+		name string
+		recs []AgentRecord
+		want bool
+		why  string
+	}{
+		{
+			name: "boot in flight",
+			recs: []AgentRecord{{RootPane: pane, BootStatus: BootBooting, CreatedAt: time.Now()}},
+			want: true,
+			why:  "the CLI is coming up — the session handle has not been announced yet",
+		},
+		{
+			name: "creating",
+			recs: []AgentRecord{{RootPane: pane, BootStatus: BootCreating, CreatedAt: time.Now()}},
+			want: true,
+			why:  "the pane may not even be materialized yet",
+		},
+		{
+			name: "boot just flipped ready",
+			recs: []AgentRecord{{RootPane: pane, BootStatus: BootReady, CreatedAt: time.Now().Add(-10 * time.Second)}},
+			want: true,
+			why:  "the status flips when the CLI launches and the session handle lands a beat later — the gap the reader is watching",
+		},
+		{
+			name: "boot finished long ago",
+			recs: []AgentRecord{{RootPane: pane, BootStatus: BootReady, CreatedAt: time.Now().Add(-time.Hour)}},
+			want: false,
+			why:  "an agent that has run for an hour without a session is not starting, it is unreadable",
+		},
+		{
+			name: "grace expired without a session",
+			recs: []AgentRecord{{RootPane: pane, BootStatus: BootReady, CreatedAt: time.Now().Add(-chatBootGrace - time.Minute)}},
+			want: false,
+			why:  "a create whose CLI died silently must stop promising a start",
+		},
+		{
+			name: "another pane's record",
+			recs: []AgentRecord{{RootPane: "w2:p9", BootStatus: BootBooting, CreatedAt: time.Now()}},
+			want: false,
+			why:  "one pane's boot says nothing about another's",
+		},
+		{
+			name: "no records at all",
+			recs: nil,
+			want: false,
+			why:  "a foreign session lasso never created has no boot to wait for",
+		},
+	}
+	for _, tc := range cases {
+		if got := paneBooting(tc.recs, pane); got != tc.want {
+			t.Errorf("%s = %v, want %v (%s)", tc.name, got, tc.want, tc.why)
 		}
 	}
 }
@@ -451,6 +540,10 @@ type chatFakeBackend struct {
 	// home is what a harness that keeps its logs under $HOME resolves against
 	// (claude's ~/.claude/projects). Empty for tests that never ask.
 	home string
+	// workspaceName is what workspace.get answers with — herdr's label for the
+	// workspace, which is the name lasso's auto-titler writes. Empty means herdr
+	// has none, which the fake reports as an error the caller must survive.
+	workspaceName string
 }
 
 func (b *chatFakeBackend) Name() string { return privateHostName(&b.name, "chatfake") }
@@ -472,6 +565,12 @@ func (b *chatFakeBackend) ReadDir(p string) ([]fileEntry, error) {
 }
 
 func (b *chatFakeBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	if method == "workspace.get" {
+		if b.workspaceName == "" {
+			return nil, fmt.Errorf("no such workspace")
+		}
+		return json.RawMessage(`{"workspace":{"label":` + jsonString(b.workspaceName) + `}}`), nil
+	}
 	if method != "pane.list" {
 		return nil, fmt.Errorf("unexpected herdr method %q", method)
 	}
@@ -568,7 +667,9 @@ func TestServeChat(t *testing.T) {
 }
 
 // A pane running a harness lasso cannot read yet says so, rather than showing
-// an empty conversation that looks like a broken view.
+// an empty conversation that looks like a broken view — and because that harness
+// is RUNNING, it says so as a wait: the log is expected, so the view shows
+// progress instead of a verdict.
 func TestServeChatUnreadableSession(t *testing.T) {
 	be := &chatFakeBackend{panes: []string{
 		`{"pane_id":"w1:p1","focused":true,"agent":"claude","agent_status":"idle",` +
@@ -584,6 +685,88 @@ func TestServeChatUnreadableSession(t *testing.T) {
 	}
 	if out.Note == "" {
 		t.Error("note is empty for an id-only session, want an explanation")
+	}
+	if !out.Starting {
+		t.Error("a running agent whose log has not landed is a wait, want starting")
+	}
+}
+
+// The other half of that distinction: a pane with no agent at all is not coming
+// up, and a view that spun an orb over it would be promising a transcript that
+// can never arrive.
+func TestServeChatPlainPaneIsNotStarting(t *testing.T) {
+	be := &chatFakeBackend{panes: []string{
+		`{"pane_id":"w1:p1","focused":true,"agent_session":{"source":"herdr:omp","agent":"omp","kind":"path","value":"/home/u/.omp/agent/sessions/-proj/2026-09-13T03-43-04-614Z_01a0.jsonl"}}`,
+	}}
+	useFakeHost(t, be)
+
+	rec := httptest.NewRecorder()
+	serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
+	var out chatPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Note == "" {
+		t.Error("note is empty for a pane with no agent, want an explanation")
+	}
+	if out.Starting {
+		t.Error("a pane with no agent is over, not starting")
+	}
+}
+
+// The header names a session the way the agent panel does: herdr's workspace
+// label, the name lasso's auto-titler wrote from the prompt. A fresh agent has
+// neither that name's company nor a session title yet — what it has is a work
+// dir, which herdr puts in the pane's terminal title, and that slug is the
+// unique identifier this ordering exists to keep out of a header.
+func TestServeChatNamesTheWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-09-13T03-43-04-614Z_abc.jsonl")
+	if err := os.WriteFile(path, []byte(chatLog(recHeader, recUser)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The pane's own title is the work dir (what a create shows first), while the
+	// harness's session title — recHeader's — is "Fix the tests".
+	pane := fmt.Sprintf(
+		`{"pane_id":"w1:p1","focused":true,"agent":"omp","agent_status":"idle","workspace_id":"w1",`+
+			`"terminal_title_stripped":"in-the-footer-on-3bo6",`+
+			`"agent_session":{"source":"herdr:omp","agent":"omp","kind":"path","value":%q}}`, path)
+
+	for _, tc := range []struct {
+		name  string
+		label string
+		want  string
+		why   string
+	}{
+		{
+			name:  "a labelled workspace",
+			label: "Add footer herdr sidebar toggle",
+			want:  "Add footer herdr sidebar toggle",
+			why:   "the auto-titled name the panel lists it under, over both the slug and the session title",
+		},
+		{
+			name:  "herdr's placeholder for an unnamed workspace",
+			label: "~",
+			want:  "Fix the tests",
+			why:   "a cwd is not a name, so the file-not-yet-written slug gives way to the session's own title",
+		},
+		{
+			name:  "no label at all",
+			label: "",
+			want:  "Fix the tests",
+			why:   "a workspace herdr will not name falls back the same way",
+		},
+	} {
+		useFakeHost(t, &chatFakeBackend{panes: []string{pane}, workspaceName: tc.label})
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Title != tc.want {
+			t.Errorf("%s: title = %q, want %q (%s)", tc.name, out.Title, tc.want, tc.why)
+		}
 	}
 }
 

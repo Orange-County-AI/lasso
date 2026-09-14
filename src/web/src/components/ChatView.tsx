@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import {
   AlertTriangle,
-  ArrowUp,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -10,17 +10,40 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
+  Menu,
   Paperclip,
   Pencil,
+  Plus,
   Search,
   Send,
   SquareTerminal,
+  SquareX,
   Users,
   Wrench,
   X,
 } from "lucide-react"
 import * as React from "react"
+import { toast } from "sonner"
+import { AgentPicker } from "@/components/AgentPicker"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
@@ -1014,26 +1037,60 @@ function Composer({
             e.target.value = ""
           }}
         />
-        {/* Three columns: attach, input, submit. Both buttons are square and
-            pinned to the input's top edge, so the input is the only tall thing
-            on the row and neither button sits under the thumb's resting corner
-            — where a stray tap lands on the wrong one. */}
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={attaching || sending}
-          title="Attach a file and insert its path"
-          aria-label="Attach a file"
-          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg border border-input text-muted-foreground disabled:opacity-40"
-        >
-          {attaching ? (
-            <Orb state="working" px={16} />
-          ) : (
-            <Paperclip className="size-4" />
-          )}
-        </button>
+        {/* Below md: three columns — attach, input, submit — with both buttons
+            square and pinned to the input's top edge, so the input is the only
+            tall thing on the row and neither button sits under the thumb's
+            resting corner, where a stray tap lands on the wrong one.
+
+            At md+ the input takes the width and the two actions stack against
+            its right edge, attach above submit: a pointer reaches a short column
+            of verbs faster than one end of a long row, and the input stops being
+            squeezed between two fixed squares.
+
+            One set of buttons serves both layouts, which is what the wrapper is
+            for: the pair is a single DOM node, so from md up it can BE the
+            column, while below md `contents` dissolves it and lets the two
+            buttons be the row's own flex items — `order` (1 and 3) then
+            interleaves them around the input (2) that follows them in the DOM.
+            The cost of that ordering is a keyboard reaching the pair before the
+            input; both are buttons the typing path never needs (⌘Enter sends),
+            so it costs the mouse-and-keyboard flow nothing. */}
+        <div className="contents md:order-2 md:flex md:shrink-0 md:flex-col md:gap-1 md:self-stretch">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={attaching || sending}
+            title="Attach a file and insert its path"
+            aria-label="Attach a file"
+            className="order-1 flex size-10 shrink-0 items-center justify-center self-start rounded-lg border border-input text-muted-foreground disabled:opacity-40 md:order-none"
+          >
+            {attaching ? (
+              <Orb state="working" px={16} />
+            ) : (
+              <Paperclip className="size-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={sending || (!text.trim() && attachments.length === 0)}
+            title="Send (⌘Enter)"
+            aria-label="Send"
+            className="order-3 flex size-10 shrink-0 items-center justify-center self-start rounded-lg bg-primary text-primary-foreground disabled:opacity-40 md:order-none"
+          >
+            {sending ? (
+              // on="accent": this button is filled with the theme's accent, and
+              // the orb's own scheme detection reads the DOCUMENT, which is the
+              // wrong surface to choose ink for (see ui/orb.tsx).
+              <Orb state="working" px={20} on="accent" />
+            ) : (
+              <Send className="size-5" />
+            )}
+          </button>
+        </div>
         <textarea
           ref={ref}
+          {...NO_AUTOCORRECT}
           // Three rows, not one: a prompt is a paragraph often enough that a
           // single-line box makes people write blind, and this one grows from
           // here as the draft fills (see the measure effect above).
@@ -1055,39 +1112,49 @@ function Composer({
             void attachFiles([file])
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            // ⌘Enter sends; a bare Enter breaks the line, which is what a prompt
+            // written as a paragraph is usually after. It used to be the other
+            // way round — Enter sent, Shift+Enter broke the line — and that made
+            // every paragraph break a sent message. With the line break on Enter,
+            // Shift+Enter breaks it too, so the terminal habit still works.
+            if (e.key === "Enter" && e.metaKey) {
               e.preventDefault()
               void send()
             }
           }}
           placeholder="Message the agent…"
           // 16px on touch: iOS zooms the page for a smaller field.
-          className="max-h-40 min-w-0 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:text-[13px]"
+          className="order-2 max-h-40 min-w-0 flex-1 resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-base outline-none placeholder:text-muted-foreground focus-visible:border-ring md:order-1 md:text-[13px]"
         />
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={sending || (!text.trim() && attachments.length === 0)}
-          title="Send (Enter)"
-          aria-label="Send"
-          className="flex size-10 shrink-0 items-center justify-center self-start rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
-        >
-          {sending ? (
-            // on="accent": this button is filled with the theme's accent, and
-            // the orb's own scheme detection reads the DOCUMENT, which is the
-            // wrong surface to choose ink for (see ui/orb.tsx).
-            <Orb state="working" px={20} on="accent" />
-          ) : (
-            <Send className="size-5" />
-          )}
-        </button>
       </div>
     </div>
   )
 }
 
-export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
+export function ChatView({
+  onShowTerminal,
+  onNewAgent,
+  className,
+}: {
+  onShowTerminal: () => void
+  // The chat's own creator, for the widths where the footer's New button is not
+  // on screen. App decides what it opens; this only says where it is (see the
+  // header).
+  onNewAgent: () => void
+  // Merged onto the root. The view is a flex ROW's second child whenever the
+  // agent sidebar is beside it (see App.tsx), and it has to be told to take the
+  // width that is left over rather than its content's own.
+  className?: string
+}) {
   const { activePaneID, panesRev, host } = useApp()
+  // The agent sheet, for the widths that have no docked column to put beside the
+  // chat (see AgentPicker). Per-view state: the sheet is a transient way to pick
+  // a conversation, so it does not survive leaving the chat.
+  const [pickerOpen, setPickerOpen] = React.useState(false)
+  // The pane-close confirmation. Closing is herdr's own pane.close — what ends
+  // the agent in the pane; there is no softer "detach" — and on a phone it is
+  // two taps away in a menu, so it is asked before it happens rather than done.
+  const [confirmClose, setConfirmClose] = React.useState(false)
   // The view follows the focused pane, so the chat is always the session the
   // terminal beside it would be showing. Polled: the transcript is a file the
   // agent appends to, and nothing pushes it. Bounded by the server's caps.
@@ -1277,6 +1344,23 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
   }, [hasMore, loadingOlder, loadOlder])
 
   const running = data?.running ?? false
+  // Closing the pane needs no navigation of lasso's own: the chat follows herdr's
+  // focused pane, so the view has already moved on by the time the pane is gone.
+  // The host is the tab's (the chat reads the pane the tab's herdr has focused),
+  // which is what hostFetch addresses.
+  const paneID = data?.pane_id
+  const closePane = React.useCallback(async () => {
+    if (!paneID) return
+    try {
+      await api.close([paneID])
+    } catch (e) {
+      toast.error(`could not close the pane: ${(e as Error).message}`)
+    }
+  }, [paneID])
+  // An empty view that is a WAIT rather than a verdict (the agent is booting, or
+  // its log has not been written yet) — the server's call, not an inference from
+  // a clock: see the notes in chatview.go.
+  const starting = data?.starting ?? false
 
   // A relative path in an agent's prose is relative to WHERE IT IS WORKING, on
   // the machine it is working on — so resolve it the same way the file viewer
@@ -1296,18 +1380,20 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
     // --background is a 62% wash — so herdr's tab bar, its status line and the
     // pane's own text read straight through the conversation. Same opt-out
     // FileViewer takes over the tree it opens from, and for the same reason:
-    // a reading surface does not get to be translucent (index.css).
-    <div className="vsurface flex h-full min-h-0 flex-col bg-background">
+    // a reading surface does not get to be translucent (index.css). What the
+    // chat does NOT share with the file viewer is the flat fill: index.css
+    // reproduces the backdrop under `.chat-overlay .vsurface`, so the opaque
+    // layer here is a painting of the shading/image rather than --h-bg, and the
+    // elements inside float on it like the rest of the chrome.
+    <div
+      className={cn(
+        // relative: the agent sheet is an overlay INSIDE this view, so it covers
+        // the conversation and the composer rather than the whole window.
+        "vsurface relative flex h-full min-h-0 flex-col bg-background",
+        className
+      )}
+    >
       <div className="flex flex-none items-center gap-2 border-border border-b px-2.5 py-1.5">
-        <button
-          type="button"
-          onClick={onShowTerminal}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          title="Back to the terminal"
-        >
-          <ArrowUp className="size-3.5 -rotate-90" />
-          Terminal
-        </button>
         <span className="truncate text-[12.5px] text-foreground">
           {data?.title || data?.agent || "Chat"}
         </span>
@@ -1324,6 +1410,58 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           )}
           {data?.tokens ? <span>{Math.round(data.tokens / 1000)}k</span> : null}
         </span>
+        {/* Below md, one glyph opens the header's actions. Three icons plus a
+            fourth would crowd a phone's title row, and a menu can name each one
+            where a glyph has to be guessed at: this is the only chrome a phone
+            has, so what it does needs to be legible rather than dense. The agent
+            list is here because below md the docked column hides itself and the
+            footer does not exist; Terminal, because the footer's toggle is the
+            desktop's way back; New agent, because the footer's creator is — and
+            the chat's own dialog is agents-only there (see App's agentsOnly). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              title="Chat actions"
+              aria-label="Chat actions"
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+            >
+              <Menu className="size-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setPickerOpen(true)}>
+              <Bot className="size-3.5" />
+              Agents
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onShowTerminal}>
+              <SquareTerminal className="size-3.5" />
+              Terminal
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onNewAgent}>
+              <Plus className="size-3.5" />
+              New agent
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setConfirmClose(true)}>
+              <SquareX className="size-3.5" />
+              Close pane
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {/* And at md+ this is the one action the header keeps: the footer already
+            carries Agents (its left-hand toggle), Terminal and New, but nothing
+            anywhere closes a pane — so the chat, which is where you are looking
+            at the pane in question, is where that belongs. */}
+        <button
+          type="button"
+          onClick={() => setConfirmClose(true)}
+          title="Close this pane"
+          aria-label="Close this pane"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground max-md:hidden"
+        >
+          <SquareX className="size-4" />
+        </button>
       </div>
 
       {/* The viewport and its corner control share a positioning context:
@@ -1365,8 +1503,22 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
               could not read the session: {(error as Error).message}
             </div>
           )}
+          {/* An empty view says why — and a pane still coming up says it as
+              WORK: a newly created agent has no session or log for its first
+              seconds, and a sentence about what is missing reads as a dead end
+              for a pane the reader just asked lasso to create. `starting` is the
+              server's answer to "is this a wait or a verdict" (see the notes in
+              chatview.go), so the orb goes on exactly the waits. */}
           {!isLoading && !error && rows.length === 0 && !running && (
-            <div className="text-center text-[12px] text-muted-foreground">
+            <div
+              className={cn(
+                "text-[12px] text-muted-foreground",
+                starting
+                  ? "flex items-center justify-center gap-2 py-1"
+                  : "text-center"
+              )}
+            >
+              {starting && <Orb state="working" px={16} />}
               {data?.note || "No messages yet."}
             </div>
           )}
@@ -1450,6 +1602,32 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           }
         />
       )}
+
+      {/* Last, so it covers the header, the transcript and the composer alike —
+          the whole view is what a sheet replaces while it is open. */}
+      {pickerOpen && <AgentPicker onClose={() => setPickerOpen(false)} />}
+
+      {/* Asked, not done: this ends the agent in the pane, and the tap that
+          reaches it is one glyph away on the desktop and two in a menu on a
+          phone. The transcript stays on disk either way, which is the part worth
+          saying out loud — the conversation is not what is being closed. */}
+      <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close this pane?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Herdr closes {data?.title || data?.agent || "this pane"} and the
+              agent running in it stops. Its session transcript stays on disk.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void closePane()}>
+              Close pane
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

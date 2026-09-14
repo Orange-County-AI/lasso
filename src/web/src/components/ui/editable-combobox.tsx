@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react"
 import { Popover } from "radix-ui"
 import * as React from "react"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import {
   Tooltip,
   TooltipContent,
@@ -111,8 +112,7 @@ export function EditableCombobox({
             ref={inputRef}
             value={value}
             placeholder={placeholder}
-            autoComplete="off"
-            spellCheck={false}
+            {...NO_AUTOCORRECT}
             onChange={(e) => {
               onValueChange(e.target.value)
               setTyping(true)

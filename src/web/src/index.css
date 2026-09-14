@@ -458,6 +458,28 @@
   background-color: var(--h-panel);
 }
 
+/* The chat is the exception, and it is a matter of WHICH opaque fill. These
+ * surfaces still have to be opaque — the conversation covers the terminal — but
+ * flat is the wrong opaque: the chat is where the eye spends its time, and the
+ * shading (or the whole backdrop) stopping dead at its edge is what made the
+ * conversation read as a separate, deader surface than the chrome around it.
+ * So it REPRODUCES the backdrop instead: the same stack the body paints, over
+ * the same opaque canvas, fixed and cover so the image lands at the same
+ * coordinates the window's copy does and the two meet seamlessly at the
+ * panel's edge. Nothing behind the chat can read through — it is a painting,
+ * not a window — and the wash chosen in Settings now reaches the whole
+ * conversation. Every element INSIDE it is a translucent token (--background,
+ * --card), so they float on that backdrop exactly as the chrome does.
+ * `.chat-overlay` is the element App.tsx wraps the chat view, its agent column
+ * and the agent sheet in, which is the whole of "chat mode". */
+:root[data-atmosphere] .chat-overlay .vsurface {
+  background-color: var(--atmo-base);
+  background-image: var(--atmo-layers);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
 /* Same opt-out, for the same reason, one level up: at phone widths the sidebar
  * OVERLAYS the terminal full-screen instead of sitting beside it, so at --card's
  * 55% the terminal's text read straight through Settings' prose. A surface that

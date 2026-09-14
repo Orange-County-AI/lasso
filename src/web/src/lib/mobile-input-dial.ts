@@ -13,6 +13,10 @@ const TRACKING_CLASS = "__lasso_mobile_input_dial_tracking"
 const HOLD_MS = 140
 const ROOT_SIZE = 58
 const ITEM_SIZE = 54
+// The dedicated chat button, which sits diagonally above-right of the root.
+// Deliberately smaller than ROOT_SIZE: it is a destination, not the control you
+// are operating, and it must not read as a second dial.
+const CHAT_SIZE = 44
 const BACK_RADIUS = 44
 const TERMINAL_BOTTOM_GAP = 24
 
@@ -32,22 +36,16 @@ type DialTarget = {
   command?: MobileCommand
 }
 
-// Four targets on one arc from straight up to straight left, evenly spaced at
-// r=220 — the arc is re-spaced rather than crowded at one end, so the points sit
-// 30.5° apart (the endpoints keep the 1.5° pull-in that keeps a label pill
-// inside the frame). Adding one more would overlap: the labels are drawn, so the
-// geometry is read as much as it is remembered.
+// Three targets on one arc from ~30° off vertical to straight left, evenly
+// spaced at r=220 — the arc is re-spaced rather than crowded at one end, so the
+// points sit 29° apart (the endpoint keeps the 1.5° pull-in that keeps a label
+// pill inside the frame). Adding one more would overlap: the labels are drawn,
+// so the geometry is read as much as it is remembered. The TOP of the arc is
+// left free on purpose: that space belongs to the dedicated chat button above
+// the root (.dial-chat), which is a destination rather than one of the
+// terminal's input controls, and belongs one tap away rather than on an arc
+// where a target is a hold-and-slide from its neighbour.
 const ROOT_TARGETS: readonly DialTarget[] = [
-  {
-    id: "chat",
-    label: "Chat",
-    glyph: "☰",
-    kind: "command",
-    command: "chat",
-    x: -6,
-    y: -219,
-    width: 78,
-  },
   {
     id: "new",
     label: "New",
@@ -280,6 +278,51 @@ ${sel} .dial-menu {
   inset: 0;
   pointer-events: none;
 }
+/* The dedicated way into chat mode: a destination rather than one of the
+   terminal's input controls (on the arc it would be one hold-and-slide from the
+   wrong target), sitting up and to the RIGHT of the root instead of stacked
+   above it. The two circles must NOT overlap — that needs their centres 51px
+   apart, 58/2 + 44/2 — while the smaller one's bottom edge still has to drop
+   BELOW the root's top line, which needs dy < 51. So the offset has to be bought
+   with dx, and the screen edge caps dx: this spends 11px of it past the root's
+   box, leaving 4px to the edge against the root's own 18px inset. Hence ~66°
+   above horizontal and a 3px drop, rims ~1.4px clear. The drop and the angle
+   trade against each other and against that margin: a 6px drop at the same
+   margin puts the rims back through each other, which is the state this
+   replaced, so the angle gives way to the separation. Each circle owns its own
+   hit area outright. It wears the closed root's recipe (a ~15% wash behind the
+   lifted edge), so it is the same chrome at a smaller size; the glyph is the
+   arc's old Chat glyph. */
+${sel} .dial-chat {
+  position: absolute;
+  left: calc(100% - 30px);
+  bottom: calc(100% - 3px);
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: ${CHAT_SIZE}px;
+  height: ${CHAT_SIZE}px;
+  padding: 0;
+  border: 1px solid var(--dial-edge);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--h-hover, #1a1a1a) 15%, transparent);
+  color: var(--h-fg, #ededed);
+  font: 700 18px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  pointer-events: auto;
+  touch-action: none;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+${sel} .dial-chat:hover {
+  background: color-mix(in srgb, var(--h-hover, #1a1a1a) 72%, transparent);
+}
+${sel} .dial-chat:active {
+  background: color-mix(in srgb, var(--h-panel, #111) 82%, transparent);
+  transform: scale(.94);
+}
+${sel} .dial-chat:focus-visible {
+  outline: 2px solid var(--h-accent, #fff);
+  outline-offset: 3px;
+}
 ${sel} .dial-line {
   position: absolute;
   left: ${ROOT_SIZE / 2}px;
@@ -414,8 +457,7 @@ export function mountTerminalInputDial(id: string): () => void {
 
   const sync = () => {
     if (disposed) return
-    if (coarse.matches && !release)
-      release = attachTerminalInputDial(win, id)
+    if (coarse.matches && !release) release = attachTerminalInputDial(win, id)
     else if (!coarse.matches && release) {
       release()
       release = null
@@ -532,10 +574,43 @@ function buildTerminalInputDial(win: Window, id: string): () => void {
   root.setAttribute("aria-label", "Open input controls")
   root.setAttribute("aria-expanded", "false")
 
-  dial.append(menu, root)
+  // The way into chat mode. It is not a dial target because it is a destination
+  // rather than an input control, and because the arc asks for a hold-and-slide
+  // that a plain "go there" should not: one tap, always in the same place,
+  // whatever level the dial is on. preventDefault on the gesture is what keeps
+  // the software keyboard up (the same reason the root and the items do it), and
+  // the command goes out on the UP — a finger that slid off is a cancel, which
+  // matters because a touch pointer is implicitly captured and its up lands here
+  // even when it ended somewhere else.
+  const chatButton = doc.createElement("button")
+  chatButton.type = "button"
+  chatButton.className = "dial-chat"
+  // The glyph the arc's Chat target carried, so the control reads the same as
+  // the one it replaces.
+  chatButton.textContent = "☰"
+  chatButton.title = "Chat"
+  chatButton.setAttribute("aria-label", "Read this session as chat")
+  let chatDown: { x: number; y: number } | null = null
+  on(chatButton, "pointerdown", (event: Event) => {
+    event.preventDefault()
+    const p = event as PointerEvent
+    chatDown = { x: p.clientX, y: p.clientY }
+  })
+  on(chatButton, "pointerup", (event: Event) => {
+    event.preventDefault()
+    const p = event as PointerEvent
+    const from = chatDown
+    chatDown = null
+    if (from && Math.hypot(p.clientX - from.x, p.clientY - from.y) > 12) return
+    emitMobileCommand("chat")
+  })
+  on(chatButton, "pointercancel", () => {
+    chatDown = null
+  })
+
+  dial.append(menu, root, chatButton)
   doc.body.appendChild(dial)
   win.requestAnimationFrame(() => win.dispatchEvent(new Event("resize")))
-
   let open = false
   let level: DialLevel = "root"
   let activeID: string | null = null
