@@ -10,7 +10,8 @@ import (
 // The creator's OMP model list is the host's own role assignments, in config
 // order, deduplicated — a role's ":<thinking level>" suffix dropped (lasso has
 // its own effort field), a colon that ISN'T a level kept (it's part of the id),
-// and the per-task-agent overrides folded in after the named roles.
+// the per-task-agent overrides folded in after the named roles, and each
+// role's fallback models appended last.
 func TestOmpRoleModels(t *testing.T) {
 	cfg := []byte(`theme:
   dark: herdr
@@ -24,7 +25,12 @@ modelRoles:
 retry:
   fallbackChains:
     default:
-      - never-suggest/from-a-fallback-chain
+      - openai-codex/gpt-5.6-luna:high
+      - anthropic/claude-opus-5:high
+      - google/*
+    "openai-codex/gpt-5.6-terra":
+      - kimi-code/k3
+      - zai/glm-5.4
 task:
   agentModelOverrides:
     scout: openai-codex/gpt-5.6-terra
@@ -41,6 +47,12 @@ task:
 		"openrouter/qwen3:free",
 		// Then the task-agent overrides — only the one that's new.
 		"kimi-code/k3",
+		// Then each role's fallback models: luna's ":high" stripped, the
+		// already-seen opus and k3 collapse away, the "google/*" wildcard is
+		// a matcher rather than a launch selector, and the model-keyed chain
+		// contributes what's new.
+		"openai-codex/gpt-5.6-luna",
+		"zai/glm-5.4",
 	}
 	got := ompRoleModels(cfg)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -60,6 +72,26 @@ func TestOmpRoleModelsRejectsUnusableConfig(t *testing.T) {
 		if got := ompRoleModels([]byte(in)); len(got) != 0 {
 			t.Errorf("%s: got %q, want nothing", name, got)
 		}
+	}
+}
+
+// Unsupported entries inside fallback chains are skipped, while scalar chains
+// and valid scalar sequence items still contribute.
+func TestOmpRoleModelsSkipsUnusableFallbackChains(t *testing.T) {
+	cfg := []byte(`modelRoles:
+  default: anthropic/claude-opus-5
+retry:
+  fallbackChains:
+    default: anthropic/claude-sonnet-4-5
+    empty: []
+    nested:
+      - {model: not-a-selector}
+      - kimi-code/k3
+`)
+	want := []string{"anthropic/claude-opus-5", "anthropic/claude-sonnet-4-5", "kimi-code/k3"}
+	got := ompRoleModels(cfg)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("omp role models = %q, want %q", got, want)
 	}
 }
 
