@@ -484,6 +484,10 @@ export function NewDialog({
     harnesses.find((h) => h.id === agent) ??
     harnesses[0] ??
     FALLBACK_HARNESSES[0]
+  // Not every harness has an effort knob (opencode has none), and a harness
+  // with one drives a third column in the model row — so this decides the row's
+  // shape, not just whether one field renders.
+  const hasEffort = !!harness.effort_levels?.length
 
   const branchesQuery = useQuery({
     queryKey: qk.repoBranches(selectedHost, repo),
@@ -1153,7 +1157,15 @@ export function NewDialog({
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-3">
+                <div
+                  className={cn(
+                    "grid grid-cols-2 gap-3",
+                    // Three across needs the sm+ dialog's width; on a phone the
+                    // effort select wraps to its own row instead of squeezing
+                    // the harness and model selects into ~90px.
+                    hasEffort && "sm:grid-cols-3"
+                  )}
+                >
                   <Field label="AI agent" htmlFor="agent-agent">
                     <select
                       id="agent-agent"
@@ -1193,34 +1205,37 @@ export function NewDialog({
                       emptyOption="default"
                     />
                   </Field>
+                  {/* Only harnesses whose CLI takes an effort knob list levels
+                  (claude, codex, omp, pi); elsewhere the column is dropped
+                  rather than offering a setting that goes nowhere. It sits
+                  beside the model, not behind Advanced: which model and how
+                  hard it thinks is one decision, so it belongs in the row
+                  someone fills in first. */}
+                  {hasEffort && (
+                    <Field label="Thinking effort" htmlFor="agent-effort">
+                      <select
+                        id="agent-effort"
+                        className={fieldClass}
+                        value={effort}
+                        onChange={(e) => setEffort(e.target.value)}
+                      >
+                        {/* Blank = pass no flag, so the CLI applies its own
+                        default — same wording as the Model placeholder. */}
+                        <option value="">default</option>
+                        {harness.effort_levels?.map((lvl) => (
+                          <option key={lvl} value={lvl}>
+                            {lvl}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
                 </div>
 
                 {/* The toggle lives in the footer beside the host picker; the
                 fields it reveals stay here, inside the scrolling body. */}
                 {showAdvanced && (
                   <div className="flex flex-col gap-3 border-border border-l pl-3">
-                    {/* Only harnesses whose CLI takes an effort knob list levels
-                    (claude, codex); elsewhere the select is hidden rather than
-                    offering a setting that goes nowhere. */}
-                    {!!harness.effort_levels?.length && (
-                      <Field label="Thinking effort" htmlFor="agent-effort">
-                        <select
-                          id="agent-effort"
-                          className={fieldClass}
-                          value={effort}
-                          onChange={(e) => setEffort(e.target.value)}
-                        >
-                          {/* Blank = pass no flag, so the CLI applies its own
-                          default — same wording as the Model placeholder. */}
-                          <option value="">default</option>
-                          {harness.effort_levels.map((lvl) => (
-                            <option key={lvl} value={lvl}>
-                              {lvl}
-                            </option>
-                          ))}
-                        </select>
-                      </Field>
-                    )}
                     {/* Plan mode only exists on harnesses that support it (claude,
                     opencode, omp); hide the toggle elsewhere rather than
                     offering a no-op. */}
