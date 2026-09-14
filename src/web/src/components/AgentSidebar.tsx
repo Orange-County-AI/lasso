@@ -1,23 +1,25 @@
+import { AgentLines } from "@/components/AgentParts"
 import { Orb } from "@/components/ui/orb"
-import { AgentStatus } from "@/components/AgentStatus"
-import { agentName, agentSub, useAgents } from "@/lib/agents"
-import type { Pane } from "@/lib/api"
+import { paneKey, useAgents } from "@/lib/agents"
+import type { HostPane } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-// The chat's docked left sidebar: the agents running on THIS tab's host, in
-// herdr's own order.
+// The chat's docked left sidebar: every agent lasso can reach, across every
+// connected machine, this tab's own host first.
 //
 // Only agents — a pane with no agent is a bare shell or a stray tab, and there
 // is no session to read, so listing it would offer a row that selects nothing.
-// herdr's own sidebar indexes workspaces; this one indexes conversations, which
-// is one per agent pane, and the chat beside it can show exactly one of those.
+// herdr's own sidebar indexes one machine's workspaces; this one indexes the
+// fleet's conversations, which is one per agent pane, and the chat beside it can
+// show exactly one of those.
 //
 // The list, the naming and the focus action come from lib/agents, because the
 // phone's sheet (AgentPicker) is the same list for the widths where a docked
 // column does not fit — see md:hidden here and md:hidden on the button that
 // opens the sheet. Exactly one of the two is reachable at any width.
-export function AgentSidebar({ host }: { host: string | null }) {
-  const { agents, isLoading, error, current, focusAgent } = useAgents(host)
+export function AgentSidebar() {
+  const { agents, isLoading, error, unlisted, current, focusAgent } =
+    useAgents()
 
   return (
     // vsurface: this sits over the terminal (the chat is an overlay), and under
@@ -46,17 +48,28 @@ export function AgentSidebar({ host }: { host: string | null }) {
         )}
         {!isLoading && !error && agents.length === 0 && (
           <div className="px-2 py-3 text-[11.5px] text-muted-foreground">
-            No agents on this host.
+            No agents on any connected host.
           </div>
         )}
         {agents.map((p) => (
           <Row
-            key={p.pane_id}
+            key={paneKey(p)}
             pane={p}
-            current={p.pane_id === current}
+            current={paneKey(p) === current}
             onSelect={focusAgent}
           />
         ))}
+        {/* A host that did not answer is the one reason an agent you expect is
+            not here, so it is said rather than left to be inferred. */}
+        {unlisted.length > 0 && (
+          <div
+            className="px-2 py-2 text-[11px] text-muted-foreground"
+            title={unlisted.join(", ")}
+          >
+            {unlisted.length} host{unlisted.length === 1 ? "" : "s"} could not
+            be listed
+          </div>
+        )}
       </div>
     </aside>
   )
@@ -67,11 +80,10 @@ function Row({
   current,
   onSelect,
 }: {
-  pane: Pane
+  pane: HostPane
   current: boolean
-  onSelect: (p: Pane) => void
+  onSelect: (p: HostPane) => void
 }) {
-  const sub = agentSub(pane)
   return (
     <button
       type="button"
@@ -82,22 +94,7 @@ function Row({
         current && "bg-accent"
       )}
     >
-      <span className="flex items-center gap-2">
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-[13px]",
-            current ? "text-foreground" : "text-muted-foreground"
-          )}
-        >
-          {agentName(pane)}
-        </span>
-        <AgentStatus status={pane.agent_status} />
-      </span>
-      {sub && (
-        <span className="truncate text-[11px] text-muted-foreground">
-          {sub}
-        </span>
-      )}
+      <AgentLines pane={pane} current={current} />
     </button>
   )
 }

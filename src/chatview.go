@@ -219,6 +219,10 @@ type chatPayload struct {
 	// Note explains why Items is empty when it is (no transcript yet, an
 	// unsupported format) — the view shows it instead of an empty box.
 	Note string `json:"note,omitempty"`
+	// Starting says that emptiness is a pane still coming up — a live agent
+	// whose session or log has not landed yet — so the view shows progress (the
+	// orb) rather than a sentence that reads as a dead end.
+	Starting bool `json:"starting,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -322,10 +326,21 @@ type chatTranscript struct {
 	// Note explains an unreadable session to the person looking at the empty
 	// view.
 	Note string
+	// Starting says the note describes a pane that is still COMING UP rather
+	// than one with nothing to show: a live agent whose session or log is not
+	// there yet. The view shows progress for it — the orb — instead of a
+	// sentence that reads as a dead end, which is what a freshly created agent
+	// used to get for its whole boot.
+	Starting bool
 }
 
 // paneTranscript resolves the pane's agent transcript from herdr's own
 // agent_session — the handle herdr itself resumes the pane with.
+//
+// `booting` is the caller's answer to "is lasso bringing this pane's agent up",
+// which is the one thing that separates a session that has not arrived YET from
+// a pane herdr has no session for at all (see paneBooting). It only affects what
+// an empty view is told, never where a transcript is read from.
 //
 // Two shapes, and the difference is not cosmetic. kind="path" is a file herdr
 // named outright. kind="id" is a session IDENTIFIER, and only the harness that
@@ -333,15 +348,30 @@ type chatTranscript struct {
 // ~/.claude/projects/<slug>/<id>.jsonl, which lasso already resolves for the
 // file viewer's cwd (findClaudeTranscript). Refusing the id outright is what
 // left Claude Code panes unreadable while their transcripts sat on disk.
-func paneTranscript(b Backend, p pane) chatTranscript {
+func paneTranscript(b Backend, p pane, booting bool) chatTranscript {
 	s := p.AgentSession
-	if s == nil {
-		return chatTranscript{Note: "No agent session in this pane."}
+	// The boot comes FIRST, because the earliest part of one has no agent for
+	// herdr to see: the pane exists (the workspace was created) and the CLI is
+	// still starting in it, so a liveness check would call the pane empty while
+	// the agent the reader just asked for is arriving in it. That first second or
+	// two is where "no agent session in this pane" is most alarming and most
+	// false, so `booting` claims the pane before liveness gets a say.
+	if s == nil && booting {
+		return chatTranscript{
+			Note:     "Waiting for the agent to start…",
+			Starting: true,
+		}
 	}
 	// An agent_session outlives the agent (herdr keeps it to resume the pane),
 	// so the pane must still be running one — otherwise a plain shell sitting in
 	// the directory of an exited agent would keep showing that session.
 	if !paneHasLiveAgent(p) {
+		return chatTranscript{Note: "No agent session in this pane."}
+	}
+	// A live agent with no session reported, that lasso is not starting: herdr has
+	// no session for this pane and never will (a bot, a session someone started by
+	// hand). A wait here would promise a transcript that is not coming.
+	if s == nil {
 		return chatTranscript{Note: "No agent session in this pane."}
 	}
 	agent := strings.ToLower(strings.TrimSpace(s.Agent))
@@ -361,11 +391,39 @@ func paneTranscript(b Backend, p pane) chatTranscript {
 			}
 			// The id is real but its log is not on this machine yet — the session
 			// has not written one, or it lives on the other side of an ssh hop.
-			return chatTranscript{Note: "This session's transcript is not on this host yet."}
+			// A running agent's log is expected to arrive, so this is a wait.
+			return chatTranscript{
+				Note:     "This session's transcript is not on this host yet.",
+				Starting: true,
+			}
 		}
 		return chatTranscript{Note: "This agent's transcript is not readable by lasso yet."}
 	}
 	return chatTranscript{Note: "No agent session in this pane."}
+}
+
+// chatBootGrace is how long a pane lasso created may still be called "starting"
+// after the fact. The record's boot status flips to ready the moment the CLI
+// launches, and herdr's session handle can land a beat after that, so the flag
+// alone leaves a gap exactly where the reader is watching their new agent
+// arrive. Bounded so a create whose CLI died silently stops promising a start.
+const chatBootGrace = 3 * time.Minute
+
+// paneBooting reports whether lasso is still bringing this pane's agent up, given
+// the host's records. Only lasso's own record knows: herdr reports an agent in
+// the pane whether the CLI is mid-boot or has been running for hours without
+// ever announcing a session. The records arrive as an argument so the rule is
+// testable without a database — and so a failed read is the caller's to swallow
+// (it means "not booting", which is the note that promises nothing).
+func paneBooting(recs []AgentRecord, paneID string) bool {
+	for _, rec := range recs {
+		if rec.RootPane != paneID {
+			continue
+		}
+		return rec.BootStatus == BootCreating || rec.BootStatus == BootBooting ||
+			time.Since(rec.CreatedAt) < chatBootGrace
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1575,19 +1633,32 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		Cwd:    paneCwd(p),
 		Title:  cleanPaneTitle(p.TerminalTitleStripped),
 	}
-	tx := paneTranscript(be, p)
+	// This host's records, for the one question herdr cannot answer: is the agent
+	// in this pane one lasso is still starting? A read that fails just means no.
+	recs, _ := listAgents(be.Name())
+	tx := paneTranscript(be, p, paneBooting(recs, p.PaneID))
 	if tx.Path == "" {
 		// The note distinguishes the situations that matter to whoever is
 		// looking at the empty view: an agent that never ran here, a harness
 		// lasso cannot read, and a session whose log is not on this host yet.
+		// Some of those are a WAIT — a live agent whose session has not been
+		// reported or written yet — and Starting is what tells them apart from
+		// the ones that are simply over.
 		out.Note = tx.Note
+		out.Starting = tx.Starting
 		writeChat(w, out)
 		return
 	}
 	path := tx.Path
 	info, err := be.Stat(path)
 	if err != nil || info.IsDir() {
+		// herdr named a transcript and the pane is running an agent, so this is
+		// not a missing file so much as one not written yet: every harness here
+		// creates its log with the first message. That is the state a freshly
+		// created agent sits in until it is prompted, so it is a wait rather
+		// than a dead end.
 		out.Note = "The agent's transcript is not readable yet."
+		out.Starting = true
 		writeChat(w, out)
 		return
 	}

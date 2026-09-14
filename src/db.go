@@ -650,6 +650,12 @@ func scanAgentRow(rows *sql.Rows) (AgentRecord, error) {
 // messaged, read, nor closed. The history/reopen views take
 // listAllAgentsIncludingClosed / findAgentRecordAny instead.
 func listAgents(host string) ([]AgentRecord, error) {
+	if db == nil {
+		// No store open: a test handler, or a lasso started without one. There are
+		// no records to list, which is what every caller is asking — the writers
+		// guard the same way (see updateAgentBootStatus).
+		return nil, nil
+	}
 	rows, err := db.Query(
 		`SELECT `+agentCols+` FROM agents WHERE host=? AND closed_at='' ORDER BY created_at`, host)
 	if err != nil {

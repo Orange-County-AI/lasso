@@ -2,77 +2,117 @@ import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
 import { toast } from "sonner"
 
-import { type Pane, api } from "@/lib/api"
-import { useApp } from "@/lib/app-store"
+import { type HostPane, api } from "@/lib/api"
+import { moveTabToHost, useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 
+// paneKey is an identity for a pane across the whole fleet. herdr's own ids are
+// unique only WITHIN a host, and this list spans every machine lasso can reach,
+// so every address here — the highlight, the stand-in for a selection in flight,
+// a React key — carries the host with the id. Two machines each running an agent
+// called "w1:p1" are two rows.
+export function paneKey(p: HostPane): string {
+  return `${p.host}\u0000${p.pane_id}`
+}
+
 // What a human calls an agent, in the order herdr labels the pane: the workspace
-// (the name lasso's creator set, and what auto-titling rewrites), then the tab,
-// then the pane id as a last resort so a row is never blank.
-export function agentName(p: Pane): string {
-  return p.workspace_label || p.tab_label || p.pane_id
+// (the name lasso's creator set, and what auto-titling rewrites), then the pane's
+// own label, then its tab, then the terminal title — which for an agent is what
+// it is working on, and the only name left when nothing along the way was ever
+// labelled.
+export function agentName(p: HostPane): string {
+  return (
+    p.workspace_label ||
+    p.pane_label ||
+    p.tab_label ||
+    p.terminal_title ||
+    p.pane_id
+  )
 }
 
 // The harness and the last cwd segment — which for an agent is the worktree it
-// was started in. The second half of "which one is this".
-export function agentSub(p: Pane): string {
+// was started in. The second half of "which one is this", after its machine.
+export function agentSub(p: HostPane): string {
   return [p.agent, (p.cwd ?? "").split("/").filter(Boolean).pop()]
     .filter(Boolean)
     .join(" · ")
 }
 
-// The agents running on this tab's host, and the one action both surfaces offer
-// on them: focus.
+// orderByHost puts this tab's own machine first and the rest in name order,
+// keeping the payload's order inside each host. The aggregation's own order is
+// herdr-target order across an ssh config, which is neither stable enough to tap
+// at between polls nor any statement about where the reader is.
+function orderByHost(panes: HostPane[], tabHost: string | null): HostPane[] {
+  return [...panes].sort((a, b) => {
+    if (a.host === b.host) return 0
+    const rank = (p: HostPane) => (p.host === tabHost ? 0 : 1)
+    if (rank(a) !== rank(b)) return rank(a) - rank(b)
+    return (a.host_label || a.host).localeCompare(b.host_label || b.host)
+  })
+}
+
+// Every agent lasso can reach, on every connected machine — not just this tab's
+// host. An agent on another box is the one you cannot see any other way short of
+// switching tabs, which is the whole point of listing the fleet.
 //
-// Two callers share it — the docked column (App.tsx) and the phone's sheet
-// (ChatView.tsx) — and they have to agree on every part of it: the same list,
-// the same stand-in highlight, the same address. They are never both on screen
-// (one is md+ and the other is not), so the second observer costs a shared
-// cache entry rather than a second poll.
+// Two surfaces render it (the docked column and the phone's sheet) and they have
+// to agree on every part of it: the same list, the same naming, the same
+// stand-in highlight, the same address. They are never both on screen (one is
+// md+ and the other is not), so the second observer costs a shared cache entry
+// rather than a second poll.
 //
-// Focus stays herdr's, not this hook's: a selection focuses the pane the way the
-// rest of lasso does (api.focus), and the chat then follows the same pane_id
-// over SSE that the terminal does. So the highlight is not a second source of
-// truth — a row is current because herdr says that pane is focused, with the
-// selected one standing in for it only until that answer arrives.
-export function useAgents(host: string | null) {
-  const { activePaneID, panesRev } = useApp()
+// Focus stays herdr's, not this hook's: a selection moves the tab when the agent
+// is elsewhere and then focuses the pane the way the rest of lasso does, and the
+// chat follows the same pane_id over SSE that the terminal does. So the
+// highlight is not a second source of truth — a row is current because herdr
+// says that pane is focused, with the selected one standing in for it only until
+// that answer arrives.
+export function useAgents() {
+  const { activePaneID, host: tabHost, panesRev } = useApp()
   const { data, isLoading, error } = useQuery({
-    // panes_rev covers the list itself (a create, a close, a rename); the
-    // interval covers what a layout revision cannot: an agent's STATUS moves
-    // without one, and a row still reading "working" for a turn that ended is
-    // the one way a list can lie.
-    queryKey: qk.panes(host ?? "", panesRev),
-    queryFn: () => api.panes(),
-    refetchInterval: 4000,
+    // panes_rev is this TAB's host's revision, so it covers a create, a close or
+    // a rename on the machine the reader is looking at without waiting for the
+    // poll; the interval covers everything else — the other hosts, and the one
+    // thing no layout revision carries, an agent's STATUS moving (which is the
+    // one way a list like this can lie).
+    queryKey: qk.allPanes(panesRev),
+    queryFn: () => api.allPanes(),
+    refetchInterval: 5000,
     refetchIntervalInBackground: false,
   })
 
   // The pane focus is heading to. The host feed reports herdr's focus on an
-  // event or its 2s poll, so a selection would otherwise look like it did
-  // nothing for a beat; the highlight prefers this until the real answer
-  // catches up.
+  // event or its 2s poll, and a cross-host selection has a whole attach in front
+  // of that, so a tap would otherwise look like it did nothing for a beat; the
+  // highlight prefers this until the real answer catches up.
   const [pending, setPending] = React.useState<string | null>(null)
   // Retired when that answer moves — which is what it stood in for — or after 3s
-  // of silence: a focus that never lands (a split tab whose active pane is
-  // another pane, a refusal) must not leave the wrong row looking current.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activePaneID is the trigger, not an input — the effect exists to RUN when herdr's focus moves.
+  // of silence: a focus that never lands (an unreachable host, a split tab whose
+  // active pane is another pane, a refusal) must not leave the wrong row looking
+  // current.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activePaneID is the trigger, not an input — the effect exists to RUN when herdr's focus (or the tab's host) moves.
   React.useEffect(() => {
     setPending(null)
-  }, [activePaneID])
+  }, [activePaneID, tabHost])
   React.useEffect(() => {
     if (!pending) return
     const t = setTimeout(() => setPending(null), 3000)
     return () => clearTimeout(t)
   }, [pending])
 
-  const focusAgent = React.useCallback(async (p: Pane) => {
+  const focusAgent = React.useCallback(async (p: HostPane) => {
     if (!p.workspace_id) return
-    setPending(p.pane_id)
+    setPending(paneKey(p))
     try {
-      // Reached the way the rest of lasso reaches a pane: herdr has no
-      // pane.focus, so a pane is focused through its workspace and then its tab
-      // (see serveFocus). A split tab therefore lands on the tab's active pane.
+      // The TAB moves first when the agent is on another machine. Two reasons,
+      // in order: the focus call is addressed to the host this tab is on
+      // (lib/host), and the chat follows that host's focused pane — so attaching
+      // after focusing would land the focus on a host the chat is not showing.
+      // focusCreatedAgent and the creator's own success path take the same two
+      // steps in the same order.
+      await moveTabToHost(p.host)
+      // herdr has no pane.focus, so a pane is reached through its workspace and
+      // then its tab (see serveFocus). A split tab lands on its active pane.
       await api.focus(p.workspace_id, p.tab_id)
     } catch (e) {
       // Nothing is on its way, so drop the stand-in now rather than at the next
@@ -82,13 +122,28 @@ export function useAgents(host: string | null) {
     }
   }, [])
 
+  const agents = React.useMemo(
+    () =>
+      orderByHost(
+        (data?.panes ?? []).filter((p) => p.has_agent),
+        tabHost
+      ),
+    [data, tabHost]
+  )
+
   return {
-    agents: (data?.panes ?? []).filter((p) => p.agent),
+    agents,
     isLoading,
     error,
+    // Hosts the aggregation could not list this pass. They contribute no rows,
+    // and saying so is the difference between "that agent is gone" and "that
+    // machine did not answer".
+    unlisted: Object.keys(data?.errors ?? {}),
     // The pane the highlight belongs on: the selection in flight, else herdr's
-    // own answer. Both surfaces take it from here so they cannot disagree.
-    current: pending ?? activePaneID,
+    // own answer, which only means anything on the host this tab is showing.
+    current:
+      pending ??
+      (tabHost && activePaneID ? `${tabHost}\u0000${activePaneID}` : null),
     focusAgent,
   }
 }

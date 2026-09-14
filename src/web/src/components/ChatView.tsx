@@ -1299,6 +1299,10 @@ export function ChatView({
   }, [hasMore, loadingOlder, loadOlder])
 
   const running = data?.running ?? false
+  // An empty view that is a WAIT rather than a verdict (the agent is booting, or
+  // its log has not been written yet) — the server's call, not an inference from
+  // a clock: see the notes in chatview.go.
+  const starting = data?.starting ?? false
 
   // A relative path in an agent's prose is relative to WHERE IT IS WORKING, on
   // the machine it is working on — so resolve it the same way the file viewer
@@ -1328,20 +1332,6 @@ export function ChatView({
       )}
     >
       <div className="flex flex-none items-center gap-2 border-border border-b px-2.5 py-1.5">
-        {/* Where the "← Terminal" button used to be. Below md there is no footer
-            and so no New button, and on a phone the creator is the one thing the
-            chat needs that only the footer had; the way back to the terminal
-            moved to the right of this header, where it works at every width. */}
-        <button
-          type="button"
-          onClick={onNewAgent}
-          aria-haspopup="dialog"
-          title="New agent"
-          aria-label="New agent"
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
-        >
-          <Plus className="size-4" />
-        </button>
         <span className="truncate text-[12.5px] text-foreground">
           {data?.title || data?.agent || "Chat"}
         </span>
@@ -1390,6 +1380,22 @@ export function ChatView({
         >
           <SquareTerminal className="size-4" />
         </button>
+        {/* The chat's own creator, at the far right of the header and mobile
+            only: below md there is no footer and so no New button, while at md+
+            the footer's is the same entry point (both open the same dialog,
+            scoped by the view — see App's agentsOnly). It sits at the END
+            rather than ahead of the title because that is the corner a thumb
+            reaches without moving the hand. */}
+        <button
+          type="button"
+          onClick={onNewAgent}
+          aria-haspopup="dialog"
+          title="New agent"
+          aria-label="New agent"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+        >
+          <Plus className="size-4" />
+        </button>
       </div>
 
       {/* The viewport and its corner control share a positioning context:
@@ -1431,8 +1437,22 @@ export function ChatView({
               could not read the session: {(error as Error).message}
             </div>
           )}
+          {/* An empty view says why — and a pane still coming up says it as
+              WORK: a newly created agent has no session or log for its first
+              seconds, and a sentence about what is missing reads as a dead end
+              for a pane the reader just asked lasso to create. `starting` is the
+              server's answer to "is this a wait or a verdict" (see the notes in
+              chatview.go), so the orb goes on exactly the waits. */}
           {!isLoading && !error && rows.length === 0 && !running && (
-            <div className="text-center text-[12px] text-muted-foreground">
+            <div
+              className={cn(
+                "text-[12px] text-muted-foreground",
+                starting
+                  ? "flex items-center justify-center gap-2 py-1"
+                  : "text-center"
+              )}
+            >
+              {starting && <Orb state="working" px={16} />}
               {data?.note || "No messages yet."}
             </div>
           )}
@@ -1519,9 +1539,7 @@ export function ChatView({
 
       {/* Last, so it covers the header, the transcript and the composer alike —
           the whole view is what a sheet replaces while it is open. */}
-      {pickerOpen && (
-        <AgentPicker host={host} onClose={() => setPickerOpen(false)} />
-      )}
+      {pickerOpen && <AgentPicker onClose={() => setPickerOpen(false)} />}
     </div>
   )
 }

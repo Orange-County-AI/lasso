@@ -1,10 +1,10 @@
 import { Bot, X } from "lucide-react"
 import * as React from "react"
 
-import { AgentStatus } from "@/components/AgentStatus"
+import { AgentLines } from "@/components/AgentParts"
 import { Orb } from "@/components/ui/orb"
-import { agentName, agentSub, useAgents } from "@/lib/agents"
-import type { Pane } from "@/lib/api"
+import { paneKey, useAgents } from "@/lib/agents"
+import type { HostPane } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 // The agent list as a SHEET, for the widths with no room to dock one: below md
@@ -13,17 +13,13 @@ import { cn } from "@/lib/utils"
 // — picks which conversation the chat is showing.
 //
 // A phone gets a STACK and anything wider gets a grid, which is the whole
-// difference screen size makes here: a tile holds a name, a worktree and a
-// status, none of which grow with the viewport, so the second column is free
-// real estate where there is room for it and a squeezed name where there is not.
-export function AgentPicker({
-  host,
-  onClose,
-}: {
-  host: string | null
-  onClose: () => void
-}) {
-  const { agents, isLoading, error, current, focusAgent } = useAgents(host)
+// difference screen size makes here: a tile holds a name, a machine, a worktree
+// and a status, none of which grow with the viewport, so the second column is
+// free real estate where there is room for it and a squeezed name where there is
+// not.
+export function AgentPicker({ onClose }: { onClose: () => void }) {
+  const { agents, isLoading, error, unlisted, current, focusAgent } =
+    useAgents()
 
   // Escape dismisses it: a sheet over a reading surface should close without
   // hunting for the button that opened it.
@@ -76,18 +72,18 @@ export function AgentPicker({
         )}
         {!isLoading && !error && agents.length === 0 && (
           <div className="px-1 py-3 text-[11.5px] text-muted-foreground">
-            No agents on this host.
+            No agents on any connected host.
           </div>
         )}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {agents.map((p) => (
             <Tile
-              key={p.pane_id}
+              key={paneKey(p)}
               pane={p}
-              current={p.pane_id === current}
+              current={paneKey(p) === current}
               // Focus then dismiss, in that order and without waiting: the
-              // conversation on screen is the answer to the tap, and the highlight
-              // follows herdr's own report a beat later (lib/agents).
+              // conversation on screen is the answer to the tap, and the
+              // highlight follows herdr's own report a beat later (lib/agents).
               onSelect={(pane) => {
                 void focusAgent(pane)
                 onClose()
@@ -95,6 +91,17 @@ export function AgentPicker({
             />
           ))}
         </div>
+        {/* A host that did not answer is the one reason an agent you expect is
+            not here, so it is said rather than left to be inferred. */}
+        {unlisted.length > 0 && (
+          <div
+            className="px-1 py-2 text-[11px] text-muted-foreground"
+            title={unlisted.join(", ")}
+          >
+            {unlisted.length} host{unlisted.length === 1 ? "" : "s"} could not
+            be listed
+          </div>
+        )}
       </div>
     </div>
   )
@@ -105,11 +112,10 @@ function Tile({
   current,
   onSelect,
 }: {
-  pane: Pane
+  pane: HostPane
   current: boolean
-  onSelect: (p: Pane) => void
+  onSelect: (p: HostPane) => void
 }) {
-  const sub = agentSub(pane)
   return (
     <button
       type="button"
@@ -122,22 +128,7 @@ function Tile({
         current && "border-primary/50 bg-accent"
       )}
     >
-      <span className="flex items-center gap-2">
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-[13px]",
-            current ? "text-foreground" : "text-muted-foreground"
-          )}
-        >
-          {agentName(pane)}
-        </span>
-        <AgentStatus status={pane.agent_status} />
-      </span>
-      {sub && (
-        <span className="truncate text-[11px] text-muted-foreground">
-          {sub}
-        </span>
-      )}
+      <AgentLines pane={pane} current={current} />
     </button>
   )
 }

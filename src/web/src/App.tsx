@@ -505,7 +505,7 @@ function Shell() {
                       terminal: the overlay is the only thing that grew, so the
                       iframe underneath keeps the size the shared pty was fitted
                       to and no other client's herdr reflows. */}
-                  {chatSidebar && <AgentSidebar host={host} />}
+                  {chatSidebar && <AgentSidebar />}
                   <ChatView
                     className="min-w-0 flex-1"
                     onNewAgent={openNew}
