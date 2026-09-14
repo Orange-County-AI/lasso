@@ -540,6 +540,10 @@ type chatFakeBackend struct {
 	// home is what a harness that keeps its logs under $HOME resolves against
 	// (claude's ~/.claude/projects). Empty for tests that never ask.
 	home string
+	// workspaceName is what workspace.get answers with — herdr's label for the
+	// workspace, which is the name lasso's auto-titler writes. Empty means herdr
+	// has none, which the fake reports as an error the caller must survive.
+	workspaceName string
 }
 
 func (b *chatFakeBackend) Name() string { return privateHostName(&b.name, "chatfake") }
@@ -561,6 +565,12 @@ func (b *chatFakeBackend) ReadDir(p string) ([]fileEntry, error) {
 }
 
 func (b *chatFakeBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	if method == "workspace.get" {
+		if b.workspaceName == "" {
+			return nil, fmt.Errorf("no such workspace")
+		}
+		return json.RawMessage(`{"workspace":{"label":` + jsonString(b.workspaceName) + `}}`), nil
+	}
 	if method != "pane.list" {
 		return nil, fmt.Errorf("unexpected herdr method %q", method)
 	}
@@ -701,6 +711,62 @@ func TestServeChatPlainPaneIsNotStarting(t *testing.T) {
 	}
 	if out.Starting {
 		t.Error("a pane with no agent is over, not starting")
+	}
+}
+
+// The header names a session the way the agent panel does: herdr's workspace
+// label, the name lasso's auto-titler wrote from the prompt. A fresh agent has
+// neither that name's company nor a session title yet — what it has is a work
+// dir, which herdr puts in the pane's terminal title, and that slug is the
+// unique identifier this ordering exists to keep out of a header.
+func TestServeChatNamesTheWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-09-13T03-43-04-614Z_abc.jsonl")
+	if err := os.WriteFile(path, []byte(chatLog(recHeader, recUser)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The pane's own title is the work dir (what a create shows first), while the
+	// harness's session title — recHeader's — is "Fix the tests".
+	pane := fmt.Sprintf(
+		`{"pane_id":"w1:p1","focused":true,"agent":"omp","agent_status":"idle","workspace_id":"w1",`+
+			`"terminal_title_stripped":"in-the-footer-on-3bo6",`+
+			`"agent_session":{"source":"herdr:omp","agent":"omp","kind":"path","value":%q}}`, path)
+
+	for _, tc := range []struct {
+		name  string
+		label string
+		want  string
+		why   string
+	}{
+		{
+			name:  "a labelled workspace",
+			label: "Add footer herdr sidebar toggle",
+			want:  "Add footer herdr sidebar toggle",
+			why:   "the auto-titled name the panel lists it under, over both the slug and the session title",
+		},
+		{
+			name:  "herdr's placeholder for an unnamed workspace",
+			label: "~",
+			want:  "Fix the tests",
+			why:   "a cwd is not a name, so the file-not-yet-written slug gives way to the session's own title",
+		},
+		{
+			name:  "no label at all",
+			label: "",
+			want:  "Fix the tests",
+			why:   "a workspace herdr will not name falls back the same way",
+		},
+	} {
+		useFakeHost(t, &chatFakeBackend{panes: []string{pane}, workspaceName: tc.label})
+		rec := httptest.NewRecorder()
+		serveChat(rec, httptest.NewRequest(http.MethodGet, "/api/chat", nil))
+		var out chatPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Title != tc.want {
+			t.Errorf("%s: title = %q, want %q (%s)", tc.name, out.Title, tc.want, tc.why)
+		}
 	}
 }
 

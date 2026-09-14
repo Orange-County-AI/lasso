@@ -1088,6 +1088,38 @@ func tabLabel(be Backend, tabID string) string {
 	return r.Tab.Label
 }
 
+// workspaceLabel fetches a workspace's display label (best effort, "" on
+// failure) — the name lasso's auto-titler writes from the agent's prompt, and
+// the one the agent panel lists every agent under.
+//
+// herdr labels a workspace it was not given a name for after its cwd: "~" when
+// that is home, the directory's name otherwise. That is a path rather than a
+// name, and a path is exactly what a caller reaching for this is trying to get
+// away from, so "~" comes back empty and the caller falls back to what the pane
+// itself is called.
+func workspaceLabel(be Backend, workspaceID string) string {
+	if workspaceID == "" {
+		return ""
+	}
+	res, err := be.HerdrCall("workspace.get", map[string]any{"workspace_id": workspaceID})
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Workspace struct {
+			Label string `json:"label"`
+		} `json:"workspace"`
+	}
+	if json.Unmarshal(res, &r) != nil {
+		return ""
+	}
+	label := strings.TrimSpace(r.Workspace.Label)
+	if label == "~" {
+		return ""
+	}
+	return label
+}
+
 // ---------------------------------------------------------------------------
 // pane list: list every pane + focus one
 // ---------------------------------------------------------------------------

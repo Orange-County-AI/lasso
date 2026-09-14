@@ -1626,12 +1626,25 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	// recovers a status herdr left empty, from the pane's own title.
 	_, paneStatus := paneAgentPresence(p)
 
+	// What this session is called, and the order it is asked in is the point. The
+	// workspace label is the name lasso's auto-titler wrote from the agent's
+	// prompt — the name the agent panel lists it under — so a header using it
+	// names the session the way the list beside it does. The pane's terminal title
+	// is the fallback, and on a FRESH agent that title is its work dir: the slug,
+	// the unique identifier nobody wants to read in a header, which is what a
+	// create showed until its harness wrote a session title of its own.
+	label := workspaceLabel(be, p.WorkspaceID)
+	title := label
+	if title == "" {
+		title = cleanPaneTitle(p.TerminalTitleStripped)
+	}
+
 	out := chatPayload{
 		PaneID: p.PaneID,
 		Agent:  p.Agent,
 		Host:   be.Name(),
 		Cwd:    paneCwd(p),
-		Title:  cleanPaneTitle(p.TerminalTitleStripped),
+		Title:  title,
 	}
 	// This host's records, for the one question herdr cannot answer: is the agent
 	// in this pane one lasso is still starting? A read that fails just means no.
@@ -1713,7 +1726,11 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	// instead of splicing two conversations together.
 	out.Path = path
 	out.Note = parsed.note
-	if parsed.title != "" {
+	// The harness's own name for the session, when herdr's workspace has none: a
+	// labelled workspace is the name this agent goes by everywhere else in lasso
+	// (the panel, the creator, the auto-titler's target), and two names for one
+	// agent is worse than the less specific one.
+	if parsed.title != "" && label == "" {
 		out.Title = parsed.title
 	}
 	if out.Agent == "" {

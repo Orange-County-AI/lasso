@@ -24,7 +24,9 @@ export function AgentSidebar() {
   return (
     // vsurface: this sits over the terminal (the chat is an overlay), and under
     // the atmosphere --card is translucent — herdr's pane text would read
-    // straight through the list. Same opt-out the chat and the file viewer take.
+    // straight through the list. Same opt-out the chat and the file viewer take;
+    // inside the chat that opt-out paints the backdrop rather than going flat,
+    // so this column carries the same shading as the conversation beside it.
     <aside className="vsurface flex w-52 flex-none flex-col border-border border-r bg-card max-md:hidden">
       <div className="flex flex-none items-center gap-2 border-border border-b px-2.5 py-1.5">
         <span className="text-[12px] text-muted-foreground">Agents</span>

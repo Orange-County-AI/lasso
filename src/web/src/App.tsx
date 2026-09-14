@@ -665,40 +665,15 @@ function Shell() {
         textarea carries the same commands there. */}
       <footer className="hidden flex-none items-center gap-2 border-border border-t bg-card px-2 py-1 md:flex">
         <div className="flex flex-none items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Switch host"
-            aria-label="Switch host"
-            aria-haspopup="menu"
-            aria-expanded={hostMenuOpen}
-            onPointerDownCapture={() => {
-              hostOpenAtPointerDown.current = hostMenuOpen
-            }}
-            onPointerCancel={() => {
-              hostOpenAtPointerDown.current = null
-            }}
-            onKeyDownCapture={() => {
-              hostOpenAtPointerDown.current = null
-            }}
-            onClick={toggleHostMenu}
-          >
-            <Server />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Keyboard shortcuts (⌘/)"
-            aria-label="Keyboard shortcuts"
-            onClick={() => setShortcutsOpen(true)}
-          >
-            <Keyboard />
-          </Button>
           {/* The list on the LEFT of the terminal column, which is a different
               thing in each view: herdr's own sidebar in the terminal, the host's
               agents in the chat (see toggleLeftSidebar). The chat's state is
               this tab's, so only there does the button carry a pressed state —
-              herdr's sidebar reports nothing to press. */}
+              herdr's sidebar reports nothing to press.
+              It comes first in this row because the column it moves is the one
+              nearest the edge — a control for the leftmost thing reads first
+              left-to-right — and it keeps the corner-to-corner symmetry with the
+              Sidebar toggle that closes the row on the right. */}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -728,6 +703,35 @@ function Shell() {
             ) : (
               <PanelLeft />
             )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Switch host"
+            aria-label="Switch host"
+            aria-haspopup="menu"
+            aria-expanded={hostMenuOpen}
+            onPointerDownCapture={() => {
+              hostOpenAtPointerDown.current = hostMenuOpen
+            }}
+            onPointerCancel={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onKeyDownCapture={() => {
+              hostOpenAtPointerDown.current = null
+            }}
+            onClick={toggleHostMenu}
+          >
+            <Server />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Keyboard shortcuts (⌘/)"
+            aria-label="Keyboard shortcuts"
+            onClick={() => setShortcutsOpen(true)}
+          >
+            <Keyboard />
           </Button>
         </div>
         <UsageFooter />
