@@ -40,6 +40,7 @@ import {
 } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import {
+  fleetThemeIsPalette,
   getMode,
   getPalettePref,
   localPaletteName,
@@ -472,7 +473,11 @@ function ThemesSettings({ active }: { active: boolean }) {
           onChoose={setPalettePref}
         />
       )}
-      <HerdrThemeSelect theme={t} themes={catalog} pinned={!!localPalette} />
+      <HerdrThemeSelect
+        theme={t}
+        themes={catalog}
+        governs={fleetThemeIsPalette()}
+      />
       <ThemeBackgrounds
         theme={effective}
         shipped={shipped}
@@ -657,19 +662,23 @@ function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
 // mode, the chrome) off the theme_rev SSE bump. Every host lasso syncs to gets
 // it too (see ThemeSyncHosts), so the remote TUIs follow as well.
 //
+// Held while an appearance palette is named: that palette is the fleet's theme
+// then (lib/mode.ts:fleetThemeIsPalette), and a pick here would fan herdr's
+// over every host and its agents — the endpoint refuses one for the same
+// reason. Clear the palette above and this hands the fleet back to herdr.
+//
 // The list is the server's own: lasso's built-ins, the bundled Omarchy
 // palettes, and anything installed from a URL, in one canonical order.
 function HerdrThemeSelect({
   theme,
   themes,
-  pinned,
+  governs,
 }: {
   theme: ThemePayload | undefined
   themes: ThemeCatalogEntry[]
-  // True when a palette is named for the scheme in force, so the shared herdr
-  // theme is not what is on screen — worth saying, or the select reads as
-  // broken.
-  pinned: boolean
+  // True while a palette named in the appearance setting owns the fleet's
+  // theme, i.e. while this control has nothing to say.
+  governs: boolean
 }) {
   const t = theme
   // Optimistic selection so the dropdown doesn't snap back while the config
@@ -707,7 +716,7 @@ function HerdrThemeSelect({
         id="settings-herdr-theme"
         className={cn(fieldClass, "max-w-xs")}
         value={value}
-        disabled={!t}
+        disabled={!t || governs}
         onChange={(e) => {
           wroteOn.current = t
           setPending(e.target.value)
@@ -731,8 +740,8 @@ function HerdrThemeSelect({
         follow it live.
         {t?.forced &&
           " This lasso was launched with a -theme override, so its terminals won't follow until that flag is dropped."}
-        {pinned &&
-          " A palette is named above, so the change will show in herdr and its TUIs, not in the browsers."}
+        {governs &&
+          " Off while a palette is named above: the fleet wears that palette, not herdr's theme. Clear it to pick herdr's again."}
       </p>
     </div>
   )

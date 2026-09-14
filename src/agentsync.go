@@ -326,6 +326,17 @@ func forgetThemeSynced(host string) {
 	delete(themeSynced.by, host)
 }
 
+// themeSyncedFor reports the theme lasso last WROTE to host, and whether it has
+// written one at all. The convergence compares against it; the hub's theme poll
+// uses the local entry to tell a change lasso made from one somebody else made
+// (see hub.refreshTheme).
+func themeSyncedFor(host string) (string, bool) {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	name, ok := themeSynced.by[host]
+	return name, ok
+}
+
 // claimThemeConverge reports whether this caller should push name to host: true
 // only when the last write there wasn't already name and no push is in flight.
 // The in-flight half matters because probes arrive in bursts (a sweep, then the
@@ -1480,6 +1491,43 @@ func syncThemeNow(rt resolvedTheme) []themeSyncResult {
 // changed under it. Refusing is the honest answer.
 var themeSyncRunning atomic.Bool
 
+// fleetThemeIsPalette reports whether an appearance palette — not herdr's own
+// theme — is what the fleet wears.
+//
+// The two are one value: herdr's config.toml plus every agent CLI's own theme
+// file, written host by host. Which of them owns it is the appearance setting's
+// call. Naming a palette hands it to the palette (lib/mode.ts:pushPaletteToFleet
+// pushes it on every appearance change), so herdr's theme picker may not take it
+// back while one is named: that pick would fan the theme no screen is showing
+// out over the palette every screen is, leaving omp, opencode and Claude Code on
+// a canvas nobody is looking at. Only "herdr" mode — the mode whose whole
+// meaning is that the fleet's own theme wins — keeps the picker authoritative.
+//
+// Per-scheme naming resolves the way the browser resolves it, so a pinned mode
+// is exact: a palette named for the OTHER scheme governs nothing, because no
+// browser in this mode wears it. "system" defers to the device, which the server
+// cannot observe — so a palette named for EITHER scheme counts, since some
+// browser may be wearing it and the fleet has one theme for all of them.
+func fleetThemeIsPalette() bool {
+	if db == nil { // not a running server: boot, CLI, tests
+		return false
+	}
+	us, err := getUIState()
+	if err != nil {
+		return false // unreadable prefs must not wedge the picker
+	}
+	switch us.AppearanceMode {
+	case appearanceModeLight:
+		return us.PaletteLight != ""
+	case appearanceModeDark:
+		return us.PaletteDark != ""
+	case appearanceModeSystem:
+		return us.PaletteLight != "" || us.PaletteDark != ""
+	default: // "herdr"
+		return false
+	}
+}
+
 // serveThemeSync pushes the live theme to the fleet on demand.
 //
 // It returns as soon as the push STARTS, and reports the outcome as a notice
@@ -1629,6 +1677,13 @@ func setLocalHerdrTheme(name string) error {
 	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
 		return err
 	}
+	// Record it BEFORE re-resolving, which is what tells the hub's poll that the
+	// change it is about to see is lasso's own: while an appearance palette is
+	// named the poll adopts only a config.toml theme lasso wrote (anything else
+	// is herdr's own popup or a hand edit, and the fleet stays on the palette),
+	// and the write above has not reached the fan-out that would otherwise mark
+	// it yet.
+	markThemeSynced("local", name)
 	// herdr does not watch its config file, so ask the server to re-read it.
 	// Best-effort: with herdr down the theme still applies on its next start,
 	// and it must not turn a successful write into a reported failure.

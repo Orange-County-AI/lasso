@@ -207,6 +207,33 @@ export function localPaletteName(m: Mode = getMode()): string {
   return getPalettePref(resolvedMode(m))
 }
 
+// fleetThemeIsPalette reports whether an appearance palette — not herdr's own
+// theme — is what the fleet wears. Mirrors the server's own rule
+// (src/agentsync.go:fleetThemeIsPalette), which refuses the theme picker while
+// this is true, so the control and the endpoint it calls agree.
+//
+// The fleet's theme is one value (herdr's config.toml plus every agent CLI's
+// theme file) and naming a palette takes it: pushPaletteToFleet hands it to the
+// palette on every appearance change. Herdr's theme picker may therefore not
+// take it back while one is named — that pick would fan a theme no screen is
+// showing out over the palette every screen is, and leave it there, since the
+// fanout and the per-probe convergence both read what lasso wrote to herdr's
+// config. Only "herdr" mode, whose whole meaning is that the fleet's own theme
+// wins, keeps the picker authoritative.
+//
+// Pinned modes are exact — a palette named for the OTHER scheme governs
+// nothing, since no browser in this mode wears it — while "system" defers to
+// each device's OS scheme, which the server cannot observe: there a palette
+// named for either scheme counts, because some browser may be wearing it and the
+// fleet has one theme for all of them.
+export function fleetThemeIsPalette(): boolean {
+  const m = getMode()
+  if (m === "herdr") return false
+  if (m === "system")
+    return getPalettePref("light") !== "" || getPalettePref("dark") !== ""
+  return getPalettePref(m) !== ""
+}
+
 // ---------------------------------------------------------------------------
 // Pushing the resolved palette to the fleet
 // ---------------------------------------------------------------------------
@@ -237,16 +264,17 @@ let pushedPalette: string | null = null
 let pushTimer: ReturnType<typeof setTimeout> | null = null
 
 // pushPaletteToFleet mirrors this browser's resolved palette onto herdr's config
-// and every reachable host's agent themes. "" is skipped: that is "herdr" mode,
-// whose whole meaning is that the fleet's own theme wins, and pushing it would
-// be a fleet-wide write of what is already there.
+// and every reachable host's agent themes. "" is skipped: it means no palette is
+// named for the scheme in force (herdr mode, or a scheme left to follow the
+// fleet), which is exactly the state whose whole meaning is that herdr's own
+// theme wins — pushing it would be a fleet-wide write of what is already there.
 export function pushPaletteToFleet() {
   const palette = localPaletteName()
   if (!palette) {
-    // "herdr" mode hands the fleet theme back to the herdr picker, which may
-    // move it while we are not looking. Forget what we pushed, or coming back to
-    // a palette we happen to have pushed BEFORE that would read as already
-    // synced and leave the fleet on whatever the picker set — the exact
+    // No palette in force hands the fleet theme back to the herdr picker, which
+    // may move it while we are not looking. Forget what we pushed, or coming
+    // back to a palette we happen to have pushed BEFORE that would read as
+    // already synced and leave the fleet on whatever the picker set — the exact
     // mismatch this exists to close.
     pushedPalette = null
     return
