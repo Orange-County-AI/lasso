@@ -12,14 +12,13 @@ import (
 // use. omp assigns a model to each ROLE in ~/.omp/agent/config.yml — the named
 // roles under `modelRoles` (default, smol, slow, task, vision, designer, plus
 // any custom role) and the per-task-agent assignments under
-// `task.agentModelOverrides`. Those selectors are exactly the models the user
+// `task.agentModelOverrides` — plus each role's fallback models under
+// `retry.fallbackChains`. Those selectors are exactly the models the user
 // has authenticated, picked deliberately, and already runs work on, so they are
 // the right candidate set for `omp --model`.
 //
 // Deliberately NOT read:
 //
-//   - `retry.fallbackChains` — recovery paths, keyed by role OR by model/provider,
-//     whose values may be wildcards ("google/*") that are not launch selectors.
 //   - `enabledModels` / `modelTags` — catalog filtering and labels, not role
 //     assignments.
 //
@@ -33,15 +32,19 @@ import (
 // the picker should offer first, which a Go map would shuffle on every request.
 type ompConfigRoles struct {
 	ModelRoles yaml.Node `yaml:"modelRoles"`
-	Task       struct {
+	Retry      struct {
+		FallbackChains yaml.Node `yaml:"fallbackChains"`
+	} `yaml:"retry"`
+	Task struct {
 		AgentModelOverrides yaml.Node `yaml:"agentModelOverrides"`
 	} `yaml:"task"`
 }
 
 // ompRoleModels extracts the deduplicated model selectors an omp config.yml
-// assigns to roles, in config order. A file it can't parse yields nothing
-// rather than a partial list — the caller then falls back to the compiled-in
-// suggestions.
+// assigns to roles, in config order: the named roles first, then the
+// per-task-agent overrides, then each role's fallback models. A file it can't
+// parse yields nothing rather than a partial list — the caller then falls back
+// to the compiled-in suggestions.
 func ompRoleModels(data []byte) []string {
 	var cfg ompConfigRoles
 	if yaml.Unmarshal(data, &cfg) != nil {
@@ -49,6 +52,19 @@ func ompRoleModels(data []byte) []string {
 	}
 	var out []string
 	seen := map[string]bool{}
+	add := func(raw string) {
+		sel := ompModelSelector(raw)
+		if sel == "" || seen[sel] {
+			return
+		}
+		// A fallback entry may be a wildcard ("google/*") that matches models
+		// without naming one — not a `--model` selector, so not a suggestion.
+		if strings.Contains(sel, "*") {
+			return
+		}
+		seen[sel] = true
+		out = append(out, sel)
+	}
 	for _, n := range []*yaml.Node{&cfg.ModelRoles, &cfg.Task.AgentModelOverrides} {
 		if n.Kind != yaml.MappingNode {
 			continue
@@ -60,12 +76,27 @@ func ompRoleModels(data []byte) []string {
 			if v.Kind != yaml.ScalarNode {
 				continue
 			}
-			sel := ompModelSelector(v.Value)
-			if sel == "" || seen[sel] {
-				continue
+			add(v.Value)
+		}
+	}
+	// Fallback chains map a role (or a model selector) to the ordered models
+	// to try after a retryable failure. Each chain is a YAML list of
+	// selectors, in the order omp tries them — appended after the primaries,
+	// in config order, since they are the user's second choices.
+	if n := &cfg.Retry.FallbackChains; n.Kind == yaml.MappingNode {
+		for i := 1; i < len(n.Content); i += 2 {
+			chain := n.Content[i]
+			switch chain.Kind {
+			case yaml.SequenceNode:
+				for _, item := range chain.Content {
+					if item.Kind != yaml.ScalarNode {
+						continue
+					}
+					add(item.Value)
+				}
+			case yaml.ScalarNode:
+				add(chain.Value)
 			}
-			seen[sel] = true
-			out = append(out, sel)
 		}
 	}
 	return out
