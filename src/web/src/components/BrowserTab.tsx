@@ -178,8 +178,6 @@ export function BrowserTab() {
         </Button>
         <Input
           value={url}
-          spellCheck={false}
-          autoComplete="off"
           placeholder="port or URL"
           className="h-7 flex-1 text-[13px]"
           onChange={(e) => setUrl(e.target.value)}

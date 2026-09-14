@@ -29,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -917,6 +918,7 @@ function ThemeBackgrounds({
       <div className="flex flex-wrap items-center gap-1.5">
         <input
           className={cn(fieldClass, "min-w-0 flex-1 basis-52")}
+          {...NO_AUTOCORRECT}
           placeholder="Image URL, or an absolute path on this host"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -1083,6 +1085,7 @@ function ThemeInstall({
       <div className="flex flex-wrap items-center gap-1.5">
         <input
           className={cn(fieldClass, "min-w-0 flex-1 basis-64")}
+          {...NO_AUTOCORRECT}
           placeholder="https://github.com/user/omarchy-<name>-theme"
           value={url}
           disabled={install.isPending}
@@ -1876,6 +1879,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
           >
             <textarea
               id="settings-repos-root"
+              {...NO_AUTOCORRECT}
               className={cn(fieldClass, "resize-none")}
               rows={3}
               value={reposRoot}
@@ -1913,6 +1917,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
           >
             <textarea
               id="settings-scratch-setup"
+              {...NO_AUTOCORRECT}
               className={cn(fieldClass, "resize-none font-mono")}
               rows={3}
               value={scratchSetup}
@@ -1999,6 +2004,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
           >
             <textarea
               id="settings-copy-files"
+              {...NO_AUTOCORRECT}
               className={cn(fieldClass, "resize-none")}
               rows={2}
               value={copyFiles}
@@ -2016,6 +2022,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
           >
             <textarea
               id="settings-setup"
+              {...NO_AUTOCORRECT}
               className={cn(fieldClass, "resize-none font-mono")}
               rows={3}
               value={setup}

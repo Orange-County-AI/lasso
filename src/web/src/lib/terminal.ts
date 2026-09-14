@@ -1012,6 +1012,43 @@ export function openHerdrGoto(tries = 0) {
   if (tries < 20) setTimeout(() => openHerdrGoto(tries + 1), 100)
 }
 
+// herdr's sidebar — its workspace/agent list — has no socket method: protocol
+// 22 exposes nothing that opens or closes it, and the server does not even
+// report whether it is open. So the only way to toggle it is the chord herdr
+// binds to it, `toggle_sidebar`, "prefix+b" by default.
+//
+// Sent as two keydowns in one tick, exactly like openHerdrGoto — the pty sees
+// 0x02 then 'b', which is all herdr's prefix state machine needs — and with the
+// same caveat: the prefix and the binding are herdr's defaults, and lasso has no
+// way to read a config that remapped either.
+//
+// Focus goes to the terminal first, following openHerdrGoto: what this opens is
+// navigated with the keys, and the click that got here left focus on the footer
+// button.
+export function toggleHerdrSidebar(tries = 0) {
+  try {
+    const win = frameWindow("term")
+    const ta = win?.document.querySelector(
+      ".xterm-helper-textarea"
+    ) as HTMLElement | null
+    if (win && ta) {
+      win.focus()
+      win.term?.focus?.()
+      dispatchTermKey(win, ta, {
+        key: "b",
+        code: "KeyB",
+        keyCode: 66,
+        ctrlKey: true,
+      })
+      dispatchTermKey(win, ta, { key: "b", code: "KeyB", keyCode: 66 })
+      return
+    }
+  } catch {
+    /* same-origin; ignore */
+  }
+  if (tries < 20) setTimeout(() => toggleHerdrSidebar(tries + 1), 100)
+}
+
 // Hand keyboard focus to the herdr terminal (/terminal/) so the user can type
 // into the focused pane without clicking it first. Focuses both the iframe
 // window and xterm's input, and retries while xterm is still (re)connecting —

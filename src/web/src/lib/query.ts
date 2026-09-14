@@ -25,6 +25,10 @@ export const qk = {
   repoBranches: (host: string, path: string) =>
     ["repo-branches", host, path] as const,
   chat: (host: string, pane: string) => ["chat", host, pane] as const,
+  // The tab's own pane list (the chat's agent sidebar reads it), keyed on the
+  // pane-list revision so a create, a close or a rename lands on the SSE bump
+  // rather than at the next poll — the same trigger the theme picker uses.
+  panes: (host: string, rev: number) => ["panes", host, rev] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.
   diff: (host: string, path: string) => ["diff", host, path] as const,

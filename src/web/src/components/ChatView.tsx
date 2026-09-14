@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import {
   AlertTriangle,
-  ArrowUp,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -12,6 +12,7 @@ import {
   Loader2,
   Paperclip,
   Pencil,
+  Plus,
   Search,
   Send,
   SquareTerminal,
@@ -20,7 +21,9 @@ import {
   X,
 } from "lucide-react"
 import * as React from "react"
+import { AgentPicker } from "@/components/AgentPicker"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
 import { useApp } from "@/lib/app-store"
@@ -1034,6 +1037,7 @@ function Composer({
         </button>
         <textarea
           ref={ref}
+          {...NO_AUTOCORRECT}
           // Three rows, not one: a prompt is a paragraph often enough that a
           // single-line box makes people write blind, and this one grows from
           // here as the draft fills (see the measure effect above).
@@ -1086,8 +1090,26 @@ function Composer({
   )
 }
 
-export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
+export function ChatView({
+  onShowTerminal,
+  onNewAgent,
+  className,
+}: {
+  onShowTerminal: () => void
+  // The chat's own creator, for the widths where the footer's New button is not
+  // on screen. App decides what it opens; this only says where it is (see the
+  // header).
+  onNewAgent: () => void
+  // Merged onto the root. The view is a flex ROW's second child whenever the
+  // agent sidebar is beside it (see App.tsx), and it has to be told to take the
+  // width that is left over rather than its content's own.
+  className?: string
+}) {
   const { activePaneID, panesRev, host } = useApp()
+  // The agent sheet, for the widths that have no docked column to put beside the
+  // chat (see AgentPicker). Per-view state: the sheet is a transient way to pick
+  // a conversation, so it does not survive leaving the chat.
+  const [pickerOpen, setPickerOpen] = React.useState(false)
   // The view follows the focused pane, so the chat is always the session the
   // terminal beside it would be showing. Polled: the transcript is a file the
   // agent appends to, and nothing pushes it. Bounded by the server's caps.
@@ -1297,16 +1319,28 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
     // pane's own text read straight through the conversation. Same opt-out
     // FileViewer takes over the tree it opens from, and for the same reason:
     // a reading surface does not get to be translucent (index.css).
-    <div className="vsurface flex h-full min-h-0 flex-col bg-background">
+    <div
+      className={cn(
+        // relative: the agent sheet is an overlay INSIDE this view, so it covers
+        // the conversation and the composer rather than the whole window.
+        "vsurface relative flex h-full min-h-0 flex-col bg-background",
+        className
+      )}
+    >
       <div className="flex flex-none items-center gap-2 border-border border-b px-2.5 py-1.5">
+        {/* Where the "← Terminal" button used to be. Below md there is no footer
+            and so no New button, and on a phone the creator is the one thing the
+            chat needs that only the footer had; the way back to the terminal
+            moved to the right of this header, where it works at every width. */}
         <button
           type="button"
-          onClick={onShowTerminal}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          title="Back to the terminal"
+          onClick={onNewAgent}
+          aria-haspopup="dialog"
+          title="New agent"
+          aria-label="New agent"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
         >
-          <ArrowUp className="size-3.5 -rotate-90" />
-          Terminal
+          <Plus className="size-4" />
         </button>
         <span className="truncate text-[12.5px] text-foreground">
           {data?.title || data?.agent || "Chat"}
@@ -1324,6 +1358,38 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
           )}
           {data?.tokens ? <span>{Math.round(data.tokens / 1000)}k</span> : null}
         </span>
+        {/* The agent list, for the widths where the footer's toggle does not
+            exist and the docked column hides itself — this is a phone's (and a
+            small tablet's) only way to pick which conversation is on screen, and
+            the chat input dial already reaches everything else the footer
+            carries. Hidden at md+ because the same list is docked there.
+            The glyph is an agent, not a layout: what it opens is agents to
+            select, and whether they land in a stack or a grid is the screen's
+            business, not the button's. */}
+        <button
+          type="button"
+          onClick={() => setPickerOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={pickerOpen}
+          title="All agents"
+          aria-label="All agents"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+        >
+          <Bot className="size-4" />
+        </button>
+        {/* Back to the terminal, at EVERY width: it is the button that used to sit
+            at the left of this header, so the chat keeps one route back wherever
+            it is read (the footer's own toggle is md+ only, and on a phone that
+            toggle is the input dial instead). */}
+        <button
+          type="button"
+          onClick={onShowTerminal}
+          title="Back to the terminal"
+          aria-label="Back to the terminal"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <SquareTerminal className="size-4" />
+        </button>
       </div>
 
       {/* The viewport and its corner control share a positioning context:
@@ -1449,6 +1515,12 @@ export function ChatView({ onShowTerminal }: { onShowTerminal: () => void }) {
             ])
           }
         />
+      )}
+
+      {/* Last, so it covers the header, the transcript and the composer alike —
+          the whole view is what a sheet replaces while it is open. */}
+      {pickerOpen && (
+        <AgentPicker host={host} onClose={() => setPickerOpen(false)} />
       )}
     </div>
   )

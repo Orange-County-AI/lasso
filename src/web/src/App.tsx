@@ -6,6 +6,9 @@ import {
   type LucideIcon,
   MessageSquare,
   NotebookPen,
+  PanelLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -17,6 +20,7 @@ import {
 import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
+import { AgentSidebar } from "@/components/AgentSidebar"
 import { BrowserTab } from "@/components/BrowserTab"
 import { ChatView } from "@/components/ChatView"
 import { FilesPanel } from "@/components/FilesPanel"
@@ -52,6 +56,7 @@ import {
   blurHerdrTerminal,
   focusHerdrTerminal,
   openHerdrGoto,
+  toggleHerdrSidebar,
 } from "@/lib/terminal"
 import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
@@ -192,6 +197,12 @@ function Shell() {
   // the shared herdr pty keeps its width (and every other pane keeps its
   // layout) while the chat is up, exactly as the mobile sidebar overlay does.
   const [leftView, setLeftView] = React.useState<LeftView>("terminal")
+  // The chat's own left sidebar: the host's agents, beside the conversation.
+  // Per-TAB, like leftView itself and unlike the right sidebar's synced layout —
+  // it is a property of this reading surface, not a shape the shared pty is
+  // measured against (it takes no width from it: the chat is an overlay over a
+  // terminal that stays sized, so opening this cannot reflow every other pane).
+  const [chatSidebar, setChatSidebar] = React.useState(false)
   const toggleLeftView = React.useCallback(() => {
     const next = leftView === "chat" ? "terminal" : "chat"
     setLeftView(next)
@@ -209,6 +220,15 @@ function Shell() {
     // keyboard over a terminal the reader had not asked to type into yet. They
     // type through the dial, which focuses itself when it is used.
     if (!window.matchMedia("(pointer: coarse)").matches) focusHerdrTerminal()
+  }, [leftView])
+  // The footer's left-hand toggle, whose subject is the mode it sits in. In the
+  // terminal it is herdr's OWN sidebar — a chord into the TUI, because herdr's
+  // socket API has no method for it and reports no state for it either, so the
+  // button is an action rather than an indicator. In the chat it is lasso's agent
+  // list, whose state this tab does own.
+  const toggleLeftSidebar = React.useCallback(() => {
+    if (leftView === "chat") setChatSidebar((open) => !open)
+    else toggleHerdrSidebar()
   }, [leftView])
   const [collapsed, setCollapsed] = React.useState(false)
   const [newOpen, setNewOpen] = React.useState(false)
@@ -379,6 +399,12 @@ function Shell() {
       } else if (k === "o" || k === "i") {
         e.preventDefault()
         setNewTab(k === "o" ? "agent" : "terminal")
+        // ⌘I asks for a TERMINAL, and chat mode's creator has no terminal to
+        // offer (see NewDialog's agentsOnly) — so it hands the screen back
+        // first, rather than opening an agent form in answer to a terminal
+        // shortcut. ⌘O stays where it is: a new agent is exactly what the chat
+        // is for, and its dialog is pinned to agents there anyway.
+        if (k === "i") setLeftView("terminal")
         setNewOpen(true)
       } else if (k === "/") {
         e.preventDefault()
@@ -474,8 +500,17 @@ function Shell() {
                   sight and reach while the chat's own composer is the way to
                   type. */}
               {leftView === "chat" && (
-                <div className="chat-overlay absolute inset-0 z-20">
-                  <ChatView onShowTerminal={() => setLeftView("terminal")} />
+                <div className="chat-overlay absolute inset-0 z-20 flex">
+                  {/* The agent list TAKES width from the chat, not from the
+                      terminal: the overlay is the only thing that grew, so the
+                      iframe underneath keeps the size the shared pty was fitted
+                      to and no other client's herdr reflows. */}
+                  {chatSidebar && <AgentSidebar host={host} />}
+                  <ChatView
+                    className="min-w-0 flex-1"
+                    onNewAgent={openNew}
+                    onShowTerminal={() => setLeftView("terminal")}
+                  />
                 </div>
               )}
             </div>
@@ -610,6 +645,12 @@ function Shell() {
           onOpenChange={setNewOpen}
           tab={newTab}
           onTabChange={setNewTab}
+          // Chat mode's creator is agents-only (see the dialog): the footer's New
+          // and the chat header's both land here, so the two entry points cannot
+          // disagree about what chat can make. Derived rather than latched
+          // because the modal blocks the page: nothing can change the view out
+          // from under it.
+          agentsOnly={leftView === "chat"}
         />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
@@ -617,7 +658,7 @@ function Shell() {
       </div>
       {/* The app's only chrome. There is no header and no floating navigation,
         so this footer is always present at desktop widths and has no visibility
-        toggle: it is the only pointer route to New, the sidebar, the host menu
+        toggle: it is the only pointer route to New, both sidebars, the host menu
         and the shortcuts reference. Usage metrics scroll inside their own track
         so a long provider list can never push the controls offscreen. Phones
         keep the whole viewport for the terminal — the input dial beside xterm's
@@ -652,6 +693,41 @@ function Shell() {
             onClick={() => setShortcutsOpen(true)}
           >
             <Keyboard />
+          </Button>
+          {/* The list on the LEFT of the terminal column, which is a different
+              thing in each view: herdr's own sidebar in the terminal, the host's
+              agents in the chat (see toggleLeftSidebar). The chat's state is
+              this tab's, so only there does the button carry a pressed state —
+              herdr's sidebar reports nothing to press. */}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={
+              leftView === "chat"
+                ? chatSidebar
+                  ? "Hide agents"
+                  : "Show agents"
+                : "Toggle herdr sidebar"
+            }
+            aria-label={
+              leftView === "chat"
+                ? chatSidebar
+                  ? "Hide agents"
+                  : "Show agents"
+                : "Toggle herdr sidebar"
+            }
+            aria-pressed={leftView === "chat" ? chatSidebar : undefined}
+            onClick={toggleLeftSidebar}
+          >
+            {leftView === "chat" ? (
+              chatSidebar ? (
+                <PanelLeftClose />
+              ) : (
+                <PanelLeftOpen />
+              )
+            ) : (
+              <PanelLeft />
+            )}
           </Button>
         </div>
         <UsageFooter />

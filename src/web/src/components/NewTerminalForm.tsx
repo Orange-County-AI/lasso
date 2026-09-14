@@ -4,7 +4,7 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { DialogFooter } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
+import { Input, NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
@@ -204,6 +204,7 @@ export function NewTerminalForm({
           <textarea
             ref={commandRef}
             id="terminal-command"
+            {...NO_AUTOCORRECT}
             className={commandClass}
             rows={3}
             value={command}
