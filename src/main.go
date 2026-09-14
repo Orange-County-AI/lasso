@@ -1548,6 +1548,17 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown theme %q", req.Name), http.StatusBadRequest)
 		return
 	}
+	// While an appearance palette is named, that palette IS the fleet's theme
+	// (see fleetThemeIsPalette), so this pick is refused rather than applied:
+	// writing herdr's config here would fan the theme no screen is showing out
+	// over the palette every screen is, and leave it there, since the fanout and
+	// the per-probe convergence both read what lasso wrote to this file. The
+	// Settings select is held for the same reason; this is the backstop for
+	// every other caller.
+	if fleetThemeIsPalette() {
+		http.Error(w, "an appearance palette is the fleet's theme; clear it to hand herdr its own back", http.StatusConflict)
+		return
+	}
 	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
 		http.Error(w, "write config.toml: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -2386,6 +2397,11 @@ type hub struct {
 	themeRev   int // theme revision (bumped when the resolved theme changes)
 	uiStateRev int // UI-prefs revision (bumped on every /api/ui-state save)
 	curTheme   resolvedTheme
+	// strayTheme is the last config.toml theme the poll refused to adopt because
+	// an appearance palette governs (see refreshTheme). Held only to say so ONCE
+	// per value: the file keeps disagreeing until somebody changes it, so the
+	// poll would otherwise log the same line every couple of seconds.
+	strayTheme string
 	feeds      map[string]*hostFeed
 	// noticeClients is every connected tab, subscribed to one-shot notices. Kept
 	// as its own channel per client rather than folded into Active because a
@@ -2507,6 +2523,16 @@ func (h *hub) run(ctx context.Context) {
 // refreshTheme re-resolves herdr's theme from config.toml (a cheap file read +
 // parse) so an edit to [theme].name is picked up live, bumping themeRev and
 // pushing it to every tab when it moves.
+//
+// WHICH edits, though, depends on who owns the fleet's theme. While an
+// appearance palette is named, that palette owns it (fleetThemeIsPalette), so a
+// change to herdr's config that lasso did not write — herdr's own theme popup, a
+// hand edit — is not adopted. It has to be this way round rather than "adopt but
+// don't fan out": the convergence pushes the HUB's theme to every host that is
+// behind (convergeThemeOnProbe), so adopting the edit would put the fleet on it
+// within a probe sweep regardless of what the fan-out here does. Keeping the hub
+// on the palette is what keeps the fan-out, the convergence and every browser
+// that follows herdr on it.
 func (h *hub) refreshTheme() {
 	rt, stranded := loadHerdrThemeConfig(*themeName) // outside the lock: it does I/O
 	// An edit made outside lasso — herdr's own theme popup, a hand edit — may
@@ -2520,11 +2546,31 @@ func (h *hub) refreshTheme() {
 	if stranded {
 		tidyHerdrThemeConfig("cleared theme overrides stranded by an outside re-theme")
 	}
+	// Read before taking the hub lock: themeSynced has a mutex of its own, and
+	// nothing here needs the two held together.
+	wrote, lassoWrote := themeSyncedFor("local")
 	h.mu.Lock()
 	if rt == h.curTheme {
 		h.mu.Unlock()
 		return
 	}
+	// Lasso's own write is the one config theme the poll still adopts while a
+	// palette governs — setLocalHerdrTheme marks the record before it re-resolves
+	// — and it is also the only thing it fans out then, since it IS the palette
+	// the appearance pushed.
+	if fleetThemeIsPalette() && !(lassoWrote && wrote == rt.Resolved) {
+		say := h.strayTheme != rt.Resolved
+		h.strayTheme = rt.Resolved
+		on := h.curTheme.Resolved
+		h.mu.Unlock()
+		// Said out loud, once per value: a palette and a hand-edited config.toml
+		// disagreeing in silence is how a fleet ends up on a theme nobody chose.
+		if say {
+			log.Printf("theme:    herdr's config.toml names %q, which lasso did not write; an appearance palette governs, so the fleet stays on %s", rt.Name, on)
+		}
+		return
+	}
+	h.strayTheme = ""
 	h.curTheme = rt
 	h.themeRev++
 	h.mu.Unlock()

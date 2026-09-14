@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -884,6 +885,171 @@ func TestServeThemeSetPerHostFlip(t *testing.T) {
 	}
 	if want := []string{"minime"}; !slices.Equal(themeSyncOffHosts(), want) {
 		t.Errorf("a refused request changed the deny-list: %v, want %v", themeSyncOffHosts(), want)
+	}
+}
+
+// The fleet's theme — herdr's config.toml plus every agent CLI's own theme file
+// — is one value, and the appearance setting decides whose it is: naming a
+// palette hands it to the palette, and "herdr" mode is the one mode whose whole
+// meaning is that herdr's own theme wins, palettes stored and all.
+//
+// A pinned mode answers for its own scheme only (a light palette under a pinned
+// dark mode governs nothing, since no browser in that mode wears it), while
+// "system" defers to each device's OS scheme — which the server cannot observe,
+// so a palette named for EITHER scheme counts there.
+func TestFleetThemeIsPalette(t *testing.T) {
+	openTestDB(t)
+	for _, tc := range []struct {
+		mode        string
+		light, dark string
+		want        bool
+	}{
+		{appearanceModeHerdr, "", "", false},
+		{appearanceModeHerdr, "rose-pine-dawn", "rose-pine", false},
+		{appearanceModeLight, "rose-pine-dawn", "", true},
+		{appearanceModeLight, "", "rose-pine", false},
+		{appearanceModeDark, "", "rose-pine", true},
+		{appearanceModeDark, "rose-pine-dawn", "", false},
+		{appearanceModeSystem, "", "", false},
+		{appearanceModeSystem, "rose-pine-dawn", "", true},
+		{appearanceModeSystem, "", "rose-pine", true},
+	} {
+		got := postUIState(t, fmt.Sprintf(
+			`{"appearance_mode":%q,"palette_light":%q,"palette_dark":%q,"client_id":"A","user_intent":true}`,
+			tc.mode, tc.light, tc.dark))
+		if got.AppearanceMode != tc.mode || got.PaletteLight != tc.light || got.PaletteDark != tc.dark {
+			t.Fatalf("appearance patch did not land: %+v", got.uiState)
+		}
+		if f := fleetThemeIsPalette(); f != tc.want {
+			t.Errorf("%s (light %q, dark %q): fleetThemeIsPalette() = %v, want %v",
+				tc.mode, tc.light, tc.dark, f, tc.want)
+		}
+	}
+}
+
+// POST /api/theme-set refuses a theme while an appearance palette is named. The
+// palette IS the fleet's theme then, so writing herdr's config here would fan the
+// theme no screen is showing out over the palette every screen is — and leave it
+// there, since the fan-out and the per-probe convergence both read what lasso
+// wrote to that file. Clearing the palette, or never naming one, hands the picker
+// back.
+func TestServeThemeSetHeldWhileFleetWearsAPalette(t *testing.T) {
+	openTestDB(t)
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	// The pick that IS accepted kicks a fan-out goroutine that can outlive this
+	// test, so nothing it writes may land outside the temp tree.
+	t.Setenv("HOME", t.TempDir())
+	stubSSHHosts(t)
+	resetHostStore(t)
+	t.Cleanup(func() { resetHostStore(t) })
+	if err := setSetting(syncAgentThemesKey, "false"); err != nil {
+		t.Fatal(err)
+	}
+	prevHub := srvHub
+	srvHub = newHub()
+	t.Cleanup(func() { srvHub = prevHub })
+
+	post := func(name string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		serveThemeSet(rec, httptest.NewRequest(
+			http.MethodPost, "/api/theme-set", strings.NewReader(`{"name":"`+name+`"}`)))
+		return rec
+	}
+
+	postUIState(t, `{"appearance_mode":"system","palette_dark":"rose-pine","client_id":"A","user_intent":true}`)
+	if rec := post("dracula"); rec.Code != http.StatusConflict {
+		t.Fatalf("theme-set with a palette named: %d (%s), want 409", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(cfg); err == nil {
+		t.Errorf("herdr's config was written despite the refusal")
+	}
+
+	// The palette for the scheme in force is the one that governs.
+	postUIState(t, `{"appearance_mode":"dark","palette_dark":"","palette_light":"rose-pine-dawn","client_id":"A","user_intent":true}`)
+	if rec := post("dracula"); rec.Code != http.StatusOK {
+		t.Fatalf("theme-set with only the other scheme's palette named: %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	if body, err := os.ReadFile(cfg); err != nil || !strings.Contains(string(body), `name = "dracula"`) {
+		t.Errorf("config.toml = %q (err %v), want herdr's theme set", body, err)
+	}
+
+	// And "herdr" mode, palettes stored and all: that mode's whole meaning is
+	// that herdr's own theme is the fleet's.
+	postUIState(t, `{"appearance_mode":"herdr","palette_light":"rose-pine-dawn","client_id":"A","user_intent":true}`)
+	if rec := post("nord"); rec.Code != http.StatusOK {
+		t.Fatalf("theme-set in herdr mode: %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+}
+
+// While an appearance palette is named, that palette is the fleet's theme, so the
+// hub's poll does not adopt a herdr config.toml theme lasso did not write. It has
+// to be "don't adopt" rather than "adopt but don't fan out": the per-probe
+// convergence pushes the HUB's theme to every host that is behind, so adopting
+// the edit would put the fleet on it within a probe sweep whatever the fan-out
+// does. Lasso's own writes are still adopted — the record setLocalHerdrTheme keeps
+// is how the poll tells them from a hand edit — and herdr mode owns its theme
+// again, stored palettes and all.
+func TestRefreshThemeRefusesOutsideEditWhileFleetWearsAPalette(t *testing.T) {
+	openTestDB(t)
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv("HERDR_CONFIG_PATH", cfg)
+	// The adopt path fans out in a goroutine that can outlive this test.
+	t.Setenv("HOME", t.TempDir())
+	stubSSHHosts(t)
+	resetHostStore(t)
+	t.Cleanup(func() { resetHostStore(t) })
+	if err := setSetting(syncAgentThemesKey, "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setHerdrThemeName(cfg, "nord"); err != nil {
+		t.Fatal(err)
+	}
+	h := &hub{curTheme: loadHerdrTheme("auto")}
+	if h.curTheme.Resolved != "nord" {
+		t.Fatalf("hub seeded on %q, want nord", h.curTheme.Resolved)
+	}
+	// The write record is package state, and every test in the package that kicks
+	// a fan-out leaves a goroutine behind that marks it: a leftover entry naming
+	// the edit below would read as lasso's own write and be adopted, which is the
+	// one thing this test asserts does not happen.
+	forgetThemeSynced("local")
+	t.Cleanup(func() { forgetThemeSynced("local") })
+
+	// An edit made out of band — herdr's own theme popup, a hand edit — while a
+	// palette governs.
+	postUIState(t, `{"appearance_mode":"system","palette_dark":"rose-pine","client_id":"A","user_intent":true}`)
+	os.WriteFile(cfg, []byte("[theme]\nname = \"dracula\"\n"), 0o644)
+	h.refreshTheme()
+	// And the config keeps saying it: the poll must settle, not rewrite or log
+	// every tick.
+	h.refreshTheme()
+	if h.curTheme.Resolved != "nord" {
+		t.Errorf("poll adopted an edit lasso did not make: hub on %q, want nord", h.curTheme.Resolved)
+	}
+	if h.themeRev != 0 {
+		t.Errorf("themeRev = %d, want 0 — nothing any screen shows moved", h.themeRev)
+	}
+
+	// Lasso's own push is still adopted, which is what the record is for: without
+	// it the palette push this whole mechanism exists to serve would be refused
+	// its own write.
+	markThemeSynced("local", "dracula")
+	h.refreshTheme()
+	if h.curTheme.Resolved != "dracula" {
+		t.Errorf("lasso's own write was not adopted: hub on %q, want dracula", h.curTheme.Resolved)
+	}
+	if h.themeRev != 1 {
+		t.Errorf("themeRev = %d, want 1", h.themeRev)
+	}
+
+	// With herdr as the appearance, an out-of-band edit is the fleet's theme
+	// again — the palettes stored beside it change nothing.
+	postUIState(t, `{"appearance_mode":"herdr","client_id":"A","user_intent":true}`)
+	os.WriteFile(cfg, []byte("[theme]\nname = \"nord\"\n"), 0o644)
+	h.refreshTheme()
+	if h.curTheme.Resolved != "nord" {
+		t.Errorf("herdr mode did not adopt the edit: hub on %q, want nord", h.curTheme.Resolved)
 	}
 }
 
