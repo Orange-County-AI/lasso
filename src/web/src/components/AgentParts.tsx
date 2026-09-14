@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { Orb } from "@/components/ui/orb"
 import { agentName, agentSub } from "@/lib/agents"
 import type { HostPane } from "@/lib/api"
@@ -56,9 +57,14 @@ export function AgentStatus({
 export function AgentLines({
   pane,
   current,
+  meta,
 }: {
   pane: HostPane
   current: boolean
+  // Trailing row-two content for surfaces with more to say — the grid card's
+  // herdr tab and token count. The list surfaces pass nothing and read
+  // exactly as before.
+  meta?: ReactNode
 }) {
   const sub = agentSub(pane)
   return (
@@ -74,14 +80,15 @@ export function AgentLines({
         </span>
         <AgentStatus status={pane.agent_status} />
       </span>
-      <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
         <span
           className="shrink-0 rounded-sm bg-muted px-1 text-[10px] text-foreground/70"
           title={pane.host}
         >
           {pane.host_label || pane.host}
         </span>
-        {sub && <span className="min-w-0 truncate">{sub}</span>}
+        {sub && <span className="min-w-0 flex-1 truncate">{sub}</span>}
+        {meta}
       </span>
     </>
   )

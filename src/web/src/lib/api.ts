@@ -1168,9 +1168,13 @@ export const api = {
   workspaceRename: (workspace_id: string | undefined, label: string) =>
     postJSON<unknown>("/api/workspace-rename", { workspace_id, label }),
 
-  close: (pane_ids: string[]) =>
+  // Pane ids are unique per host only, so a close names its machine: omitted is
+  // the tab's host (the single chat's case — the pane on screen is the tab's),
+  // explicit is the pane's own (a grid card's, which may live elsewhere).
+  // serveClose resolves ?host= through the same carrier the sidebar uses.
+  close: (pane_ids: string[], host?: string) =>
     postJSON<{ closed?: string[]; errors?: Record<string, string> }>(
-      "/api/close",
+      withHost("/api/close", host),
       { pane_ids }
     ),
 
