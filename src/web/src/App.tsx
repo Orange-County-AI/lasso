@@ -15,12 +15,14 @@ import {
   Server,
   Settings,
   SquareTerminal,
+  Users,
   X,
 } from "lucide-react"
 import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { AgentSidebar } from "@/components/AgentSidebar"
+import { AgentsView } from "@/components/AgentsView"
 import { BrowserTab } from "@/components/BrowserTab"
 import { ChatView } from "@/components/ChatView"
 import { FilesPanel } from "@/components/FilesPanel"
@@ -69,11 +71,11 @@ type RightView =
   | "terminal"
   | "usage"
   | "settings"
-
-// The left column's two faces: the terminal, and the same session read as a
-// conversation (ChatView). Not a RightView — the sidebar and the left column
-// answer different questions, and the chat is about the pane, not the files.
-type LeftView = "terminal" | "chat"
+// The left column's faces: the terminal, the focused session read as a
+// conversation (ChatView), and the fleet as parallel conversations (AgentsView).
+// Not a RightView — the sidebar and the left column answer different questions,
+// and both chats are about panes, not files.
+type LeftView = "terminal" | "chat" | "agents"
 
 // Shared tab-strip styling: a full-width underline strip, matching the original
 // vanilla UI rather than shadcn's default pill TabsList.
@@ -204,6 +206,8 @@ function Shell() {
   // terminal that stays sized, so opening this cannot reflow every other pane).
   const [chatSidebar, setChatSidebar] = React.useState(false)
   const toggleLeftView = React.useCallback(() => {
+    // From the grid the Chat button means the single conversation; otherwise a
+    // straight terminal <-> chat flip.
     const next = leftView === "chat" ? "terminal" : "chat"
     setLeftView(next)
     if (next === "chat") {
@@ -220,6 +224,15 @@ function Shell() {
     // keyboard over a terminal the reader had not asked to type into yet. They
     // type through the dial, which focuses itself when it is used.
     if (!window.matchMedia("(pointer: coarse)").matches) focusHerdrTerminal()
+  }, [leftView])
+  // The grid holds a composer per card, so entering it blurs the terminal for
+  // the same reason the single chat does; leaving for the terminal refocuses.
+  const toggleAgentsView = React.useCallback(() => {
+    const next = leftView === "agents" ? "terminal" : "agents"
+    setLeftView(next)
+    if (next === "agents") blurHerdrTerminal()
+    else if (!window.matchMedia("(pointer: coarse)").matches)
+      focusHerdrTerminal()
   }, [leftView])
   // The footer's left-hand toggle, whose subject is the mode it sits in. In the
   // terminal it is herdr's OWN sidebar — a chord into the TUI, because herdr's
@@ -515,6 +528,19 @@ function Shell() {
                   />
                 </div>
               )}
+              {/* The grid overlays for the same reason the single chat does: the
+                  terminal stays mounted and sized underneath, so the shared pty
+                  keeps its width while N transcripts (not N terminals) are read
+                  above it. */}
+              {leftView === "agents" && (
+                <div className="chat-overlay absolute inset-0 z-20 flex">
+                  <AgentsView
+                    className="min-w-0 flex-1"
+                    onNewAgent={openNew}
+                    onShowChat={() => setLeftView("chat")}
+                  />
+                </div>
+              )}
             </div>
           </ResizablePanel>
 
@@ -647,12 +673,12 @@ function Shell() {
           onOpenChange={setNewOpen}
           tab={newTab}
           onTabChange={setNewTab}
-          // Chat mode's creator is agents-only (see the dialog): the footer's New
-          // and the chat header's both land here, so the two entry points cannot
-          // disagree about what chat can make. Derived rather than latched
-          // because the modal blocks the page: nothing can change the view out
-          // from under it.
-          agentsOnly={leftView === "chat"}
+          // Both chats' creator is agents-only (see the dialog): the footer's New
+          // and the chat header's both land here, so the entry points cannot
+          // disagree about what a reading view can make. Derived rather than
+          // latched because the modal blocks the page: nothing can change the
+          // view out from under it.
+          agentsOnly={leftView !== "terminal"}
         />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
@@ -669,9 +695,11 @@ function Shell() {
         <div className="flex flex-none items-center gap-1">
           {/* The list on the LEFT of the terminal column, which is a different
               thing in each view: herdr's own sidebar in the terminal, the host's
-              agents in the chat (see toggleLeftSidebar). The chat's state is
-              this tab's, so only there does the button carry a pressed state —
-              herdr's sidebar reports nothing to press.
+              agents in the chat (see toggleLeftSidebar). Disabled in the agents
+              grid, which has no docked column and covers the terminal the chord
+              would move. The chat's state is this tab's, so only there does the
+              button carry a pressed state — herdr's sidebar reports nothing to
+              press.
               It comes first in this row because the column it moves is the one
               nearest the edge — a control for the leftmost thing reads first
               left-to-right — and it keeps the corner-to-corner symmetry with the
@@ -680,20 +708,27 @@ function Shell() {
             variant="ghost"
             size="icon-sm"
             title={
-              leftView === "chat"
-                ? chatSidebar
-                  ? "Hide agents"
-                  : "Show agents"
-                : "Toggle herdr sidebar"
+              leftView === "agents"
+                ? "No sidebar in the agents grid"
+                : leftView === "chat"
+                  ? chatSidebar
+                    ? "Hide agents"
+                    : "Show agents"
+                  : "Toggle herdr sidebar"
             }
             aria-label={
-              leftView === "chat"
-                ? chatSidebar
-                  ? "Hide agents"
-                  : "Show agents"
-                : "Toggle herdr sidebar"
+              leftView === "agents"
+                ? "No sidebar in the agents grid"
+                : leftView === "chat"
+                  ? chatSidebar
+                    ? "Hide agents"
+                    : "Show agents"
+                  : "Toggle herdr sidebar"
             }
             aria-pressed={leftView === "chat" ? chatSidebar : undefined}
+            // The grid has no docked column and covers the terminal, so a chord
+            // into herdr's sidebar would move something nobody can see. Off.
+            disabled={leftView === "agents"}
             onClick={toggleLeftSidebar}
           >
             {leftView === "chat" ? (
@@ -738,6 +773,25 @@ function Shell() {
         </div>
         <UsageFooter />
         <div className="ml-auto flex flex-none items-center gap-1">
+          {/* The parallel view: every agent as its own transcript card, grouped
+              by machine, for interfacing with several at once. Sits left of Chat
+              because it is the wider sibling — grid first, single second — and
+              the footer is md+ only, which is exactly the tablet-and-larger
+              surface this is for. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={leftView === "agents"}
+            title={
+              leftView === "agents"
+                ? "Back to the terminal"
+                : "All agents in parallel"
+            }
+            onClick={toggleAgentsView}
+          >
+            {leftView === "agents" ? <SquareTerminal /> : <Users />}
+            {leftView === "agents" ? "Terminal" : "Agents"}
+          </Button>
           {/* The label names where it goes, not where you are: one glance says
               what the click does. Phones get this from the input dial's Chat
               target instead — the footer is md+ only. */}

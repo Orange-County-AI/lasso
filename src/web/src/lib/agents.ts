@@ -50,6 +50,72 @@ function orderByHost(panes: HostPane[], tabHost: string | null): HostPane[] {
     return (a.host_label || a.host).localeCompare(b.host_label || b.host)
   })
 }
+// Attention order for parallel monitoring: an agent that stopped for an answer
+// (blocked) outranks one still producing (working), which outranks rest (idle),
+// which outranks a finished turn nobody has looked at since (done). Unknown and
+// unreported statuses sort last. Same concept as herdr's own agent list, which
+// surfaces what needs a human first.
+export function agentStatusRank(status?: string): number {
+  switch (status) {
+    case "blocked":
+      return 0
+    case "working":
+      return 1
+    case "idle":
+      return 2
+    case "done":
+      return 3
+    default:
+      return 4
+  }
+}
+
+// Priority sort within one surface: status rank first, then a stable name
+// fallback so rows do not jump between polls.
+export function sortAgentsByPriority(panes: HostPane[]): HostPane[] {
+  return [...panes].sort((a, b) => {
+    const byRank =
+      agentStatusRank(a.agent_status) - agentStatusRank(b.agent_status)
+    if (byRank !== 0) return byRank
+    return agentName(a).localeCompare(agentName(b))
+  })
+}
+
+export interface AgentHostGroup {
+  host: string
+  hostLabel: string
+  panes: HostPane[]
+  blocked: number
+  working: number
+}
+
+// Grouped for the parallel grid: one section per herdr machine, this tab's own
+// machine first and the rest in name order, agents inside each group in
+// priority order. Groups (not a flat fleet sort) because a card's transcript is
+// read from that machine — the header says where every composer below it sends.
+export function groupAgentsByHost(
+  agents: HostPane[],
+  tabHost: string | null
+): AgentHostGroup[] {
+  const byHost = new Map<string, HostPane[]>()
+  for (const p of agents) {
+    const list = byHost.get(p.host)
+    if (list) list.push(p)
+    else byHost.set(p.host, [p])
+  }
+  const groups: AgentHostGroup[] = [...byHost].map(([host, panes]) => ({
+    host,
+    hostLabel: panes[0]?.host_label || host,
+    panes: sortAgentsByPriority(panes),
+    blocked: panes.filter((p) => p.agent_status === "blocked").length,
+    working: panes.filter((p) => p.agent_status === "working").length,
+  }))
+  return groups.sort((a, b) => {
+    const rank = (g: AgentHostGroup) => (g.host === tabHost ? 0 : 1)
+    if (rank(a) !== rank(b)) return rank(a) - rank(b)
+    return a.hostLabel.localeCompare(b.hostLabel)
+  })
+}
 
 // Every agent lasso can reach, on every connected machine — not just this tab's
 // host. An agent on another box is the one you cannot see any other way short of
