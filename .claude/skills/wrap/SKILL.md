@@ -25,7 +25,7 @@ push `main` and the tag explicitly.
 
 1. `feature=$(git -C . branch --show-current)`. Abort if it's `main` (nothing to wrap) or empty (detached HEAD).
 2. If the working tree has uncommitted changes (`git status --porcelain` non-empty) that plainly belong to the feature being wrapped, **commit them and continue — don't stop to ask**. Stage everything and commit with a descriptive message summarizing the feature. Only pause to ask the user if the changes look unrelated or surprising (e.g. edits outside the feature's scope, or debris you didn't create).
-3. Locate the main worktree (where `main` is checked out — normally `/home/stephan/projects/lasso`):
+3. Locate the main worktree (where `main` is checked out — `/home/stephan/projects/lasso` on titan, `/home/dev/projects/lasso` on a workspace box; derive it, never assume, and ignore the `prunable` worktrees whose paths belong to another machine):
    ```bash
    MAIN=$(git worktree list --porcelain | awk '/^worktree /{w=$2} /^branch refs\/heads\/main$/{print w}')
    ```
@@ -38,9 +38,19 @@ The release workflow only publishes binaries if the build is green, and a red
 branch, **before** merging. From the worktree root:
 
 ```bash
-( cd src/web && bun install --frozen-lockfile && bun run typecheck && bun run lint ) \
-  && ( cd src && go vet ./... && go test . )
+mise run typecheck && mise run lint && ( cd src && go vet ./... && go test . )
 ```
+
+**Never run `bun install` on the host.** Those mise tasks run the frontend half
+inside the `dev-lasso` incus container (`scripts/container.sh`), which is the whole
+point: `bun install` and Vite are the only third-party code in this repo, and on
+the host they execute beside the SSH key, the 1Password session and — on a
+workspace box — this org's entire exported credential set. Both boxes' install
+guards refuse a bare `bun install` on the first attempt for exactly that reason.
+The container is disposable: the first task on a fresh box builds it from the
+`dev-base` image in about a minute (`incus image list` must show `dev-base`). The
+Go half stays on the host — Go has no install hooks, and the binary has to be here
+anyway to drive herdr.
 
 If anything fails, **stop and report** — do not merge. Fix or hand back to the user.
 
@@ -72,10 +82,30 @@ VER=$(grep -oP 'lassoSemver = "\K[0-9]+\.[0-9]+\.[0-9]+' "$MAIN/src/version.go")
 ## 4. Push main, then the tag (triggers the GitHub release)
 
 ```bash
+# Prove the remote is reachable BEFORE cutting a tag no release can be built from.
+git -C "$MAIN" ls-remote origin -h refs/heads/main >/dev/null   # publickey failure → https fallback below
 git -C "$MAIN" push origin main
 git -C "$MAIN" tag "v$VER"
 git -C "$MAIN" push origin "v$VER"     # this push is what fires .github/workflows/release.yml
 ```
+
+**A box with no GitHub ssh key pushes over https through `gh`.** `origin` is ssh
+(`git@github.com:Orange-County-AI/lasso.git`), and a workspace box typically holds
+a `gh` token with `repo` scope but no deploy key — `ls-remote` then fails with
+`Permission denied (publickey)`. Push through gh's credential helper rather than
+rewriting the remote, and keep the token out of argv (`/proc/<pid>/cmdline` is
+world-readable):
+
+```bash
+R=https://github.com/Orange-County-AI/lasso.git
+git -C "$MAIN" -c credential.helper='!gh auth git-credential' push "$R" main
+git -C "$MAIN" tag "v$VER"
+git -C "$MAIN" -c credential.helper='!gh auth git-credential' push "$R" "v$VER"
+```
+
+If neither path works, **stop and report**. An unpushed tag publishes no release,
+and `lasso update` against a missing release silently leaves the old version
+running — which step 6's verification is the only thing that would catch.
 
 ## 5. Wait for the release to actually publish
 
@@ -97,14 +127,20 @@ done
 If it never appears, check the run: `gh run list --repo Orange-County-AI/lasso --workflow release.yml`.
 Don't proceed to update against a missing/failed release.
 
-## 6. lasso update — then restart the daemon via **its supervisor**
+## 6. lasso update — then restart the daemon via **whatever owns the process**
 
 Clear the mise cache first so the new version is actually seen, then update:
 
 ```bash
 mise cache clear
-lasso update        # swaps the release binary in place
+lasso update                  # swaps the release binary in place
 ```
+
+**The binary may not be yours to write.** On a workspace box `/usr/local/bin/lasso`
+is `root:root` out of the image, so `replaceSelf`'s `os.CreateTemp` in that
+directory fails as the agent user with `replace binary: permission denied`. `sudo`
+takes no password there and runs the identical code path, so on such a box the
+update is `sudo lasso update`.
 
 **`lasso update` atomically replaces the running binary (`replaceSelf` renames
 the new bytes over `os.Executable()`) — it does NOT update mise metadata.** On
@@ -113,38 +149,86 @@ dir (e.g. `installs/ubi-52labs-lasso/2.9.7/lasso`), so after an update the
 directory name and the `~/.config/mise/config.toml` pin still claim the old
 version while the bytes are the new release (verified 2026-08-17: dir named
 2.9.7 served 2.9.11). Any later `mise install`/`upgrade`/`prune` on that tool
-silently rolls prod back to the pinned version. Keep the pin honest — re-pin to
-the version just released:
+silently rolls prod back to the pinned version. Keep an **existing** pin honest —
+and only an existing one:
 
 ```bash
-mise use -g "ubi:52labs/lasso@$VER"
+case "$(readlink -f "$(command -v lasso)")" in
+  */installs/*) mise use -g "ubi:52labs/lasso@$VER" ;;   # mise-managed (titan)
+  *) : ;;                                                # image binary — no pin, see below
+esac
 ```
 
-**`lasso update` only auto-restarts a *pidfile-managed* daemon.** When lasso is
-run under a supervisor (prod is a systemd `--user` unit), the built-in restart
-no-ops and the running daemon keeps serving the **old** binary — `/api/version`
-then stays stale and closing out would land on a half-applied update. So
-restart explicitly via whatever owns the process:
+**Never create a mise pin for lasso on a box that has none.** `/opt/mise/shims` is
+first on PATH, so `mise use -g ubi:52labs/lasso@…` on a workspace box mints a shim
+that permanently shadows the image's `/usr/local/bin/lasso`: the supervisor keeps
+launching the image binary while every shell — and every later wrap — reads the
+mise one.
+
+**`lasso update` only auto-restarts a *pidfile-managed* daemon.** Under any
+supervisor the built-in restart no-ops and the running daemon keeps serving the
+**old** binary, so find the owner by asking the process, not the platform:
 
 ```bash
-if systemctl --user is-active --quiet lasso.service 2>/dev/null; then
-  systemctl --user restart lasso.service          # prod: systemd --user unit
+# The running server: its argv carries -listen under a supervisor or a unit. The
+# pattern is anchored on the executable deliberately — a loose 'lasso .*-listen'
+# also matches THIS shell (its own argv quotes the pattern) and `-n` then hands
+# back the wrapper's pid, i.e. a SIGTERM aimed at yourself.
+LPID=$(pgrep -nf '(^|/)lasso -listen')
+
+if lasso status | grep -q running; then
+  lasso restart                                          # pidfile daemon (dev) — update already did this
+elif [ -n "${XDG_RUNTIME_DIR:-}" ] && systemctl --user is-active --quiet lasso.service; then
+  systemctl --user restart lasso.service                 # systemd --user unit
+elif systemctl is-active --quiet lasso.service 2>/dev/null; then
+  sudo systemctl restart lasso.service                   # system unit
+elif [ -n "$LPID" ] && ps -o args= -p "$(ps -o ppid= -p "$LPID" | tr -d ' ')" | grep -q supervise.sh; then
+  sudo kill -TERM "$LPID"; sleep 6                       # supervise.sh child — its loop relaunches it
 else
-  lasso restart                                    # dev / unsupervised (pidfile)
+  echo "cannot identify what owns the running lasso — stop and report"; exit 1
 fi
 ```
 
+**On a workspace box `lasso restart` is the wrong answer, and it fails quietly.**
+There is no `lasso.service` on those boxes at all — the only unit is
+`workspace@<org>.service`, whose Main PID is `supervise.sh`, and lasso is a
+backgrounded job of that script (`start_lasso`) — while `systemctl --user` cannot
+even reach a bus (`$XDG_RUNTIME_DIR` and `$DBUS_SESSION_BUS_ADDRESS` unset), so a
+`systemctl --user`-first branch falls straight through. `lasso restart` then finds
+no pidfile, skips the stop, and **starts a second daemon** on `127.0.0.1:8090`
+sharing `~/.lasso/lasso.db`, with its own ttyds, herdr clients, agent reaper and
+notify watcher — while the supervised instance keeps serving the old binary. The
+verification below would read that new rogue process, report `v$VER`, and close the
+pane on a half-applied update. Hence the `supervise.sh` branch: SIGTERM the child
+and let the supervisor relaunch it. That is also the only way it gets its
+credential env (`/run/workspace-lasso/lasso.env`, never argv) and its real flags
+back; the supervisor's loop picks it up within ~2s.
+
 Then verify the *running* daemon picked it up (check the server, not the shell —
-the shell PATH can read a staler binary). Default prod listen is `127.0.0.1:8090`;
-override via `$LASSO_LISTEN`:
+the shell PATH can read a staler binary). Take the address from the process,
+because the default `127.0.0.1:8090` is not what a workspace box binds:
 
 ```bash
-curl -s "http://${LASSO_LISTEN:-127.0.0.1:8090}/api/version"
+LPID=$(pgrep -nf '(^|/)lasso -listen')
+LADDR=$(tr '\0' ' ' </proc/"$LPID"/cmdline | grep -oP '(?<=-listen )\S+')
+LADDR=${LADDR:-${LASSO_LISTEN:-127.0.0.1:8090}}; LADDR=${LADDR/0.0.0.0/127.0.0.1}
+curl -s "http://$LADDR/api/version"
 ```
 
-Confirm it reports `v$VER`. If it still doesn't, do **not** close the pane —
-stop and report. (Manual recovery: `mise upgrade lasso` then restart via the
-supervisor above, and re-check `/api/version`.)
+A `403 forbidden: this lasso requires a Cloudflare Access identity` is not a
+failed update: that box gates on the Access header, and nothing injects one into a
+loopback request. Present an allowed identity and read the version:
+
+```bash
+EMAIL=$(sudo sed -n 's/.*LASSO_ACCESS_ALLOWED_EMAILS=//p' /etc/workspace/lasso-mode | tr -d "\"' " | cut -d, -f1)
+curl -s -H "Cf-Access-Authenticated-User-Email: $EMAIL" "http://$LADDR/api/version"
+```
+
+Confirm it reports `v$VER`. If it still doesn't, do **not** close the pane — stop
+and report. (Manual recovery: re-run the update with `sudo` if the binary is
+root-owned, confirm `pgrep -nf 'lasso .*-listen'` is a *new* pid, and re-check
+`/api/version`. A second lasso on `:8090` means the `lasso restart` branch ran by
+mistake — `lasso stop` kills that one; never SIGKILL the supervised pid.)
 
 ## 7. Close this agent — do this LAST
 
@@ -171,6 +255,13 @@ the agent. After the pane closes the connection drops — that's success, not an
   to the close. A half-finished wrap that still closed the agent is the worst outcome.
 - The agent's terminal is a herdr pane; herdr is a separate daemon from lasso, so
   the pane survives the `lasso update` daemon restart and updating mid-wrap is safe.
+- **On a workspace box the binary swap sits outside the image pin, deliberately.**
+  supervise.sh launches lasso with `-disable-self-update`, and its own comment says
+  that flag "IS THE POINT OF THE IMAGE PIN": the Dockerfile asserts a sha256 for
+  `/usr/local/bin/lasso`, so replacing those bytes makes "what is running here"
+  unanswerable from the repo, and a runtime rebuild reverts the box to the pinned
+  version. A wrap there is correct but temporary — persisting it is a pin bump in
+  `titan-iac`, which no box can write from inside itself. Say so in the summary.
 - **wrap never touches the herdr binary.** `lasso update` only swaps the lasso
   binary and restarts the lasso daemon — it does not install, pin, or replace
   herdr, and lasso resolves the `herdr` client via `PATH`. A custom/forked herdr
