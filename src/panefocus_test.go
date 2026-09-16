@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -154,10 +155,12 @@ func TestCreateAgentInvalidatesPaneList(t *testing.T) {
 	}
 }
 
-// focusBackend records which herdr methods a focus lands on.
+// focusBackend records which herdr methods a focus lands on, failing the ones
+// named in fail so a pane herdr does not know can be exercised.
 type focusBackend struct {
 	Backend
 	methods []string
+	fail    map[string]bool
 }
 
 func (b *focusBackend) Name() string      { return "local" }
@@ -165,7 +168,66 @@ func (b *focusBackend) HerdrSock() string { return "" }
 
 func (b *focusBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
 	b.methods = append(b.methods, method)
+	if b.fail[method] {
+		return nil, fmt.Errorf("%s: pane_not_found", method)
+	}
 	return json.RawMessage(`{}`), nil
+}
+
+func focusPost(t *testing.T, b *focusBackend, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	prev := defaultBackend()
+	setDefaultBackend(b)
+	t.Cleanup(func() { setDefaultBackend(prev) })
+	rec := httptest.NewRecorder()
+	serveFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus", strings.NewReader(body)))
+	return rec
+}
+
+// A pane id must reach pane.focus, and nothing else: focusing the workspace and
+// tab instead lands on whichever pane a SPLIT tab had active, which is the
+// sibling of the one that was asked for.
+func TestFocusWithPaneIDUsesPaneFocus(t *testing.T) {
+	b := &focusBackend{}
+	rec := focusPost(t, b, `{"workspace_id":"ws1","tab_id":"t1","pane_id":"ws1:p2"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(b.methods) != 1 || b.methods[0] != "pane.focus" {
+		t.Fatalf("herdr calls = %v, want exactly [pane.focus] — a workspace/tab focus lands on the split tab's other pane", b.methods)
+	}
+}
+
+// A pane that closed between the listing and the click must still land the user
+// somewhere: with a workspace beside it, the focus falls back to it rather than
+// answering 502 and leaving the user where they were.
+func TestFocusFallsBackToWorkspaceWhenPaneIsGone(t *testing.T) {
+	b := &focusBackend{fail: map[string]bool{"pane.focus": true}}
+	rec := focusPost(t, b, `{"workspace_id":"ws1","tab_id":"t1","pane_id":"ws1:p9"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	want := []string{"pane.focus", "workspace.focus", "tab.focus"}
+	if !slices.Equal(b.methods, want) {
+		t.Fatalf("herdr calls = %v, want %v", b.methods, want)
+	}
+}
+
+// A pane id ALONE is the strict form: the creator retries it while herdr
+// materializes the pane, so a failure has to be reported rather than silently
+// landing the user on some other pane.
+func TestFocusWithPaneIDOnlyReportsFailure(t *testing.T) {
+	b := &focusBackend{fail: map[string]bool{"pane.focus": true}}
+	rec := focusPost(t, b, `{"pane_id":"ws1:p9"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — the creator's retry needs the failure", rec.Code)
+	}
+	if len(b.methods) != 1 || b.methods[0] != "pane.focus" {
+		t.Fatalf("herdr calls = %v, want exactly [pane.focus]", b.methods)
+	}
 }
 
 // A caller that knows only the workspace — the creator falling back when the new
@@ -174,13 +236,7 @@ func (b *focusBackend) HerdrCall(method string, params any) (json.RawMessage, er
 // the user wherever they were, which is the bug the fallback exists to avoid.
 func TestFocusWithoutTabIDFocusesTheWorkspace(t *testing.T) {
 	b := &focusBackend{}
-	prev := defaultBackend()
-	setDefaultBackend(b)
-	t.Cleanup(func() { setDefaultBackend(prev) })
-
-	req := httptest.NewRequest(http.MethodPost, "/api/focus", strings.NewReader(`{"workspace_id":"ws1"}`))
-	rec := httptest.NewRecorder()
-	serveFocus(rec, req)
+	rec := focusPost(t, b, `{"workspace_id":"ws1"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -189,10 +245,9 @@ func TestFocusWithoutTabIDFocusesTheWorkspace(t *testing.T) {
 		t.Fatalf("herdr calls = %v, want exactly [workspace.focus]", b.methods)
 	}
 
-	// A missing workspace is still a 400: there is nothing to focus.
-	rec = httptest.NewRecorder()
-	serveFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus", strings.NewReader(`{"tab_id":"t1"}`)))
+	// Naming neither a pane nor a workspace is still a 400: nothing to focus.
+	rec = focusPost(t, &focusBackend{}, `{"tab_id":"t1"}`)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status without workspace_id = %d, want 400", rec.Code)
+		t.Fatalf("status without workspace_id or pane_id = %d, want 400", rec.Code)
 	}
 }

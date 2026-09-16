@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -93,11 +94,34 @@ func stubProbedHosts(t *testing.T, aliases ...string) {
 	})
 }
 
+// newTestHub builds a hub whose feeds stop when the test ends.
+//
+// newHub() seeds rootCtx with context.Background() — right for a CLI path, but
+// in a test it leaves every feed it starts polling for the life of the test
+// BINARY. A feed for the DEFAULT host is never idle-stopped (scheduleFeedIdle
+// exempts it, since the server's own lives as long as the server does), so a
+// leaked poller keeps writing the process-global pane.list cache under "local" —
+// the same slot every later test naming a host "local" reads, whether it wants
+// that snapshot or the cached error from a backend that has since gone away.
+// That is what made TestFeedsAreIndependentPerHost intermittent: it was served
+// a previous test's poller's view of the world, so its own backend was never
+// called (or was answered with another test's cwd).
+//
+// Production replaces rootCtx in hub.run, so this is a test-only lifecycle.
+func newTestHub(t *testing.T) *hub {
+	t.Helper()
+	h := newHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	h.rootCtx = ctx
+	t.Cleanup(cancel)
+	return h
+}
+
 // The point of the whole change: two feeds, two hosts, each carrying its own
 // host's state. A frame from one must never describe the other.
 func TestFeedsAreIndependentPerHost(t *testing.T) {
 	local, norm := stubTwoHosts(t, "local", "norm")
-	h := newHub()
+	h := newTestHub(t)
 
 	fl, err := h.feed("local")
 	if err != nil {
@@ -166,7 +190,7 @@ func TestPaneListCacheIsPerHost(t *testing.T) {
 // would have reaped a second tab's host out from under it.
 func TestHostInUseCoversWatchedHosts(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
-	h := newHub()
+	h := newTestHub(t)
 	prevHub := srvHub
 	srvHub = h
 	t.Cleanup(func() { srvHub = prevHub })
@@ -195,7 +219,7 @@ func TestHostInUseCoversWatchedHosts(t *testing.T) {
 // a fresh tab's first paint is not cold, and the idle timer must not undo that.
 func TestDefaultHostFeedIsNeverIdleStopped(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
-	h := newHub()
+	h := newTestHub(t)
 	f, err := h.feed("local")
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +243,7 @@ func TestDefaultHostFeedIsNeverIdleStopped(t *testing.T) {
 // that window keeps it warm rather than paying a fresh pane.list.
 func TestFeedSurvivesAReconnect(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
-	h := newHub()
+	h := newTestHub(t)
 	f1, _, unwatch, err := h.watch("norm")
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +263,7 @@ func TestFeedSurvivesAReconnect(t *testing.T) {
 // so two tabs on one origin get two different hosts' frames.
 func TestServeSSERoutesByHostParam(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
-	h := newHub()
+	h := newTestHub(t)
 	srv := httptest.NewServer(http.HandlerFunc(h.serveSSE))
 	t.Cleanup(srv.Close)
 

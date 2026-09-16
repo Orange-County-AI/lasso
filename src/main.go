@@ -1228,14 +1228,24 @@ func servePanes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"panes": panes})
 }
 
-// serveFocus focuses a pane. herdr exposes no pane.focus, so focusing a pane
-// means focusing its workspace and then its tab (panes live one-per-tab in the
-// common case; for split tabs this focuses the tab the pane belongs to).
+// serveFocus focuses a pane.
 //
-// tab_id is OPTIONAL: a caller that knows only the workspace (the creator
-// landing on an agent whose pane hasn't surfaced in pane.list yet) still gets
-// the workspace focused, which lands on its active tab. Only workspace_id is
-// required — with neither there is nothing to focus.
+// pane_id is the PREFERRED selector: herdr's pane.focus (protocol 22, present
+// but absent from the socket-API method table — see lassoHerdrProtocol) focuses
+// a pane's workspace, its tab AND the pane itself in one call, which is the only
+// way to land on the right half of a SPLIT tab. workspace.focus + tab.focus land
+// on whichever pane that tab had active, so asking for one pane of a split
+// silently focused its sibling. It also marks the target SEEN, which is how a
+// finished agent's `done` clears to `idle` when a human looks at it in lasso —
+// herdr's own rule is that explicit focus marks seen and reads do not, so the
+// two-call path left a Done badge standing on a conversation already read.
+//
+// workspace_id/tab_id remain the fallback, and workspace_id alone is still
+// enough: the creator lands on an agent whose pane has not surfaced in pane.list
+// yet, and focusing the workspace lands on its active tab. That is also the
+// path a pane_id herdr rejects (a pane closed between listing and click) falls
+// back to, so a stale id lands on the workspace rather than answering 502.
+// With neither a pane nor a workspace there is nothing to focus.
 func serveFocus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1244,19 +1254,29 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		WorkspaceID string `json:"workspace_id"`
 		TabID       string `json:"tab_id"`
+		PaneID      string `json:"pane_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.WorkspaceID == "" {
-		http.Error(w, "workspace_id required", http.StatusBadRequest)
+	if req.WorkspaceID == "" && req.PaneID == "" {
+		http.Error(w, "workspace_id or pane_id required", http.StatusBadRequest)
 		return
 	}
 	be, err := reqBackend(r, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	if req.PaneID != "" {
+		if _, err := be.HerdrCall("pane.focus", map[string]any{"pane_id": req.PaneID}); err == nil {
+			writeJSON(w, map[string]any{"ok": true})
+			return
+		} else if req.WorkspaceID == "" {
+			http.Error(w, "pane.focus: "+err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	if _, err := be.HerdrCall("workspace.focus", map[string]any{"workspace_id": req.WorkspaceID}); err != nil {
 		http.Error(w, "workspace.focus: "+err.Error(), http.StatusBadGateway)
@@ -1662,14 +1682,27 @@ func outsideHerdrEnv() []string {
 }
 
 // lassoHerdrProtocol is the private client/server protocol of the released Herdr
-// this build is tested against (v0.9.0). Lasso's JSON socket calls retain their
+// this build is tested against (v0.9.1). Lasso's JSON socket calls retain their
 // shapes, but its embedded terminals launch Herdr clients, so fleet hosts must
 // still match the local release. Do not infer compatibility from the source
 // tree's protocol or from the endpoint generation alone.
 //
-// Verified on an isolated v0.9.0 release server: ping reports protocol 22;
-// workspace.create/list, tab.list, pane.list/get/read/process_info, agent.list,
-// and Lasso's lifecycle subscription payload retain their response shapes.
+// Verified against a live v0.9.1 install: ping reports protocol 22 (unchanged
+// from v0.9.0, so a fleet mid-upgrade stays compatible in both directions) with
+// capabilities live_handoff, detached_server_daemon, surface_interest,
+// health_check and endpoint_protocol_generation 1; workspace.create/list,
+// tab.list, pane.list/get/read/process_info, agent.list, and Lasso's lifecycle
+// subscription payload retain their response shapes.
+//
+// Two v0.9.1 notes that this build depends on. pane.focus takes {"pane_id"} and
+// focuses the pane's workspace, tab AND the pane — it is absent from the
+// socket-API docs' method table but present in the schema's method enum and
+// live on the socket, and it is what serveFocus uses to land on one half of a
+// split tab. And pane.focused now fires for manual pane selection by ANY client
+// attached to the server, so the host feed's subscription (which re-polls on any
+// event) follows a human's own navigation instead of waiting for its 400ms/2s
+// poll; nothing had to change for that, but it is why focus tracking got sharper
+// with no lasso release.
 const lassoHerdrProtocol = 22
 
 // versionInfo is the /api/version payload: the herdr socket protocol this lasso

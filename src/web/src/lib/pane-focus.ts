@@ -32,17 +32,20 @@ export function usePaneFocusPending(): boolean {
   )
 }
 
-// focusCreatedAgent lands herdr on an agent the creator just made. The pane id
-// the create returns is not enough on its own: focusing a PANE means focusing
-// its tab, and only pane.list knows which tab that is — a listing that can still
-// be answering from a call issued before the pane existed (it takes 0.5-1.5s on
-// a busy session; the server invalidates its cache on create, but a remote
-// host's herdr can also lag its own create). A single miss used to abandon the
-// navigation entirely, which is what made landing on a new agent a coin flip.
+// focusCreatedAgent lands herdr on an agent the creator just made, from the pane
+// id the create returns. herdr's pane.focus focuses that pane's workspace and
+// tab along with the pane, so no tab lookup is needed — this used to poll
+// pane.list for the pane's tab id, a listing that can still be answering from a
+// call issued before the pane existed (it takes 0.5-1.5s on a busy session; the
+// server invalidates its cache on create, but a remote host's herdr can also lag
+// its own create), and a single miss abandoned the navigation, which is what
+// made landing on a new agent a coin flip.
 //
-// So it retries the lookup briefly, and then falls back to focusing the
-// WORKSPACE: landing on the new agent is the point, and its workspace has one
-// tab at this stage anyway.
+// What can still miss is the pane itself: herdr may not have materialized it
+// yet, and a pane_id passed ALONE fails rather than landing elsewhere. So the
+// retry is now on the focus itself, and it falls back to focusing the WORKSPACE:
+// landing on the new agent is the point, and its workspace has one tab at this
+// stage anyway.
 export async function focusCreatedAgent(
   workspaceID: string | undefined,
   rootPane: string | undefined
@@ -54,16 +57,14 @@ export async function focusCreatedAgent(
   let lastErr: unknown
   while (rootPane) {
     try {
-      const { panes } = await api.panes()
-      const pane = panes?.find((p) => p.pane_id === rootPane)
-      if (pane?.workspace_id && pane.tab_id) {
-        await api.focus(pane.workspace_id, pane.tab_id)
-        return
-      }
+      await api.focus({ pane_id: rootPane })
+      return
     } catch (err) {
       lastErr = err
     }
     if (Date.now() >= deadline) break
+    // Promise.withResolvers is ES2024; this project's tsconfig pins ES2023, and
+    // NewDialog's retry sleep takes the same executor form.
     await new Promise((r) => setTimeout(r, 300))
   }
   if (!workspaceID) {
@@ -71,7 +72,7 @@ export async function focusCreatedAgent(
       ? lastErr
       : new Error("The created pane is not available in Herdr")
   }
-  await api.focus(workspaceID)
+  await api.focus({ workspace_id: workspaceID })
 }
 
 // restoreHost re-points THIS TAB at the host a history entry names, on

@@ -42,9 +42,21 @@ func cliDoctor() {
 	var d doctorReport
 	fmt.Printf("lasso %s\n", lassoVersion())
 
-	// herdr binary — lasso is a UI over herdr, so it's required.
+	// herdr binary — lasso is a UI over herdr, so it's required. The version is
+	// worth printing beside the path because it is NOT necessarily the one
+	// answering the socket: `herdr update` installs the new binary and
+	// deliberately leaves a compatible server running (its own status calls that
+	// `server_binary_stale`), so the two disagree until a human restarts the
+	// session. Reporting only the daemon made a freshly updated host look
+	// un-updated.
+	herdrBin := ""
 	if path, err := exec.LookPath("herdr"); err == nil {
-		d.line(checkPass, "herdr binary", path)
+		herdrBin = herdrBinVersion()
+		detail := path
+		if herdrBin != "" {
+			detail = herdrBin + ", " + path
+		}
+		d.line(checkPass, "herdr binary", detail)
 	} else {
 		d.line(checkFail, "herdr binary", "not found on PATH — install: curl -fsSL https://herdr.dev/install.sh | sh")
 	}
@@ -55,6 +67,12 @@ func cliDoctor() {
 		d.line(checkWarn, "herdr daemon", fmt.Sprintf("socket %s unreachable (%v) — start herdr", sock, err))
 	} else if p != lassoHerdrProtocol {
 		d.line(checkWarn, "herdr protocol", fmt.Sprintf("herdr %s speaks protocol %d, lasso targets %d — update one to match", v, p, lassoHerdrProtocol))
+	} else if herdrBin != "" && herdrBin != v {
+		// Protocol-compatible, so nothing is broken and this is not a failure:
+		// the running panes are exactly what a restart would end, which is why
+		// herdr leaves the choice to a human.
+		d.line(checkWarn, "herdr daemon",
+			fmt.Sprintf("%s, protocol %d — the installed binary is %s; new terminals already use it, and the running server adopts it on the next session restart (`herdr update --handoff` moves live panes across)", v, p, herdrBin))
 	} else {
 		d.line(checkPass, "herdr daemon", fmt.Sprintf("%s, protocol %d", v, p))
 	}
@@ -136,6 +154,26 @@ func cliDoctor() {
 		fmt.Println("\nsome checks failed — see above")
 		os.Exit(1)
 	}
+}
+
+// herdrBinVersion reports the INSTALLED herdr binary's version, which is not
+// necessarily the running daemon's (see cliDoctor). `herdr --version` prints
+// "herdr <semver>"; anything else — an older build, a wrapper — yields "" and
+// the check degrades to reporting the daemon alone rather than guessing.
+func herdrBinVersion() string {
+	cmd := exec.Command("herdr", "--version")
+	// The updater refuses to run inside a pane, and a CLI invoked from one can
+	// pick up that pane's identity; a version read wants neither.
+	cmd.Env = outsideHerdrEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || fields[0] != "herdr" {
+		return ""
+	}
+	return fields[1]
 }
 
 // portInUse reports whether something is already listening on addr.
