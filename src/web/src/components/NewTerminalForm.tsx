@@ -161,9 +161,14 @@ export function NewTerminalForm({
       })
       try {
         await moveTabToHost(selectedHost)
-        // tab_id may be missing; the workspace alone still lands on the new
-        // terminal rather than leaving the user where they were.
-        await api.focus(result.workspace_id, result.tab_id)
+        // The new terminal's own pane, so a split lands on it rather than on
+        // its tab's previously active sibling. workspace_id/tab_id ride along
+        // as the fallback for a pane herdr has not surfaced yet.
+        await api.focus({
+          pane_id: result.root_pane,
+          workspace_id: result.workspace_id,
+          tab_id: result.tab_id,
+        })
       } catch (error) {
         toast.warning("Terminal created, but navigation failed", {
           description: (error as Error).message,

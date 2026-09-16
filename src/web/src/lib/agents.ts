@@ -177,9 +177,15 @@ export function useAgents() {
       // focusCreatedAgent and the creator's own success path take the same two
       // steps in the same order.
       await moveTabToHost(p.host)
-      // herdr has no pane.focus, so a pane is reached through its workspace and
-      // then its tab (see serveFocus). A split tab lands on its active pane.
-      await api.focus(p.workspace_id, p.tab_id)
+      // pane.focus lands on THIS pane, not merely its tab: a split tab's two
+      // agents are two rows here, and focusing the tab landed on whichever of
+      // them was active. workspace_id/tab_id ride along as the server's
+      // fallback for a pane closed since this listing (see api.focus).
+      await api.focus({
+        pane_id: p.pane_id,
+        workspace_id: p.workspace_id,
+        tab_id: p.tab_id,
+      })
     } catch (e) {
       // Nothing is on its way, so drop the stand-in now rather than at the next
       // focus change, which may never come.

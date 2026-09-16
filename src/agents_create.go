@@ -843,7 +843,13 @@ func findWorkspaceForDir(b Backend, workDir string) (wsID, paneID string, ok boo
 func attachWorkspaceAt(b Backend, workDir, label string, focus bool) (wsID, paneID string, err error) {
 	if wsID, paneID, ok := findWorkspaceForDir(b, workDir); ok {
 		if focus {
-			_, _ = b.HerdrCall("workspace.focus", map[string]any{"workspace_id": wsID})
+			// The reattached workspace's own pane, which is what the caller is
+			// about to land on: workspace.focus alone lands on whichever pane its
+			// active tab holds. Best effort either way — a reattach that focuses
+			// nothing is still a successful reattach.
+			if _, err := b.HerdrCall("pane.focus", map[string]any{"pane_id": paneID}); err != nil {
+				_, _ = b.HerdrCall("workspace.focus", map[string]any{"workspace_id": wsID})
+			}
 		}
 		return wsID, paneID, nil
 	}

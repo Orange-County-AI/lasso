@@ -1154,12 +1154,18 @@ export const api = {
     return getJSON<FileDiff>(withHost(`/api/diff-file?${params}`, host))
   },
 
-  // workspace_id is required (/api/focus 400s without it); tab_id is optional —
-  // omitting it focuses the workspace, which lands on its active tab. That is
-  // the fallback for a just-created workspace whose pane hasn't surfaced in
-  // pane.list yet, where the tab id is simply not knowable.
-  focus: (workspace_id: string, tab_id?: string) =>
-    postJSON<unknown>("/api/focus", { workspace_id, tab_id }),
+  // pane_id is the selector to pass whenever it is known: herdr's pane.focus
+  // focuses the pane's workspace, its tab AND the pane itself, which is the only
+  // way to land on the right half of a SPLIT tab (workspace+tab focus lands on
+  // whichever pane the tab had active) and the only one that marks the agent
+  // seen, clearing a finished agent's Done badge. Passing workspace_id beside it
+  // makes the server fall back to focusing the workspace when the pane is gone —
+  // a pane closed between a listing and the click lands somewhere sensible
+  // instead of failing. A pane_id ALONE is the strict form, which 502s on an
+  // unknown pane, and is what lets the creator retry a pane herdr has not
+  // materialized yet. With neither, /api/focus answers 400.
+  focus: (sel: { workspace_id?: string; tab_id?: string; pane_id?: string }) =>
+    postJSON<unknown>("/api/focus", sel),
 
   rename: (tab_id: string | undefined, label: string) =>
     postJSON<unknown>("/api/rename", { tab_id, label }),
