@@ -209,7 +209,7 @@ func TestSyncClaudeTheme(t *testing.T) {
 	path := filepath.Join(home, ".claude", "themes", "herdr.json")
 
 	dark := resolveThemeByName("catppuccin")
-	if err := syncClaudeTheme(b, home, dark, false); err != nil {
+	if err := syncClaudeTheme(b, home, dark, false, glyphCanvasFor(dark)); err != nil {
 		t.Fatalf("dark: %v", err)
 	}
 	var got claudeThemeFile
@@ -266,7 +266,7 @@ func TestSyncClaudeTheme(t *testing.T) {
 	}
 
 	light := resolveThemeByName("catppuccin-latte")
-	if err := syncClaudeTheme(b, home, light, true); err != nil {
+	if err := syncClaudeTheme(b, home, light, true, glyphCanvasFor(light)); err != nil {
 		t.Fatalf("light: %v", err)
 	}
 	data, _ = os.ReadFile(path)
@@ -289,7 +289,7 @@ func TestSyncClaudeSettingsTheme(t *testing.T) {
 
 	// syncClaudeTheme pins as part of its own run — the theme file alone was
 	// the bug.
-	if err := syncClaudeTheme(b, home, resolveThemeByName("nord"), false); err != nil {
+	if err := syncClaudeTheme(b, home, resolveThemeByName("nord"), false, glyphCanvasFor(resolveThemeByName("nord"))); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	read := func() map[string]any {
@@ -571,7 +571,7 @@ func TestSyncOmpTheme(t *testing.T) {
 
 	// A host where omp has never run is left completely alone — a theme switch
 	// must not litter config for a CLI that isn't there.
-	if err := syncOmpTheme(b, home, resolveThemeByName("catppuccin")); err != nil {
+	if err := syncOmpTheme(b, home, resolveThemeByName("catppuccin"), glyphCanvasFor(resolveThemeByName("catppuccin"))); err != nil {
 		t.Fatalf("syncOmpTheme (no omp): %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -590,7 +590,7 @@ func TestSyncOmpTheme(t *testing.T) {
 		t.Fatal(err)
 	}
 	dark := resolveThemeByName("catppuccin")
-	if err := syncOmpTheme(b, home, dark); err != nil {
+	if err := syncOmpTheme(b, home, dark, glyphCanvasFor(dark)); err != nil {
 		t.Fatalf("syncOmpTheme dark: %v", err)
 	}
 	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
@@ -610,10 +610,14 @@ func TestSyncOmpTheme(t *testing.T) {
 	// A theme flip rewrites the palette file — that write is what a running omp
 	// reloads on, so it is the whole point of the mirror.
 	light := resolveThemeByName("catppuccin-latte")
-	if err := syncOmpTheme(b, home, light); err != nil {
+	if err := syncOmpTheme(b, home, light, glyphCanvasFor(light)); err != nil {
 		t.Fatalf("syncOmpTheme light: %v", err)
 	}
-	if cols := readColors(); cols["text"] != light.ui.Text {
+	// `statusLineBg` is a fill, so it is the theme's own value either way; omp's
+	// text is conditioned for legibility (legibility.go), and catppuccin-latte's
+	// own #4c4f69 clears the floor, so both are exact here. What must not happen
+	// is the file still holding the dark palette.
+	if cols := readColors(); cols["statusLineBg"] != light.ui.Surface0 || cols["text"] != light.ui.Text {
 		t.Errorf("theme file not repainted for the light theme: %v", cols)
 	}
 	if got := readTheme(); got["dark"] != "herdr" || got["light"] != "herdr" {
@@ -630,7 +634,7 @@ func TestSyncOmpTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syncOmpTheme(b, home, light); err != nil {
+	if err := syncOmpTheme(b, home, light, glyphCanvasFor(light)); err != nil {
 		t.Fatalf("syncOmpTheme repeat: %v", err)
 	}
 	afterCfg, err := os.Stat(path)
@@ -653,7 +657,7 @@ func TestSyncOmpTheme(t *testing.T) {
 	if err := os.WriteFile(path, []byte("theme: [this is: not a map\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncOmpTheme(b, home, dark); err != nil {
+	if err := syncOmpTheme(b, home, dark, glyphCanvasFor(dark)); err != nil {
 		t.Fatalf("syncOmpTheme broken: %v", err)
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "not a map") {
@@ -698,7 +702,7 @@ func TestOmpThemeBodyComplete(t *testing.T) {
 			Colors map[string]string `json:"colors"`
 			Export map[string]string `json:"export"`
 		}
-		if err := json.Unmarshal(ompThemeBody(rt), &f); err != nil {
+		if err := json.Unmarshal(ompThemeBody(rt, glyphCanvasFor(rt)), &f); err != nil {
 			t.Fatalf("%s: theme body isn't json: %v", name, err)
 		}
 		for _, tok := range required {
@@ -725,7 +729,7 @@ func TestOmpThemeBodyComplete(t *testing.T) {
 	var f struct {
 		Colors map[string]string `json:"colors"`
 	}
-	if err := json.Unmarshal(ompThemeBody(rt), &f); err != nil {
+	if err := json.Unmarshal(ompThemeBody(rt, glyphCanvasFor(rt)), &f); err != nil {
 		t.Fatalf("theme body isn't json: %v", err)
 	}
 	if f.Colors["text"] != themes["nord"].ui.Text {
@@ -1034,7 +1038,7 @@ func TestRefreshThemeRefusesOutsideEditWhileFleetWearsAPalette(t *testing.T) {
 	// Lasso's own push is still adopted, which is what the record is for: without
 	// it the palette push this whole mechanism exists to serve would be refused
 	// its own write.
-	markThemeSynced("local", "dracula")
+	markThemeSynced("local", themeStamp{name: "dracula"})
 	h.refreshTheme()
 	if h.curTheme.Resolved != "dracula" {
 		t.Errorf("lasso's own write was not adopted: hub on %q, want dracula", h.curTheme.Resolved)
@@ -1141,7 +1145,7 @@ func saturationOf(hex string) float64 {
 func TestDiffBandsLiftEquallyOnEveryHue(t *testing.T) {
 	for _, name := range []string{"osaka-jade", "retro-82", "gruvbox", "vesper", "catppuccin", "nord"} {
 		rt := resolveThemeByName(name)
-		m := claudeOverrides(rt.ui)
+		m := claudeOverrides(rt.ui, glyphCanvasFor(rt))
 		base := perceivedL(rt.ui.PanelBg)
 		for _, c := range []struct {
 			tok  string

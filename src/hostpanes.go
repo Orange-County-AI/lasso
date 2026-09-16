@@ -499,6 +499,15 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		if srvHub != nil {
 			srvHub.bumpUIStateRev()
 		}
+		// One preference here reaches past the browser: a backdrop decides what
+		// "legible" means for the words omp and Claude Code paint in a pane
+		// (legibility.go), so the agent theme files have to be re-mirrored. It
+		// is compared against the stored blob rather than triggered by any
+		// patch — the same POST routinely carries a sidebar drag — and the
+		// re-mirror is debounced, because a dimming slider writes in runs.
+		if theme := liveTheme().Resolved; backdropChanged(stored, us, theme) {
+			scheduleBackdropResync("backdrop changed for " + theme)
+		}
 		writeJSON(w, uiStateResp{uiState: us, LayoutDenied: denied})
 	default:
 		http.Error(w, "GET or POST", http.StatusMethodNotAllowed)

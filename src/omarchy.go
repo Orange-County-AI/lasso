@@ -1018,6 +1018,17 @@ func relLuminance(hex string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
+	return relLuminanceRGB(r, g, b), true
+}
+
+// relLuminanceRGB is the same value for channels that never were a hex — a
+// composite computed rather than parsed (see glyphCanvasOf). It is WCAG's own
+// definition, sRGB linearized first, and deliberately NOT agentsync.go's
+// luminance(), which skips that linearization: the cheap one answers "is this a
+// light or a dark theme?" (every caller compares it against 0.5) and is wrong
+// by a factor of two or more as a contrast input — nord's #eceff4 on #2e3440
+// measures 3.9:1 under it against a true 10.4:1.
+func relLuminanceRGB(r, g, b int) float64 {
 	lin := func(v int) float64 {
 		c := float64(v) / 255
 		if c <= 0.03928 {
@@ -1025,7 +1036,7 @@ func relLuminance(hex string) (float64, bool) {
 		}
 		return math.Pow((c+0.055)/1.055, 2.4)
 	}
-	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b), true
+	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
 }
 
 func rgbOf(hex string) (int, int, int, bool) {

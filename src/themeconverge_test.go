@@ -146,7 +146,7 @@ func TestConvergeThemeOnProbePushesStaleHostOnce(t *testing.T) {
 	pushed := make(chan string, 8)
 	prevFn := syncThemeToHostFn
 	syncThemeToHostFn = func(host string, rt resolvedTheme) {
-		markThemeSynced(host, rt.Resolved)
+		markThemeSynced(host, themeStampFor(rt))
 		pushed <- host + ":" + rt.Resolved
 	}
 	t.Cleanup(func() { syncThemeToHostFn = prevFn })

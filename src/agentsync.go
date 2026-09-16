@@ -233,7 +233,7 @@ func syncThemeToHostErr(host string, rt resolvedTheme) error {
 			forgetThemeSynced(host)
 			return err
 		}
-		markThemeSynced(host, rt.Resolved)
+		markThemeSynced(host, themeStampFor(rt))
 		return nil
 	}
 	t, release, err := themeBackend(host)
@@ -247,7 +247,7 @@ func syncThemeToHostErr(host string, rt resolvedTheme) error {
 		forgetThemeSynced(host)
 		return err
 	}
-	markThemeSynced(host, rt.Resolved)
+	markThemeSynced(host, themeStampFor(rt))
 	return nil
 }
 
@@ -292,6 +292,63 @@ func liveTheme() resolvedTheme {
 	return loadHerdrTheme(*themeName)
 }
 
+// syncAgentThemesEverywhere re-mirrors only the agent THEME FILES — locally and
+// on every reachable host — leaving herdr's config.toml and the TUI reload
+// alone. It is what a backdrop change needs (scheduleBackdropResync): picking a
+// wallpaper or moving the dimming slider changes what "legible" means for omp's
+// and Claude Code's text (legibility.go) and changes no theme NAME, so writing
+// the name again would be a fleet-wide write of a value already there, and
+// asking every herdr to reload would repaint fourteen TUIs per drag.
+//
+// A host's record is only re-fingerprinted, never created (restampLegibility):
+// a machine that is behind on the theme itself must stay behind so its next
+// probe pushes the whole thing rather than be told it is in step by a pass that
+// wrote none of it.
+func syncAgentThemesEverywhere(rt resolvedTheme) {
+	if rt.Resolved == "" || rt.Foreign {
+		return
+	}
+	themeFanoutMu.Lock()
+	defer themeFanoutMu.Unlock()
+
+	sig := backdropSig(rt.Resolved)
+	rows, _ := hostSnapshot()
+	hosts := append([]string{"local"}, themeFanoutHosts(rows)...)
+	var wg sync.WaitGroup
+	for _, host := range hosts {
+		if !themeSyncEnabledFor(host) {
+			// syncAgentThemesVia would refuse anyway; checking here keeps the
+			// pass from dialling ssh to a host it may not write to, and from
+			// re-fingerprinting one it wrote nothing to.
+			continue
+		}
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+			themeSem <- struct{}{}
+			defer func() { <-themeSem }()
+			if isLocalHost(host) {
+				if syncAgentThemesVia(localFsBackend(), rt) == nil {
+					restampLegibility(host, rt.Resolved, sig)
+				}
+				return
+			}
+			t, release, err := themeBackend(host)
+			if err != nil {
+				log.Printf("theme:    %s not reachable to re-mirror agent themes: %v", host, err)
+				return
+			}
+			defer release()
+			// By name, like syncRemoteTheme: a remote herdr owns its own
+			// [theme.custom] block, so lasso mirrors the canonical palette.
+			if syncAgentThemesVia(t, resolveThemeByName(rt.Resolved)) == nil {
+				restampLegibility(host, rt.Resolved, sig)
+			}
+		}(host)
+	}
+	wg.Wait()
+}
+
 // themeSynced records the theme name lasso last WROTE to each host, plus which
 // hosts have a convergence push in flight. It is the whole mechanism behind
 // catching a host up: a machine asleep when the user picked a palette used to
@@ -306,17 +363,47 @@ func liveTheme() resolvedTheme {
 // rather than trusting a note on disk about files it never saw.
 var themeSynced struct {
 	mu       sync.Mutex
-	by       map[string]string // host -> theme name last written successfully
-	inFlight map[string]bool   // hosts with a convergence push running
+	by       map[string]themeStamp // host -> what was last written successfully
+	inFlight map[string]bool       // hosts with a convergence push running
 }
 
-func markThemeSynced(host, name string) {
+// themeStamp is what lasso last wrote to a host, and it is two values because a
+// host can be in step on one and behind on the other: the theme NAME, and the
+// backdrop fingerprint the agent palettes were conditioned for (backdropSig).
+// Picking a wallpaper or moving the dimming slider changes no theme name and
+// every colour omp and Claude Code paint their words in, so a record keyed on
+// the name alone would leave a machine that was asleep through one wearing a
+// palette conditioned for a backdrop nobody has any more.
+type themeStamp struct {
+	name       string
+	legibility string
+}
+
+func themeStampFor(rt resolvedTheme) themeStamp {
+	return themeStamp{name: rt.Resolved, legibility: backdropSig(rt.Resolved)}
+}
+
+func markThemeSynced(host string, st themeStamp) {
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
 	if themeSynced.by == nil {
-		themeSynced.by = map[string]string{}
+		themeSynced.by = map[string]themeStamp{}
 	}
-	themeSynced.by[host] = name
+	themeSynced.by[host] = st
+}
+
+// restampLegibility records a new backdrop fingerprint for a host lasso has
+// already written THIS theme to. A host with no record, or one recorded on
+// another theme, is left alone deliberately: it is behind on the theme itself,
+// and its next probe has to push the whole thing — herdr's config.toml
+// included — rather than be told it is in step by a pass that only rewrote
+// agent theme files.
+func restampLegibility(host, name, sig string) {
+	themeSynced.mu.Lock()
+	defer themeSynced.mu.Unlock()
+	if st, ok := themeSynced.by[host]; ok && st.name == name {
+		themeSynced.by[host] = themeStamp{name: name, legibility: sig}
+	}
 }
 
 // forgetThemeSynced drops a host's record so the next probe retries it.
@@ -333,19 +420,20 @@ func forgetThemeSynced(host string) {
 func themeSyncedFor(host string) (string, bool) {
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
-	name, ok := themeSynced.by[host]
-	return name, ok
+	st, ok := themeSynced.by[host]
+	return st.name, ok
 }
 
-// claimThemeConverge reports whether this caller should push name to host: true
-// only when the last write there wasn't already name and no push is in flight.
-// The in-flight half matters because probes arrive in bursts (a sweep, then the
-// footer's refresh) and a push takes seconds — without it one stale host would
-// be written by several goroutines at once.
-func claimThemeConverge(host, name string) bool {
+// claimThemeConverge reports whether this caller should push st to host: true
+// only when the last write there wasn't already st — theme name AND backdrop
+// fingerprint, so a host that slept through a dimming change is caught up too —
+// and no push is in flight. The in-flight half matters because probes arrive in
+// bursts (a sweep, then the footer's refresh) and a push takes seconds — without
+// it one stale host would be written by several goroutines at once.
+func claimThemeConverge(host string, st themeStamp) bool {
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
-	if themeSynced.inFlight[host] || themeSynced.by[host] == name {
+	if themeSynced.inFlight[host] || themeSynced.by[host] == st {
 		return false
 	}
 	if themeSynced.inFlight == nil {
@@ -385,7 +473,7 @@ func convergeThemeOnProbe(hi HostInfo) {
 		return
 	}
 	rt := liveTheme()
-	if rt.Resolved == "" || !claimThemeConverge(hi.Alias, rt.Resolved) {
+	if rt.Resolved == "" || !claimThemeConverge(hi.Alias, themeStampFor(rt)) {
 		return
 	}
 	go func() {
@@ -415,6 +503,9 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 		return err
 	}
 	light := luminance(rt.ui.PanelBg) > 0.5
+	// One read of this lasso's backdrop state per host, shared by the two CLIs
+	// that condition their text against it (see legibility.go).
+	cv := glyphCanvasFor(rt)
 	var errs []error
 	step := func(cli string, err error) {
 		if err != nil {
@@ -423,8 +514,8 @@ func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
 		}
 	}
 	step("opencode", syncOpencodeTheme(b, home, rt))
-	step("claude", syncClaudeTheme(b, home, rt, light))
-	step("omp", syncOmpTheme(b, home, rt))
+	step("claude", syncClaudeTheme(b, home, rt, light, cv))
+	step("omp", syncOmpTheme(b, home, rt, cv))
 	step("ghostty", syncGhosttyTheme(b, home, rt))
 	step("lasso appearance", syncLassoResolved(b, home, light))
 	return errors.Join(errs...)
@@ -727,12 +818,12 @@ const ompThemeSchema = "https://raw.githubusercontent.com/can1357/oh-my-pi/main/
 // syncOmpTheme writes the generated theme and points both mode slots at it.
 // Skipped entirely on hosts where omp has never run (no ~/.omp/agent), so a
 // theme switch doesn't litter config for a CLI that isn't there.
-func syncOmpTheme(b Backend, home string, rt resolvedTheme) error {
+func syncOmpTheme(b Backend, home string, rt resolvedTheme, cv glyphCanvas) error {
 	dir := filepath.Join(home, ".omp", "agent")
 	if _, err := b.Stat(dir); err != nil {
 		return nil // omp not set up on this host
 	}
-	if err := syncOmpThemeFile(b, dir, rt); err != nil {
+	if err := syncOmpThemeFile(b, dir, rt, cv); err != nil {
 		return err
 	}
 	return syncOmpThemePin(b, dir)
@@ -742,8 +833,14 @@ func syncOmpTheme(b Backend, home string, rt resolvedTheme) error {
 // roles lasso uses for its own chrome and for opencode's generated theme. Every
 // token omp requires is present; thinkingMax is the one optional token and is
 // emitted too (omp falls back to thinkingXhigh without it).
-func ompColors(u uiPalette) map[string]string {
-	return map[string]string{
+//
+// Every token that spells WORDS is then raised to a contrast floor against cv,
+// the canvas omp actually paints on — which under a backdrop is the theme's
+// background washed into a photograph rather than the background itself (see
+// legibility.go). It is a floor, not a restyle: a token already clearing it
+// comes back exactly as mapped here.
+func ompColors(u uiPalette, cv glyphCanvas) map[string]string {
+	m := map[string]string{
 		"accent":       u.Accent,
 		"border":       u.Surface1,
 		"borderAccent": u.Accent,
@@ -822,11 +919,13 @@ func ompColors(u uiPalette) map[string]string {
 		"statusLineCost":      u.Peach,
 		"statusLineSubagents": u.Accent,
 	}
+	legibleTokens(m, ompLegibility, cv)
+	return m
 }
 
-// ompThemeBody renders rt as an omp custom theme.
-func ompThemeBody(rt resolvedTheme) []byte {
-	colors := ompColors(rt.ui)
+// ompThemeBody renders rt as an omp custom theme, legible on canvas c.
+func ompThemeBody(rt resolvedTheme, cv glyphCanvas) []byte {
+	colors := ompColors(rt.ui, cv)
 	// A [theme.custom] override reaches us already parsed to a hex, so this is
 	// belt and braces — but omp treats a non-hex token as a var reference and
 	// throws when it resolves nothing, and a theme that fails to load costs the
@@ -837,7 +936,7 @@ func ompThemeBody(rt resolvedTheme) []byte {
 	for tok, v := range colors {
 		if _, _, _, ok := hexRGB(v); !ok {
 			if base == nil {
-				base = ompColors(resolveThemeByName(rt.Resolved).ui)
+				base = ompColors(resolveThemeByName(rt.Resolved).ui, cv)
 			}
 			colors[tok] = base[tok]
 		}
@@ -863,10 +962,10 @@ func ompThemeBody(rt resolvedTheme) []byte {
 // (<agent dir>/themes, which omp discovers and watches). Unchanged content is
 // left alone: the write is what a running omp reloads on, so a no-op rewrite
 // would make every poll tick restyle live sessions for nothing.
-func syncOmpThemeFile(b Backend, agentDir string, rt resolvedTheme) error {
+func syncOmpThemeFile(b Backend, agentDir string, rt resolvedTheme, cv glyphCanvas) error {
 	dir := filepath.Join(agentDir, "themes")
 	path := filepath.Join(dir, ompThemeName+".json")
-	body := ompThemeBody(rt)
+	body := ompThemeBody(rt, cv)
 	if body == nil {
 		return fmt.Errorf("render omp theme %q", rt.Resolved)
 	}
@@ -955,8 +1054,13 @@ const (
 )
 
 // claudeOverrides maps herdr's UI tokens onto Claude Code's theme tokens
-// (ported from herdr-theme-sync's mapping).
-func claudeOverrides(p uiPalette) map[string]string {
+// (ported from herdr-theme-sync's mapping), with every token that spells WORDS
+// raised to a contrast floor against cv — the canvas Claude paints on, which
+// under a backdrop is a photograph washed by the scrim rather than the theme's
+// own background (see legibility.go). Borders, fills and `inverseText` are left
+// as mapped: a border is shape rather than words, and inverseText is drawn ON
+// an accent fill, so this canvas is not the one it needs contrast against.
+func claudeOverrides(p uiPalette, cv glyphCanvas) map[string]string {
 	m := map[string]string{}
 	put := func(hex string, toks ...string) {
 		if hex == "" {
@@ -1016,6 +1120,7 @@ func claudeOverrides(p uiPalette) map[string]string {
 	}
 	diff(p.Green, "diffAdded", "diffAddedWord", "diffAddedDimmed")
 	diff(p.Red, "diffRemoved", "diffRemovedWord", "diffRemovedDimmed")
+	legibleTokens(m, claudeLegibility, cv)
 	return m
 }
 
@@ -1066,7 +1171,7 @@ func syncClaudeSettingsTheme(b Backend, home string) error {
 	return b.WriteFile(path, out, 0o644)
 }
 
-func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error {
+func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool, cv glyphCanvas) error {
 	path := filepath.Join(home, ".claude", "themes", "herdr.json")
 	base := "dark"
 	if light {
@@ -1075,7 +1180,7 @@ func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool) error
 	theme := claudeThemeFile{
 		Name:      "herdr (" + rt.Resolved + ")",
 		Base:      base,
-		Overrides: claudeOverrides(rt.ui),
+		Overrides: claudeOverrides(rt.ui, cv),
 	}
 	out, err := json.MarshalIndent(theme, "", "  ")
 	if err != nil {
@@ -1304,9 +1409,18 @@ func luminance(hex string) float64 {
 // theme?", where the cheap approximation is fine and every caller compares it
 // against 0.5.
 func perceivedL(hex string) float64 {
+	l, _, _, _ := oklabOf(hex)
+	return l
+}
+
+// oklabOf is the whole of that transform: Oklab's lightness AND its two
+// opponent axes, which together are the colour in a space where "the same
+// colour, lighter" is one coordinate (see oklabHex). perceivedL is its first
+// return value and nothing more.
+func oklabOf(hex string) (L, a, b float64, ok bool) {
 	ri, gi, bi, ok := hexRGB(hex)
 	if !ok {
-		return 0
+		return 0, 0, 0, false
 	}
 	lin := func(v int) float64 {
 		c := float64(v) / 255
@@ -1315,11 +1429,63 @@ func perceivedL(hex string) float64 {
 		}
 		return math.Pow((c+0.055)/1.055, 2.4)
 	}
-	r, g, b := lin(ri), lin(gi), lin(bi)
-	l := math.Cbrt(0.4122214708*r + 0.5363325363*g + 0.0514459929*b)
-	m := math.Cbrt(0.2119034982*r + 0.6806995451*g + 0.1073969566*b)
-	s := math.Cbrt(0.0883024619*r + 0.2817188376*g + 0.6299787005*b)
-	return 0.2104542553*l + 0.7936177850*m - 0.0040720468*s
+	r, g, bl := lin(ri), lin(gi), lin(bi)
+	l := math.Cbrt(0.4122214708*r + 0.5363325363*g + 0.0514459929*bl)
+	m := math.Cbrt(0.2119034982*r + 0.6806995451*g + 0.1073969566*bl)
+	s := math.Cbrt(0.0883024619*r + 0.2817188376*g + 0.6299787005*bl)
+	return 0.2104542553*l + 0.7936177850*m - 0.0040720468*s,
+		1.9779984951*l - 2.4285922050*m + 0.4505937099*s,
+		0.0259040371*l + 0.7827717662*m - 0.8086757660*s,
+		true
+}
+
+// oklabHex is oklabOf inverted, with the one thing an inverse needs that a
+// forward transform does not: a gamut answer. Most (L, a, b) triples name a
+// colour sRGB cannot show — a saturated green at a dark lightness, say — and
+// the standard remedy is the right one here: keep the lightness and the hue,
+// which is what identifies the colour, and walk the CHROMA down (a and b
+// scaled together) until the result fits. Bisection, 20 rounds, well past
+// 8-bit resolution.
+func oklabHex(L, a, b float64) string {
+	inGamut := func(t float64) (int, int, int, bool) {
+		l := L + 0.3963377774*a*t + 0.2158037573*b*t
+		m := L - 0.1055613458*a*t - 0.0638541728*b*t
+		s := L - 0.0894841775*a*t - 1.2914855480*b*t
+		l, m, s = l*l*l, m*m*m, s*s*s
+		lr := 4.0767416621*l - 3.3077115913*m + 0.2309699292*s
+		lg := -1.2684380046*l + 2.6097574011*m - 0.3413193965*s
+		lb := -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+		enc := func(c float64) (int, bool) {
+			// A hair outside is rounding, not a gamut miss; anything more is.
+			fits := c >= -0.001 && c <= 1.001
+			c = math.Min(1, math.Max(0, c))
+			if c <= 0.0031308 {
+				c *= 12.92
+			} else {
+				c = 1.055*math.Pow(c, 1/2.4) - 0.055
+			}
+			return int(math.Round(c * 255)), fits
+		}
+		r, okR := enc(lr)
+		g, okG := enc(lg)
+		bb, okB := enc(lb)
+		return r, g, bb, okR && okG && okB
+	}
+	t := 1.0
+	if _, _, _, ok := inGamut(t); !ok {
+		lo, hi := 0.0, 1.0
+		for range 20 {
+			mid := (lo + hi) / 2
+			if _, _, _, ok := inGamut(mid); ok {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		t = lo
+	}
+	r, g, bb, _ := inGamut(t)
+	return fmt.Sprintf("#%02x%02x%02x", r, g, bb)
 }
 
 // blendHex mixes color a toward color b by fraction t (0..1).
@@ -1683,7 +1849,7 @@ func setLocalHerdrTheme(name string) error {
 	// is herdr's own popup or a hand edit, and the fleet stays on the palette),
 	// and the write above has not reached the fan-out that would otherwise mark
 	// it yet.
-	markThemeSynced("local", name)
+	markThemeSynced("local", themeStamp{name: name, legibility: backdropSig(name)})
 	// herdr does not watch its config file, so ask the server to re-read it.
 	// Best-effort: with herdr down the theme still applies on its next start,
 	// and it must not turn a successful write into a reported failure.
