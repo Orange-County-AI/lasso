@@ -306,9 +306,17 @@ func TestHubNoticeReachesTheEventStream(t *testing.T) {
 	// The stream is per host now, so it needs a host to resolve to. Its poll
 	// against a herdr that isn't there just marks the feed down; the notice
 	// fan-out under test is global and unaffected.
+	//
+	// The hub's context dies with the test (newTestHub, not newHub): that poll
+	// FAILS every *pollEvery for as long as it runs, and it is filed under the
+	// default host — which is never idle-stopped — in the process-global
+	// pane.list cache. Left running, this one test poisoned "local" for the rest
+	// of the binary: any later test whose feed refreshed inside the 400ms the
+	// error stayed fresh was served it instead of polling its own backend, which
+	// is what made TestFeedsAreIndependentPerHost intermittent.
 	setDefaultBackend(&localBackend{})
 	t.Cleanup(func() { setDefaultBackend(nil) })
-	h := newHub()
+	h := newTestHub(t)
 	srv := httptest.NewServer(http.HandlerFunc(h.serveSSE))
 	t.Cleanup(srv.Close)
 
