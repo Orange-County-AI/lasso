@@ -329,6 +329,16 @@ function Shell() {
     if (rightPanel.current?.isCollapsed()) expandSidebar()
     else collapseSidebar()
   }, [expandSidebar, collapseSidebar])
+  // The chat's own way in, for the widths where nothing else reaches the right
+  // sidebar: the footer is md+ and the input dial's `sidebar` command lives
+  // inside the terminal iframe the chat overlays. An OPEN rather than a toggle —
+  // below md the panel covers the header the menu item sits in, so it can only
+  // ever be invoked against a collapsed one — and it stamps intent like ⌘\,
+  // being a human moving the layout.
+  const openSidebar = React.useCallback(() => {
+    markSidebarIntent()
+    expandSidebar()
+  }, [expandSidebar])
 
   // Footer navigation. New always opens on the agent tab — the terminal tab is
   // ⌘I's business — and the mobile dial's "new" command shares this.
@@ -348,14 +358,19 @@ function Shell() {
   }, [toggleSidebar])
 
   // Phones have no footer — it's md+ only — and an open sidebar covers the
-  // whole screen there, so the tab strip's ✕ is the ONLY pointer route back to
-  // the terminal (the input dial's sidebar command is behind the keyboard).
-  // Same hand-off as the footer toggle: closing gives the terminal the keyboard.
+  // whole screen there, so the tab strip's ✕ is the ONLY pointer route back
+  // (the input dial's sidebar command is behind the keyboard).
+  // Same hand-off as the footer toggle: closing gives the terminal the keyboard
+  // — but only when the terminal is what it uncovers. Over the chat or the
+  // agents grid the iframe is hidden behind an overlay, so focusing it would pop
+  // a phone's keyboard for a surface nobody can see and aim the next keystrokes
+  // at herdr instead of the composer (the same reason entering the chat blurs
+  // it).
   const closeSidebar = React.useCallback(() => {
     markSidebarIntent()
     collapseSidebar()
-    focusHerdrTerminal()
-  }, [collapseSidebar])
+    if (leftView === "terminal") focusHerdrTerminal()
+  }, [collapseSidebar, leftView])
 
   // The footer button is separate from the menu's mobile-capable anchor.
   // Capture its pointer-down state before Radix's outside-click dismissal, so
@@ -525,6 +540,7 @@ function Shell() {
                     className="min-w-0 flex-1"
                     onNewAgent={openNew}
                     onShowTerminal={() => setLeftView("terminal")}
+                    onShowSidebar={openSidebar}
                   />
                 </div>
               )}
