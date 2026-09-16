@@ -11,6 +11,7 @@ import {
   ListTodo,
   Loader2,
   Menu,
+  PanelRightOpen,
   Paperclip,
   Pencil,
   Plus,
@@ -1134,6 +1135,7 @@ function Composer({
 export function ChatView({
   onShowTerminal,
   onNewAgent,
+  onShowSidebar,
   className,
 }: {
   onShowTerminal: () => void
@@ -1141,6 +1143,12 @@ export function ChatView({
   // on screen. App decides what it opens; this only says where it is (see the
   // header).
   onNewAgent: () => void
+  // lasso's right sidebar (Files, Diff, Settings). An OPEN, not a toggle: below
+  // md that panel overlays the whole screen, so the header carrying this menu is
+  // only reachable while it is collapsed. It is the only pointer route to it
+  // from the chat on a phone — the footer is md+ and the input dial's `sidebar`
+  // command lives inside the terminal iframe this view covers.
+  onShowSidebar: () => void
   // Merged onto the root. The view is a flex ROW's second child whenever the
   // agent sidebar is beside it (see App.tsx), and it has to be told to take the
   // width that is left over rather than its content's own.
@@ -1415,9 +1423,12 @@ export function ChatView({
             where a glyph has to be guessed at: this is the only chrome a phone
             has, so what it does needs to be legible rather than dense. The agent
             list is here because below md the docked column hides itself and the
-            footer does not exist; Terminal, because the footer's toggle is the
-            desktop's way back; New agent, because the footer's creator is — and
-            the chat's own dialog is agents-only there (see App's agentsOnly). */}
+            footer does not exist; Sidebar, for the same reason and with no other
+            route at all on a phone (the dial that carries it is inside the
+            terminal iframe this view covers); Terminal, because the footer's
+            toggle is the desktop's way back; New agent, because the footer's
+            creator is — and the chat's own dialog is agents-only there (see
+            App's agentsOnly). The two panels lead, then the two navigations. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -1433,6 +1444,10 @@ export function ChatView({
             <DropdownMenuItem onSelect={() => setPickerOpen(true)}>
               <Bot className="size-3.5" />
               Agents
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onShowSidebar}>
+              <PanelRightOpen className="size-3.5" />
+              Sidebar
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onShowTerminal}>
               <SquareTerminal className="size-3.5" />
