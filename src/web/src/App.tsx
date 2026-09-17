@@ -357,9 +357,9 @@ function Shell() {
     if (wasOpen) focusHerdrTerminal()
   }, [toggleSidebar])
 
-  // Phones have no footer — it's md+ only — and an open sidebar covers the
-  // whole screen there, so the tab strip's ✕ is the ONLY pointer route back
-  // (the input dial's sidebar command is behind the keyboard).
+  // Below md there is no footer — it's md+ only — and an open sidebar covers
+  // the whole screen there, so the tab strip's ✕ is the ONLY pointer route back
+  // (the input dial is behind that overlay, with its sidebar command).
   // Same hand-off as the footer toggle: closing gives the terminal the keyboard
   // — but only when the terminal is what it uncovers. Over the chat or the
   // agents grid the iframe is hidden behind an overlay, so focusing it would pop
@@ -393,10 +393,10 @@ function Shell() {
       } else if (command === "host") {
         openHostMenu()
       } else if (command === "chat") {
-        // The phone's own way into the chat: the footer that carries this
-        // control on the desktop is hidden below md, so the chrome there is the
-        // dial — and this command comes from the dedicated button it holds above
-        // its root, not from an arc target (see lib/mobile-input-dial.ts).
+        // The way into the chat wherever the footer that carries this control
+        // is hidden, which is every width below md — phone or a desktop window
+        // dragged narrow. The command comes from the dedicated button the dial
+        // holds above its root, not from an arc target (lib/mobile-input-dial).
         toggleLeftView()
       } else if (command === "search") {
         // Same destination as ⌘K: herdr's own search. The dial supplies the
@@ -704,9 +704,11 @@ function Shell() {
         so this footer is always present at desktop widths and has no visibility
         toggle: it is the only pointer route to New, both sidebars, the host menu
         and the shortcuts reference. Usage metrics scroll inside their own track
-        so a long provider list can never push the controls offscreen. Phones
-        keep the whole viewport for the terminal — the input dial beside xterm's
-        textarea carries the same commands there. */}
+        so a long provider list can never push the controls offscreen. Below md
+        it is gone — a phone keeps the whole viewport for the terminal, and a
+        desktop window dragged that narrow has no room for the row either — and
+        the input dial beside xterm's textarea carries the same commands at that
+        width, mouse or finger (see lib/mobile-input-dial). */}
       <footer className="hidden flex-none items-center gap-2 border-border border-t bg-card px-2 py-1 md:flex">
         <div className="flex flex-none items-center gap-1">
           {/* The list on the LEFT of the terminal column, which is a different
@@ -809,8 +811,8 @@ function Shell() {
             {leftView === "agents" ? "Terminal" : "Agents"}
           </Button>
           {/* The label names where it goes, not where you are: one glance says
-              what the click does. Phones get this from the input dial's Chat
-              target instead — the footer is md+ only. */}
+              what the click does. Below md this row is gone and the way in is
+              the input dial's Chat button instead. */}
           <Button
             variant="ghost"
             size="sm"
