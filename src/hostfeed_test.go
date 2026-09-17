@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -93,11 +94,86 @@ func stubProbedHosts(t *testing.T, aliases ...string) {
 	})
 }
 
+// stopHubFeeds cancels every feed a hub started, the DEFAULT host's included —
+// which neither scheduleFeedIdle nor stopFeedIfIdle will touch, by design.
+//
+// A hub built outside main keeps newHub's context.Background() as its rootCtx
+// (only hub.run replaces it), so nothing else ever ends these goroutines: a
+// feed a test starts otherwise polls for the life of the test BINARY. That is
+// not merely wasted work — the pane.list cache it writes is process-global and
+// keyed by host NAME, so a leaked "local" feed lands its snapshots (or, for a
+// backend with no herdr socket, its "dial unix: missing address") in whichever
+// test runs next, inside the TTL, under a name that test cannot own.
+func stopHubFeeds(h *hub) {
+	h.mu.Lock()
+	feeds := h.feeds
+	h.feeds = map[string]*hostFeed{}
+	cancels := make([]context.CancelFunc, 0, len(feeds))
+	for _, f := range feeds {
+		if f.idleTimer != nil {
+			f.idleTimer.Stop()
+			f.idleTimer = nil
+		}
+		if f.cancel != nil {
+			cancels = append(cancels, f.cancel)
+		}
+	}
+	h.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// A feed that has been stopped must actually STOP polling. stopFeedIfIdle
+// cancels the feed's context, which is the only thing that ends run() — and it
+// was being handed a no-op, because run() overwrote f.cancel to mark itself
+// running (see hostFeed.running). The log said "stopped watching norm (idle)"
+// and the poller kept calling pane.list every -poll for the life of the
+// process: the cost feedIdle exists to stop paying, plus a zombie writer on
+// that host's shared pane.list cache.
+func TestStoppedFeedStopsPolling(t *testing.T) {
+	// The poll has to outrun paneListTTL (400ms). Every poll goes through the
+	// pane.list cache, so a zombie poller ticking FASTER than the TTL is served
+	// the cache and reaches the backend only once per TTL — which is a bug that
+	// counts as a pass. At 600ms every tick is a real call.
+	prevPoll := *pollEvery
+	*pollEvery = 600 * time.Millisecond
+	t.Cleanup(func() { *pollEvery = prevPoll })
+
+	// Private host names, for the same reason TestCreateAgentInvalidatesPaneList
+	// has one: this test counts pane.list calls, and the cache those calls go
+	// through is process-global and keyed by host name. Warming "norm" here
+	// inside its 400ms TTL is enough to make the NEXT test's poll a cache hit
+	// and its own call count zero.
+	_, watched := stubTwoHosts(t, "feedstop-default", "feedstop-watched")
+	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
+
+	f, _, unwatch, err := h.watch("feedstop-watched")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	waitFor(t, func() bool { return watched.calls.Load() > 0 })
+	unwatch()
+	h.stopFeedIfIdle(f)
+
+	// Two poll intervals to settle (a stopped feed's last in-flight poll may
+	// still land), then two more to measure: the count is compared against the
+	// settled one, not against the count at the moment of the stop.
+	time.Sleep(2 * *pollEvery)
+	settled := watched.calls.Load()
+	time.Sleep(2 * *pollEvery)
+	if got := watched.calls.Load(); got != settled {
+		t.Fatalf("pane.list calls went %d -> %d after the feed was stopped — the poller outlived its cancel", settled, got)
+	}
+}
+
 // The point of the whole change: two feeds, two hosts, each carrying its own
 // host's state. A frame from one must never describe the other.
 func TestFeedsAreIndependentPerHost(t *testing.T) {
 	local, norm := stubTwoHosts(t, "local", "norm")
 	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
 
 	fl, err := h.feed("local")
 	if err != nil {
@@ -110,7 +186,6 @@ func TestFeedsAreIndependentPerHost(t *testing.T) {
 	if fl == fn {
 		t.Fatal("both hosts share one feed")
 	}
-	t.Cleanup(func() { h.stopFeedIfIdle(fl); h.stopFeedIfIdle(fn) })
 
 	waitFor(t, func() bool { return fl.snapshot().Cwd == "/work/local" })
 	waitFor(t, func() bool { return fn.snapshot().Cwd == "/work/norm" })
@@ -167,6 +242,7 @@ func TestPaneListCacheIsPerHost(t *testing.T) {
 func TestHostInUseCoversWatchedHosts(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
 	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
 	prevHub := srvHub
 	srvHub = h
 	t.Cleanup(func() { srvHub = prevHub })
@@ -196,6 +272,7 @@ func TestHostInUseCoversWatchedHosts(t *testing.T) {
 func TestDefaultHostFeedIsNeverIdleStopped(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
 	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
 	f, err := h.feed("local")
 	if err != nil {
 		t.Fatal(err)
@@ -220,6 +297,7 @@ func TestDefaultHostFeedIsNeverIdleStopped(t *testing.T) {
 func TestFeedSurvivesAReconnect(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
 	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
 	f1, _, unwatch, err := h.watch("norm")
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +318,7 @@ func TestFeedSurvivesAReconnect(t *testing.T) {
 func TestServeSSERoutesByHostParam(t *testing.T) {
 	stubTwoHosts(t, "local", "norm")
 	h := newHub()
+	t.Cleanup(func() { stopHubFeeds(h) })
 	srv := httptest.NewServer(http.HandlerFunc(h.serveSSE))
 	t.Cleanup(srv.Close)
 

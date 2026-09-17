@@ -309,6 +309,12 @@ func TestHubNoticeReachesTheEventStream(t *testing.T) {
 	setDefaultBackend(&localBackend{})
 	t.Cleanup(func() { setDefaultBackend(nil) })
 	h := newHub()
+	// The SSE connection below starts this default host's feed, and a DEFAULT
+	// host's feed is exempt from every idle stop — so without this it polls a
+	// socketless localBackend for the life of the test binary, caching "dial
+	// unix: missing address" under host "local" where any later test's
+	// herdrPaneList can be served it.
+	t.Cleanup(func() { stopHubFeeds(h) })
 	srv := httptest.NewServer(http.HandlerFunc(h.serveSSE))
 	t.Cleanup(srv.Close)
 
