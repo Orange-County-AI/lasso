@@ -54,6 +54,7 @@ import {
   reconcileQueued,
 } from "@/lib/chat-queue"
 import { qk } from "@/lib/query"
+import { isStandalone } from "@/lib/standalone"
 import { cn } from "@/lib/utils"
 
 // The agent session as a conversation: what the terminal shows, rendered so a
@@ -67,6 +68,17 @@ import { cn } from "@/lib/utils"
 // keystrokes (AskCard → POST /api/chat/answer). Nothing here answers an agent
 // out of band — every write lands in the pane, so a card always says what the
 // harness actually received.
+
+// One measure for the conversation AND the composer: a centred column with a
+// cap, so a wide window reads like an article instead of a 200-character line
+// — and the input sits exactly under the rows it answers, which is the whole
+// reason the two share a constant rather than each naming a width.
+//
+// Applied inside the padding, so it is a no-op on a phone (the screen is
+// narrower than the cap) and needs no breakpoint. Every element that carries it
+// also carries the SAME horizontal padding, or the two columns would be capped
+// against different available widths and drift apart by the difference.
+const MEASURE = "mx-auto w-full max-w-4xl px-4"
 
 // mergeItems folds a freshly-read page into what is already on screen: rows that
 // are already here are UPDATED in place (a tool card completing, an output
@@ -974,22 +986,43 @@ function Composer({
     }
   }
 
+  // Below md the two buttons take the row's FULL height in a browser TAB, and
+  // stay pinned squares in an installed app. Same row, two different things
+  // underneath it: installed, the app owns the screen and its own inset
+  // (--safe-bottom in index.css) is all that sits below the composer, so a
+  // full-height accent slab beside a three-row textarea is just a slab. In a
+  // tab the browser's own toolbar is directly under the row, and there the two
+  // actions get the row's whole height as their target rather than a 40px
+  // square with the browser's chrome a thumb's width away.
+  //
+  // Keyed on the display mode rather than the OS: what changes is whether
+  // anything of the browser is drawn below the composer, which is what
+  // standalone answers on every engine.
+  //
+  // md+ is unchanged either way — the pair is a column against the input's
+  // right edge (see the wrapper below).
+  const buttonBox = isStandalone()
+    ? "size-10 self-start"
+    : "w-10 self-stretch md:size-10 md:self-start"
+
   return (
     <div className="flex-none border-border border-t bg-card">
       {notice && (
         <div
           className={cn(
-            "px-3 py-1.5 text-[11.5px]",
+            "text-[11.5px]",
             notice.tone === "bad"
               ? "bg-destructive/8 text-destructive"
               : "bg-muted text-muted-foreground"
           )}
         >
-          {notice.text}
+          {/* The tint is full-bleed, like a banner; the words sit in the
+              composer's own column so they line up with the input below. */}
+          <div className={cn("py-1.5", MEASURE)}>{notice.text}</div>
         </div>
       )}
       {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+        <div className={cn("flex flex-wrap gap-1.5 pt-2", MEASURE)}>
           {attachments.map((a) => (
             <span
               key={a.path}
@@ -1026,7 +1059,7 @@ function Composer({
           ))}
         </div>
       )}
-      <div className="flex items-stretch gap-2 px-4 pt-2 pb-1">
+      <div className={cn("flex items-stretch gap-2 pt-2 pb-1", MEASURE)}>
         <input
           ref={fileRef}
           type="file"
@@ -1038,10 +1071,9 @@ function Composer({
             e.target.value = ""
           }}
         />
-        {/* Below md: three columns — attach, input, submit — with both buttons
-            square and pinned to the input's top edge, so the input is the only
-            tall thing on the row and neither button sits under the thumb's
-            resting corner, where a stray tap lands on the wrong one.
+        {/* Below md: three columns — attach, input, submit — each button 40px
+            wide, as tall as the row or pinned square at the input's top edge
+            depending on how the app is being displayed (see buttonBox above).
 
             At md+ the input takes the width and the two actions stack against
             its right edge, attach above submit: a pointer reaches a short column
@@ -1063,7 +1095,10 @@ function Composer({
             disabled={attaching || sending}
             title="Attach a file and insert its path"
             aria-label="Attach a file"
-            className="order-1 flex size-10 shrink-0 items-center justify-center self-start rounded-lg border border-input text-muted-foreground disabled:opacity-40 md:order-none"
+            className={cn(
+              "order-1 flex shrink-0 items-center justify-center rounded-lg border border-input text-muted-foreground disabled:opacity-40 md:order-none",
+              buttonBox
+            )}
           >
             {attaching ? (
               <Orb state="working" px={16} />
@@ -1077,7 +1112,10 @@ function Composer({
             disabled={sending || (!text.trim() && attachments.length === 0)}
             title="Send (⌘Enter)"
             aria-label="Send"
-            className="order-3 flex size-10 shrink-0 items-center justify-center self-start rounded-lg bg-primary text-primary-foreground disabled:opacity-40 md:order-none"
+            className={cn(
+              "order-3 flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40 md:order-none",
+              buttonBox
+            )}
           >
             {sending ? (
               // on="accent": this button is filled with the theme's accent, and
@@ -1484,7 +1522,15 @@ export function ChatView({
           the rows nor takes a row of its own at the end of them (a control
           that added height would move the very edge it offers to reach). */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* Block layout with margins, not a flex column: a card is
+        {/* The SCROLLER takes the full width — its scrollbar belongs at the
+            view's edge — and the rows sit in the centred column inside it. The
+            gutter is reserved on BOTH edges so the content box stays centred on
+            the view whether or not a scrollbar is drawn: with it on one side
+            only, a classic scrollbar would shift this column half its width off
+            the composer's, which is exactly the alignment the shared measure
+            exists to keep.
+
+            Block layout with margins, not a flex column: a card is
             `overflow-hidden`, and as a flex item that zeroes its own min-height
             so the column squashes it to its border — a chat of 2px strips. */}
         <div
@@ -1499,86 +1545,89 @@ export function ChatView({
             // button.
             if (el.scrollTop < 120 && hasMore && !loadingOlder) void loadOlder()
           }}
-          className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
+          className="min-h-0 flex-1 overflow-y-auto py-3 [scrollbar-gutter:stable_both-edges]"
         >
-          {loadingOlder && (
-            <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
-              <Orb state="working" px={16} />
-              loading earlier…
-            </div>
-          )}
-          {isLoading && (
-            <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
-              <Orb state="working" px={16} />
-              loading…
-            </div>
-          )}
-          {error && (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/8 px-3 py-2 text-[12px] text-destructive">
-              could not read the session: {(error as Error).message}
-            </div>
-          )}
-          {/* An empty view says why — and a pane still coming up says it as
-              WORK: a newly created agent has no session or log for its first
-              seconds, and a sentence about what is missing reads as a dead end
-              for a pane the reader just asked lasso to create. `starting` is the
-              server's answer to "is this a wait or a verdict" (see the notes in
-              chatview.go), so the orb goes on exactly the waits. */}
-          {!isLoading && !error && rows.length === 0 && !running && (
-            <div
-              className={cn(
-                "text-[12px] text-muted-foreground",
-                starting
-                  ? "flex items-center justify-center gap-2 py-1"
-                  : "text-center"
-              )}
-            >
-              {starting && <Orb state="working" px={16} />}
-              {data?.note || "No messages yet."}
-            </div>
-          )}
-          {rows.map((row) => (
-            <RowView
-              key={row.kind === "group" ? row.id : row.item.id}
-              row={row}
-              resolveImage={resolveImage}
-              host={data?.host ?? ""}
-              paneID={data?.pane_id ?? ""}
-            />
-          ))}
-          {/* The message the pane has taken but the transcript has not written
-            yet, drawn exactly where its row will appear and in the user's own
-            bubble — a lighter, dashed one, so it reads as "on its way" rather
-            than as a message the session recorded. The working indicator below
-            it is where the agent's answer will land, which is the order the two
-            things actually happen in. */}
-          {queued
-            .filter((q) => q.target === target)
-            .map((q) => (
-              <div key={q.id} className="flex justify-end">
-                <div className="max-w-[85%] rounded-xl rounded-br-sm border border-primary/20 border-dashed bg-primary/8 px-3 py-2 text-[13.5px] text-foreground leading-snug opacity-60">
-                  <div className="whitespace-pre-wrap break-words">
-                    {q.text}
-                  </div>
-                  <div className="mt-1 text-[10.5px] text-muted-foreground">
-                    queued…
+          <div className={cn("space-y-2.5", MEASURE)}>
+            {loadingOlder && (
+              <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+                <Orb state="working" px={16} />
+                loading earlier…
+              </div>
+            )}
+            {isLoading && (
+              <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-muted-foreground">
+                <Orb state="working" px={16} />
+                loading…
+              </div>
+            )}
+            {error && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/8 px-3 py-2 text-[12px] text-destructive">
+                could not read the session: {(error as Error).message}
+              </div>
+            )}
+            {/* An empty view says why — and a pane still coming up says it as
+                WORK: a newly created agent has no session or log for its first
+                seconds, and a sentence about what is missing reads as a dead
+                end for a pane the reader just asked lasso to create. `starting`
+                is the server's answer to "is this a wait or a verdict" (see the
+                notes in chatview.go), so the orb goes on exactly the waits. */}
+            {!isLoading && !error && rows.length === 0 && !running && (
+              <div
+                className={cn(
+                  "text-[12px] text-muted-foreground",
+                  starting
+                    ? "flex items-center justify-center gap-2 py-1"
+                    : "text-center"
+                )}
+              >
+                {starting && <Orb state="working" px={16} />}
+                {data?.note || "No messages yet."}
+              </div>
+            )}
+            {rows.map((row) => (
+              <RowView
+                key={row.kind === "group" ? row.id : row.item.id}
+                row={row}
+                resolveImage={resolveImage}
+                host={data?.host ?? ""}
+                paneID={data?.pane_id ?? ""}
+              />
+            ))}
+            {/* The message the pane has taken but the transcript has not written
+                yet, drawn exactly where its row will appear and in the user's
+                own bubble — a lighter, dashed one, so it reads as "on its way"
+                rather than as a message the session recorded. The working
+                indicator below it is where the agent's answer will land, which
+                is the order the two things actually happen in. */}
+            {queued
+              .filter((q) => q.target === target)
+              .map((q) => (
+                <div key={q.id} className="flex justify-end">
+                  <div className="max-w-[85%] rounded-xl rounded-br-sm border border-primary/20 border-dashed bg-primary/8 px-3 py-2 text-[13.5px] text-foreground leading-snug opacity-60">
+                    <div className="whitespace-pre-wrap break-words">
+                      {q.text}
+                    </div>
+                    <div className="mt-1 text-[10.5px] text-muted-foreground">
+                      queued…
+                    </div>
                   </div>
                 </div>
+              ))}
+            {/* Where the agent's NEXT message will land. The header says the same
+                thing, but a view waiting on output should say it at the point
+                the output will appear — and that gap is seconds long every
+                turn, since the harness writes a message only once it is
+                complete (see src/chatview.go). Left-aligned like the agent rows
+                it precedes, not centred like the page-loading rows above: this
+                one is a placeholder in the conversation, not a note about the
+                fetch. */}
+            {!isLoading && !error && running && (
+              <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                <Orb state="working" px={16} />
+                working…
               </div>
-            ))}
-          {/* Where the agent's NEXT message will land. The header says the same
-            thing, but a view waiting on output should say it at the point the
-            output will appear — and that gap is seconds long every turn, since
-            the harness writes a message only once it is complete (see
-            src/chatview.go). Left-aligned like the agent rows it precedes, not
-            centred like the page-loading rows above: this one is a placeholder
-            in the conversation, not a note about the fetch. */}
-          {!isLoading && !error && running && (
-            <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-              <Orb state="working" px={16} />
-              working…
-            </div>
-          )}
+            )}
+          </div>
         </div>
         {/* Only when the newest row is out of sight, which is the only time
             this says anything: a reader at the bottom is already looking at

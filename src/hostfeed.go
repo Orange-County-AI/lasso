@@ -36,9 +36,22 @@ type hostFeed struct {
 	trigger chan struct{}
 
 	// subMu guards the event subscription's cancel, which is replaced whenever
-	// the host's connection is redialed under us.
+	// the host's connection is redialed under us, and running.
 	subMu     sync.Mutex
 	subCancel context.CancelFunc
+	// running says run() has taken this feed over, which is what a repoint's
+	// startSub needs to know: before that, run() will start the subscription
+	// itself, and subscribing here would leave two readers on one socket.
+	//
+	// It is its own field rather than a "cancel is set" test, which is what this
+	// used to be: run() then had to WRITE f.cancel to satisfy that test, which
+	// clobbered the feed context's real cancel with a no-op — so stopFeedIfIdle
+	// logged "stopped watching <host> (idle)" while the poller and its
+	// subscription ran on for the life of the process. An unwatched host went on
+	// paying herdr's most expensive call (pane.list) forever, and went on writing
+	// that host's process-global pane.list cache, which is how one test's leaked
+	// feed failed another's assertions.
+	running bool
 
 	// idleTimer stops the feed once no client has watched it for feedIdle. Held
 	// under the hub's lock, not the feed's.
@@ -108,7 +121,7 @@ func (f *hostFeed) snapshot() Active {
 func (f *hostFeed) startSub() {
 	f.subMu.Lock()
 	defer f.subMu.Unlock()
-	if f.cancel == nil { // feed not running yet; run() will start the sub
+	if !f.running { // feed not running yet; run() will start the sub
 		return
 	}
 	if f.subCancel != nil {
@@ -155,7 +168,7 @@ func (f *hostFeed) pushCurrent() {
 // would have multiplied that work by the number of open tabs' hosts.
 func (f *hostFeed) run(ctx context.Context) {
 	f.subMu.Lock()
-	f.cancel = func() {}
+	f.running = true
 	f.subMu.Unlock()
 	f.startSub()
 
@@ -168,6 +181,7 @@ func (f *hostFeed) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			f.subMu.Lock()
+			f.running = false
 			if f.subCancel != nil {
 				f.subCancel()
 				f.subCancel = nil

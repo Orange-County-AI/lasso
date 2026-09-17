@@ -117,6 +117,54 @@ func newTestHub(t *testing.T) *hub {
 	return h
 }
 
+// A feed that has been stopped must actually STOP polling. stopFeedIfIdle
+// cancels the feed's context, which is the only thing that ends run() — and it
+// was being handed a no-op, because run() overwrote f.cancel to mark itself
+// running (see hostFeed.running). The log said "stopped watching norm (idle)"
+// and the poller kept calling pane.list every -poll for the life of the
+// process: the cost feedIdle exists to stop paying, plus a zombie writer on
+// that host's shared pane.list cache.
+//
+// newTestHub's cancel hides that from every other test here — it takes the
+// whole hub's context down, so a feed whose own cancel is a no-op still dies
+// with the test. This one stops ONE feed and leaves the hub up, which is what
+// lasso does on a live server when a tab hops away.
+func TestStoppedFeedStopsPolling(t *testing.T) {
+	// The poll has to outrun paneListTTL (400ms). Every poll goes through the
+	// pane.list cache, so a zombie poller ticking FASTER than the TTL is served
+	// the cache and reaches the backend only once per TTL — which is a bug that
+	// counts as a pass. At 600ms every tick is a real call.
+	prevPoll := *pollEvery
+	*pollEvery = 600 * time.Millisecond
+	t.Cleanup(func() { *pollEvery = prevPoll })
+
+	// Private host names, for the same reason TestCreateAgentInvalidatesPaneList
+	// has one: this test counts pane.list calls, and the cache those calls go
+	// through is process-global and keyed by host name. Warming "norm" here
+	// inside its 400ms TTL is enough to make the NEXT test's poll a cache hit
+	// and its own call count zero.
+	_, watched := stubTwoHosts(t, "feedstop-default", "feedstop-watched")
+	h := newTestHub(t)
+
+	f, _, unwatch, err := h.watch("feedstop-watched")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	waitFor(t, func() bool { return watched.calls.Load() > 0 })
+	unwatch()
+	h.stopFeedIfIdle(f)
+
+	// Two poll intervals to settle (a stopped feed's last in-flight poll may
+	// still land), then two more to measure: the count is compared against the
+	// settled one, not against the count at the moment of the stop.
+	time.Sleep(2 * *pollEvery)
+	settled := watched.calls.Load()
+	time.Sleep(2 * *pollEvery)
+	if got := watched.calls.Load(); got != settled {
+		t.Fatalf("pane.list calls went %d -> %d after the feed was stopped — the poller outlived its cancel", settled, got)
+	}
+}
+
 // The point of the whole change: two feeds, two hosts, each carrying its own
 // host's state. A frame from one must never describe the other.
 func TestFeedsAreIndependentPerHost(t *testing.T) {
@@ -134,7 +182,6 @@ func TestFeedsAreIndependentPerHost(t *testing.T) {
 	if fl == fn {
 		t.Fatal("both hosts share one feed")
 	}
-	t.Cleanup(func() { h.stopFeedIfIdle(fl); h.stopFeedIfIdle(fn) })
 
 	waitFor(t, func() bool { return fl.snapshot().Cwd == "/work/local" })
 	waitFor(t, func() bool { return fn.snapshot().Cwd == "/work/norm" })
