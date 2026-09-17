@@ -15,6 +15,7 @@
 // primary key) and repairs a server whose db was restored from a backup.
 
 import { api } from "./api"
+import { isStandalone } from "./standalone"
 
 // Why notifications may be unavailable — each needs a different sentence in the
 // UI, so they are distinct rather than a single boolean.
@@ -43,16 +44,6 @@ function isIOS(): boolean {
   const ua = navigator.userAgent
   if (/iPad|iPhone|iPod/.test(ua)) return true
   return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1
-}
-
-// Standalone = launched from the Home Screen rather than a browser tab.
-// `navigator.standalone` is Apple's original signal and is still the reliable
-// one on iOS; display-mode covers everything else.
-function isStandalone(): boolean {
-  // Not in the DOM typings (it is Apple's own), so it is narrowed rather than
-  // asserted: `in` makes the read checked and typed unknown.
-  if ("standalone" in navigator && navigator.standalone === true) return true
-  return window.matchMedia("(display-mode: standalone)").matches
 }
 
 export function pushSupport(): PushSupport {
