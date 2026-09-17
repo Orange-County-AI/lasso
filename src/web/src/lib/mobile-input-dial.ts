@@ -1,10 +1,14 @@
 import { emitMobileCommand, type MobileCommand } from "@/lib/mobile-command"
 import { sendKeyToTerminal, type VirtualKey } from "@/lib/terminal"
 
-// Touch-only input controls injected inside each same-origin terminal iframe.
-// Keeping the dial beside xterm's textarea is intentional: preventDefault on a
-// same-document pointer gesture preserves the iOS software keyboard, while a
-// control in the parent document would dismiss it and could not reopen it.
+// The floating input controls injected inside each same-origin terminal
+// iframe: the app's chrome for every device and width the md+ footer does not
+// cover. Keeping the dial beside xterm's textarea is intentional: preventDefault
+// on a same-document pointer gesture preserves the iOS software keyboard, while
+// a control in the parent document would dismiss it and could not reopen it.
+// That is why it lives here even at a width a mouse reached by dragging a
+// window narrow — one control, one implementation, rather than a second copy in
+// the parent document for the pointer that does not need the keyboard trick.
 
 // Exported so terminal.ts can tell a tap on the dial from a tap on the terminal.
 export const DIAL_ID = "__lasso_mobile_input_dial"
@@ -19,6 +23,11 @@ const ITEM_SIZE = 54
 const CHAT_SIZE = 44
 const BACK_RADIUS = 44
 const TERMINAL_BOTTOM_GAP = 24
+// The width at which the footer — the only other route to New, both sidebars,
+// the host menu, the shortcuts sheet and chat — is gone. Tailwind's `md`, so
+// the same 767px the sidebar's full-screen overlay uses in index.css: below it
+// the app has no chrome of its own and the dial is it, whatever the pointer.
+const NARROW_QUERY = "(max-width: 767px)"
 
 type DialLevel = "root" | "keys" | "app"
 type TargetKind = "branch" | "command" | "key"
@@ -416,7 +425,9 @@ html.${TRACKING_CLASS} .xterm-screen {
   overscroll-behavior: none !important;
   touch-action: none !important;
 }
-/* The gap is where the closed dial sits above the software keyboard's edge. */
+/* The gap is where the closed dial sits: clear of the bottom row it would
+   otherwise cover, and above the software keyboard's edge on a phone. It goes
+   with the stylesheet, so a window widened back past md gets the rows back. */
 #terminal-container {
   height: calc(100% - ${TERMINAL_BOTTOM_GAP}px) !important;
 }
@@ -434,12 +445,22 @@ function targetCenter(target: DialTarget): { x: number; y: number } {
   }
 }
 
-// Touch capability is watched, not merely sampled at boot. Sampling it once was
-// a hole either way round: a tab that went from a mouse to a touch primary (a
-// hybrid folded into tablet mode, a tablet's keyboard case detached) never got
-// the dial at all, and one that went the other way kept it — its hold-and-slide
-// gesture and its 24px terminal gap still in force — with no touchscreen left
-// to work them.
+// Two conditions put the dial on screen, and BOTH are watched rather than
+// sampled at boot.
+//
+// Touch, because sampling it once was a hole either way round: a tab that went
+// from a mouse to a touch primary (a hybrid folded into tablet mode, a tablet's
+// keyboard case detached) never got the dial at all, and one that went the
+// other way kept it — its hold-and-slide gesture and its 24px terminal gap
+// still in force — with no touchscreen left to work them.
+//
+// Width, because a desktop dragged below md loses the footer and used to gain
+// nothing: with a mouse and no touchscreen there was no route left to New, the
+// host menu, either sidebar, the shortcuts sheet or the chat — the window had
+// no chrome at all until it was widened again. The dial works a mouse as it is
+// (a click opens the ring, a click on a target fires it, and the CSS has
+// carried `cursor: grab` and a hover state all along), so the fix is to mount
+// the control that already exists rather than to grow a second one.
 //
 // The returned teardown is what makes that possible, and terminal.ts holds
 // exactly one per iframe: it releases the previous document's mount on every
@@ -449,26 +470,56 @@ function targetCenter(target: DialTarget): { x: number; y: number } {
 export function mountTerminalInputDial(id: string): () => void {
   const frame = document.getElementById(id) as HTMLIFrameElement | null
   const win = frame?.contentWindow as Window | null
-  const coarse = win?.matchMedia?.("(pointer: coarse)")
-  if (!win || !coarse) return () => {}
+  if (!win) return () => {}
+  // Touch is asked of the IFRAME and the width of the PARENT, deliberately.
+  // Pointer capability belongs to the device, so either document answers it —
+  // but this document is only the terminal COLUMN, so a max-width query here
+  // would measure the panel split (a wide window with a wide sidebar reads as
+  // narrow) instead of the app, i.e. a dial beside a footer that is still
+  // there. The parent's width is the one the footer's own breakpoint reads.
+  const conditions = [
+    win.matchMedia?.("(pointer: coarse)"),
+    window.matchMedia?.(NARROW_QUERY),
+  ].filter((q): q is MediaQueryList => !!q)
+  if (conditions.length === 0) return () => {}
 
+  return watchDialConditions(conditions, () => attachTerminalInputDial(win, id))
+}
+
+// A media-query list reduced to what the watcher needs, so a test can hand it a
+// pair it drives by hand.
+export type DialCondition = {
+  matches: boolean
+  addEventListener(type: "change", listener: () => void): void
+  removeEventListener(type: "change", listener: () => void): void
+}
+
+// Mount while ANY condition holds, and mount exactly ONCE: the two overlap (a
+// phone is both touch and narrow, and a tablet crosses either boundary on its
+// own), so attaching per condition would build two dials in one document and
+// leave one of them with nobody holding its teardown.
+export function watchDialConditions(
+  conditions: readonly DialCondition[],
+  attach: () => () => void
+): () => void {
   let release: (() => void) | null = null
   let disposed = false
 
   const sync = () => {
     if (disposed) return
-    if (coarse.matches && !release) release = attachTerminalInputDial(win, id)
-    else if (!coarse.matches && release) {
+    const wanted = conditions.some((c) => c.matches)
+    if (wanted && !release) release = attach()
+    else if (!wanted && release) {
       release()
       release = null
     }
   }
   sync()
-  coarse.addEventListener("change", sync)
+  for (const c of conditions) c.addEventListener("change", sync)
 
   return () => {
     disposed = true
-    coarse.removeEventListener("change", sync)
+    for (const c of conditions) c.removeEventListener("change", sync)
     release?.()
     release = null
   }
