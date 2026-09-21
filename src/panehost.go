@@ -421,3 +421,23 @@ type remoteAgent struct {
 	pane
 	Name string `json:"name"`
 }
+
+// hopPane resolves the pane on the far side of a hop, together with the backend
+// whose disk holds its files. remoteAttachCwd answers the same question for a
+// directory; this is for a caller that needs the pane itself — the chat reads a
+// transcript named by that pane's agent_session, which only the far host's herdr
+// reports and only the far host's disk holds.
+//
+// Resolved through namedHostBackend, so a hop naming the default host reuses the
+// connection lasso already holds rather than dialing the pool for its own box.
+func hopPane(h sshHop) (Backend, pane, bool) {
+	be, err := namedHostBackend(h.host)
+	if err != nil {
+		return nil, pane{}, false
+	}
+	p, ok := attachedPane(be, h.agent)
+	if !ok {
+		return nil, pane{}, false
+	}
+	return be, p, true
+}

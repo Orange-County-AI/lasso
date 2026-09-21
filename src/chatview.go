@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1582,6 +1583,99 @@ func detailsWallMS(raw json.RawMessage) int {
 // endpoint
 // ---------------------------------------------------------------------------
 
+// errChatNoPane is "the tab's host has no such pane", kept apart from a
+// transport failure so the handler can answer 404 rather than 502.
+var errChatNoPane = errors.New("pane not found")
+
+// chatScreen is the pane whose conversation is on screen, plus the backend whose
+// disk holds its transcript. When note is set no pane was resolved at all and it
+// is the whole view.
+type chatScreen struct {
+	be   Backend
+	pane pane
+	// host names the machine the view is about even when no pane came back, so
+	// a note can say which one.
+	host string
+	note string
+}
+
+// chatScreenPane resolves the pane whose conversation is ON SCREEN for this tab,
+// and the backend whose disk holds its transcript.
+//
+// The tab's own host answers for an ordinary pane, which is the common case and
+// the only one this used to handle. But a pane is not always a window onto the
+// machine it runs on, and the chat has exactly the two exceptions the file
+// viewer already resolves (panehost.go, clientmachine.go): a MACHINE selected in
+// the terminal's own herdr client draws another server's whole session, and an
+// ssh ATTACH puts a remote pane inside a local one. Either way the agent being
+// read is another herdr's and its transcript is on that host's disk — so a chat
+// resolved against the tab's host alone showed an unrelated local pane's
+// conversation under a machine, and under an attach looked for the far side's
+// log on a box that never had it ("This session's transcript is not on this host
+// yet." about a file that was never coming).
+//
+// `want` names a pane on the TAB's host and is deliberately NOT carried across a
+// hop. herdr's pane ids are unique only within one server — `wQR:p1` exists on
+// every machine that has been up a while — so looking a local id up in a remote
+// listing is a coin flip between the right pane and a stranger's. The far side
+// is addressed the way the hop itself names it: the attached agent, or that
+// server's own focused pane.
+func chatScreenPane(be Backend, want string) (chatScreen, error) {
+	// A selected machine outranks the pane entirely — the same precedence
+	// activeCwd draws, and for the same reason: it replaces the screen, so the
+	// pane this request named is not even visible.
+	if hop, ok := clientMachineHop(be); ok {
+		hbe, p, ok := hopPane(hop)
+		if !ok {
+			// A note, deliberately, rather than falling back to the tab's own
+			// focused pane. That pane is not what the terminal is drawing, so
+			// its conversation belongs to someone else and the composer would
+			// type into a pane nobody can see — which is the bug this resolution
+			// exists to fix, not a safe degradation of it.
+			return chatScreen{
+				host: hop.host,
+				note: "Can't read " + hop.host + "'s session.",
+			}, nil
+		}
+		return chatScreen{be: hbe, pane: p, host: hbe.Name()}, nil
+	}
+	panes, err := panesRaw(be)
+	if err != nil {
+		return chatScreen{}, err
+	}
+	p, ok := findChatPane(panes, want)
+	if !ok {
+		return chatScreen{}, errChatNoPane
+	}
+	// An attach leaves the LOCAL pane on screen — it is the window — so a far
+	// side lasso cannot read falls back to it rather than to a note: the local
+	// pane's own answer is honest about a host that did not respond, and the
+	// composer still types into the pane the reader is looking at.
+	if hop, ok := paneSSHHop(paneForeground(be, p.PaneID)); ok {
+		if hbe, rp, ok := hopPane(hop); ok {
+			return chatScreen{be: hbe, pane: rp, host: hbe.Name()}, nil
+		}
+	}
+	return chatScreen{be: be, pane: p, host: be.Name()}, nil
+}
+
+// findChatPane picks the requested pane, or herdr's focused one when the caller
+// named none.
+func findChatPane(panes []pane, want string) (pane, bool) {
+	for _, p := range panes {
+		if want != "" {
+			if p.PaneID == want {
+				return p, true
+			}
+			continue
+		}
+		if p.Focused {
+			return p, true
+		}
+	}
+	return pane{}, false
+}
+
 // serveChat serves the focused pane's agent session as chat rows.
 //
 // Read-only, and resolved against THIS tab's host (reqHostBackend) — the pane
@@ -1594,29 +1688,24 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	panes, err := panesRaw(be)
-	if err != nil {
+	scr, err := chatScreenPane(be, r.URL.Query().Get("pane"))
+	switch {
+	case errors.Is(err, errChatNoPane):
+		http.Error(w, "pane not found", http.StatusNotFound)
+		return
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	want := r.URL.Query().Get("pane")
-	idx := -1
-	for i := range panes {
-		if want != "" {
-			if panes[i].PaneID == want {
-				idx = i
-				break
-			}
-		} else if panes[i].Focused {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		http.Error(w, "pane not found", http.StatusNotFound)
+	if scr.note != "" {
+		writeChat(w, chatPayload{Host: scr.host, Note: scr.note})
 		return
 	}
-	p := panes[idx]
+	// Everything below reads the pane's transcript, and it must read it on the
+	// machine that pane lives on: `be` is rebound to the screen's backend so the
+	// pane listing, the records, the stat and every byte of the file come from
+	// one host.
+	be, p := scr.be, scr.pane
 	// herdr's own view of the pane is what answers "is it generating right now",
 	// and it answers BEFORE the transcript can. Both harnesses write a COMPLETE
 	// assistant message, so the first seconds of every turn have no record at
