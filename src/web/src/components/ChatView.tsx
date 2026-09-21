@@ -1354,17 +1354,20 @@ export function ChatView({
   const running = data?.running ?? false
   // Closing the pane needs no navigation of lasso's own: the chat follows herdr's
   // focused pane, so the view has already moved on by the time the pane is gone.
-  // The host is the tab's (the chat reads the pane the tab's herdr has focused),
-  // which is what hostFetch addresses.
+  // Addressed to the PAYLOAD's host, not the tab's: the pane on screen is another
+  // machine's whenever the terminal is showing one (a selected herdr machine, an
+  // ssh attach — see chatScreenPane), and pane ids are unique per host only, so
+  // the tab's host would close whatever wears that id there.
   const paneID = data?.pane_id
+  const paneHost = data?.host
   const closePane = React.useCallback(async () => {
     if (!paneID) return
     try {
-      await api.close([paneID])
+      await api.close([paneID], paneHost)
     } catch (e) {
       toast.error(`could not close the pane: ${(e as Error).message}`)
     }
-  }, [paneID])
+  }, [paneID, paneHost])
   // An empty view that is a WAIT rather than a verdict (the agent is booting, or
   // its log has not been written yet) — the server's call, not an inference from
   // a clock: see the notes in chatview.go.
@@ -1603,7 +1606,11 @@ export function ChatView({
           now" can land in a different machine's pane of the same id. Keyed by
           target so switching panes remounts onto that target's own draft
           rather than carrying one agent's sentence over to another. */}
-      {data && (
+      {/* No pane, no composer: a payload that resolved no pane at all (the
+          terminal is showing a machine lasso could not read) has nothing to
+          address, and a field that answers a send with a 400 is worse than no
+          field. */}
+      {data?.pane_id && (
         <Composer
           key={`${data.host}\u0000${data.pane_id}`}
           host={data.host}
