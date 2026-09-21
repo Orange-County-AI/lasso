@@ -76,7 +76,7 @@ interface WiredDoc extends Document {
   __herdrWired?: boolean
   __touchScrollWired?: boolean
   __longPressRightClickWired?: boolean
-  __tapReconnectWired?: boolean
+  __reconnectWired?: boolean
 }
 interface OverlayNode extends HTMLElement {
   __herdrReconnectWatched?: boolean
@@ -544,14 +544,14 @@ function wireLongPressRightClick(doc: WiredDoc, win: TermWindow) {
   })
 }
 
-// ttyd's disconnect prompt is keyboard-only. On a NORMAL close (code 1000 — a
-// phone waking from sleep, a proxy idling the socket out) its client skips the
-// automatic retry, prints "Press ⏎ to Reconnect" and waits on a one-shot xterm
-// onKey listener. That key is out of reach on a phone: the software keyboard is
-// closed, and the only way to reopen it is to interact with a terminal that no
-// longer takes input. So relabel the prompt and let a tap press ⏎ for it — we
-// dispatch the same key event a hardware Enter would, so ttyd's own listener
-// does the reconnecting and none of its state is reached behind its back.
+// ttyd's disconnect prompt is keyboard-only: it prints "Press ⏎ to Reconnect"
+// and waits on a one-shot xterm onKey listener. That key is out of reach on a
+// phone — the software keyboard is closed, and the only way to reopen it is to
+// interact with a terminal that no longer takes input. So relabel the prompt
+// and let a tap press ⏎ for it; wireReconnect below also presses it on its own.
+// Either way we dispatch the same key event a hardware Enter would, so ttyd's
+// own listener does the reconnecting and none of its state is reached behind
+// its back.
 const TTYD_RECONNECT_TEXT = "Press ⏎ to Reconnect"
 const TAP_RECONNECT_TEXT = "Tap to Reconnect"
 
@@ -590,7 +590,32 @@ function relabelReconnect(doc: Document, overlay: HTMLElement) {
   overlay.style.left = `${(box.width - node.width) / 2}px`
 }
 
-function wireTapToReconnect(id: string, tries: number) {
+// How the automatic press is paced. The first attempt is quick enough that a
+// blip reads as "it never dropped"; each failure doubles, because the prompt
+// also arms when the SERVER is the thing that went away (a `lasso update`
+// restarting the binary, a host off the tailnet) and every attempt spawns a
+// fresh client process in the pty. A prompt that arms after a long healthy
+// stretch is a NEW incident rather than a failing retry, so it starts over.
+const reconnectFirstDelay = 400
+const reconnectMaxDelay = 15_000
+const reconnectHealthy = 60_000
+
+// wireReconnect presses ttyd's reconnect prompt for the user, and on a touch
+// device relabels it so a finger can press it too.
+//
+// ttyd stops retrying on its own after ANY WebSocket `error` event — its client
+// sets doReconnect=false in the error handler, so the close that follows prints
+// the prompt and waits, whatever the close code. A network blip, a phone waking
+// from sleep and an edge proxy tearing the socket down all take that path, and
+// so does a normal close (code 1000), for which it never retries at all.
+//
+// Nothing shows the drop while the chat or the agents grid covers the terminal,
+// so it surfaces as a dead pane at the moment you switch back. Pressing it
+// automatically is what makes a switch back look like the terminal never left.
+//
+// The press is ttyd's own one-shot Enter listener, so none of its state is
+// reached behind its back — the same route the tap takes.
+function wireReconnect(id: string, tries: number) {
   let win: TermWindow | null
   let doc: WiredDoc | null
   try {
@@ -602,11 +627,11 @@ function wireTapToReconnect(id: string, tries: number) {
   // ttyd builds .xterm after its own token fetch, so retry like the other
   // xterm-dependent wirings rather than binding to a terminal that isn't there.
   if (!win || !doc?.querySelector(".xterm")) {
-    if (tries < 20) setTimeout(() => wireTapToReconnect(id, tries + 1), 150)
+    if (tries < 20) setTimeout(() => wireReconnect(id, tries + 1), 150)
     return
   }
-  if (doc.__tapReconnectWired) return
-  doc.__tapReconnectWired = true
+  if (doc.__reconnectWired) return
+  doc.__reconnectWired = true
   const frameDoc = doc
   const coarse = win.matchMedia?.("(pointer: coarse)").matches ?? false
   // The iframe is same-origin, so its window IS a full DOM realm; only the
@@ -615,29 +640,86 @@ function wireTapToReconnect(id: string, tries: number) {
   const frameGlobals = win as Window & typeof globalThis
   const ObserverCtor = frameGlobals.MutationObserver
 
-  // Only a touch device gets the relabel: a mouse keeps ⏎, which is accurate
-  // there and is the affordance ttyd's own users know.
-  if (coarse) {
-    // The node is appended once and then only has its text rewritten, so watch
-    // the .xterm element for the append and the node itself for each message.
-    const watch = (overlay: OverlayNode) => {
-      relabelReconnect(frameDoc, overlay)
-      if (overlay.__herdrReconnectWatched) return
-      overlay.__herdrReconnectWatched = true
-      new ObserverCtor(() => relabelReconnect(frameDoc, overlay)).observe(
-        overlay,
-        { characterData: true, childList: true, subtree: true }
-      )
+  let attempt = 0
+  let lastArmed = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cancel = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+  }
+  // This document dies with the iframe (a host move remounts it), but the
+  // visibility listener below lives on the PARENT and outlives it.
+  const dead = () => !frameDoc.defaultView
+
+  const armAuto = () => {
+    if (dead()) {
+      cancel()
+      document.removeEventListener("visibilitychange", onVisible)
+      return
     }
-    const existing = ttydOverlay(frameDoc)
-    if (existing) watch(existing)
-    const host = frameDoc.querySelector(".xterm")
-    if (host) {
-      new ObserverCtor(() => {
-        const overlay = ttydOverlay(frameDoc)
-        if (overlay) watch(overlay)
-      }).observe(host, { childList: true })
-    }
+    if (timer !== undefined) return
+    if (!reconnectPrompt(frameDoc)) return
+    // Reconnecting a terminal nobody can see spawns a client for a hidden tab
+    // and, on a phone, races the freeze that dropped it in the first place.
+    // onVisible re-arms this on the way back.
+    if (document.visibilityState === "hidden") return
+    const now = Date.now()
+    if (now - lastArmed > reconnectHealthy) attempt = 0
+    lastArmed = now
+    const delay = Math.min(reconnectFirstDelay * 2 ** attempt, reconnectMaxDelay)
+    attempt += 1
+    timer = setTimeout(() => {
+      timer = undefined
+      if (dead() || !reconnectPrompt(frameDoc)) return
+      sendKeyToTerminal(id, "Enter")
+      // Re-arm from a timer rather than only from the overlay's next mutation:
+      // a press that lands gets one (ttyd swaps in "Reconnecting…"), but a
+      // press that goes nowhere — xterm's textarea gone, ttyd's one-shot key
+      // listener already spent — produces no mutation at all, and waiting on
+      // one would leave the terminal dead with nothing retrying it.
+      setTimeout(armAuto, 1500)
+    }, delay)
+  }
+
+  function onVisible() {
+    if (document.visibilityState !== "visible") return
+    // Coming back is a fresh look at the terminal, so try now rather than serve
+    // out a backoff that ran down while nobody could see the prompt.
+    attempt = 0
+    lastArmed = 0
+    cancel()
+    armAuto()
+  }
+  document.addEventListener("visibilitychange", onVisible)
+
+  // The node is appended once and then only has its text rewritten, so watch
+  // the .xterm element for the append and the node itself for each message.
+  // Every overlay message lands here; both handlers ignore the ones that are
+  // not the reconnect offer.
+  const onOverlay = (overlay: OverlayNode) => {
+    // Only a touch device gets the relabel: a mouse keeps ⏎, which is accurate
+    // there and is the affordance ttyd's own users know.
+    if (coarse) relabelReconnect(frameDoc, overlay)
+    armAuto()
+  }
+  const watch = (overlay: OverlayNode) => {
+    onOverlay(overlay)
+    if (overlay.__herdrReconnectWatched) return
+    overlay.__herdrReconnectWatched = true
+    new ObserverCtor(() => onOverlay(overlay)).observe(overlay, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    })
+  }
+  const existing = ttydOverlay(frameDoc)
+  if (existing) watch(existing)
+  const host = frameDoc.querySelector(".xterm")
+  if (host) {
+    new ObserverCtor(() => {
+      const overlay = ttydOverlay(frameDoc)
+      if (overlay) watch(overlay)
+    }).observe(host, { childList: true })
   }
 
   let lastTap = 0
@@ -664,6 +746,9 @@ function wireTapToReconnect(id: string, tries: number) {
     if (now - lastTap < 800) return
     lastTap = now
     event.preventDefault()
+    // A human beat the backoff to it, so the next drop starts over quick.
+    attempt = 0
+    cancel()
     sendKeyToTerminal(id, "Enter")
   }
   frameDoc.addEventListener(
@@ -705,7 +790,7 @@ export function wireTerminalIframe(
   if (win) {
     // Registered before the touch gestures so a tap that reconnects is never
     // consumed by the long-press handler's touchend.
-    wireTapToReconnect(id, 0)
+    wireReconnect(id, 0)
     wireTouchScroll(doc, win)
     if (suppressContext) wireLongPressRightClick(doc, win)
   }
