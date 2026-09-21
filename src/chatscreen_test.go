@@ -65,8 +65,15 @@ func chatPaneList(paneID, session string) string {
 // across tests, so it is cleared for each fixture.
 func chatFleet(t *testing.T, local, remote *chatScreenBackend) {
 	t.Helper()
-	resetPaneListCache()
-	t.Cleanup(resetPaneListCache)
+	// The pane.list cache is keyed by host and outlives a test, so both fakes'
+	// entries are stamped stale — otherwise the previous test's listing answers
+	// for this one's host of the same name.
+	clear := func() {
+		invalidatePaneList(local.name)
+		invalidatePaneList(remote.name)
+	}
+	clear()
+	t.Cleanup(clear)
 	stubSSHHosts(t, remote.name)
 	stubProbedHosts(t, remote.name)
 	prevFn := hostBackendFn
