@@ -10,11 +10,28 @@ holds a *completed* feature. It takes that branch all the way to a published
 release and then closes the agent. The final step kills this agent's terminal, so
 everything else must succeed first.
 
-End-to-end: **merge → bump → push → tag → wait for release → `lasso update` → close own herdr pane.**
+End-to-end: **sync → verify → merge → bump → tag → wait for release → `lasso update` → close own herdr pane.**
 
-This repo has **no auto-push git hook** — merging to local `main` does *not* reach
-GitHub on its own, and the GitHub Release is what `lasso update` pulls from. So we
-push `main` and the tag explicitly.
+**Assume the merge publishes itself.** Titan carries a GLOBAL
+`post-commit`/`post-merge` hook (`core.hooksPath = ~/.config/git/hooks`) that
+auto-pushes `main` to origin, so a commit or merge on `main` **is** the push — it
+happens before you can look at the result, and there is no local staging window in
+which to discover a red tree. Check once, and let the answer shape the run:
+
+```bash
+H=$(git config --get core.hooksPath)   # titan: ~/.config/git/hooks
+ls "${H:-.git/hooks}"/post-merge 2>/dev/null && echo "merging main auto-pushes it"
+```
+
+(It is a GLOBAL config, so this answers the same from any worktree — no need to
+wait for `$MAIN` below.)
+
+Either way the ordering below is the same, because it is built not to need that
+window: **everything is verified on the feature branch with main already merged
+INTO it**, where nothing is published and a conflict costs nothing. The explicit
+`git push origin main` in step 5 is then a no-op on titan and the real push on a
+box without the hook. The tag is never auto-pushed by anything, and the GitHub
+Release is what `lasso update` pulls from, so that push is always ours to make.
 
 > **Layout note:** all Go code lives under `src/` (the Go module root), the
 > frontend under `src/web/`, and the version source of truth is `src/version.go`.
@@ -31,11 +48,29 @@ push `main` and the tag explicitly.
    ```
    Abort if empty.
 
-## 1. Mirror CI locally (don't cut a red release)
+## 1. Bring main INTO the feature branch first
+
+This is the step that replaces the staging window the auto-push hook takes away.
+Another agent lands on `main` constantly, and a merge git resolves cleanly can
+still be **semantically** broken — this skill's own last run merged a test that
+called a helper a branch landing in parallel had deleted, and the hook published
+that the same second. Merging the other direction first puts the identical tree on
+the feature branch, where a break is a local problem:
+
+```bash
+git fetch origin
+git merge origin/main            # in THIS worktree, on the feature branch
+```
+
+Conflicts are resolved here, on the feature branch. If you can't resolve one with
+confidence, `git merge --abort` and report.
+
+## 2. Mirror CI locally (don't cut a red release)
 
 The release workflow only publishes binaries if the build is green, and a red
-`main` poisons every later agent. Run the same checks CI does, on the feature
-branch, **before** merging. From the worktree root:
+`main` poisons every later agent. Run the same checks CI does **on the branch you
+just merged main into** — that tree is what `main` is about to become, so this is
+the check that actually protects it. From the worktree root:
 
 ```bash
 mise run typecheck && mise run lint && ( cd src && go vet ./... && go test . )
@@ -47,14 +82,36 @@ point: `bun install` and Vite are the only third-party code in this repo, and on
 the host they execute beside the SSH key, the 1Password session and — on a
 workspace box — this org's entire exported credential set. Both boxes' install
 guards refuse a bare `bun install` on the first attempt for exactly that reason.
-The container is disposable: the first task on a fresh box builds it from the
-`dev-base` image in about a minute (`incus image list` must show `dev-base`). The
-Go half stays on the host — Go has no install hooks, and the binary has to be here
-anyway to drive herdr.
+The Go half stays on the host — Go has no install hooks, and the binary has to be
+here anyway to drive herdr.
+
+**A fresh `dev-lasso` on titan does NOT come up working today** (verified
+2026-09-21), so budget for it rather than being surprised. Two independent breaks,
+both in the container, neither in this repo's code:
+
+- **No `raw.idmap`, so the bind mount is unwritable.** `container_needs_idmap`
+  reads titan's `/etc/subuid` line `root:1000:1` as "the identity map already
+  applies" and skips the flag, so `src/web` mounts `nobody:nogroup` and
+  `bun install` dies with `EACCES ... could not create the "node_modules"
+  directory`. Fix on the existing container and restart it:
+  ```bash
+  incus config set dev-lasso raw.idmap="both 1000 1000" && incus restart dev-lasso
+  ```
+- **No DHCP lease on `incusbr0`**, so the container cannot reach npm at all
+  (`eth0` is up with no IPv4; `ConnectionRefused downloading tarball ...`). With no
+  network there is no way to install, so seed `node_modules` from a checkout that
+  already has one — a host-side copy, which executes nothing:
+  ```bash
+  cmp -s src/web/bun.lock "$MAIN/src/web/bun.lock" \
+    && cp -a "$MAIN/src/web/node_modules" src/web/node_modules
+  ```
+  Only when the lockfiles match. If they differ the deps genuinely changed and the
+  container needs its network back — stop and report rather than typechecking
+  against the wrong tree.
 
 If anything fails, **stop and report** — do not merge. Fix or hand back to the user.
 
-## 2. Merge the feature into main
+## 3. Merge the feature into main
 
 Work on the main worktree via `git -C "$MAIN"` so this agent's worktree is never
 checked out elsewhere:
@@ -65,10 +122,28 @@ git -C "$MAIN" merge --ff-only origin/main          # sync main with remote firs
 git -C "$MAIN" merge --no-ff "$feature" -m "Merge $feature"
 ```
 
-A `--no-ff` merge commit matches this repo's history (`Merge <branch>: …`). If the
-merge conflicts, abort it (`git -C "$MAIN" merge --abort`) and report — don't guess.
+A `--no-ff` merge commit matches this repo's history (`Merge <branch>: …`).
 
-## 3. Bump the version (this is "publishing a release" step 1)
+**This merge is the publish on titan** — the `post-merge` hook pushes `main` the
+instant it lands, and its output says so (`Merged into main branch, pushing to
+origin... Successfully pushed to origin/main`). Two consequences:
+
+- **A conflict here means step 1 was skipped or main moved since.** Abort
+  (`git -C "$MAIN" merge --abort`), go back to step 1, and re-verify — don't
+  resolve a conflict directly on `main`, where the resolution publishes itself.
+- **A break found after this point is fixed FORWARD on `main`**, with its own
+  commit. There is nothing to unwind: the bad tree is already on origin, and a
+  revert is one more published commit than a fix.
+
+If `origin/main` moved between step 1 and here (another agent landed), the
+`--ff-only` sync brings in code step 2 never checked. Cheap insurance, on `main`,
+before spending a version number on it:
+
+```bash
+( cd "$MAIN/src" && go vet ./... && go test . ) && ( cd "$MAIN" && mise run typecheck )
+```
+
+## 4. Bump the version (this is "publishing a release" step 1)
 
 `src/version.go` holds the single source of truth (`lassoSemver`). The release
 workflow refuses to publish unless the pushed tag equals it. Bump + commit on main
@@ -79,7 +154,13 @@ workflow refuses to publish unless the pushed tag equals it. Bump + commit on ma
 VER=$(grep -oP 'lassoSemver = "\K[0-9]+\.[0-9]+\.[0-9]+' "$MAIN/src/version.go")
 ```
 
-## 4. Push main, then the tag (triggers the GitHub release)
+## 5. Push main, then the tag (triggers the GitHub release)
+
+On titan the hook has already pushed `main` (the bump commit too), so the branch
+push below is an idempotent `Everything up-to-date`. Run it anyway: it is the real
+push on a box without the hook, and it proves the remote is reachable before a tag
+is cut that no release could be built from. **The tag is never auto-pushed** —
+that one is always ours.
 
 ```bash
 # Prove the remote is reachable BEFORE cutting a tag no release can be built from.
@@ -105,9 +186,9 @@ git -C "$MAIN" -c credential.helper='!gh auth git-credential' push "$R" "v$VER"
 
 If neither path works, **stop and report**. An unpushed tag publishes no release,
 and `lasso update` against a missing release silently leaves the old version
-running — which step 6's verification is the only thing that would catch.
+running — which step 7's verification is the only thing that would catch.
 
-## 5. Wait for the release to actually publish
+## 6. Wait for the release to actually publish
 
 `lasso update` pulls from the GitHub Release, which takes a few minutes to build
 and upload. Running update too early silently re-installs the *old* version (the
@@ -127,7 +208,7 @@ done
 If it never appears, check the run: `gh run list --repo Orange-County-AI/lasso --workflow release.yml`.
 Don't proceed to update against a missing/failed release.
 
-## 6. lasso update — then restart the daemon via **whatever owns the process**
+## 7. lasso update — then restart the daemon via **whatever owns the process**
 
 Clear the mise cache first so the new version is actually seen, then update:
 
@@ -230,12 +311,12 @@ root-owned, confirm `pgrep -nf 'lasso .*-listen'` is a *new* pid, and re-check
 `/api/version`. A second lasso on `:8090` means the `lasso restart` branch ran by
 mistake — `lasso stop` kills that one; never SIGKILL the supervised pid.)
 
-## 7. Close this agent — do this LAST
+## 8. Close this agent — do this LAST
 
 Close **this agent's own herdr pane**. Herdr can perform this self-close
 directly; no `close_agent` MCP call or lasso round-trip is required. This
 terminates the terminal this agent is running in, so nothing after it runs. Only
-reach here once steps 1–6 succeeded.
+reach here once steps 1–7 succeeded.
 
 ```bash
 herdr pane close "$HERDR_PANE_ID"   # confirm with `herdr pane current` if unset
