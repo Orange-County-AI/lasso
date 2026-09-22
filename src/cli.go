@@ -32,6 +32,7 @@ import (
 //	lasso mcp             call any of lasso's MCP tools from a shell
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
+//	lasso skill           print lasso's agent skill (SKILL.md) to stdout
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
@@ -84,6 +85,9 @@ func main() {
 		case "mcp-group":
 			cliMCPGroup(os.Args[2:])
 			return
+		case "skill":
+			cliSkill(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Println(lassoVersion())
 			return
@@ -120,6 +124,7 @@ usage:
   lasso mcp [tool] [flags] call lasso's MCP tools (no tool = list them)
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
+  lasso skill              print lasso's agent skill (SKILL.md) to stdout
   lasso version            print the version
 
 run "lasso -h" style flags after serve/start/restart; see the README for details.
