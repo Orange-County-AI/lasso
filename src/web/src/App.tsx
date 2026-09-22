@@ -1,4 +1,5 @@
 import {
+  Bot,
   Files,
   Gauge,
   Globe,
@@ -15,6 +16,7 @@ import {
   Server,
   Settings,
   SquareTerminal,
+  SquareX,
   Users,
   X,
 } from "lucide-react"
@@ -22,6 +24,7 @@ import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { AgentSidebar } from "@/components/AgentSidebar"
+import { AgentsTab } from "@/components/AgentsTab"
 import { AgentsView } from "@/components/AgentsView"
 import { BrowserTab } from "@/components/BrowserTab"
 import { ChatView } from "@/components/ChatView"
@@ -34,6 +37,16 @@ import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
 import { UsageFooter } from "@/components/UsageFooter"
 import { UsageTab } from "@/components/UsageTab"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
@@ -42,6 +55,8 @@ import {
 } from "@/components/ui/resizable"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { agentName, paneKey, useAgents } from "@/lib/agents"
+import { api } from "@/lib/api"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
@@ -71,6 +86,9 @@ type RightView =
   | "terminal"
   | "usage"
   | "settings"
+  // Below md only: the fleet's agents, which at md+ is the docked column beside
+  // the chat instead (AgentsTab, AgentSidebar).
+  | "agents"
 // The left column's faces: the terminal, the focused session read as a
 // conversation (ChatView), and the fleet as parallel conversations (AgentsView).
 // Not a RightView — the sidebar and the left column answer different questions,
@@ -259,9 +277,14 @@ function Shell() {
   // The active host (SSE-driven), mirrored into a ref so the (referentially
   // stable) popstate handler always sees the current one. herdr's focused pane
   // is deliberately NOT part of the URL — see lib/url.
-  const { host } = useApp()
+  const { host, activePaneID } = useApp()
   const hostRef = React.useRef(host)
   hostRef.current = host
+  // The Agents tab's own two header actions need a name for the pane they would
+  // end. The list is a shared query cache, so this second observer costs an
+  // entry rather than a second poll (lib/agents).
+  const { agents, current } = useAgents()
+  const currentAgent = agents.find((p) => paneKey(p) === current)
 
   const savedLayout = React.useMemo<Layout | undefined>(() => {
     try {
@@ -371,6 +394,45 @@ function Shell() {
     collapseSidebar()
     if (leftView === "terminal") focusHerdrTerminal()
   }, [collapseSidebar, leftView])
+
+  // Picking an agent from the sidebar's Agents tab closes the panel — below md
+  // it covers the very view that answers the tap — but does NOT hand the keyboard
+  // to the terminal the way ✕ does. A pick is "show me that one", not "let me
+  // type": focusing xterm here would pop a phone's on-screen keyboard over a
+  // session nobody has asked to type into yet.
+  const dismissSidebar = React.useCallback(() => {
+    markSidebarIntent()
+    collapseSidebar()
+  }, [collapseSidebar])
+
+  // The Agents tab is md:hidden — at md+ the same list is the chat's docked
+  // column — so a window widened across the breakpoint while it is selected would
+  // leave a pane showing with no lit trigger above it. Fall back to Files, which
+  // is where the strip starts.
+  React.useEffect(() => {
+    if (rightView !== "agents") return
+    const mq = window.matchMedia("(min-width: 768px)")
+    const check = () => {
+      if (mq.matches) setRightView("files")
+    }
+    check()
+    mq.addEventListener("change", check)
+    return () => mq.removeEventListener("change", check)
+  }, [rightView])
+
+  // Closing the focused pane, offered beside the agent it belongs to (the Agents
+  // tab's header). herdr's own pane.close is what ends the agent in it — there is
+  // no softer "detach" — so it is asked before it happens, exactly as the chat's
+  // md+ glyph asks.
+  const [confirmClose, setConfirmClose] = React.useState(false)
+  const closeActivePane = React.useCallback(async () => {
+    if (!activePaneID) return
+    try {
+      await api.close([activePaneID], host ?? undefined)
+    } catch (e) {
+      toast.error(`could not close the pane: ${(e as Error).message}`)
+    }
+  }, [activePaneID, host])
 
   // The footer button is separate from the menu's mobile-capable anchor.
   // Capture its pointer-down state before Radix's outside-click dismissal, so
@@ -538,7 +600,6 @@ function Shell() {
                   {chatSidebar && <AgentSidebar />}
                   <ChatView
                     className="min-w-0 flex-1"
-                    onNewAgent={openNew}
                     onShowTerminal={() => setLeftView("terminal")}
                     onShowSidebar={openSidebar}
                   />
@@ -607,6 +668,16 @@ function Shell() {
             >
               <FitTabs
                 tabs={[
+                  // Agents leads, and only below md: this panel IS a phone's
+                  // chrome, so the list of what you could be reading belongs
+                  // before the files you are reading. At md+ the chat's docked
+                  // column is the same list and this tab is not rendered.
+                  {
+                    value: "agents",
+                    label: "Agents",
+                    icon: Bot,
+                    className: "md:hidden",
+                  },
                   {
                     value: "files",
                     label: "Files",
@@ -631,20 +702,55 @@ function Shell() {
                   { value: "settings", label: "Settings", icon: Settings },
                 ]}
                 trailing={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="mr-1 ml-1 flex-none self-center md:hidden"
-                    title="Close sidebar"
-                    aria-label="Close sidebar"
-                    onClick={closeSidebar}
-                  >
-                    <X />
-                  </Button>
+                  <>
+                    {/* Scoped to the Agents tab on purpose. Both act on an AGENT
+                        — one makes the next, one ends the focused one — and a
+                        destructive button parked in the strip while someone reads
+                        Settings is aimed at something off screen. Here they sit
+                        beside the row they are about. */}
+                    {rightView === "agents" && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="ml-1 flex-none self-center md:hidden"
+                          title="New agent"
+                          aria-label="New agent"
+                          onClick={openNew}
+                        >
+                          <Plus />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="flex-none self-center md:hidden"
+                          title="Close this pane"
+                          aria-label="Close this pane"
+                          disabled={!activePaneID}
+                          onClick={() => setConfirmClose(true)}
+                        >
+                          <SquareX />
+                        </Button>
+                      </>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="mr-1 ml-1 flex-none self-center md:hidden"
+                      title="Close sidebar"
+                      aria-label="Close sidebar"
+                      onClick={closeSidebar}
+                    >
+                      <X />
+                    </Button>
+                  </>
                 }
               />
 
               <div className="relative min-h-0 flex-1">
+                <Pane show={rightView === "agents"}>
+                  <AgentsTab onPick={dismissSidebar} />
+                </Pane>
                 <Pane show={rightView === "files"}>
                   <FilesPanel />
                 </Pane>
@@ -690,15 +796,39 @@ function Shell() {
           tab={newTab}
           onTabChange={setNewTab}
           // Both chats' creator is agents-only (see the dialog): the footer's New
-          // and the chat header's both land here, so the entry points cannot
-          // disagree about what a reading view can make. Derived rather than
-          // latched because the modal blocks the page: nothing can change the
-          // view out from under it.
-          agentsOnly={leftView !== "terminal"}
+          // and the sidebar's Agents tab both land here, so the entry points
+          // cannot disagree about what a reading view can make. The Agents tab
+          // counts whatever the left column shows — its button says "New agent",
+          // and below md (the only width that tab exists at) it is the only New
+          // on screen. Derived rather than latched because the modal blocks the
+          // page: nothing can change the view out from under it.
+          agentsOnly={leftView !== "terminal" || rightView === "agents"}
         />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        {/* Asked, not done — the same question the chat's own glyph asks at md+,
+            because it ends the same thing. The transcript stays on disk either
+            way, which is the part worth saying out loud: the conversation is not
+            what is being closed. */}
+        <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Close this pane?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Herdr closes{" "}
+                {currentAgent ? agentName(currentAgent) : "this pane"} and the
+                agent running in it stops. Its transcript stays on disk.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={closeActivePane}>
+                Close pane
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
       {/* The app's only chrome. There is no header and no floating navigation,
         so this footer is always present at desktop widths and has no visibility
