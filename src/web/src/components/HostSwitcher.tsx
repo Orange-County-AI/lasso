@@ -94,6 +94,21 @@ function versionOlder(a: string | undefined, b: string | undefined): boolean {
   return false
 }
 
+// staleServer reports that a host is running an OLDER herdr than the one
+// installed on it — herdr's own server_binary_stale. It happens whenever an
+// update replaces the binary without the running server going with it: no
+// protocol break forced a restart, or the live handoff didn't take.
+//
+// It is its own state because the update button cannot clear it. herdr's next
+// run short-circuits on "already up to date" and never offers the swap again,
+// so the row would report the same old version however many times it is
+// pressed — which is exactly the loop this state exists to stop. Only
+// restarting that host's herdr picks the new binary up, and lasso won't do that
+// for it: a server it stops may be unsupervised, with no way back up.
+function staleServer(h: HostInfo): boolean {
+  return h.reachable && h.running && !!h.stale
+}
+
 // upgradable reports whether a selectable (compatible) host runs an older herdr
 // than this box — a `herdr update` would bring it up to date even though the
 // protocol already matches. localVersion is this machine's herdr version, the
@@ -226,9 +241,13 @@ export function HostSwitcher({
             ? await api.updateHost(alias)
             : await api.provisionHost(alias)
         if (res.ok) {
+          // Say when it took root. A host that has quietly started needing sudo
+          // for every update is worth knowing about, and this is the only place
+          // it shows. (Only the update response carries the field.)
+          const sudo = "elevated" in res && res.elevated === true
           toast.success(
             kind === "update"
-              ? `Updated herdr on ${alias}`
+              ? `Updated herdr on ${alias}${sudo ? " (needed sudo)" : ""}`
               : `Set up herdr on ${alias}`
           )
           void load(true) // re-probe; the host should now be selectable
@@ -337,8 +356,14 @@ export function HostSwitcher({
     // A compatible host on an older herdr can still be updated in place; an
     // incompatible host that's behind must be updated to be usable. Neither is
     // offered while the host's probe has no verdict.
-    const canUpgrade = upgradable(h, localVer)
-    const canUpdate = !waiting && (canUpgrade || (!ok && behind(h, localProto)))
+    // A stale server takes the update off the table rather than offering one
+    // that herdr will answer with "already up to date" — see staleServer. The
+    // host loses nothing it can use: if it is also behind the latest release,
+    // the button comes back once the restart it actually needs has happened.
+    const stale = staleServer(h)
+    const canUpgrade = !stale && upgradable(h, localVer)
+    const canUpdate =
+      !stale && !waiting && (canUpgrade || (!ok && behind(h, localProto)))
     const canProvision = !ok && !canUpdate && provisionable(h)
     const action = canUpdate
       ? ("update" as const)
@@ -381,9 +406,21 @@ export function HostSwitcher({
             : "set up"}
       </button>
     )
+    // The tooltip carries herdr's own sentence (the server reports that now, not
+    // a bare "exit status 1"), so a chip this small still explains itself.
     const errBadge = err && (
       <span className="shrink-0 text-[10px] text-warn" title={err}>
         failed
+      </span>
+    )
+    // Muted, not warn: the host is perfectly usable, it is just not running what
+    // is installed on it.
+    const staleBadge = stale && (
+      <span
+        className="shrink-0 text-[10px] text-muted-foreground"
+        title={`${h.alias} has a newer herdr installed than the ${h.version} server it is running. Restart herdr on ${h.alias} to pick it up — an update won't, it reports the host as already up to date.`}
+      >
+        restart needed
       </span>
     )
     return (
@@ -409,11 +446,13 @@ export function HostSwitcher({
             <span className="text-[10px] text-muted-foreground">
               {h.version}
             </span>
+            {staleBadge}
             {errBadge}
             {canUpgrade && actionButton}
           </span>
         ) : action ? (
           <span className="flex items-center gap-1.5">
+            {staleBadge}
             {errBadge}
             {actionButton}
           </span>
@@ -431,8 +470,14 @@ export function HostSwitcher({
             )}
           </span>
         ) : (
-          <span className="truncate text-[10px] text-warn">
-            {h.err || "unavailable"}
+          // Unusable and not actionable. The stale hint still belongs here: it
+          // is the answer to "why is there no update button on a host that is
+          // plainly behind".
+          <span className="flex min-w-0 items-center gap-1.5">
+            {staleBadge}
+            <span className="truncate text-[10px] text-warn">
+              {h.err || "unavailable"}
+            </span>
           </span>
         )}
         {active === h.alias && <Check className="size-3.5" />}
