@@ -1,6 +1,7 @@
 import * as React from "react"
 import { DiffTab } from "@/components/DiffTab"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
+import { FileViewer } from "@/components/FileViewer"
 import {
   type FileChange,
   FilesTab,
@@ -9,17 +10,8 @@ import {
 import { Orb } from "@/components/ui/orb"
 import { useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
-import { lazyWithReload } from "@/lib/lazy"
 import { usePaneFocusPending } from "@/lib/pane-focus"
 import { cn } from "@/lib/utils"
-
-// The file viewer pulls in CodeMirror + react-markdown; load it only on first
-// file open so the initial page stays light. lazyWithReload rather than
-// React.lazy because that chunk's name changes with every build, and a tab
-// open across a self-update asks for one the running binary no longer has.
-const FileViewer = lazyWithReload(() =>
-  import("@/components/FileViewer").then((m) => ({ default: m.FileViewer }))
-)
 
 type SubView = "files" | "diff"
 
@@ -201,13 +193,16 @@ export function FilesPanel() {
 
         {viewer && (
           // Keyed on the pane so browsing elsewhere clears a failure rather
-          // than carrying it to the next file.
+          // than carrying it to the next file. The viewer is imported
+          // statically — see the note in FileViewer.tsx — so what this catches
+          // is a render error from the file itself (a mermaid fence, a preview
+          // that throws), never a missing chunk.
           <ErrorBoundary
             key={pane}
             label="file viewer"
             fallback={(_err, retry) => (
               <div className="vsurface absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background text-muted-foreground text-xs">
-                <div>the file viewer failed to load.</div>
+                <div>the file viewer hit an error.</div>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -234,16 +229,14 @@ export function FilesPanel() {
               </div>
             )}
           >
-            <React.Suspense fallback={null}>
-              <FileViewer
-                key={pane}
-                path={viewer.path}
-                host={viewer.host}
-                initialDraft={initialDraft}
-                onDraftChange={saveDraft}
-                onClose={() => setViewer(null)}
-              />
-            </React.Suspense>
+            <FileViewer
+              key={pane}
+              path={viewer.path}
+              host={viewer.host}
+              initialDraft={initialDraft}
+              onDraftChange={saveDraft}
+              onClose={() => setViewer(null)}
+            />
           </ErrorBoundary>
         )}
 
