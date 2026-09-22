@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import {
   AlertTriangle,
-  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -10,11 +9,9 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
-  Menu,
   PanelRightOpen,
   Paperclip,
   Pencil,
-  Plus,
   Search,
   Send,
   SquareTerminal,
@@ -25,7 +22,6 @@ import {
 } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
-import { AgentPicker } from "@/components/AgentPicker"
 import { Markdown, resolveMarkdownSrc } from "@/components/Markdown"
 import {
   AlertDialog,
@@ -37,13 +33,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
@@ -1172,20 +1161,17 @@ function Composer({
 
 export function ChatView({
   onShowTerminal,
-  onNewAgent,
   onShowSidebar,
   className,
 }: {
   onShowTerminal: () => void
-  // The chat's own creator, for the widths where the footer's New button is not
-  // on screen. App decides what it opens; this only says where it is (see the
-  // header).
-  onNewAgent: () => void
-  // lasso's right sidebar (Files, Diff, Settings). An OPEN, not a toggle: below
-  // md that panel overlays the whole screen, so the header carrying this menu is
-  // only reachable while it is collapsed. It is the only pointer route to it
-  // from the chat on a phone — the footer is md+ and the input dial's `sidebar`
-  // command lives inside the terminal iframe this view covers.
+  // lasso's right sidebar (Files, Agents, Settings). An OPEN, not a toggle:
+  // below md that panel overlays the whole screen, so the header carrying this
+  // button is only reachable while it is collapsed. It is the only pointer route
+  // to it from the chat on a phone — the footer is md+ and the input dial's own
+  // sidebar button lives inside the terminal iframe this view covers. It is also
+  // the way to the agent list and the creator there, both of which live in that
+  // panel below md.
   onShowSidebar: () => void
   // Merged onto the root. The view is a flex ROW's second child whenever the
   // agent sidebar is beside it (see App.tsx), and it has to be told to take the
@@ -1193,13 +1179,9 @@ export function ChatView({
   className?: string
 }) {
   const { activePaneID, panesRev, host } = useApp()
-  // The agent sheet, for the widths that have no docked column to put beside the
-  // chat (see AgentPicker). Per-view state: the sheet is a transient way to pick
-  // a conversation, so it does not survive leaving the chat.
-  const [pickerOpen, setPickerOpen] = React.useState(false)
   // The pane-close confirmation. Closing is herdr's own pane.close — what ends
-  // the agent in the pane; there is no softer "detach" — and on a phone it is
-  // two taps away in a menu, so it is asked before it happens rather than done.
+  // the agent in the pane; there is no softer "detach" — so it is asked before it
+  // happens rather than done.
   const [confirmClose, setConfirmClose] = React.useState(false)
   // The view follows the focused pane, so the chat is always the session the
   // terminal beside it would be showing. Polled: the transcript is a file the
@@ -1436,9 +1418,7 @@ export function ChatView({
     // elements inside float on it like the rest of the chrome.
     <div
       className={cn(
-        // relative: the agent sheet is an overlay INSIDE this view, so it covers
-        // the conversation and the composer rather than the whole window.
-        "vsurface relative flex h-full min-h-0 flex-col bg-background",
+        "vsurface flex h-full min-h-0 flex-col bg-background",
         className
       )}
     >
@@ -1459,56 +1439,42 @@ export function ChatView({
           )}
           {data?.tokens ? <span>{Math.round(data.tokens / 1000)}k</span> : null}
         </span>
-        {/* Below md, one glyph opens the header's actions. Three icons plus a
-            fourth would crowd a phone's title row, and a menu can name each one
-            where a glyph has to be guessed at: this is the only chrome a phone
-            has, so what it does needs to be legible rather than dense. The agent
-            list is here because below md the docked column hides itself and the
-            footer does not exist; Sidebar, for the same reason and with no other
-            route at all on a phone (the dial that carries it is inside the
-            terminal iframe this view covers); Terminal, because the footer's
-            toggle is the desktop's way back; New agent, because the footer's
-            creator is — and the chat's own dialog is agents-only there (see
-            App's agentsOnly). The two panels lead, then the two navigations. */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              title="Chat actions"
-              aria-label="Chat actions"
-              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
-            >
-              <Menu className="size-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setPickerOpen(true)}>
-              <Bot className="size-3.5" />
-              Agents
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowSidebar}>
-              <PanelRightOpen className="size-3.5" />
-              Sidebar
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowTerminal}>
-              <SquareTerminal className="size-3.5" />
-              Terminal
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onNewAgent}>
-              <Plus className="size-3.5" />
-              New agent
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setConfirmClose(true)}>
-              <SquareX className="size-3.5" />
-              Close pane
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* Below md these two are the chat's whole chrome, as buttons rather
+            than items under one glyph: the menu they replace carried five, and
+            three of those have moved into the sidebar panel — the agent list is a
+            tab there now, and New agent and Close pane are its header's own
+            controls — which leaves exactly the two that are about this VIEW
+            rather than about an agent. Two icons fit a phone's title row where
+            four did not, and a destination one tap away beats a named item two
+            taps in. Sidebar is the only pointer route to that panel from the chat
+            on a phone (the footer is md+, and the dial's own sidebar button is
+            inside the terminal iframe this view covers); Terminal is the way
+            back, which the footer's toggle is at md+. Sidebar takes the outer
+            edge, where the panel it opens comes from and where the footer keeps
+            its own sidebar control at md+. */}
+        <button
+          type="button"
+          onClick={onShowTerminal}
+          title="Show the terminal"
+          aria-label="Show the terminal"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+        >
+          <SquareTerminal className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={onShowSidebar}
+          title="Open the sidebar"
+          aria-label="Open the sidebar"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+        >
+          <PanelRightOpen className="size-4" />
+        </button>
         {/* And at md+ this is the one action the header keeps: the footer already
             carries Agents (its left-hand toggle), Terminal and New, but nothing
             anywhere closes a pane — so the chat, which is where you are looking
-            at the pane in question, is where that belongs. */}
+            at the pane in question, is where that belongs. Below md the sidebar's
+            Agents tab carries it instead, next to the agent whose pane it ends. */}
         <button
           type="button"
           onClick={() => setConfirmClose(true)}
@@ -1674,14 +1640,10 @@ export function ChatView({
         />
       )}
 
-      {/* Last, so it covers the header, the transcript and the composer alike —
-          the whole view is what a sheet replaces while it is open. */}
-      {pickerOpen && <AgentPicker onClose={() => setPickerOpen(false)} />}
-
       {/* Asked, not done: this ends the agent in the pane, and the tap that
-          reaches it is one glyph away on the desktop and two in a menu on a
-          phone. The transcript stays on disk either way, which is the part worth
-          saying out loud — the conversation is not what is being closed. */}
+          reaches it is one glyph away. The transcript stays on disk either way,
+          which is the part worth saying out loud — the conversation is not what
+          is being closed. */}
       <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
         <AlertDialogContent>
           <AlertDialogHeader>

@@ -29,6 +29,10 @@ export const qk = {
   // on this tab's pane-list revision so a create, a close or a rename on the host
   // you are looking at lands on the SSE bump rather than at the next poll.
   allPanes: (rev: number) => ["all-panes", rev] as const,
+  // Every revision's entry at once: what to drop when the fleet's panes are
+  // known to have changed under us (a pane closed on ANOTHER host, which this
+  // tab's panes_rev does not carry).
+  allPanesAny: ["all-panes"] as const,
   // The host is the cwd's host (which can differ from the active one; see
   // useDiff) so one host's diff is never served for another's cwd.
   diff: (host: string, path: string) => ["diff", host, path] as const,

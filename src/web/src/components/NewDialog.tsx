@@ -982,7 +982,7 @@ export function NewDialog({
           // keystrokes at a terminal nobody is looking at (the same reason
           // entering the chat blurs it). So the chat's creator drops focus
           // instead — the composer takes it on the next tap, as it does after a
-          // pick in the agent sheet.
+          // pick in the sidebar's Agents tab.
           e.preventDefault()
           if (agentsOnly) blurHerdrTerminal()
           else focusHerdrTerminal()

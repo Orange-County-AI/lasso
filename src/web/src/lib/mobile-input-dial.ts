@@ -17,10 +17,20 @@ const TRACKING_CLASS = "__lasso_mobile_input_dial_tracking"
 const HOLD_MS = 140
 const ROOT_SIZE = 58
 const ITEM_SIZE = 54
-// The dedicated chat button, which sits diagonally above-right of the root.
-// Deliberately smaller than ROOT_SIZE: it is a destination, not the control you
-// are operating, and it must not read as a second dial.
-const CHAT_SIZE = 44
+// The two dedicated destination buttons, above-right and below-right of the
+// root: chat, and the app's right sidebar. Deliberately smaller than ROOT_SIZE —
+// they are destinations, not the control you are operating, and neither may read
+// as a second dial — but not smaller than the 44px a thumb needs.
+const SAT_SIZE = 44
+// How far the dial's own box floats above the safe-area inset. It is NOT the 18px
+// the root itself wants: the satellite BELOW the root hangs 41px past that box
+// (its centre sits 48px under the root's, plus its 22px radius, less the box's
+// own 29px half-height), so the box is lifted by exactly that much to land the
+// lowest button on the same 18px line the root used to sit on. The group grows
+// upward only, which is why TERMINAL_BOTTOM_GAP is unchanged — the lowest painted
+// pixel of the dial is where it always was.
+const SAT_DROP = 41
+const DIAL_BOTTOM = 18 + SAT_DROP
 const BACK_RADIUS = 44
 const TERMINAL_BOTTOM_GAP = 24
 // The width at which the footer — the only other route to New, both sidebars,
@@ -53,7 +63,8 @@ type DialTarget = {
 // left free on purpose: that space belongs to the dedicated chat button above
 // the root (.dial-chat), which is a destination rather than one of the
 // terminal's input controls, and belongs one tap away rather than on an arc
-// where a target is a hold-and-slide from its neighbour.
+// where a target is a hold-and-slide from its neighbour. The sidebar
+// (.dial-sidebar) left the arc for the same reason and sits below the root.
 const ROOT_TARGETS: readonly DialTarget[] = [
   {
     id: "new",
@@ -87,6 +98,10 @@ const ROOT_TARGETS: readonly DialTarget[] = [
   },
 ]
 
+// Two, since Sidebar left for its own button below the root. They take the root
+// arc's own two lower points rather than keeping their old ad-hoc radii, so both
+// levels are read off one r=220 arc at one 29° spacing and the level change moves
+// a target along the arc instead of onto a different curve.
 const APP_TARGETS: readonly DialTarget[] = [
   {
     id: "search",
@@ -94,8 +109,8 @@ const APP_TARGETS: readonly DialTarget[] = [
     glyph: "⌕",
     kind: "command",
     command: "search",
-    x: -160,
-    y: -120,
+    x: -190,
+    y: -112,
     width: 96,
   },
   {
@@ -104,19 +119,9 @@ const APP_TARGETS: readonly DialTarget[] = [
     glyph: "@",
     kind: "command",
     command: "host",
-    x: -92,
+    x: -112,
     y: -190,
     width: 80,
-  },
-  {
-    id: "sidebar",
-    label: "Sidebar",
-    glyph: "▣",
-    kind: "command",
-    command: "sidebar",
-    x: -5,
-    y: -235,
-    width: 104,
   },
 ]
 
@@ -213,7 +218,7 @@ function dialCSS(): string {
 ${sel} {
   position: fixed;
   right: calc(18px + env(safe-area-inset-right, 0px));
-  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(${DIAL_BOTTOM}px + env(safe-area-inset-bottom, 0px));
   width: ${ROOT_SIZE}px;
   height: ${ROOT_SIZE}px;
   z-index: 2147483000;
@@ -287,30 +292,32 @@ ${sel} .dial-menu {
   inset: 0;
   pointer-events: none;
 }
-/* The dedicated way into chat mode: a destination rather than one of the
-   terminal's input controls (on the arc it would be one hold-and-slide from the
-   wrong target), sitting up and to the RIGHT of the root instead of stacked
-   above it. The two circles must NOT overlap — that needs their centres 51px
-   apart, 58/2 + 44/2 — while the smaller one's bottom edge still has to drop
-   BELOW the root's top line, which needs dy < 51. So the offset has to be bought
-   with dx, and the screen edge caps dx: this spends 11px of it past the root's
-   box, leaving 4px to the edge against the root's own 18px inset. Hence ~66°
-   above horizontal and a 3px drop, rims ~1.4px clear. The drop and the angle
-   trade against each other and against that margin: a 6px drop at the same
-   margin puts the rims back through each other, which is the state this
-   replaced, so the angle gives way to the separation. Each circle owns its own
-   hit area outright. It wears the closed root's recipe (a ~15% wash behind the
-   lifted edge), so it is the same chrome at a smaller size; the glyph is the
-   arc's old Chat glyph. */
-${sel} .dial-chat {
+/* The two destinations — chat above the root, the app's right sidebar below it —
+   rather than targets on the arc, where each would be one hold-and-slide from the
+   wrong neighbour. Both sit to the RIGHT of the root rather than stacked on its
+   axis: the circles must NOT overlap, which needs their centres 51px apart
+   (58/2 + 44/2), while the smaller one still has to break the root's top (or
+   bottom) line, which needs |dy| < 51. So the separation is bought with dx, and
+   the screen edge caps dx: this spends 11px of it past the root's box, leaving
+   4px to the edge against the root's own 18px inset. Hence ~66° off horizontal
+   and a 3px overlap of the box, rims ~1.4px clear. The drop and the angle trade
+   against each other and against that margin: a 6px drop at the same margin puts
+   the rims back through each other, which is the state this replaced, so the
+   angle gives way to the separation. The two are exact mirrors (a bottom offset
+   against the same top offset, off the same left edge), which is what makes them read as one column beside the
+   root, and each circle owns its own hit area outright. They wear the closed
+   root's recipe (a ~15% wash behind the lifted edge), so they are the same chrome
+   at a smaller size; the glyphs are the ones the arc's own Chat and Sidebar
+   targets carried. */
+${sel} .dial-chat,
+${sel} .dial-sidebar {
   position: absolute;
   left: calc(100% - 30px);
-  bottom: calc(100% - 3px);
   z-index: 3;
   display: grid;
   place-items: center;
-  width: ${CHAT_SIZE}px;
-  height: ${CHAT_SIZE}px;
+  width: ${SAT_SIZE}px;
+  height: ${SAT_SIZE}px;
   padding: 0;
   border: 1px solid var(--dial-edge);
   border-radius: 50%;
@@ -321,14 +328,23 @@ ${sel} .dial-chat {
   touch-action: none;
   transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-${sel} .dial-chat:hover {
+${sel} .dial-chat {
+  bottom: calc(100% - 3px);
+}
+${sel} .dial-sidebar {
+  top: calc(100% - 3px);
+}
+${sel} .dial-chat:hover,
+${sel} .dial-sidebar:hover {
   background: color-mix(in srgb, var(--h-hover, #1a1a1a) 72%, transparent);
 }
-${sel} .dial-chat:active {
+${sel} .dial-chat:active,
+${sel} .dial-sidebar:active {
   background: color-mix(in srgb, var(--h-panel, #111) 82%, transparent);
   transform: scale(.94);
 }
-${sel} .dial-chat:focus-visible {
+${sel} .dial-chat:focus-visible,
+${sel} .dial-sidebar:focus-visible {
   outline: 2px solid var(--h-accent, #fff);
   outline-offset: 3px;
 }
@@ -625,41 +641,66 @@ function buildTerminalInputDial(win: Window, id: string): () => void {
   root.setAttribute("aria-label", "Open input controls")
   root.setAttribute("aria-expanded", "false")
 
-  // The way into chat mode. It is not a dial target because it is a destination
-  // rather than an input control, and because the arc asks for a hold-and-slide
-  // that a plain "go there" should not: one tap, always in the same place,
-  // whatever level the dial is on. preventDefault on the gesture is what keeps
-  // the software keyboard up (the same reason the root and the items do it), and
-  // the command goes out on the UP — a finger that slid off is a cancel, which
-  // matters because a touch pointer is implicitly captured and its up lands here
-  // even when it ended somewhere else.
-  const chatButton = doc.createElement("button")
-  chatButton.type = "button"
-  chatButton.className = "dial-chat"
-  // The glyph the arc's Chat target carried, so the control reads the same as
-  // the one it replaces.
-  chatButton.textContent = "☰"
-  chatButton.title = "Chat"
-  chatButton.setAttribute("aria-label", "Read this session as chat")
-  let chatDown: { x: number; y: number } | null = null
-  on(chatButton, "pointerdown", (event: Event) => {
-    event.preventDefault()
-    const p = event as PointerEvent
-    chatDown = { x: p.clientX, y: p.clientY }
-  })
-  on(chatButton, "pointerup", (event: Event) => {
-    event.preventDefault()
-    const p = event as PointerEvent
-    const from = chatDown
-    chatDown = null
-    if (from && Math.hypot(p.clientX - from.x, p.clientY - from.y) > 12) return
-    emitMobileCommand("chat")
-  })
-  on(chatButton, "pointercancel", () => {
-    chatDown = null
-  })
+  // The two destinations. Neither is a dial target: they are places to go rather
+  // than input controls, and the arc asks for a hold-and-slide that a plain "go
+  // there" should not — one tap, always in the same place, whatever level the
+  // dial is on. preventDefault on the gesture is what keeps the software keyboard
+  // up (the same reason the root and the items do it), and the command goes out
+  // on the UP — a finger that slid off is a cancel, which matters because a touch
+  // pointer is implicitly captured and its up lands here even when it ended
+  // somewhere else.
+  const satellite = (
+    className: string,
+    glyph: string,
+    title: string,
+    label: string,
+    command: MobileCommand
+  ) => {
+    const button = doc.createElement("button")
+    button.type = "button"
+    button.className = className
+    button.textContent = glyph
+    button.title = title
+    button.setAttribute("aria-label", label)
+    let down: { x: number; y: number } | null = null
+    on(button, "pointerdown", (event: Event) => {
+      event.preventDefault()
+      const p = event as PointerEvent
+      down = { x: p.clientX, y: p.clientY }
+    })
+    on(button, "pointerup", (event: Event) => {
+      event.preventDefault()
+      const p = event as PointerEvent
+      const from = down
+      down = null
+      if (from && Math.hypot(p.clientX - from.x, p.clientY - from.y) > 12)
+        return
+      emitMobileCommand(command)
+    })
+    on(button, "pointercancel", () => {
+      down = null
+    })
+    return button
+  }
 
-  dial.append(menu, root, chatButton)
+  // The glyphs the arc's own Chat and Sidebar targets carried, so each control
+  // reads the same as the one it replaces.
+  const chatButton = satellite(
+    "dial-chat",
+    "☰",
+    "Chat",
+    "Read this session as chat",
+    "chat"
+  )
+  const sidebarButton = satellite(
+    "dial-sidebar",
+    "▣",
+    "Sidebar",
+    "Toggle the sidebar",
+    "sidebar"
+  )
+
+  dial.append(menu, root, chatButton, sidebarButton)
   doc.body.appendChild(dial)
   win.requestAnimationFrame(() => win.dispatchEvent(new Event("resize")))
   let open = false
