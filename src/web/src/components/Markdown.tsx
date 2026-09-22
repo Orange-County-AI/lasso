@@ -7,6 +7,7 @@ import rehypeRaw from "rehype-raw"
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
 import remarkGfm from "remark-gfm"
 import { api } from "@/lib/api"
+import { isChunkLoadError } from "@/lib/chunk"
 
 // One markdown pipeline, two readers: the file viewer, where the source is a
 // document on a machine, and the chat, where it is what an agent just said.
@@ -264,10 +265,27 @@ function useDarkChrome(): boolean {
 // from appending its own error graphic to the document body when a diagram
 // doesn't parse — we show the message alongside the original source instead, so
 // a bad block stays readable and doesn't take the rest of the view down.
+//
+// A failure here has two unrelated causes and they need different words. The
+// diagram may not parse, which is about the markdown. Or the CHUNK may be gone:
+// this import, and the per-diagram-type imports mermaid.render makes under it,
+// name hashed files that a lasso self-update replaces, so a tab open across one
+// asks the /assets/ handler for a name it no longer has and gets a 404. Reported
+// as mermaid's own error that reads as a broken diagram and points at the
+// markdown, while the fix is a reload — which is what `stale` offers.
+// Deliberately NOT an automatic reload: unlike a file the user just clicked, a
+// diagram can come into view at any time, and reloading the whole app —
+// terminals included — because a picture needs redrawing is worse than the
+// message. The source is shown either way, so the block stays readable while
+// they decide.
 function MermaidDiagram({ chart }: { chart: string }) {
   const dark = useDarkChrome()
   const [svg, setSvg] = React.useState<string | null>(null)
   const [err, setErr] = React.useState<string | null>(null)
+  // The chunk is missing rather than the diagram being wrong — a reload, not a
+  // correction. Kept separate from `err` so neither message claims the other's
+  // cause.
+  const [stale, setStale] = React.useState(false)
   // mermaid.render needs a DOM-id-safe, unique id; useId's own value contains
   // colons, which break the selectors mermaid builds from it.
   const id = `mmd-${React.useId().replace(/[^a-zA-Z0-9]/g, "")}`
@@ -287,10 +305,15 @@ function MermaidDiagram({ chart }: { chart: string }) {
         if (cancelled) return
         setSvg(svg)
         setErr(null)
+        setStale(false)
       } catch (e) {
         if (cancelled) return
         setSvg(null)
-        setErr(e instanceof Error ? e.message : String(e))
+        // One of the two, never both: a reload fixes a missing chunk and
+        // nothing about a diagram that doesn't parse.
+        const gone = isChunkLoadError(e)
+        setStale(gone)
+        setErr(gone ? null : e instanceof Error ? e.message : String(e))
       }
     })()
     return () => {
@@ -298,6 +321,25 @@ function MermaidDiagram({ chart }: { chart: string }) {
     }
   }, [chart, dark, id])
 
+  if (stale)
+    return (
+      <div className="md-mermaid-error">
+        <div className="md-mermaid-msg">
+          couldn't load the diagram renderer — lasso may have updated since this
+          tab opened. reload to draw it.
+        </div>
+        <button
+          type="button"
+          className="mb-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+          onClick={() => window.location.reload()}
+        >
+          reload lasso
+        </button>
+        <pre>
+          <code>{chart}</code>
+        </pre>
+      </div>
+    )
   if (err != null)
     return (
       <div className="md-mermaid-error">
