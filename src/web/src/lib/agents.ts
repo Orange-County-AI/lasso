@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
 import { toast } from "sonner"
 
-import { type HostPane, api } from "@/lib/api"
+import { api, type HostPane } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 
@@ -135,6 +135,7 @@ export function groupAgentsByHost(
 // that answer arrives.
 export function useAgents() {
   const { activePaneID, host: tabHost, panesRev } = useApp()
+  const queryClient = useQueryClient()
   const { data, isLoading, error } = useQuery({
     // panes_rev is this TAB's host's revision, so it covers a create, a close or
     // a rename on the machine the reader is looking at without waiting for the
@@ -194,6 +195,25 @@ export function useAgents() {
     }
   }, [])
 
+  // Ending the agent in a pane — herdr's own pane.close, the same call the chat's
+  // header makes. It lives here rather than in the surface that offers it for the
+  // reason focusAgent does: the address is the row's (host + pane id, unique only
+  // together), and the list that has to forget the row is this hook's. panes_rev
+  // covers a close on the tab's OWN host; another machine's is carried only by the
+  // 5s poll, so the cache is dropped outright and the row goes now either way.
+  const closeAgent = React.useCallback(
+    async (p: HostPane) => {
+      try {
+        await api.close([p.pane_id], p.host)
+      } catch (e) {
+        toast.error(`could not close ${agentName(p)}: ${(e as Error).message}`)
+        return
+      }
+      await queryClient.invalidateQueries({ queryKey: qk.allPanesAny })
+    },
+    [queryClient]
+  )
+
   const agents = React.useMemo(
     () =>
       orderByHost(
@@ -217,5 +237,6 @@ export function useAgents() {
       pending ??
       (tabHost && activePaneID ? `${tabHost}\u0000${activePaneID}` : null),
     focusAgent,
+    closeAgent,
   }
 }

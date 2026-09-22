@@ -1449,16 +1449,9 @@ export function ChatView({
             taps in. Sidebar is the only pointer route to that panel from the chat
             on a phone (the footer is md+, and the dial's own sidebar button is
             inside the terminal iframe this view covers); Terminal is the way
-            back, which the footer's toggle is at md+. */}
-        <button
-          type="button"
-          onClick={onShowSidebar}
-          title="Open the sidebar"
-          aria-label="Open the sidebar"
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
-        >
-          <PanelRightOpen className="size-4" />
-        </button>
+            back, which the footer's toggle is at md+. Sidebar takes the outer
+            edge, where the panel it opens comes from and where the footer keeps
+            its own sidebar control at md+. */}
         <button
           type="button"
           onClick={onShowTerminal}
@@ -1467,6 +1460,15 @@ export function ChatView({
           className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
         >
           <SquareTerminal className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={onShowSidebar}
+          title="Open the sidebar"
+          aria-label="Open the sidebar"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+        >
+          <PanelRightOpen className="size-4" />
         </button>
         {/* And at md+ this is the one action the header keeps: the footer already
             carries Agents (its left-hand toggle), Terminal and New, but nothing
