@@ -124,15 +124,20 @@ func detectClaudeComposer(screen string) ComposerState {
 	return ComposerUnknown
 }
 
+// claudeComposerRule accepts a bare rule and one carrying a label: a named
+// session draws its name into the upper fence ("──── my-session ─"). Missing
+// that made every named pane read as Unknown, so the chat never saw its own
+// paste land and stopped short of pressing Enter. The label must sit between
+// two runs of rule, with at least 8 glyphs of rule leading it, so a transcript
+// line that merely starts with a dash cannot pass.
 func claudeComposerRule(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if len([]rune(trimmed)) < 8 {
+	trimmed := []rune(strings.TrimSpace(line))
+	lead := 0
+	for lead < len(trimmed) && trimmed[lead] == '─' {
+		lead++
+	}
+	if lead < 8 {
 		return false
 	}
-	for _, glyph := range trimmed {
-		if glyph != '─' {
-			return false
-		}
-	}
-	return true
+	return lead == len(trimmed) || trimmed[len(trimmed)-1] == '─'
 }

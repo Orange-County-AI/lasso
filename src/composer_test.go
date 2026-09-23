@@ -22,6 +22,8 @@ func TestDetectComposerScreens(t *testing.T) {
 		{"claude-empty-working", "claude", ComposerEmpty},
 		{"claude-draft", "claude", ComposerDraft},
 		{"claude-draft-working", "claude", ComposerDraft},
+		{"claude-empty-named", "claude", ComposerEmpty},
+		{"claude-draft-named", "claude", ComposerDraft},
 		{"shell", "claude", ComposerUnknown},
 	}
 	for _, tt := range tests {
