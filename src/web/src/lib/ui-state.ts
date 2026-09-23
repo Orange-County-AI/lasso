@@ -47,6 +47,8 @@ const DEFAULTS: UIState = {
   // on the tab's own host, which is what it always did.
   creator_default_host: "",
   creator_last_host: "",
+  // Mirrors getUIState in db.go: the grid's historical order.
+  agents_sort: "priority",
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic
