@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
 import { toast } from "sonner"
 
-import { type HostPane, api } from "@/lib/api"
+import { type AgentSort, api, type HostPane } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
 import { qk } from "@/lib/query"
 
@@ -70,15 +70,58 @@ export function agentStatusRank(status?: string): number {
   }
 }
 
-// Priority sort within one surface: status rank first, then a stable name
-// fallback so rows do not jump between polls.
+// Numeric collation, so "agent-2" precedes "agent-10" rather than following
+// it. One instance: constructing an Intl.Collator per comparison is the
+// expensive way to do this, and a sort over N agents calls the comparator
+// O(N log N) times on every poll.
+const byName = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+})
+
+// A total order over the fleet, used as the tiebreak under BOTH sorts. Name
+// alone is not total — two agents genuinely share a name often enough (two
+// worktrees of one repo, two panes herdr never labelled) — and a comparator
+// that returns 0 for them leaves their relative order to the engine's sort,
+// which is free to differ between two arrays holding the same elements. That
+// is a pair of cards trading places on a poll where nothing changed, which is
+// exactly what "alpha" exists to prevent.
+function tiebreak(a: HostPane, b: HostPane): number {
+  const byHost = (a.host_label || a.host).localeCompare(b.host_label || b.host)
+  if (byHost !== 0) return byHost
+  return a.pane_id.localeCompare(b.pane_id)
+}
+
+// Priority sort within one surface: status rank first, then name, then the
+// total-order tiebreak so rows do not jump between polls.
 export function sortAgentsByPriority(panes: HostPane[]): HostPane[] {
   return [...panes].sort((a, b) => {
     const byRank =
       agentStatusRank(a.agent_status) - agentStatusRank(b.agent_status)
     if (byRank !== 0) return byRank
-    return agentName(a).localeCompare(agentName(b))
+    const byLabel = byName.compare(agentName(a), agentName(b))
+    if (byLabel !== 0) return byLabel
+    return tiebreak(a, b)
   })
+}
+
+// Name order, ignoring status entirely. The point is what it does NOT do: the
+// order changes only when an agent is created, closed or renamed, so a card
+// stays where the reader last saw it while its agent blocks, answers and
+// finishes. Status still reaches them — through the card's own badge and the
+// group header's "1 blocked · 2 working" counts — it just stops moving things.
+export function sortAgentsAlpha(panes: HostPane[]): HostPane[] {
+  return [...panes].sort((a, b) => {
+    const byLabel = byName.compare(agentName(a), agentName(b))
+    if (byLabel !== 0) return byLabel
+    return tiebreak(a, b)
+  })
+}
+
+// The one entry point both orders go through, so a surface picks a mode rather
+// than picking a function.
+export function sortAgents(panes: HostPane[], sort: AgentSort): HostPane[] {
+  return sort === "alpha" ? sortAgentsAlpha(panes) : sortAgentsByPriority(panes)
 }
 
 export interface AgentHostGroup {
@@ -90,12 +133,19 @@ export interface AgentHostGroup {
 }
 
 // Grouped for the parallel grid: one section per herdr machine, this tab's own
-// machine first and the rest in name order, agents inside each group in
-// priority order. Groups (not a flat fleet sort) because a card's transcript is
-// read from that machine — the header says where every composer below it sends.
+// machine first and the rest in name order, agents inside each group in the
+// caller's chosen order. Groups (not a flat fleet sort) because a card's
+// transcript is read from that machine — the header says where every composer
+// below it sends.
+//
+// The GROUP order is deliberately not a sort mode: which machine a section
+// belongs to never changes on its own, so the sections already hold still
+// under either sort, and the reader's own machine leading is orientation
+// rather than priority.
 export function groupAgentsByHost(
   agents: HostPane[],
-  tabHost: string | null
+  tabHost: string | null,
+  sort: AgentSort = "priority"
 ): AgentHostGroup[] {
   const byHost = new Map<string, HostPane[]>()
   for (const p of agents) {
@@ -106,7 +156,7 @@ export function groupAgentsByHost(
   const groups: AgentHostGroup[] = [...byHost].map(([host, panes]) => ({
     host,
     hostLabel: panes[0]?.host_label || host,
-    panes: sortAgentsByPriority(panes),
+    panes: sortAgents(panes, sort),
     blocked: panes.filter((p) => p.agent_status === "blocked").length,
     working: panes.filter((p) => p.agent_status === "working").length,
   }))

@@ -14,7 +14,6 @@ import * as React from "react"
 import { toast } from "sonner"
 import { AgentLines } from "@/components/AgentParts"
 import { Markdown } from "@/components/Markdown"
-import { Orb } from "@/components/ui/orb"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,21 +25,31 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Orb } from "@/components/ui/orb"
 import {
   agentName,
   groupAgentsByHost,
   paneKey,
-  sortAgentsByPriority,
+  sortAgents,
   useAgents,
 } from "@/lib/agents"
-import { api, type ChatItem, type ChatPayload, type HostPane } from "@/lib/api"
+import {
+  type AgentSort,
+  api,
+  type ChatItem,
+  type ChatPayload,
+  type HostPane,
+} from "@/lib/api"
 import { useApp } from "@/lib/app-store"
+import { useFlip } from "@/lib/flip"
 import { qk, queryClient } from "@/lib/query"
+import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // The fleet as parallel conversations: every agent lasso can reach in a grid,
-// grouped by herdr machine unless the header toggle says otherwise, attention
-// order (blocked > working > idle > done) either way. Each card reads the
+// grouped by herdr machine unless the header toggle says otherwise, in
+// attention order (blocked > working > idle > done) or plain name order — see
+// the Sort control. Each card reads the
 // agent's TRANSCRIPT — the same source ChatView renders — never the terminal:
 // the pty stays fitted to the iframe underneath (see App's overlay note), and
 // N terminals cannot share one column anyway.
@@ -105,6 +114,15 @@ export function AgentsView({
   const { host: tabHost } = useApp()
   const [groupByHost, setGroupByHost] = React.useState(true)
   const [filter, setFilter] = React.useState("")
+  // Persisted server-side rather than held here beside groupByHost, because of
+  // what the choice is FOR: someone picks A–Z so the card they are typing into
+  // stops moving, and an order that reverts on the next reload — or differs on
+  // the phone — does not deliver that. Grouping stays local: it changes what
+  // the layout says, not whether it holds still.
+  const sort = useUIState().agents_sort
+  const setSort = (next: AgentSort) => {
+    if (next !== sort) patchUIState({ agents_sort: next })
+  }
 
   // Transcripts live HERE, not per card, for one reason: the search filters on
   // transcript content, and that needs every conversation's text in one place.
@@ -133,13 +151,27 @@ export function AgentsView({
       agentSearchText(p, chats.get(paneKey(p))).includes(q)
     )
   }, [agents, chats, q])
-  // Priority order either way — the toggle only decides whether machine
-  // sections divide the grid, never what floats to the top.
+  // The two controls compose: Sort decides card order, Group decides whether
+  // machine sections divide the grid. All four combinations mean something.
   const groups = React.useMemo(
-    () => groupAgentsByHost(visible, tabHost),
-    [visible, tabHost]
+    () => groupAgentsByHost(visible, tabHost, sort),
+    [visible, tabHost, sort]
   )
-  const flat = React.useMemo(() => sortAgentsByPriority(visible), [visible])
+  const flat = React.useMemo(() => sortAgents(visible, sort), [visible, sort])
+  // What tells the FLIP hook a reorder may have happened. Derived from the
+  // order actually RENDERED (sections included, since grouping moves cards
+  // too), so the grid pays no layout reads for the per-agent transcript polls
+  // that re-render this view every few seconds without moving anything.
+  const orderKey = React.useMemo(
+    () =>
+      groupByHost
+        ? groups
+            .map((g) => `${g.host}:${g.panes.map(paneKey).join(",")}`)
+            .join("|")
+        : flat.map(paneKey).join(","),
+    [groupByHost, groups, flat]
+  )
+  const flipRef = useFlip(orderKey)
   const blocked = visible.filter((p) => p.agent_status === "blocked").length
   const working = visible.filter((p) => p.agent_status === "working").length
   const openCard = (p: HostPane) => async () => {
@@ -191,6 +223,30 @@ export function AgentsView({
           )}
         </div>
         <span className="flex shrink-0 items-center gap-1">
+          {/* Both labels stay visible rather than one toggling button: with two
+              named orders, a single button reading "Priority" cannot say
+              whether that is the mode in force or the mode a click would
+              choose. The filled segment is the answer. */}
+          {/* A fieldset rather than role="group": same semantics, and it is
+              the element a screen reader already knows. Its UA defaults
+              (min-inline-size, margin) are reset by the classes. */}
+          <fieldset
+            aria-label="Sort agents"
+            className="m-0 flex h-8 min-w-0 shrink-0 items-center rounded-md border border-input p-0.5"
+          >
+            <SortSegment
+              active={sort === "priority"}
+              onClick={() => setSort("priority")}
+              label="Priority"
+              title="Sort by attention: blocked, then working, then idle, then done. Cards move as statuses change."
+            />
+            <SortSegment
+              active={sort === "alpha"}
+              onClick={() => setSort("alpha")}
+              label="A–Z"
+              title="Sort by name. The grid only changes when an agent is created, closed or renamed."
+            />
+          </fieldset>
           {/* Ghost when off, filled when on: aria-pressed alone is invisible,
               and the grid looks identical either way until you read the
               section headers — the button itself has to say which mode won. */}
@@ -283,6 +339,7 @@ export function AgentsView({
                   {g.panes.map((p) => (
                     <AgentCard
                       key={paneKey(p)}
+                      flipRef={flipRef(paneKey(p))}
                       pane={p}
                       data={chats.get(paneKey(p))}
                       onOpen={openCard(p)}
@@ -309,6 +366,7 @@ export function AgentsView({
                   {flat.map((p) => (
                     <AgentCard
                       key={paneKey(p)}
+                      flipRef={flipRef(paneKey(p))}
                       pane={p}
                       data={chats.get(paneKey(p))}
                       onOpen={openCard(p)}
@@ -322,6 +380,38 @@ export function AgentsView({
   )
 }
 
+// One segment of the sort control. A button rather than a radio input: it is
+// an action with a state, and the pressed state is what a screen reader needs
+// rather than a group of inputs that look like a form nobody submits.
+function SortSegment({
+  active,
+  onClick,
+  label,
+  title,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  title: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={title}
+      className={cn(
+        "h-7 rounded-[5px] px-2 text-[12px] transition-colors",
+        active
+          ? "bg-secondary text-secondary-foreground"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground"
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
 // One parallel conversation: the transcript tail plus a composer addressed at
 // this card's own host + pane (pane ids are unique per host only, so the
 // payload's address — not the tab's — is what a send carries). The transcript
@@ -331,16 +421,18 @@ function AgentCard({
   pane,
   data,
   onOpen,
+  flipRef,
 }: {
   pane: HostPane
   data: ChatPayload | undefined
   onOpen: () => void
+  // Registers this card with the grid's reorder animation. The transform lands
+  // on the card's own element, so a resort moves it without remounting it —
+  // scroll position, focus and an unsent draft all survive (see lib/flip).
+  flipRef: (el: HTMLElement | null) => void
 }) {
   const { pane_id: paneID, host } = pane
-  const items = React.useMemo(
-    () => (data?.items ?? []).slice(-30),
-    [data]
-  )
+  const items = React.useMemo(() => (data?.items ?? []).slice(-30), [data])
   const running = data?.running ?? false
 
   // Pinned to the tail while the reader is at the bottom; a reader scrolled up
@@ -446,7 +538,10 @@ function AgentCard({
   }, [text, attachments, sending, host, paneID])
 
   return (
-    <article className="relative flex h-80 min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+    <article
+      ref={flipRef}
+      className="relative flex h-80 min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card"
+    >
       <header className="flex flex-none items-start gap-2 border-border border-b px-2.5 py-1.5">
         <div className="flex min-w-0 flex-1 flex-col">
           <AgentLines
@@ -499,8 +594,7 @@ function AgentCard({
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget
-          stick.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
         className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5 py-2"
       >
@@ -528,7 +622,10 @@ function AgentCard({
 
       <footer className="flex-none border-border border-t p-1.5">
         {notice && (
-          <div className="mb-1 truncate text-[11px] text-destructive" title={notice}>
+          <div
+            className="mb-1 truncate text-[11px] text-destructive"
+            title={notice}
+          >
             {notice}
           </div>
         )}
@@ -659,7 +756,10 @@ function AgentCard({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={closing}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={closing} onClick={() => void closePane()}>
+            <AlertDialogAction
+              disabled={closing}
+              onClick={() => void closePane()}
+            >
               {closing ? "Closing…" : "Close pane"}
             </AlertDialogAction>
           </AlertDialogFooter>
