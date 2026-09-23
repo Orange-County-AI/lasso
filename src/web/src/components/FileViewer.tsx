@@ -20,6 +20,22 @@ import { useDiff } from "@/lib/git"
 // still open the file in the editor.
 const HILITE_CAP = 400 * 1024
 
+// Imported STATICALLY, and it has to stay that way. It was a lazy chunk, which
+// made the first file click in a tab fetch new code — and lasso self-updates by
+// swapping its own binary, which swaps the embedded bundle with it. So a tab
+// left open across an update asked for a hashed chunk name the running binary
+// had never heard of, got a hard 404 from the /assets/ file server, and the
+// recovery reloaded the page under the user: the viewer "crashed", the page
+// came back, and the second click worked. Once per update, per tab, on any file
+// — text or media alike, since the chunk is the viewer itself.
+//
+// Splitting it bought ~4 kB. Everything expensive in here (CodeMirror via
+// ScratchTab, react-markdown via ChatView) is already in the entry bundle, so
+// the chunk was app code alone and the initial page is no lighter for it. A
+// viewer that needs no network to open cannot fail that way at all, which is
+// worth far more than the 4 kB — and with the extra chunk's own wrapper gone,
+// the total shipped actually came out fractionally smaller.
+//
 // The full-column file editor overlay: images stay view-only (click-to-zoom
 // checkerboard), everything else opens in an editable textarea. Edits are only
 // persisted on an explicit save (the Save button or ⌘/Ctrl+S); closing with

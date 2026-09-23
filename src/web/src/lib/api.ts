@@ -92,6 +92,13 @@ export interface HostInfo {
   state?: HostState
   // RFC3339 timestamp of the last COMPLETED probe; absent until one finishes.
   checked_at?: string
+  // The host has a NEWER herdr installed than the server it is running (herdr's
+  // own server_binary_stale). `version` is the RUNNING server's, so without this
+  // such a host is indistinguishable from one that is simply behind — and the
+  // two need opposite things: an update, or a restart of that host's herdr.
+  // Only a restart fixes it, since herdr's updater short-circuits on "already
+  // up to date" and never offers the swap again.
+  stale?: boolean
 }
 
 export interface HostsPayload {
@@ -937,11 +944,16 @@ export const api = {
   // auto-answering its interactive prompts (stop the old server = yes, which
   // exits that host's pane processes; decline the star prompt = no). Slow — it
   // downloads a release binary on the far side — and returns the captured output.
+  // `elevated` says the unprivileged attempt was refused for permissions and the
+  // server retried under sudo — the ordinary case for a system-wide
+  // /usr/local/bin install. `error` is herdr's own sentence, not "exit status 1".
   updateHost: (host: string) =>
-    postJSON<{ ok: boolean; output: string; error?: string }>(
-      "/api/host-update",
-      { host }
-    ),
+    postJSON<{
+      ok: boolean
+      output: string
+      error?: string
+      elevated?: boolean
+    }>("/api/host-update", { host }),
 
   // Install herdr on a remote host (if missing) and bring it up supervised by
   // systemd --user (also installing herdr's agent-state integrations). For hosts where herdr

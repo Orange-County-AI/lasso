@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -55,6 +56,13 @@ type HostInfo struct {
 	// that has never finished one.
 	State     string `json:"state,omitempty"`
 	CheckedAt string `json:"checked_at,omitempty"`
+	// Stale reports that the host has a NEWER herdr installed than the server
+	// that is running — herdr's own `server_binary_stale`. It is its own state
+	// because an update cannot fix it: herdr's updater short-circuits on
+	// "already up to date" and never offers the swap again, so Version stays put
+	// however many times the button is pressed. Only restarting that host's
+	// herdr server picks the new binary up.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // hostsPayload is the body served at GET /api/hosts. Probing reports whether any
@@ -297,11 +305,20 @@ func probeHost(ctx context.Context, alias string, wantProto int) HostInfo {
 		// Non-zero exit but JSON on stdout (e.g. server stopped): fall through.
 	}
 	hi.Reachable = true
+	return herdrStatusInfo(hi, out, wantProto)
+}
+
+// herdrStatusInfo reads `herdr status server --json` into a probed host's row:
+// what is running there, and whether this lasso can drive it. Split out from
+// probeHost so the verdict can be asserted without an ssh fleet — it is where
+// the states a row renders are decided.
+func herdrStatusInfo(hi HostInfo, out []byte, wantProto int) HostInfo {
 	var st struct {
 		Running  bool   `json:"running"`
 		Version  string `json:"version"`
 		Protocol int    `json:"protocol"`
 		Socket   string `json:"socket"`
+		Stale    bool   `json:"server_binary_stale"`
 	}
 	if jerr := json.Unmarshal(out, &st); jerr != nil {
 		hi.Err = "herdr not running"
@@ -311,6 +328,10 @@ func probeHost(ctx context.Context, alias string, wantProto int) HostInfo {
 	hi.Version = st.Version
 	hi.Protocol = st.Protocol
 	hi.Socket = st.Socket
+	// herdr's own "the binary on disk is newer than the server I am running".
+	// Version alone cannot tell that apart from a host that is simply behind,
+	// and the two need opposite things: one an update, the other a restart.
+	hi.Stale = st.Stale
 	if !st.Running {
 		hi.Err = "herdr not running"
 		return hi
@@ -662,11 +683,124 @@ func invalidateHostCache() {
 
 // hostUpdateTimeout bounds the whole remote update (manifest fetch + binary
 // download + install), generous because it pulls a release binary over the far
-// host's network.
-const hostUpdateTimeout = 3 * time.Minute
+// host's network — and because a permission failure costs a SECOND attempt
+// under sudo, which re-downloads. Sized for both, so the retry that exists to
+// rescue a failed update can't itself be cut off mid-download.
+const hostUpdateTimeout = 6 * time.Minute
+
+// herdrUpdateCmd builds the remote `herdr update` command line.
+//
+// --handoff asks herdr to swap the RUNNING server onto the new binary in place,
+// and that is what makes an update visible to lasso at all: the version a row
+// shows is the running SERVER's (probeHost reads `herdr status server`), so an
+// install that replaces only the binary reads as a no-op — the row keeps its old
+// version and keeps offering the same button, forever. There is no second
+// chance at it either: herdr's next run short-circuits on "already up to date"
+// and never offers the swap again, leaving a restart as the only way out (see
+// HostInfo.Stale). The handoff is live, so it costs no sessions when it works.
+//
+// elevate re-runs the SAME herdr under `sudo -n`. `command -v` resolves it
+// inside the login shell that already has the user-local dirs on PATH, so sudo
+// runs exactly the binary that would otherwise have run rather than whatever
+// sudo's secure_path finds first. `-n` never prompts: ssh -tt gives the remote a
+// PTY, so a password prompt would swallow the answers we feed the updater and
+// then sit there until the timeout rather than failing.
+func herdrUpdateCmd(elevate bool) string {
+	if elevate {
+		return `sudo -n "$(command -v herdr)" update --handoff`
+	}
+	return "herdr update --handoff"
+}
+
+// runHostUpdate runs one `herdr update` attempt on a remote host and returns its
+// combined output. runHostUpdateFn is the seam tests drive it through, so the
+// retry policy can be asserted without an ssh fleet.
+func runHostUpdate(ctx context.Context, host string, elevate bool) (string, error) {
+	// -tt forces a remote PTY even though our stdin is a pipe, so herdr's updater
+	// sees a terminal and runs its prompts (rather than erroring out).
+	// remoteHerdrShell runs in a login shell with `herdr` forced onto PATH,
+	// matching probeHost. We only run one command, so clear any forwardings the
+	// host's config attaches.
+	cmd := exec.CommandContext(ctx, "ssh",
+		"-tt",
+		"-o", "BatchMode=yes",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "ConnectTimeout=8",
+		"-o", "StrictHostKeyChecking=accept-new",
+		host, remoteHerdrShell(herdrUpdateCmd(elevate)))
+	cmd.Stdin = strings.NewReader("y\nn\n")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+var runHostUpdateFn = runHostUpdate
+
+// needsElevation reports whether an update failed because herdr could not write
+// where it is installed — the one failure sudo can fix, and the one every host
+// with a system-wide herdr hits. herdr says `install directory not writable:
+// /usr/local/bin (Permission denied (os error 13))`; the match is on the
+// underlying condition rather than that exact sentence, so a reworded message or
+// a bare EACCES from the rename still earns the retry.
+func needsElevation(out string) bool {
+	l := strings.ToLower(out)
+	return strings.Contains(l, "permission denied") || strings.Contains(l, "not writable")
+}
+
+// sshTransportFailed reports whether ssh itself failed rather than the remote
+// command — exit 255, or a process that couldn't run at all (the same rule
+// probeHost classifies an unreachable host by). It gates the sudo retry because
+// ssh's OWN refusal reads as "Permission denied (publickey)", which needsElevation
+// would otherwise take for herdr's, buying a second dead dial and then reporting
+// the second failure's message instead of the first's.
+func sshTransportFailed(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return true
+	}
+	return ee.ExitCode() == 255
+}
+
+// sshChatter reports whether a line is ssh's own session noise rather than
+// anything the remote command said. A PTY session signs off with "Shared
+// connection to <addr> closed." on stderr, which CombinedOutput puts LAST — i.e.
+// exactly where the remote's error message would otherwise be.
+func sshChatter(line string) bool {
+	return (strings.HasPrefix(line, "Shared connection to ") ||
+		strings.HasPrefix(line, "Connection to ")) &&
+		strings.HasSuffix(line, "closed.")
+}
+
+// updateFailureMsgMax caps the reason at something a row's tooltip and a toast
+// can carry. herdr's own messages are one line; the cap is for a remote that
+// fails with a wall of text.
+const updateFailureMsgMax = 300
+
+// updateFailureReason turns a failed update into the one line worth showing a
+// human. The exec error on its own is "exit status 1", which is all the UI used
+// to have: a bare "failed" chip whose tooltip said "exit status 1" about a
+// permission problem it could name exactly. herdr prints the cause last, so the
+// last line that isn't ssh's sign-off is it.
+func updateFailureReason(out string, err error) string {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(strings.TrimSuffix(lines[i], "\r"))
+		if line == "" || sshChatter(line) {
+			continue
+		}
+		if len(line) > updateFailureMsgMax {
+			line = line[:updateFailureMsgMax] + "…"
+		}
+		return line
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "failed"
+}
 
 // serveHostUpdate runs `herdr update` on a remote ssh-config host to bring a
-// host that's behind this lasso's herdr protocol back into compatibility.
+// host that's behind this lasso's herdr protocol — or merely behind its version
+// — back up to date.
 //
 // herdr's updater is interactive: when a protocol change forces running sessions
 // to restart it asks "stop after installing? [y/N]" (stopping exits the old
@@ -704,26 +838,37 @@ func serveHostUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), hostUpdateTimeout)
 	defer cancel()
 
-	// -tt forces a remote PTY even though our stdin is a pipe, so herdr's updater
-	// sees a terminal and runs its prompts (rather than erroring out). remoteHerdrShell
-	// runs in a login shell with `herdr` forced onto PATH, matching probeHost. We
-	// only run one command, so clear any forwardings the host's config attaches.
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-tt",
-		"-o", "BatchMode=yes",
-		"-o", "ClearAllForwardings=yes",
-		"-o", "ConnectTimeout=8",
-		"-o", "StrictHostKeyChecking=accept-new",
-		req.Host, remoteHerdrShell("herdr update"))
-	cmd.Stdin = strings.NewReader("y\nn\n")
-	out, err := cmd.CombinedOutput()
+	out, err := runHostUpdateFn(ctx, req.Host, false)
+	elevated := false
+	// herdr installs itself over its own binary, so the ordinary system-wide
+	// install shape — /usr/local/bin, owned by root — refuses an unprivileged
+	// update outright and this button could never work on such a host, however
+	// many times it was pressed. Retry once through sudo, and ONLY for that
+	// failure: the human asked for this update, so escalating when the
+	// unprivileged attempt was refused for permissions is doing what they asked,
+	// while escalating a download failure or a bad channel would be privilege
+	// taken for nothing. A host without passwordless sudo fails the retry
+	// immediately ("sudo: a password is required"), which is the reason the row
+	// then reports.
+	if err != nil && ctx.Err() == nil && !sshTransportFailed(err) && needsElevation(out) {
+		elevated = true
+		sudoOut, sudoErr := runHostUpdateFn(ctx, req.Host, true)
+		// Keep both logs: the first attempt is what explains the second.
+		out, err = out+"\n"+sudoOut, sudoErr
+	}
 
-	resp := map[string]any{"ok": err == nil, "output": strings.TrimSpace(string(out))}
+	resp := map[string]any{
+		"ok":     err == nil,
+		"output": strings.TrimSpace(out),
+		// Whether it took sudo, so the UI can say so rather than let a host
+		// quietly start needing root for every update.
+		"elevated": elevated,
+	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			resp["error"] = "timed out"
 		} else {
-			resp["error"] = err.Error()
+			resp["error"] = updateFailureReason(out, err)
 		}
 	} else {
 		// The host's herdr just changed; drop the cache so the next /api/hosts

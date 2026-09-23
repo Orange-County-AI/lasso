@@ -14,9 +14,9 @@ import { cn } from "@/lib/utils"
 // show exactly one of those.
 //
 // The list, the naming and the focus action come from lib/agents, because the
-// phone's sheet (AgentPicker) is the same list for the widths where a docked
-// column does not fit — see md:hidden here and md:hidden on the button that
-// opens the sheet. Exactly one of the two is reachable at any width.
+// sidebar's Agents tab (AgentsTab) is the same list for the widths where a
+// docked column does not fit — see max-md:hidden here and md:hidden on that tab.
+// Exactly one of the two is reachable at any width.
 export function AgentSidebar() {
   const { agents, isLoading, error, unlisted, current, focusAgent } =
     useAgents()

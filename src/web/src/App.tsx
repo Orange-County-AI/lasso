@@ -1,4 +1,5 @@
 import {
+  Bot,
   Files,
   Gauge,
   Globe,
@@ -16,12 +17,12 @@ import {
   Settings,
   SquareTerminal,
   Users,
-  X,
 } from "lucide-react"
 import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { AgentSidebar } from "@/components/AgentSidebar"
+import { AgentsTab } from "@/components/AgentsTab"
 import { AgentsView } from "@/components/AgentsView"
 import { BrowserTab } from "@/components/BrowserTab"
 import { ChatView } from "@/components/ChatView"
@@ -71,6 +72,9 @@ type RightView =
   | "terminal"
   | "usage"
   | "settings"
+  // Below md only: the fleet's agents, which at md+ is the docked column beside
+  // the chat instead (AgentsTab, AgentSidebar).
+  | "agents"
 // The left column's faces: the terminal, the focused session read as a
 // conversation (ChatView), and the fleet as parallel conversations (AgentsView).
 // Not a RightView — the sidebar and the left column answer different questions,
@@ -372,6 +376,37 @@ function Shell() {
     if (leftView === "terminal") focusHerdrTerminal()
   }, [collapseSidebar, leftView])
 
+  // Picking an agent from the sidebar's Agents tab: close the panel — below md it
+  // covers the very view that answers the tap — and land on that agent's
+  // CONVERSATION, never the terminal. The list is one row per conversation, so a
+  // pick is a request to read one; a phone dropped on the terminal instead would
+  // answer it with a pane you cannot scroll back through or type into without the
+  // dial. The keyboard is deliberately NOT handed to the terminal on the way (the
+  // ✕ does that): focusing xterm here would pop a phone's on-screen keyboard over
+  // a session nobody has asked to type into yet, and aim it at herdr rather than
+  // at the composer.
+  const pickAgent = React.useCallback(() => {
+    markSidebarIntent()
+    collapseSidebar()
+    setLeftView("chat")
+    blurHerdrTerminal()
+  }, [collapseSidebar])
+
+  // The Agents tab is md:hidden — at md+ the same list is the chat's docked
+  // column — so a window widened across the breakpoint while it is selected would
+  // leave a pane showing with no lit trigger above it. Fall back to Files, which
+  // is where the strip starts.
+  React.useEffect(() => {
+    if (rightView !== "agents") return
+    const mq = window.matchMedia("(min-width: 768px)")
+    const check = () => {
+      if (mq.matches) setRightView("files")
+    }
+    check()
+    mq.addEventListener("change", check)
+    return () => mq.removeEventListener("change", check)
+  }, [rightView])
+
   // The footer button is separate from the menu's mobile-capable anchor.
   // Capture its pointer-down state before Radix's outside-click dismissal, so
   // that same click toggles closed rather than reopening the menu.
@@ -538,7 +573,6 @@ function Shell() {
                   {chatSidebar && <AgentSidebar />}
                   <ChatView
                     className="min-w-0 flex-1"
-                    onNewAgent={openNew}
                     onShowTerminal={() => setLeftView("terminal")}
                     onShowSidebar={openSidebar}
                   />
@@ -607,6 +641,16 @@ function Shell() {
             >
               <FitTabs
                 tabs={[
+                  // Agents leads, and only below md: this panel IS a phone's
+                  // chrome, so the list of what you could be reading belongs
+                  // before the files you are reading. At md+ the chat's docked
+                  // column is the same list and this tab is not rendered.
+                  {
+                    value: "agents",
+                    label: "Agents",
+                    icon: Bot,
+                    className: "md:hidden",
+                  },
                   {
                     value: "files",
                     label: "Files",
@@ -631,20 +675,46 @@ function Shell() {
                   { value: "settings", label: "Settings", icon: Settings },
                 ]}
                 trailing={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="mr-1 ml-1 flex-none self-center md:hidden"
-                    title="Close sidebar"
-                    aria-label="Close sidebar"
-                    onClick={closeSidebar}
-                  >
-                    <X />
-                  </Button>
+                  <>
+                    {/* Scoped to the Agents tab: it makes an agent, which is what
+                        that tab is a list of. Ending one is NOT here — it belongs
+                        to the row whose pane it closes (AgentsTab), where the
+                        question is about something on screen and a ✕ in the strip
+                        cannot be mistaken for it. */}
+                    {rightView === "agents" && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="ml-1 flex-none self-center md:hidden"
+                        title="New agent"
+                        aria-label="New agent"
+                        onClick={openNew}
+                      >
+                        <Plus />
+                      </Button>
+                    )}
+                    {/* The mirror of the chat header's PanelRightOpen, not a bare
+                        ✕: this closes the PANEL, and next to a row's close-pane
+                        control a plain cross reads as the same kind of thing. The
+                        pair of glyphs says which one ends a session. */}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="mr-1 ml-1 flex-none self-center md:hidden"
+                      title="Close sidebar"
+                      aria-label="Close sidebar"
+                      onClick={closeSidebar}
+                    >
+                      <PanelRightClose />
+                    </Button>
+                  </>
                 }
               />
 
               <div className="relative min-h-0 flex-1">
+                <Pane show={rightView === "agents"}>
+                  <AgentsTab onPick={pickAgent} />
+                </Pane>
                 <Pane show={rightView === "files"}>
                   <FilesPanel />
                 </Pane>
@@ -690,11 +760,13 @@ function Shell() {
           tab={newTab}
           onTabChange={setNewTab}
           // Both chats' creator is agents-only (see the dialog): the footer's New
-          // and the chat header's both land here, so the entry points cannot
-          // disagree about what a reading view can make. Derived rather than
-          // latched because the modal blocks the page: nothing can change the
-          // view out from under it.
-          agentsOnly={leftView !== "terminal"}
+          // and the sidebar's Agents tab both land here, so the entry points
+          // cannot disagree about what a reading view can make. The Agents tab
+          // counts whatever the left column shows — its button says "New agent",
+          // and below md (the only width that tab exists at) it is the only New
+          // on screen. Derived rather than latched because the modal blocks the
+          // page: nothing can change the view out from under it.
+          agentsOnly={leftView !== "terminal" || rightView === "agents"}
         />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
