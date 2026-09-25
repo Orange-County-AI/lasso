@@ -364,6 +364,17 @@ export interface AtmospherePref {
 // than a preference.
 export type AppearanceMode = "herdr" | "system" | "light" | "dark"
 
+// How the agents grid orders its cards. "priority" surfaces what needs a human
+// (blocked > working > idle > done) and therefore RESHUFFLES as statuses move;
+// "alpha" is a plain name sort, so the grid only changes when an agent is
+// created, closed or renamed — which is what someone wants when they are
+// typing into a card and would rather it stayed where they left it.
+//
+// Server-owned like the rest of UIState: the whole point of choosing "alpha"
+// is that the grid holds still, and a choice that resets on the next reload
+// would not deliver that.
+export type AgentSort = "priority" | "alpha"
+
 // Persisted, global UI preferences (SQLite-backed): sidebar layout, the Files
 // tab's click behavior, footer preferences, the appearance mode and its
 // palettes, and the per-theme backdrop.
@@ -409,6 +420,10 @@ export interface UIState {
   // The host the last create actually targeted — so reopening the creator lands
   // where the previous one did. Outranked by creator_default_host when set.
   creator_last_host: string
+  // The order the agents grid lays its cards out in (see AgentSort). Never
+  // send "" — the server answers 400 and drops the whole patch, exactly as it
+  // does for appearance_mode.
+  agents_sort: AgentSort
 }
 
 // A partial write to /api/ui-state: the preference fields to merge, plus the

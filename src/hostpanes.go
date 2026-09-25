@@ -460,6 +460,10 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("appearance_mode must be one of %s", strings.Join(appearanceModes, ", ")), http.StatusBadRequest)
 			return
 		}
+		if !validAgentsSort(us.AgentsSort) {
+			http.Error(w, fmt.Sprintf("agents_sort must be one of %s", strings.Join(agentsSorts, ", ")), http.StatusBadRequest)
+			return
+		}
 		if us.UsageHidden == nil {
 			us.UsageHidden = []string{}
 		}

@@ -325,6 +325,17 @@ type uiState struct {
 	// CreatorDefaultHost outranks it, the same way default_agent outranks
 	// last_agent.
 	CreatorLastHost string `json:"creator_last_host"`
+	// AgentsSort is the order the agents grid lays its cards out in:
+	// "priority" (the default, and what the grid always did — blocked before
+	// working before idle before done) or "alpha", a plain name sort that only
+	// changes when an agent is created, closed or renamed.
+	//
+	// Server-owned rather than per browser precisely because of what the
+	// choice IS: someone picks "alpha" so the card they are typing into stops
+	// moving under them, and a preference that resets on the next reload does
+	// not answer that. The grid's own group-by-machine toggle stays ephemeral
+	// — it changes what the layout SAYS, not whether it holds still.
+	AgentsSort string `json:"agents_sort"`
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored
@@ -380,6 +391,38 @@ func validAppearanceMode(m string) bool {
 	return false
 }
 
+// The orders the agents grid may lay its cards out in. "priority" is the
+// default and the historical behavior.
+const (
+	agentsSortPriority = "priority"
+	agentsSortAlpha    = "alpha"
+)
+
+// agentsSorts is the accepted set, in the order a client error lists them.
+var agentsSorts = []string{agentsSortPriority, agentsSortAlpha}
+
+// validAgentsSort reports whether s is one a caller may send. Exact, for the
+// same reason validAppearanceMode is: coercing an unrecognized value would
+// persist an order nobody chose and hide the client bug that sent it.
+func validAgentsSort(s string) bool {
+	for _, v := range agentsSorts {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeAgentsSort repairs what is already IN the db — every blob written
+// before this field existed carries "", which is the default order rather than
+// an invalid one. Writes are validated instead (see serveUIState).
+func normalizeAgentsSort(s string) string {
+	if validAgentsSort(s) {
+		return s
+	}
+	return agentsSortPriority
+}
+
 // normalizeAppearanceMode repairs what is already IN the db — a blob written
 // before this field existed, or one hand-edited — so every read answers a mode
 // the frontend can switch on. Writes are validated instead (see serveUIState).
@@ -401,6 +444,7 @@ func getUIState() (uiState, error) {
 		ThemeAtmosphere:     map[string]atmospherePref{},
 		CustomBackgrounds:   []string{},
 		AppearanceMode:      appearanceModeHerdr,
+		AgentsSort:          agentsSortPriority,
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -424,6 +468,7 @@ func getUIState() (uiState, error) {
 		us.CustomBackgrounds = []string{}
 	}
 	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
+	us.AgentsSort = normalizeAgentsSort(us.AgentsSort)
 	return us, nil
 }
 
