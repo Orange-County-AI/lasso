@@ -1,0 +1,13 @@
+● Read 2 files
+
+● The build passes; the named session is ready for the next step.
+
+✻ Sautéed for 7m 25s · done 6:35 AM
+
+──────────────────────────────────────────────────────────────────────────── named-session ─
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────
+   Opus 5.5  |  Ctx Used: 80.0%  |  ⎇ main  |  (+19,-53)
+   cwd: ~/.l/w/t/named-session  |  Thinking: medium  |  Out: 225.2 t/s
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent
+
