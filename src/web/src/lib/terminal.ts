@@ -108,6 +108,27 @@ function sendNewline(term: XTerm, inputMode: TerminalInputMode) {
   }
 }
 
+// xterm.js encodes Ctrl+V (and Ctrl+Shift+V) as the control byte ^V and
+// cancels the keydown, so on Windows/Linux the browser never fires a paste and
+// the clipboard never reaches the terminal. Returning false from the custom
+// key handler makes xterm skip the event without cancelling it: the browser
+// then runs its native paste into xterm's helper textarea, which is the same
+// path Cmd+V takes on a Mac (and the one the image-paste handler listens on).
+// It also needs no Clipboard API, which plain-http tailnet origins lack.
+// The cost is a literal ^V (quoted insert), same trade Windows Terminal makes;
+// on a Mac Ctrl+V stays ^V since Cmd+V is the paste chord there.
+const IS_APPLE = /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+function isPasteChord(e: KeyboardEvent): boolean {
+  return (
+    !IS_APPLE &&
+    e.type === "keydown" &&
+    e.ctrlKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    (e.code === "KeyV" || e.key === "v" || e.key === "V")
+  )
+}
+
 function wireShiftEnter(
   id: string,
   inputMode: TerminalInputMode,
@@ -124,6 +145,7 @@ function wireShiftEnter(
       term.__herdrShiftEnter = true
       const t = term
       term.attachCustomKeyEventHandler((e) => {
+        if (isPasteChord(e)) return false
         const enterish =
           e.key === "Enter" ||
           e.code === "Enter" ||
