@@ -49,8 +49,8 @@ import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { restoreHost } from "@/lib/pane-focus"
 import {
-  beginSidebarDrag,
   markSidebarIntent,
+  noteSidebarResize,
   setSidebarPct,
   sidebarIntentFresh,
   sidebarPctNow,
@@ -595,12 +595,12 @@ function Shell() {
           </ResizablePanel>
 
           {/* Dragging the handle is a human changing the layout, so it claims
-              ownership of the synced width the same way ⌘\ does. Keyboard
-              resizing goes through the separator's own key handling, hence both
-              listeners. */}
+              ownership of the synced width the same way ⌘\ does. A drag is
+              recognised from the panel's onResize (noteSidebarResize), since the
+              library's grab band is wider than this element; keyboard resizing
+              goes through the separator's own key handling. */}
           <ResizableHandle
             withHandle
-            onPointerDown={beginSidebarDrag}
             onKeyDown={markSidebarIntent}
             className={cn(collapsed && "hidden", "max-md:hidden")}
           />
@@ -614,6 +614,7 @@ function Shell() {
             collapsedSize={0}
             onResize={(size) => {
               const pct = size.asPercentage
+              noteSidebarResize()
               const c = pct < 0.05
               setCollapsed((prev) => (prev === c ? prev : c))
               // Remember the open width so a later expand restores it (the panel
