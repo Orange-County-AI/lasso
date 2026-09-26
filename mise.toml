@@ -2,6 +2,7 @@
 #   mise run dev    — Vite dev server (frontend HMR) proxying to the Go backend
 #   mise run build  — build the frontend (src/web/dist) then the binary
 #   mise run test   — run the Go tests
+#   mise run diagram — render docs/architecture/*.reladraw to SVG
 
 # Toolchain the tasks below need on PATH. go is pinned to go.mod's version so
 # `mise run build`/`test`/`dev` compile with the exact toolchain (no implicit
@@ -26,20 +27,22 @@
 go = "1.25.3"
 bun = "1.3.14"
 node = "26.7.0"
-# Renders the icon set from docs/icon/lasso.svg. It has to be resvg (or a
-# browser): the glow is an feGaussianBlur, and cairosvg drops SVG filters
-# silently, which yields a flat mark that looks merely wrong rather than broken.
-"ubi:linebender/resvg" = "0.48.1"
-
-# Runs in the dev-lasso container: the work here is uv resolving cairosvg and
-# Pillow from PyPI and building their C extensions, not the twenty lines of
-# rendering. Until 2026-09-10 this task could not run at all — cairosvg was
-# imported but never declared or installed anywhere — so the deps now live in
-# PEP 723 metadata at the top of build.py.
+# Runs in the dev-lasso container: the work here is uv resolving Pillow from
+# PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
+# top of build.py. The sources are raster art (docs/icon/icon.png and
+# favicon-art.png); there is no vector mark to render any more.
 [tasks.icons]
-description = "Re-render the icon set, favicons and wordmark from the vector mark, inside the dev-lasso container"
+description = "Re-render the favicons and home-screen icons from the raster mascot, inside the dev-lasso container"
 dir = "{{config_root}}"
 run = "./scripts/container-icons.sh"
+
+# Runs in the `sandbox` incus container (scripts/sandbox.sh), a plain Debian box
+# kept apart from dev-lasso: reladraw is fetched from npm by bunx, third-party
+# code executing, and a docs task has no reason to share the frontend's mounts.
+[tasks.diagram]
+description = "Render docs/architecture/*.reladraw to SVG, inside the sandbox incus container"
+dir = "{{config_root}}"
+run = "./scripts/container-diagram.sh"
 
 # Runs in the dev-lasso incus container, not on titan: `bun install` executes
 # third-party postinstall scripts, and that is the one place in this repo where

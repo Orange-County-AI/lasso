@@ -13,7 +13,8 @@ Backend (run from repo root, via [mise](https://mise.jdx.dev); Go sources are in
 - `mise run dev` — Vite dev server with HMR, proxying to the Go backend (requires tailscale up; auto-bumps the dev port from 8190 if busy)
 - `mise run test` — `go test .` in `src/`
 - `mise run typecheck` / `mise run lint` / `mise run check` — the frontend checks
-- `mise run icons` — re-render the icon set from the vector mark
+- `mise run icons` — re-render the favicons and home-screen icons from the raster mascot in `docs/icon/`
+- `mise run diagram` — render `docs/architecture/*.reladraw` to SVG, in the `sandbox` incus container
 
 **Every frontend command runs inside the `dev-lasso` incus container, not on titan.** `bun install`, Vite, tsc and biome are all third-party code, and on the host that code would run as the logged-in user next to the SSH key, the 1Password session and the tunnel credentials. The mise tasks above handle this for you — see `scripts/container.sh`. Do **not** reach past them and run `bun` directly in `src/web/`; that puts the dependency tree back on the host and is exactly what the container exists to prevent. The Go half (`build`, `test`) still runs on the host: Go has no install hooks, and the binary has to be here anyway to drive herdr.
 

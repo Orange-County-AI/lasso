@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/lasso-wordmark.png" alt="lasso — Retro 82 terminal monogram" width="460">
+<img src="docs/brand/lasso-wordmark.png" alt="lasso: a pixel-art terminal robot in a cowboy hat, swinging a lasso" width="460">
 
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**
@@ -226,6 +226,7 @@ mise run build      # build the frontend (src/web/dist) then the binary
 ./lasso             # serves on 127.0.0.1:8090, spawns ttyd running herdr
 mise run dev        # Vite dev server (frontend HMR) + Go backend, on your tailnet
 mise run test       # Go tests
+mise run diagram    # re-render docs/architecture/*.reladraw to SVG
 ```
 
 The Go backend lives under `src/` (module root, with `go.mod`). The frontend is a
@@ -250,6 +251,8 @@ delete it.
 
 ## Architecture
 
+<img src="docs/architecture/lasso.svg" alt="lasso architecture: the browser and MCP clients reach the lasso binary through Cloudflare Access; lasso drives the local herdr over its socket and remote herdrs through an SSH pool, keeps state in lasso.db, and sends Web Push to the phone">
+
 One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
 (WebSocket), talks to the herdr server over its unix socket to track the focused
 pane and workspace layout, and pushes live state to the browser over SSE. It can
@@ -262,6 +265,10 @@ respawning one, and one SSH connection per host serves both the terminal and
 host-addressed work.
 The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
 plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.go`.
+
+The diagram is [reladraw](https://www.npmjs.com/package/reladraw) source in
+`docs/architecture/lasso.reladraw`; edit it and run `mise run diagram`, which
+renders it inside a throwaway Debian incus container (`scripts/sandbox.sh`).
 
 ## Theming
 
@@ -578,16 +585,20 @@ match `lassoSemver` (the workflow enforces it).
 
 ## The logo
 
-The favicon and app icons use the amber L outline and teal cursor from the
-wordmark in `docs/brand/`. Regenerate the standalone vector and raster assets:
+The mascot is a pixel-art terminal robot in a cowboy hat, wrangling a lasso:
+the agent wrangler. It is a generated raster image, not a drawing, and the
+sources live in `docs/icon/`: `icon.png` is the full mascot, and
+`favicon-art.png` is the same character simplified for 16 and 32px, where the
+full one turns to mush. The wordmark is `docs/brand/lasso-wordmark.png`.
+Regenerate the favicon, ICO and home-screen assets in `src/web/public/`:
 
 ```bash
-uv run --with cairosvg --with pillow python docs/icon/build.py
+mise run icons
 ```
 
-This writes `docs/icon/lasso.svg` and the SVG, PNG, and ICO assets in
-`src/web/public/`, leaving the wordmark untouched. Icon URLs are versioned in
-`src/web/index.html` and `src/web/public/manifest.json` to invalidate cached art.
+Icon URLs are versioned in `src/web/index.html` and
+`src/web/public/manifest.json` to invalidate cached art; bump the `?v=` when
+the art changes.
 
 ## Dogfooding
 

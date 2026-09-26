@@ -79,8 +79,13 @@ container_pool() {
 #     subids"), and forcing it by moving the range breaks the launch a second
 #     way — a nested container cannot chown into uids outside the range its own
 #     host gave it ("Failed to handle idmapped storage").
+#
+# Only a real subid RANGE counts. titan's `root:1000:1` is the delegation that
+# lets raw.idmap map 1000 at all, not a range the default map draws from, and
+# matching it made this answer "no" on exactly the host that needs "yes" — so
+# every container launched here came up with a read-only mount.
 container_needs_idmap() {
-  ! awk -F: '$1 == "root" && 1000 >= $2 && 1000 < $2 + $3 { f = 1 } END { exit !f }' \
+  ! awk -F: '$1 == "root" && $3 > 1 && 1000 >= $2 && 1000 < $2 + $3 { f = 1 } END { exit !f }' \
     /etc/subuid 2>/dev/null
 }
 
