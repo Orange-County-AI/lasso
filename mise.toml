@@ -27,18 +27,12 @@
 go = "1.25.3"
 bun = "1.3.14"
 node = "26.7.0"
-# Renders the icon set from docs/icon/lasso.svg. It has to be resvg (or a
-# browser): the glow is an feGaussianBlur, and cairosvg drops SVG filters
-# silently, which yields a flat mark that looks merely wrong rather than broken.
-"ubi:linebender/resvg" = "0.48.1"
-
-# Runs in the dev-lasso container: the work here is uv resolving cairosvg and
-# Pillow from PyPI and building their C extensions, not the twenty lines of
-# rendering. Until 2026-09-10 this task could not run at all — cairosvg was
-# imported but never declared or installed anywhere — so the deps now live in
-# PEP 723 metadata at the top of build.py.
+# Runs in the dev-lasso container: the work here is uv resolving Pillow from
+# PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
+# top of build.py. The sources are raster art (docs/icon/icon.png and
+# favicon-art.png); there is no vector mark to render any more.
 [tasks.icons]
-description = "Re-render the icon set, favicons and wordmark from the vector mark, inside the dev-lasso container"
+description = "Re-render the favicons and home-screen icons from the raster mascot, inside the dev-lasso container"
 dir = "{{config_root}}"
 run = "./scripts/container-icons.sh"
 

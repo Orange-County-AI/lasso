@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/lasso-wordmark.png" alt="lasso — Retro 82 terminal monogram" width="460">
+<img src="docs/brand/lasso-wordmark.png" alt="lasso: a pixel-art terminal robot in a cowboy hat, swinging a lasso" width="460">
 
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**
@@ -585,16 +585,20 @@ match `lassoSemver` (the workflow enforces it).
 
 ## The logo
 
-The favicon and app icons use the amber L outline and teal cursor from the
-wordmark in `docs/brand/`. Regenerate the standalone vector and raster assets:
+The mascot is a pixel-art terminal robot in a cowboy hat, wrangling a lasso:
+the agent wrangler. It is a generated raster image, not a drawing, and the
+sources live in `docs/icon/`: `icon.png` is the full mascot, and
+`favicon-art.png` is the same character simplified for 16 and 32px, where the
+full one turns to mush. The wordmark is `docs/brand/lasso-wordmark.png`.
+Regenerate the favicon, ICO and home-screen assets in `src/web/public/`:
 
 ```bash
-uv run --with cairosvg --with pillow python docs/icon/build.py
+mise run icons
 ```
 
-This writes `docs/icon/lasso.svg` and the SVG, PNG, and ICO assets in
-`src/web/public/`, leaving the wordmark untouched. Icon URLs are versioned in
-`src/web/index.html` and `src/web/public/manifest.json` to invalidate cached art.
+Icon URLs are versioned in `src/web/index.html` and
+`src/web/public/manifest.json` to invalidate cached art; bump the `?v=` when
+the art changes.
 
 ## Dogfooding
 
