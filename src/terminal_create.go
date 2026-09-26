@@ -119,6 +119,18 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 
 	var res json.RawMessage
 	var method string
+	if workspaceID == "" && workspaceName == scratchWorkspaceLabel {
+		// Scratch is shared with scratch agents: find-or-create it under the
+		// same per-host lock they use, so a terminal and an agent created at
+		// once cannot each make their own "Scratch".
+		ws, tab, pane, err := openScratchTabID(b, expandTildeOn(b, "~"), tabName, focus)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		finishCreateTerminal(w, b, createTerminalResp{WorkspaceID: ws, TabID: tab, RootPane: pane}, command, aiTitle)
+		return
+	}
 	if workspaceID == "" {
 		method = "workspace.create"
 		res, err = createWorkspace()
@@ -177,12 +189,18 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 			out.TabNameError = fmt.Sprintf("name tab: %v", err)
 		}
 	}
+	finishCreateTerminal(w, b, out, command, aiTitle)
+}
+
+// finishCreateTerminal starts the background tab titler, types the command into
+// the new pane once its shell has settled, and writes the response.
+func finishCreateTerminal(w http.ResponseWriter, b Backend, out createTerminalResp, command string, aiTitle bool) {
 	if aiTitle && out.TabID != "" {
 		go terminalTitler(b, out.TabID, command)
 	}
 	if command != "" {
-		waitPaneReady(b, paneID)
-		if err := paneRun(b, paneID, terminalScript(command)); err != nil {
+		waitPaneReady(b, out.RootPane)
+		if err := paneRun(b, out.RootPane, terminalScript(command)); err != nil {
 			out.CommandError = fmt.Sprintf("submit command: %v", err)
 		}
 	}

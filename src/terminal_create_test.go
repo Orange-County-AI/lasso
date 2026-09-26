@@ -17,6 +17,7 @@ type terminalCreateBackend struct {
 	renameParams map[string]any
 	sent         []string
 	tabCreateErr error
+	workspaces   string         // workspace.list reply; "" means one "~" workspace
 	titled       chan [2]string // background titler requests (tab id, command)
 }
 
@@ -38,6 +39,9 @@ func (b *terminalCreateBackend) HerdrCall(method string, params any) (json.RawMe
 		b.renameParams = p
 		return json.RawMessage(`{}`), nil
 	case "workspace.list":
+		if b.workspaces != "" {
+			return json.RawMessage(b.workspaces), nil
+		}
 		return json.RawMessage(`{"workspaces":[{"workspace_id":"ws","label":"~","number":1,"tab_count":2,"focused":true}]}`), nil
 	case "pane.read":
 		return json.RawMessage(`{"read":{"text":"$ "}}`), nil
@@ -86,6 +90,30 @@ func TestCreateTerminalFocus(t *testing.T) {
 				t.Fatalf("workspace.create label = %#v, want Scratch", got)
 			}
 		})
+	}
+}
+
+// A terminal with no workspace named joins the Scratch workspace scratch agents
+// already share, rather than making a second "Scratch" beside it.
+func TestCreateTerminalJoinsExistingScratch(t *testing.T) {
+	b := withTerminalBackend(t)
+	b.workspaces = `{"workspaces":[{"workspace_id":"ws","label":"Scratch","number":1,"tab_count":3}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal", strings.NewReader(`{"tab_name":"logs"}`))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if b.method != "tab.create" || b.params["workspace_id"] != "ws" || b.params["label"] != "logs" {
+		t.Fatalf("%s %#v, want tab.create into ws labeled logs", b.method, b.params)
+	}
+	var out createTerminalResp
+	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.WorkspaceID != "ws" || out.TabID != "ws:t2" || out.RootPane != "p2" {
+		t.Fatalf("response = %#v", out)
 	}
 }
 
