@@ -68,7 +68,9 @@ export function NewTerminalForm({
   const queryClient = useQueryClient()
   const [command, setCommand] = React.useState("")
   const [workspace, setWorkspace] = React.useState("")
-  const [workspaceName, setWorkspaceName] = React.useState(SCRATCH_WORKSPACE)
+  // Blank means Scratch (the server's default), so the default reads as an
+  // empty field with Scratch as its placeholder.
+  const [workspaceName, setWorkspaceName] = React.useState("")
   const [tabName, setTabName] = React.useState("")
   const commandRef = React.useRef<HTMLTextAreaElement>(null)
   const selectionTouchedRef = React.useRef(false)
@@ -90,7 +92,7 @@ export function NewTerminalForm({
     if (!open) return
     selectionTouchedRef.current = false
     setWorkspace("")
-    setWorkspaceName(SCRATCH_WORKSPACE)
+    setWorkspaceName("")
     setTabName("")
   }, [open])
 
@@ -117,7 +119,7 @@ export function NewTerminalForm({
     const match = workspacesQuery.data.workspaces.find(
       (item) => item.label === preferred
     )
-    setWorkspaceName(preferred)
+    setWorkspaceName(preferred === SCRATCH_WORKSPACE ? "" : preferred)
     setWorkspace(match?.workspace_id ?? NEW_WORKSPACE)
   }, [open, workspace, workspaceName, configQuery.data, workspacesQuery.data])
   // A blank tab name is named by the server after the command (the command
@@ -234,10 +236,10 @@ export function NewTerminalForm({
               selectionTouchedRef.current = true
               setWorkspace(next)
               if (next !== NEW_WORKSPACE) {
-                setWorkspaceName(
+                const label =
                   workspaces.find((item) => item.workspace_id === next)
-                    ?.label || SCRATCH_WORKSPACE
-                )
+                    ?.label || ""
+                setWorkspaceName(label === SCRATCH_WORKSPACE ? "" : label)
               }
             }}
           >
@@ -262,7 +264,13 @@ export function NewTerminalForm({
               id="terminal-workspace-name"
               value={workspaceName}
               disabled={creating}
-              onChange={(event) => setWorkspaceName(event.target.value)}
+              onChange={(event) => {
+                // Typing is a choice too: without this the default-selection
+                // effect re-fills the configured name on every keystroke, so
+                // the field could never be cleared.
+                selectionTouchedRef.current = true
+                setWorkspaceName(event.target.value)
+              }}
               placeholder={SCRATCH_WORKSPACE}
             />
           </Field>

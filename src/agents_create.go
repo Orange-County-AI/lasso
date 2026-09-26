@@ -767,6 +767,13 @@ var scratchMu sync.Map // host -> *sync.Mutex
 // workspace, creating the workspace (whose root tab is then this one) when none
 // exists. Returns the workspace and the new tab's root pane.
 func openScratchTab(b Backend, cwd, label string, focus bool) (wsID, paneID string, err error) {
+	wsID, _, paneID, err = openScratchTabID(b, cwd, label, focus)
+	return wsID, paneID, err
+}
+
+// openScratchTabID is openScratchTab that also returns the new tab's id, which
+// the terminal creator needs to name the tab after its command later.
+func openScratchTabID(b Backend, cwd, label string, focus bool) (wsID, tabID, paneID string, err error) {
 	m, _ := scratchMu.LoadOrStore(b.Name(), &sync.Mutex{})
 	mu := m.(*sync.Mutex)
 	mu.Lock()
@@ -779,15 +786,15 @@ func openScratchTab(b Backend, cwd, label string, focus bool) (wsID, paneID stri
 		}
 		res, err := b.HerdrCall("tab.create", params)
 		if err == nil {
-			ws, _, pane := parseTerminalCreateResult(res)
+			ws, tab, pane := parseTerminalCreateResult(res)
 			if ws == "" {
 				ws = id
 			}
-			return ws, pane, nil
+			return ws, tab, pane, nil
 		}
 		// Closed between the list and the create: fall through and make a new one.
 		if !strings.Contains(err.Error(), "workspace_not_found") {
-			return "", "", fmt.Errorf("tab.create: %w", err)
+			return "", "", "", fmt.Errorf("tab.create: %w", err)
 		}
 	}
 	res, err := b.HerdrCall("workspace.create", map[string]any{
@@ -796,14 +803,14 @@ func openScratchTab(b Backend, cwd, label string, focus bool) (wsID, paneID stri
 		"focus": focus,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("workspace.create: %w", err)
+		return "", "", "", fmt.Errorf("workspace.create: %w", err)
 	}
 	ws, tab, pane := parseTerminalCreateResult(res)
 	if tab != "" && label != "" {
 		// Best effort: an unnamed tab is still a working agent.
 		_, _ = b.HerdrCall("tab.rename", map[string]any{"tab_id": tab, "label": label})
 	}
-	return ws, pane, nil
+	return ws, tab, pane, nil
 }
 
 func parseCreateResult(res json.RawMessage) (workspaceID, rootPane string) {
