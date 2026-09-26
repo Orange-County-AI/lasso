@@ -19,10 +19,13 @@ export function paneKey(p: HostPane): string {
 // (the name lasso's creator set, and what auto-titling rewrites), then the pane's
 // own label, then its tab, then the terminal title — which for an agent is what
 // it is working on, and the only name left when nothing along the way was ever
-// labelled.
+// labelled. Scratch is skipped: it is the workspace every scratch agent shares,
+// so it names none of them, and each one's own name is its tab.
+export const SCRATCH_WORKSPACE = "Scratch"
+
 export function agentName(p: HostPane): string {
   return (
-    p.workspace_label ||
+    (p.workspace_label !== SCRATCH_WORKSPACE && p.workspace_label) ||
     p.pane_label ||
     p.tab_label ||
     p.terminal_title ||

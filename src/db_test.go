@@ -48,8 +48,8 @@ func TestFreshDefaults(t *testing.T) {
 	if s.DefaultAgent != "" {
 		t.Errorf("default_agent default = %q, want empty", s.DefaultAgent)
 	}
-	if s.DefaultTerminalWorkspace != "~" {
-		t.Errorf("default_terminal_workspace default = %q, want ~", s.DefaultTerminalWorkspace)
+	if s.DefaultTerminalWorkspace != "Scratch" {
+		t.Errorf("default_terminal_workspace default = %q, want Scratch", s.DefaultTerminalWorkspace)
 	}
 }
 

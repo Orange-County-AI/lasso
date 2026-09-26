@@ -1098,6 +1098,18 @@ func tabLabel(be Backend, tabID string) string {
 // away from, so "~" comes back empty and the caller falls back to what the pane
 // itself is called.
 func workspaceLabel(be Backend, workspaceID string) string {
+	label := workspaceLabelRaw(be, workspaceID)
+	// "~" is herdr's placeholder for an unnamed workspace, and Scratch is shared
+	// by every scratch agent: neither names the agent in it.
+	if label == "~" || label == scratchWorkspaceLabel {
+		return ""
+	}
+	return label
+}
+
+// workspaceLabelRaw is the workspace's label as herdr has it, placeholders
+// included; "" when it cannot be read.
+func workspaceLabelRaw(be Backend, workspaceID string) string {
 	if workspaceID == "" {
 		return ""
 	}
@@ -1113,11 +1125,7 @@ func workspaceLabel(be Backend, workspaceID string) string {
 	if json.Unmarshal(res, &r) != nil {
 		return ""
 	}
-	label := strings.TrimSpace(r.Workspace.Label)
-	if label == "~" {
-		return ""
-	}
-	return label
+	return strings.TrimSpace(r.Workspace.Label)
 }
 
 // ---------------------------------------------------------------------------

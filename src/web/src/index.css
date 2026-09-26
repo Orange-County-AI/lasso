@@ -262,6 +262,12 @@
     @apply border-border outline-ring/50;
     box-sizing: border-box;
   }
+  /* What you type is what you see: JetBrains Mono joins "--" into one long
+     dash, which in a command field reads as a single "-". */
+  input,
+  textarea {
+    font-variant-ligatures: none;
+  }
   html,
   body,
   #root {

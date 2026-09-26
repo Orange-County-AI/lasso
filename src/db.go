@@ -198,10 +198,17 @@ type appSettings struct {
 	ScratchSetup             string
 }
 
+// terminalWorkspaceKey stores the New terminal form's default workspace. It
+// replaced "default_terminal_workspace" when the default moved from "~" to
+// Scratch: the Settings pane saves every default at once, so nearly every db
+// held an explicit "~" that was only ever the old default echoed back, and a
+// fresh key is the one way to let those installs land on the new default.
+const terminalWorkspaceKey = "terminal_workspace"
+
 // getSettings reads the settings keys, applying the same default repos_root the
 // old applyConfigDefaults did. DefaultAgent is intentionally NOT defaulted.
 func getSettings() (appSettings, error) {
-	s := appSettings{ReposRoot: "~/projects", DefaultTerminalWorkspace: "~"}
+	s := appSettings{ReposRoot: "~/projects", DefaultTerminalWorkspace: scratchWorkspaceLabel}
 	rows, err := db.Query("SELECT key, value FROM settings")
 	if err != nil {
 		return s, err
@@ -221,7 +228,7 @@ func getSettings() (appSettings, error) {
 			s.BranchPrefix = v
 		case "default_agent":
 			s.DefaultAgent = v
-		case "default_terminal_workspace":
+		case terminalWorkspaceKey:
 			if v != "" {
 				s.DefaultTerminalWorkspace = v
 			}
@@ -830,7 +837,9 @@ func updateAgentTitleByWorkspace(host, workspaceID, title string) error {
 		return nil
 	}
 	_, err := db.Exec(
-		`UPDATE agents SET title=? WHERE host=? AND workspace_id=?`,
+		// Scratch agents are excluded: a workspace rename cannot name one, since
+		// several share the Scratch workspace (theirs is a tab; see autotitle.go).
+		`UPDATE agents SET title=? WHERE host=? AND workspace_id=? AND type != 'scratch'`,
 		strings.TrimSpace(title), host, workspaceID)
 	return err
 }

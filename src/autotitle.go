@@ -121,10 +121,7 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 	if title == rec.Title {
 		return
 	}
-	if _, err := b.HerdrCall("workspace.rename", map[string]any{
-		"workspace_id": rec.WorkspaceID,
-		"label":        title,
-	}); err != nil {
+	if err := renameAgentHome(b, rec, title); err != nil {
 		log.Printf("agent %s on %s: auto-title rename failed: %v", rec.ID, host, err)
 		notifyUI(notice{
 			Level:  "error",
@@ -133,11 +130,11 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 		})
 		return
 	}
-	// Only the workspace. The herdr TAB is deliberately left alone: it's the
-	// user's own organization of the terminal, shared with whatever else they
-	// put in it, and retitling it puts a generated sentence across the top of
-	// the screen — a rename they never asked for in a place that isn't the
-	// agent's.
+	// Only the workspace (or a scratch agent's own tab, above). A worktree
+	// agent's herdr TAB is deliberately left alone: it's the user's own
+	// organization of the terminal, shared with whatever else they put in it,
+	// and retitling it puts a generated sentence across the top of the screen —
+	// a rename they never asked for in a place that isn't the agent's.
 	if err := updateAgentTitle(rec.ID, host, title); err != nil {
 		log.Printf("agent %s on %s: auto-title record update failed: %v", rec.ID, host, err)
 	}
@@ -145,6 +142,26 @@ func autoTitleAgent(b Backend, host string, rec AgentRecord) {
 	// the next poll shows the new name instead of the old one.
 	invalidatePanesCache()
 	log.Printf("agent %s on %s: auto-titled %q -> %q", rec.ID, host, rec.Title, title)
+}
+
+// renameAgentHome renames whatever names the agent in the sidebar: its own
+// workspace, or — for a scratch agent living as a tab in the shared Scratch
+// workspace — that tab, since renaming the workspace would rename every other
+// scratch agent's home with it.
+func renameAgentHome(b Backend, rec AgentRecord, title string) error {
+	if rec.Type == "scratch" && workspaceLabelRaw(b, rec.WorkspaceID) == scratchWorkspaceLabel {
+		p, ok := paneGet(b, rec.RootPane)
+		if !ok || p.TabID == "" {
+			return fmt.Errorf("pane %s: tab not found", rec.RootPane)
+		}
+		_, err := b.HerdrCall("tab.rename", map[string]any{"tab_id": p.TabID, "label": title})
+		return err
+	}
+	_, err := b.HerdrCall("workspace.rename", map[string]any{
+		"workspace_id": rec.WorkspaceID,
+		"label":        title,
+	})
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +212,12 @@ func generateAgentTitle(prompt string) (string, error) {
 	if prompt == "" {
 		return "", errors.New("no prompt to summarize")
 	}
-	instruction := titleInstruction(prompt)
+	return generateTitle(titleInstruction(prompt))
+}
+
+// generateTitle asks each titler in turn for a title answering instruction,
+// returning the first usable one.
+func generateTitle(instruction string) (string, error) {
 	var fails []string
 	for _, t := range titlers {
 		out, err := titlerRunner(t, instruction)
@@ -373,11 +395,14 @@ func trimTitleDecoration(s string) string {
 
 // truncateTitle caps a title at autoTitleMaxLen, cutting back to the last space
 // so it ends on a whole word (mirroring titleSlug's word-boundary cut).
-func truncateTitle(s string) string {
-	if len(s) <= autoTitleMaxLen {
+func truncateTitle(s string) string { return truncateTitleTo(s, autoTitleMaxLen) }
+
+// truncateTitleTo cuts s to at most n bytes, at a word boundary when it can.
+func truncateTitleTo(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	s = strings.ToValidUTF8(s[:autoTitleMaxLen], "")
+	s = strings.ToValidUTF8(s[:n], "")
 	if i := strings.LastIndex(s, " "); i > 0 {
 		s = s[:i]
 	}
