@@ -1723,6 +1723,11 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	// the unique identifier nobody wants to read in a header, which is what a
 	// create showed until its harness wrote a session title of its own.
 	label := workspaceLabel(be, p.WorkspaceID)
+	// A scratch agent's name is its tab: Scratch is shared, so workspaceLabel
+	// skips it, and the auto-titler renames the tab instead.
+	if label == "" && workspaceLabelRaw(be, p.WorkspaceID) == scratchWorkspaceLabel {
+		label = tabLabel(be, p.TabID)
+	}
 	title := label
 	if title == "" {
 		title = cleanPaneTitle(p.TerminalTitleStripped)

@@ -100,9 +100,15 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(req.WorkspaceID)
 	workspaceName := strings.TrimSpace(req.WorkspaceName)
 	if workspaceName == "" {
-		workspaceName = "~"
+		workspaceName = scratchWorkspaceLabel
 	}
 	tabName := strings.TrimSpace(req.TabName)
+	// A blank name is named after the command (terminaltitle.go); a bare shell
+	// keeps herdr's own default.
+	aiTitle := false
+	if tabName == "" {
+		tabName, aiTitle = terminalTabName(command)
+	}
 	createWorkspace := func() (json.RawMessage, error) {
 		return b.HerdrCall("workspace.create", map[string]any{
 			"cwd":   expandTildeOn(b, "~"),
@@ -170,6 +176,9 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			out.TabNameError = fmt.Sprintf("name tab: %v", err)
 		}
+	}
+	if aiTitle && out.TabID != "" {
+		go terminalTitler(b, out.TabID, command)
 	}
 	if command != "" {
 		waitPaneReady(b, paneID)

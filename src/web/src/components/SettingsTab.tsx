@@ -32,6 +32,7 @@ import {
 import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SCRATCH_WORKSPACE } from "@/lib/agents"
 import {
   api,
   completeUsageProviderOrder,
@@ -1712,6 +1713,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
   const workspaces = workspacesQuery.data?.workspaces ?? []
   const workspaceLabels = React.useMemo(() => {
     const labels = [
+      SCRATCH_WORKSPACE,
       "~",
       ...workspaces
         .slice()
@@ -1729,7 +1731,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
   const [defaultAgent, setDefaultAgent] = React.useState("")
   const [scratchSetup, setScratchSetup] = React.useState("")
   const [defaultTerminalWorkspace, setDefaultTerminalWorkspace] =
-    React.useState("~")
+    React.useState(SCRATCH_WORKSPACE)
   const terminalWorkspaceOptions = workspaceLabels.includes(
     defaultTerminalWorkspace
   )
@@ -1744,7 +1746,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
     setDefaultAgent(configQuery.data.default_agent ?? "")
     setScratchSetup(configQuery.data.scratch_setup || "")
     setDefaultTerminalWorkspace(
-      configQuery.data.default_terminal_workspace || "~"
+      configQuery.data.default_terminal_workspace || SCRATCH_WORKSPACE
     )
   }, [configQuery.data, host])
 
@@ -1828,7 +1830,7 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
     !!configQuery.data &&
     ((configQuery.data.repos_root || "") !== reposRoot ||
       (configQuery.data.default_agent ?? "") !== defaultAgent ||
-      (configQuery.data.default_terminal_workspace || "~") !==
+      (configQuery.data.default_terminal_workspace || SCRATCH_WORKSPACE) !==
         defaultTerminalWorkspace ||
       (configQuery.data.scratch_setup || "") !== scratchSetup)
 

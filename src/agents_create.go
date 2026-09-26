@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,7 @@ import (
 //                     root pane. We then copy any configured files in, run the
 //                     repo's setup script, and launch the agent — all in that
 //                     pane's shell.
-//   - scratch agent → a plain workspace rooted at a fresh ~/.lasso/scratch dir,
+//   - scratch agent → a tab in the shared Scratch workspace, rooted at a fresh ~/.lasso/scratch dir,
 //                     then the scratch setup script + agent.
 //
 // Everything routes through defaultBackend() so it targets the active herdr host;
@@ -598,19 +599,16 @@ func createAgent(b Backend, req createAgentReq) (AgentRecord, error) {
 			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("mkdir %s: %v", workDir, err))
 			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("mkdir %s: %w", workDir, err)}
 		}
-		res, err := b.HerdrCall("workspace.create", map[string]any{
-			"cwd":   workDir,
-			"label": req.Title,
-			"focus": !req.NoFocus, // land on the new agent's pane as it boots (web flow); suppressed for MCP
-		})
+		// A tab in the shared Scratch workspace, not a workspace of its own: scratch
+		// agents are throwaway, and one workspace each buried the sidebar in them.
+		ws, pane, err := openScratchTab(b, workDir, req.Title, !req.NoFocus) // focus: land on the agent as it boots (web flow); suppressed for MCP
 		if err != nil {
-			_ = updateAgentBootStatus(rec.ID, host, BootFailed, fmt.Sprintf("workspace.create: %v", err))
+			_ = updateAgentBootStatus(rec.ID, host, BootFailed, err.Error())
 			// 500, not 502: a reached-but-failed herdr call is definitive, not the
 			// "lost response, safe to resubmit" case the client retries (see the
 			// matching note in the git branch above).
-			return AgentRecord{}, &createErr{http.StatusInternalServerError, fmt.Errorf("workspace.create: %w", err)}
+			return AgentRecord{}, &createErr{http.StatusInternalServerError, err}
 		}
-		ws, pane := parseCreateResult(res)
 		rec.WorkspaceID, rec.RootPane = ws, pane
 
 	default:
@@ -756,6 +754,58 @@ func bootAgent(b Backend, host string, rec AgentRecord, uploadDir string) {
 
 // parseCreateResult pulls the workspace_id and root pane_id out of a
 // worktree.create / workspace.create response.
+// scratchWorkspaceLabel names the one herdr workspace scratch agents open their
+// tabs in, and the workspace a new terminal defaults to. It is also not a name:
+// agent naming skips it (as it skips "~") so each agent reads as its own tab.
+const scratchWorkspaceLabel = "Scratch"
+
+// scratchMu serializes find-or-create of the Scratch workspace per host, so two
+// scratch agents created at once cannot each create their own "Scratch".
+var scratchMu sync.Map // host -> *sync.Mutex
+
+// openScratchTab opens a tab labeled label, rooted at cwd, in the host's Scratch
+// workspace, creating the workspace (whose root tab is then this one) when none
+// exists. Returns the workspace and the new tab's root pane.
+func openScratchTab(b Backend, cwd, label string, focus bool) (wsID, paneID string, err error) {
+	m, _ := scratchMu.LoadOrStore(b.Name(), &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if id := terminalWorkspaceIDByLabel(b, scratchWorkspaceLabel); id != "" {
+		params := map[string]any{"workspace_id": id, "cwd": cwd, "focus": focus}
+		if label != "" {
+			params["label"] = label
+		}
+		res, err := b.HerdrCall("tab.create", params)
+		if err == nil {
+			ws, _, pane := parseTerminalCreateResult(res)
+			if ws == "" {
+				ws = id
+			}
+			return ws, pane, nil
+		}
+		// Closed between the list and the create: fall through and make a new one.
+		if !strings.Contains(err.Error(), "workspace_not_found") {
+			return "", "", fmt.Errorf("tab.create: %w", err)
+		}
+	}
+	res, err := b.HerdrCall("workspace.create", map[string]any{
+		"cwd":   cwd,
+		"label": scratchWorkspaceLabel,
+		"focus": focus,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("workspace.create: %w", err)
+	}
+	ws, tab, pane := parseTerminalCreateResult(res)
+	if tab != "" && label != "" {
+		// Best effort: an unnamed tab is still a working agent.
+		_, _ = b.HerdrCall("tab.rename", map[string]any{"tab_id": tab, "label": label})
+	}
+	return ws, pane, nil
+}
+
 func parseCreateResult(res json.RawMessage) (workspaceID, rootPane string) {
 	var r struct {
 		Workspace struct {

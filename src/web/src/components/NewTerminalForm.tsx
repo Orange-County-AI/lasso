@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { DialogFooter } from "@/components/ui/dialog"
 import { Input, NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
+import { SCRATCH_WORKSPACE } from "@/lib/agents"
 import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
 import { qk } from "@/lib/query"
@@ -67,11 +68,10 @@ export function NewTerminalForm({
   const queryClient = useQueryClient()
   const [command, setCommand] = React.useState("")
   const [workspace, setWorkspace] = React.useState("")
-  const [workspaceName, setWorkspaceName] = React.useState("~")
-  const [tabName, setTabName] = React.useState("1")
+  const [workspaceName, setWorkspaceName] = React.useState(SCRATCH_WORKSPACE)
+  const [tabName, setTabName] = React.useState("")
   const commandRef = React.useRef<HTMLTextAreaElement>(null)
   const selectionTouchedRef = React.useRef(false)
-  const tabNameTouchedRef = React.useRef(false)
 
   const configQuery = useQuery({
     queryKey: qk.agentConfig(selectedHost),
@@ -89,10 +89,9 @@ export function NewTerminalForm({
   React.useEffect(() => {
     if (!open) return
     selectionTouchedRef.current = false
-    tabNameTouchedRef.current = false
     setWorkspace("")
-    setWorkspaceName("~")
-    setTabName("1")
+    setWorkspaceName(SCRATCH_WORKSPACE)
+    setTabName("")
   }, [open])
 
   React.useEffect(() => {
@@ -104,8 +103,8 @@ export function NewTerminalForm({
   React.useEffect(() => {
     if (!open || !configQuery.data || !workspacesQuery.data) return
     const preferred = selectionTouchedRef.current
-      ? workspaceName.trim() || "~"
-      : configQuery.data.default_terminal_workspace?.trim() || "~"
+      ? workspaceName.trim() || SCRATCH_WORKSPACE
+      : configQuery.data.default_terminal_workspace?.trim() || SCRATCH_WORKSPACE
     const currentExists = workspacesQuery.data.workspaces.some(
       (item) => item.workspace_id === workspace
     )
@@ -121,13 +120,17 @@ export function NewTerminalForm({
     setWorkspaceName(preferred)
     setWorkspace(match?.workspace_id ?? NEW_WORKSPACE)
   }, [open, workspace, workspaceName, configQuery.data, workspacesQuery.data])
-  React.useEffect(() => {
-    if (!open || !workspace || tabNameTouchedRef.current) return
-    const selected = workspaces.find((item) => item.workspace_id === workspace)
-    setTabName(
-      workspace === NEW_WORKSPACE ? "1" : String((selected?.tab_count ?? 0) + 1)
-    )
-  }, [open, workspace, workspaces])
+  // A blank tab name is named by the server after the command (the command
+  // itself when trivial, an AI-written name otherwise); a bare shell gets the
+  // next number, as it always did.
+  const nextTabNumber =
+    workspace === NEW_WORKSPACE
+      ? "1"
+      : String(
+          (workspaces.find((item) => item.workspace_id === workspace)
+            ?.tab_count ?? 0) + 1
+        )
+  const autoTabName = !command.trim()
 
   React.useEffect(() => {
     if (!open || !active) return
@@ -142,8 +145,8 @@ export function NewTerminalForm({
         host: selectedHost,
         command,
         workspace_id: workspace === NEW_WORKSPACE ? undefined : workspace,
-        workspace_name: workspaceName.trim() || "~",
-        tab_name: tabName.trim() || undefined,
+        workspace_name: workspaceName.trim() || SCRATCH_WORKSPACE,
+        tab_name: tabName.trim() || (autoTabName ? nextTabNumber : undefined),
         focus: true,
       })
       if (result.command_error) {
@@ -229,12 +232,11 @@ export function NewTerminalForm({
             onChange={(event) => {
               const next = event.target.value
               selectionTouchedRef.current = true
-              tabNameTouchedRef.current = false
               setWorkspace(next)
               if (next !== NEW_WORKSPACE) {
                 setWorkspaceName(
                   workspaces.find((item) => item.workspace_id === next)
-                    ?.label || "~"
+                    ?.label || SCRATCH_WORKSPACE
                 )
               }
             }}
@@ -254,26 +256,28 @@ export function NewTerminalForm({
           <Field
             label="Workspace name (optional)"
             htmlFor="terminal-workspace-name"
-            hint='Leave blank to use "~".'
+            hint={`Leave blank to use "${SCRATCH_WORKSPACE}".`}
           >
             <Input
               id="terminal-workspace-name"
               value={workspaceName}
               disabled={creating}
               onChange={(event) => setWorkspaceName(event.target.value)}
-              placeholder="~"
+              placeholder={SCRATCH_WORKSPACE}
             />
           </Field>
         )}
-        <Field label="Tab name" htmlFor="terminal-tab-name">
+        <Field
+          label="Tab name (optional)"
+          htmlFor="terminal-tab-name"
+          hint="Leave blank to name it after the command: a short one as typed, a longer one by AI."
+        >
           <Input
             id="terminal-tab-name"
             value={tabName}
             disabled={creating}
-            onChange={(event) => {
-              tabNameTouchedRef.current = true
-              setTabName(event.target.value)
-            }}
+            onChange={(event) => setTabName(event.target.value)}
+            placeholder={autoTabName ? nextTabNumber : "Named from the command"}
           />
         </Field>
 

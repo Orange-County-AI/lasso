@@ -1179,7 +1179,9 @@ func enumerateHostPanes(b Backend, host, hostLabel string) ([]hostPane, error) {
 			if rec.RootPane != "" {
 				promptByPane[rec.RootPane] = rec.Description
 			}
-			if rec.WorkspaceID != "" {
+			// A scratch agent may share its workspace (Scratch) with others, so
+			// the workspace does not identify its prompt; the pane alone does.
+			if rec.WorkspaceID != "" && rec.Type != "scratch" {
 				promptByWS[rec.WorkspaceID] = rec.Description
 			}
 		}

@@ -17,6 +17,7 @@ type terminalCreateBackend struct {
 	renameParams map[string]any
 	sent         []string
 	tabCreateErr error
+	titled       chan [2]string // background titler requests (tab id, command)
 }
 
 func (b *terminalCreateBackend) HomeDir() (string, error) { return "/home/test", nil }
@@ -54,6 +55,9 @@ func withTerminalBackend(t *testing.T) *terminalCreateBackend {
 	prev := defaultBackend()
 	setDefaultBackend(b)
 	t.Cleanup(func() { setDefaultBackend(prev) })
+	b.titled = make(chan [2]string, 1)
+	terminalTitler = func(_ Backend, tabID, command string) { b.titled <- [2]string{tabID, command} }
+	t.Cleanup(func() { terminalTitler = autoTitleTerminal })
 	return b
 }
 
@@ -78,8 +82,8 @@ func TestCreateTerminalFocus(t *testing.T) {
 			if got, ok := b.params["focus"].(bool); !ok || got != tc.want {
 				t.Fatalf("workspace.create focus = %#v, want %v", b.params["focus"], tc.want)
 			}
-			if got := b.params["label"]; got != "~" {
-				t.Fatalf("workspace.create label = %#v, want ~", got)
+			if got := b.params["label"]; got != "Scratch" {
+				t.Fatalf("workspace.create label = %#v, want Scratch", got)
 			}
 		})
 	}
@@ -236,5 +240,59 @@ func TestListTerminalWorkspaces(t *testing.T) {
 	}
 	if len(out.Workspaces) != 1 || out.Workspaces[0].Label != "~" || out.Workspaces[0].TabCount != 2 {
 		t.Fatalf("workspaces = %#v", out.Workspaces)
+	}
+}
+
+func TestCreateTerminalNamesTabAfterTrivialCommand(t *testing.T) {
+	b := withTerminalBackend(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal",
+		strings.NewReader(`{"workspace_id":"ws","command":"btm"}`))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if got := b.params["label"]; got != "btm" {
+		t.Fatalf("tab.create label = %#v, want btm", got)
+	}
+	select {
+	case got := <-b.titled:
+		t.Fatalf("trivial command asked the titler: %v", got)
+	default:
+	}
+}
+
+func TestCreateTerminalAsksTitlerForScript(t *testing.T) {
+	b := withTerminalBackend(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal",
+		strings.NewReader(`{"workspace_id":"ws","command":"cd ~/projects/lasso && mise run dev"}`))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	// The program's name at once; the titler's answer replaces it later.
+	if got := b.params["label"]; got != "cd" {
+		t.Fatalf("tab.create label = %#v, want cd", got)
+	}
+	got := <-b.titled
+	if got[0] != "ws:t2" || got[1] != "cd ~/projects/lasso && mise run dev" {
+		t.Fatalf("titler asked for %v", got)
+	}
+}
+
+func TestCreateTerminalExplicitTabNameWins(t *testing.T) {
+	b := withTerminalBackend(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal",
+		strings.NewReader(`{"workspace_id":"ws","tab_name":"logs","command":"tail -f /var/log/syslog | grep err"}`))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+	if got := b.params["label"]; got != "logs" {
+		t.Fatalf("tab.create label = %#v, want logs", got)
+	}
+	select {
+	case got := <-b.titled:
+		t.Fatalf("explicit name asked the titler: %v", got)
+	default:
 	}
 }
