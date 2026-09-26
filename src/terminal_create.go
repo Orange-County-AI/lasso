@@ -117,6 +117,12 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// The picker names Scratch by id once it exists. Routed through the generic
+	// tab.create below it would get no cwd, and herdr would root it wherever
+	// Scratch was first created — some scratch agent's own directory.
+	if workspaceID != "" && terminalWorkspaceLabelByID(b, workspaceID) == scratchWorkspaceLabel {
+		workspaceID, workspaceName = "", scratchWorkspaceLabel
+	}
 	var res json.RawMessage
 	var method string
 	if workspaceID == "" && workspaceName == scratchWorkspaceLabel {
@@ -271,22 +277,35 @@ func scriptDelimiter(script string) string {
 }
 
 func terminalWorkspaceIDByLabel(b Backend, label string) string {
-	res, err := b.HerdrCall("workspace.list", map[string]any{})
-	if err != nil {
-		return ""
-	}
-	var payload struct {
-		Workspaces []terminalWorkspace `json:"workspaces"`
-	}
-	if json.Unmarshal(res, &payload) != nil {
-		return ""
-	}
-	for _, workspace := range payload.Workspaces {
+	for _, workspace := range terminalWorkspaces(b) {
 		if workspace.Label == label {
 			return workspace.WorkspaceID
 		}
 	}
 	return ""
+}
+
+func terminalWorkspaceLabelByID(b Backend, id string) string {
+	for _, workspace := range terminalWorkspaces(b) {
+		if workspace.WorkspaceID == id {
+			return workspace.Label
+		}
+	}
+	return ""
+}
+
+func terminalWorkspaces(b Backend) []terminalWorkspace {
+	res, err := b.HerdrCall("workspace.list", map[string]any{})
+	if err != nil {
+		return nil
+	}
+	var payload struct {
+		Workspaces []terminalWorkspace `json:"workspaces"`
+	}
+	if json.Unmarshal(res, &payload) != nil {
+		return nil
+	}
+	return payload.Workspaces
 }
 
 func parseTerminalCreateResult(res json.RawMessage) (workspaceID, tabID, rootPane string) {

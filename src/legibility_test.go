@@ -99,7 +99,7 @@ func TestGlyphCanvasFollowsTheScrim(t *testing.T) {
 // (green, yellow) that never had text contrast to begin with, and the pass has
 // to fix them without turning them into some other colour.
 func TestOmpTextLegibleUnderBackdrop(t *testing.T) {
-	rt := resolveThemeByName("ayu-light")
+	rt := ayuLightFixture(t)
 	cv := glyphCanvasOf(rt.ui.PanelBg, true, 0.75)
 	got := ompColors(rt.ui, cv)
 
@@ -157,7 +157,7 @@ func TestOmpTextLegibleUnderBackdrop(t *testing.T) {
 // the diff bands are backgrounds it draws text ON, and inverseText is the
 // theme's background painted on an accent fill.
 func TestClaudeTextLegibleUnderBackdrop(t *testing.T) {
-	rt := resolveThemeByName("ayu-light")
+	rt := ayuLightFixture(t)
 	cv := glyphCanvasOf(rt.ui.PanelBg, true, 0.75)
 	got := claudeOverrides(rt.ui, cv)
 
@@ -314,4 +314,22 @@ func TestThemeStampCarriesTheBackdrop(t *testing.T) {
 	if _, ok := themeSyncedFor("fresh"); ok {
 		t.Error("a re-mirror invented a record for a host it never wrote a theme to")
 	}
+}
+
+// ayuLightFixture resolves ayu-light, the theme the report was about, from a
+// copy of its palette in testdata. It is not a built-in: it is installed from a
+// URL, so resolving it by name silently fell back to the dark default wherever
+// it was not installed (CI, a sandboxed HOME, or after another test reloaded
+// the registry from its own LASSO_DIR).
+func ayuLightFixture(t *testing.T) resolvedTheme {
+	t.Helper()
+	p, err := readThemePalette("testdata/omarchy/ayu-light")
+	if err != nil {
+		t.Fatalf("ayu-light fixture: %v", err)
+	}
+	if !p.light {
+		t.Fatal("ayu-light fixture: not read as a light theme")
+	}
+	def := p.themeDef()
+	return resolvedTheme{Name: "ayu-light", Resolved: "ayu-light", ui: def.ui, ansi: def.ansi}
 }
