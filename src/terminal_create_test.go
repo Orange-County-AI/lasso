@@ -117,6 +117,23 @@ func TestCreateTerminalJoinsExistingScratch(t *testing.T) {
 	}
 }
 
+// The picker sends Scratch's id once it exists. That must still root the tab
+// at home, not inherit the directory of whichever scratch agent made Scratch.
+func TestCreateTerminalScratchByIDStartsAtHome(t *testing.T) {
+	b := withTerminalBackend(t)
+	b.workspaces = `{"workspaces":[{"workspace_id":"ws","label":"Scratch","number":1,"tab_count":3}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal", strings.NewReader(`{"workspace_id":"ws","workspace_name":"Scratch"}`))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if b.method != "tab.create" || b.params["workspace_id"] != "ws" || b.params["cwd"] != "/home/test" {
+		t.Fatalf("%s %#v, want tab.create into ws at /home/test", b.method, b.params)
+	}
+}
+
 func TestCreateTerminalInExistingWorkspaceRunsCommand(t *testing.T) {
 	b := withTerminalBackend(t)
 	req := httptest.NewRequest(
