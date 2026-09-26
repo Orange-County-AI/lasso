@@ -226,6 +226,7 @@ mise run build      # build the frontend (src/web/dist) then the binary
 ./lasso             # serves on 127.0.0.1:8090, spawns ttyd running herdr
 mise run dev        # Vite dev server (frontend HMR) + Go backend, on your tailnet
 mise run test       # Go tests
+mise run diagram    # re-render docs/architecture/*.reladraw to SVG
 ```
 
 The Go backend lives under `src/` (module root, with `go.mod`). The frontend is a
@@ -250,6 +251,8 @@ delete it.
 
 ## Architecture
 
+<img src="docs/architecture/lasso.svg" alt="lasso architecture: the browser and MCP clients reach the lasso binary through Cloudflare Access; lasso drives the local herdr over its socket and remote herdrs through an SSH pool, keeps state in lasso.db, and sends Web Push to the phone">
+
 One Go binary that serves the embedded SPA, reverse-proxies the `ttyd` terminals
 (WebSocket), talks to the herdr server over its unix socket to track the focused
 pane and workspace layout, and pushes live state to the browser over SSE. It can
@@ -262,6 +265,10 @@ respawning one, and one SSH connection per host serves both the terminal and
 host-addressed work.
 The data and terminal routes live under `/api/*`, `/terminal/`, and `/shell/`,
 plus an unauthenticated MCP server at `/mcp`; see the route table in `src/main.go`.
+
+The diagram is [reladraw](https://www.npmjs.com/package/reladraw) source in
+`docs/architecture/lasso.reladraw`; edit it and run `mise run diagram`, which
+renders it inside a throwaway Debian incus container (`scripts/sandbox.sh`).
 
 ## Theming
 

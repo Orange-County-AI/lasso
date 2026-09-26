@@ -2,6 +2,7 @@
 #   mise run dev    — Vite dev server (frontend HMR) proxying to the Go backend
 #   mise run build  — build the frontend (src/web/dist) then the binary
 #   mise run test   — run the Go tests
+#   mise run diagram — render docs/architecture/*.reladraw to SVG
 
 # Toolchain the tasks below need on PATH. go is pinned to go.mod's version so
 # `mise run build`/`test`/`dev` compile with the exact toolchain (no implicit
@@ -40,6 +41,14 @@ node = "26.7.0"
 description = "Re-render the icon set, favicons and wordmark from the vector mark, inside the dev-lasso container"
 dir = "{{config_root}}"
 run = "./scripts/container-icons.sh"
+
+# Runs in the `sandbox` incus container (scripts/sandbox.sh), a plain Debian box
+# kept apart from dev-lasso: reladraw is fetched from npm by bunx, third-party
+# code executing, and a docs task has no reason to share the frontend's mounts.
+[tasks.diagram]
+description = "Render docs/architecture/*.reladraw to SVG, inside the sandbox incus container"
+dir = "{{config_root}}"
+run = "./scripts/container-diagram.sh"
 
 # Runs in the dev-lasso incus container, not on titan: `bun install` executes
 # third-party postinstall scripts, and that is the one place in this repo where

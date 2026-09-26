@@ -1,0 +1,49 @@
+// lasso: one Go binary between browsers/agents and a fleet of herdr sessions.
+// Read left to right: clients -> edge -> lasso -> herdr on each host.
+
+style client  fill: #1b2433  border: #5b7bb0
+style edge    fill: #2a2118  border: #d2904e
+style core    fill: #182a1c  border: #5e9a62
+style store   fill: #142814  border: #486544  badge: database
+style fleet   fill: #2a1a2a  border: #a06aa6
+style aside   text: (size: small, color: #8a8f98)
+
+// ---- Clients ----
+node browser "Browser tab / React SPA (embedded) / terminal · chat · files" style: client
+node agents  "MCP clients / agents · lasso mcp CLI"  style: client  below browser (gap: wide)
+node phone   "Phone / service worker (sw.js)"  style: client  below agents (gap: wide)
+
+// ---- Edge ----
+node cf "Cloudflare Access / + cloudflared tunnel"  style: edge  right of agents (gap: wide)
+
+// ---- lasso server ----
+node lasso "lasso (Go, one binary)"  style: core  right of cf (gap: wide)
+node lasso.api    "HTTP API  /api/*  (per-tab host)"
+node lasso.sse    "SSE host feeds  (hostfeed.go)"
+node lasso.ttyd   "ttyd proxy  /terminal/<slug>/"
+node lasso.mcp    "MCP server  /mcp  + OAuth"
+node lasso.chat   "chat view  (transcripts)"
+node lasso.bg     "background: agent reaper · / notify watcher · theme sync"
+
+node db "lasso.db / (sqlite: agents, ui_state, / oauth_*, push subs)"  style: store  below lasso (gap: wide)
+node push "Web Push service / (Apple, FCM)"  style: edge  right of phone (gap: wide)
+
+// ---- Fleet ----
+node pool "SSH pool / one master per host"  style: fleet  right of lasso (gap: wide)
+node local "herdr (local) / unix socket"  style: fleet  above pool (gap: wide)
+node remote "herdr on remote hosts / (ssh config aliases)"  style: fleet  below pool
+node sftp "SFTP: transcripts, / files, agent themes"  style: fleet  below remote
+
+// ---- Edges ----
+edge browser -> cf "HTTPS + SSE"  from: right  to: top
+edge agents -> cf "MCP"  from: right  to: left
+edge cf -> lasso  from: right  to: left
+edge lasso -> db  from: bottom  to: top
+edge lasso -> push "VAPID"  from: bottom  to: right
+edge push -> phone "notification"  from: left  to: right
+edge lasso -> local "socket API"  from: right  to: left
+edge lasso -> pool  from: right  to: left
+edge pool -> remote  from: bottom  to: top
+edge remote -> sftp  from: bottom  to: top
+
+node hint "Which host a view drives is a property of the browser TAB (X-Lasso-Host or ?host=), not of the process." (wrap: 34)  style: aside  shape: none  below phone (gap: wide)
