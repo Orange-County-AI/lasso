@@ -63,23 +63,60 @@ export function markSidebarIntent() {
   releaseLayoutBackoff()
 }
 
-// beginSidebarDrag marks the start of a handle drag and re-marks it at the end.
-// A drag is the one gesture that can outlast the intent window: the stamp is
-// laid down on pointerdown, but the size is not persisted until the debounce
-// after the user lets go, which for a slow drag is seconds later. Stamping
-// again on release puts the claim right next to the write it belongs to.
-export function beginSidebarDrag() {
-  markSidebarIntent()
-  const end = () => {
-    markSidebarIntent()
-    window.removeEventListener("pointerup", end)
-    window.removeEventListener("pointercancel", end)
+// A drag is attributed from the RESIZE, not from a pointerdown on the handle.
+// The separator is 1px wide, but react-resizable-panels hit-tests a 10px band
+// around it (resizeTargetMinimumSize.fine) from its own document-level
+// listener, so a grab a few pixels to either side starts a drag whose
+// pointerdown lands on the neighbouring panel and never reaches the handle's
+// own onPointerDown. That drag used to persist with no intent, the server
+// refused it unless this tab happened to hold a fresh lease, and the adopted
+// reply snapped the sidebar back the moment the user let go.
+//
+// So: track whether a pointer is held anywhere in this document, and treat a
+// resize reported while one is held as the human's. Nothing unattended resizes
+// the panel mid-press (a remount or an SSE apply does not wait for a click),
+// and an apply that did coincide writes nothing, since the persist only sends
+// what differs from the synced state.
+let pointersHeld = 0
+let draggedThisPress = false
+
+if (typeof window !== "undefined") {
+  // Capture phase on window, so it runs before the panel library's own
+  // document-capture handlers and whatever they do to the event.
+  window.addEventListener(
+    "pointerdown",
+    () => {
+      pointersHeld++
+    },
+    true
+  )
+  const release = () => {
+    pointersHeld = Math.max(0, pointersHeld - 1)
+    if (pointersHeld > 0) return
+    // Re-stamp on release: a slow drag can outlast INTENT_MS, and the size is
+    // persisted a debounce AFTER the pointer comes up.
+    if (draggedThisPress) markSidebarIntent()
+    draggedThisPress = false
   }
-  // On window, not the handle: a drag routinely ends with the pointer somewhere
-  // else entirely, and a missed release would leave the claim stamped at the
-  // start of the gesture.
-  window.addEventListener("pointerup", end)
-  window.addEventListener("pointercancel", end)
+  window.addEventListener("pointerup", release, true)
+  window.addEventListener("pointercancel", release, true)
+  // A release over another document (the terminal iframe) never reaches this
+  // one; losing focus to it is the closest signal, and it must not leave the
+  // count stuck above zero.
+  window.addEventListener("blur", () => {
+    if (pointersHeld > 0) {
+      pointersHeld = 1
+      release()
+    }
+  })
+}
+
+// noteSidebarResize is called for every size the panel reports. A resize while
+// a pointer is held is a drag, whichever element the press started on.
+export function noteSidebarResize() {
+  if (pointersHeld === 0) return
+  draggedThisPress = true
+  markSidebarIntent()
 }
 
 // sidebarIntentFresh reports whether the layout change now being persisted can
