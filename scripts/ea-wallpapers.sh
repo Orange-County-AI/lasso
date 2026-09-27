@@ -29,8 +29,9 @@ mw=$(magick identify -format %w "$tmp/mark.png")
 mh=$(magick identify -format %h "$tmp/mark.png")
 
 # 16:10 window at full plate height (1613x1008), right-aligned to keep the sun.
-# The mark's top-left corner lands at (430, 90); the stamp is centred on it.
-x=$((430 + mw / 2 - 70))
+# The mark's top-left corner lands at (265, 90), measured to sit just past the
+# sidebar's edge (~245 image px) on a ~1.04:1 terminal; the stamp is centred on it.
+x=$((265 + mw / 2 - 70))
 y=$((90 + mh / 2 - 70))
 stamp() { # <plate> <id>
   magick "$plates/$1" -crop 1613x1008+739+0 +repage "$tmp/stamp.png" \
