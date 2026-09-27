@@ -9,7 +9,10 @@ export interface Shortcut {
 }
 
 export const SHORTCUTS: Shortcut[] = [
-  { keys: "⌘K", label: "Find a pane… (herdr's search, ⌃B G)" },
+  {
+    keys: "⌘K",
+    label: "Find a pane… (herdr's search, ⌃B G; in chat/agents: find an agent)",
+  },
   { keys: "⌘O", label: "New agent…" },
   { keys: "⌘I", label: "New terminal…" },
   { keys: "⌘\\", label: "Toggle the sidebar" },
