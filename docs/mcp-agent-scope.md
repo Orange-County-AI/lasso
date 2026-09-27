@@ -1,7 +1,7 @@
 # MCP agent scope — who an agent can see, and how to provision it
 
 Operator runbook for the per-host MCP credentials. The *why* and the code map
-live in `CLAUDE.md` under "Agent visibility scope"; this is how to run it.
+live in `docs/design/agent-scope.md`; this is how to run it.
 
 ## The model in one paragraph
 
