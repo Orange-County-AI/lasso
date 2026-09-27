@@ -3,12 +3,12 @@
 # requires-python = ">=3.11"
 # dependencies = ["pillow"]
 # ///
-"""Render favicon and home-screen assets from the raster mascot.
+"""Render favicon and home-screen assets from the raster icon.
 
-One source, a generated image, never a drawing: icon.png, the full mascot (the
-robot wrangler), at every size including the 16 and 32px browser-tab favicons.
-A simplified tiny-size variant used to stand in below 48px; the full mascot
-won on preference, detail loss at 16px and all.
+One source, never a drawing: icon.png, the Execution Associates EXA monogram
+(white, from design.execution.associates' exa-mark-white-alpha.png) centred on
+the brand's ink #1B0A2C at ~60% of the square, at every size including the 16
+and 32px browser-tab favicons.
 """
 from pathlib import Path
 

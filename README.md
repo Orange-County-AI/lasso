@@ -498,14 +498,13 @@ renders it inside a throwaway Debian incus container (`scripts/sandbox.sh`).
 The **terminal** adopts the theme from `~/.config/herdr/config.toml`
 (`[theme].name`) and repaints live when you change it — no restart. Leave
 `-theme auto` to follow herdr, or force one with `-theme <name>` (`lasso serve -h`
-lists the names). **Retro 82** is the default when no theme is configured (and
-the fallback for unknown names); an existing configured theme still wins.
-Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
-Two brand themes ship beside it: **Execution Associates** (`execution-associates`,
-dark dusk violet with a peach accent) and **Orange County AI** (`ocai`, light:
-navy ink and a sun-orange accent on cream), each drawn from its website's tokens
-and listed under **Brand** in the picker.
-Its navy, amber, and teal palette comes from
+lists the names). **Execution Associates** (`execution-associates`: dark dusk
+violet with a peach accent, drawn from executionassociates.com) is the default
+when no theme is configured (and the fallback for unknown names); an existing
+configured theme still wins. It sits under **Brand** in the picker beside
+**Orange County AI** (`ocai`, light: navy ink and a sun-orange accent on cream,
+from orangecountyai.com). **Retro 82** (`retro-82`) is still bundled; its navy,
+amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
 Every theme can carry a **background image**. Retro 82 defaults to one of 27

@@ -68,7 +68,7 @@ type themeDef struct {
 	brand bool
 }
 
-const defaultTheme = "retro-82"
+const defaultTheme = "execution-associates"
 
 // themes is keyed by canonical (normalized) herdr theme name.
 var themes = map[string]themeDef{
@@ -515,7 +515,7 @@ func herdrConfigIn(configPath, xdgConfigHome, home string) string {
 
 // loadHerdrTheme resolves the active theme. If forceName != "" and != "auto" it
 // is used directly; otherwise the name (and overrides) come from config.toml.
-// Falls back to Retro 82 on anything unreadable/unknown.
+// Falls back to defaultTheme (Execution Associates) on anything unreadable/unknown.
 func loadHerdrTheme(forceName string) resolvedTheme {
 	rt, _ := loadHerdrThemeConfig(forceName)
 	return rt

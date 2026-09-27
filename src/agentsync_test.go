@@ -392,8 +392,8 @@ func TestResolveThemeByName(t *testing.T) {
 	if got := resolveThemeByName("mocha").Resolved; got != "catppuccin" {
 		t.Errorf("alias mocha -> %q, want catppuccin", got)
 	}
-	if got := resolveThemeByName("nonsense").Resolved; got != "retro-82" {
-		t.Errorf("unknown -> %q, want retro-82", got)
+	if got := resolveThemeByName("nonsense").Resolved; got != defaultTheme {
+		t.Errorf("unknown -> %q, want %q", got, defaultTheme)
 	}
 	if got := resolveThemeByName("catppuccin-latte").Resolved; got != "catppuccin-latte" {
 		t.Errorf("latte -> %q", got)

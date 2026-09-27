@@ -94,7 +94,7 @@ func TestAliasesAndUnknown(t *testing.T) {
 		"catppuccin-mocha": "catppuccin",
 		"gruvbox-dark":     "gruvbox",
 		"onedark":          "one-dark",
-		"totally-bogus":    "retro-82",
+		"totally-bogus":    defaultTheme,
 		// light variants + herdr's alternate spellings for them
 		"tokyo-night-day": "tokyo-night-day",
 		"Tokyo Night Day": "tokyo-night-day",
