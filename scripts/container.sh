@@ -27,8 +27,10 @@
 # The containers are disposable. Delete one and the next task rebuilds it from
 # the dev-base image in about a minute. `mise run dev:containers` lists them
 # with the worktree each belongs to; `mise run dev:prune` removes the ones whose
-# worktree is gone. To refresh the toolchain: start the stopped dev-base
-# container, update it, `incus publish dev-base --alias dev-base --reuse -f`.
+# worktree is gone, which titan's weekly lasso-prune timer also does (keyed on
+# user.lasso.worktree, so keep that key). To refresh the toolchain: start the
+# stopped dev-base container, update it, `incus publish dev-base --alias
+# dev-base --reuse -f`.
 #
 # Idle containers are left running, not stopped after each task. An idle one
 # holds ~11 MiB of anonymous memory (measured on titan, 2026-09-27, cgroup

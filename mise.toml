@@ -74,8 +74,10 @@ dir = "{{config_root}}"
 run = "./scripts/container-web.sh check"
 
 # One dev container per worktree (scripts/container.sh). These two are the
-# cleanup half: nothing deletes a container automatically, because the only
-# safe signal that one is unused is its worktree being gone.
+# on-demand cleanup half. A container is only ever deleted once its worktree is
+# gone -- the one safe signal that it is unused. On titan the weekly
+# lasso-prune timer (titan-iac tools/lasso-prune.sh) applies the same rule to
+# every container carrying a user.lasso.worktree key.
 [tasks."dev:containers"]
 description = "List the per-worktree dev containers, the worktree each belongs to, and whether it still exists"
 dir = "{{config_root}}"
