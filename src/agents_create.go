@@ -1234,14 +1234,19 @@ func paneRun(b Backend, paneID, command string) error {
 // paneComposerState reads only the pane's visible screen. A failed read remains
 // unknown so callers fail open rather than refusing on a screen they can't parse.
 func paneComposerState(b Backend, paneID, agentKind string) ComposerState {
-	// Codex's composer is only legible with its attributes: an empty one shows
-	// a dim placeholder that plain text cannot tell from a draft.
-	if strings.EqualFold(strings.TrimSpace(agentKind), "codex") {
+	// Codex's and Claude's composers are only legible with their attributes:
+	// an empty one shows a dim placeholder (Codex) or a dim suggested next
+	// prompt (Claude) that plain text cannot tell from a draft.
+	switch kind := strings.ToLower(strings.TrimSpace(agentKind)); kind {
+	case "codex", "claude":
 		screen, ok := paneVisibleANSI(b, paneID)
 		if !ok {
 			return ComposerUnknown
 		}
-		return detectCodexComposer(screen)
+		if kind == "codex" {
+			return detectCodexComposer(screen)
+		}
+		return detectClaudeComposer(undimmed(screen))
 	}
 	text, ok := paneVisibleText(b, paneID)
 	if !ok {

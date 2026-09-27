@@ -221,6 +221,24 @@ func sgrCells(line string) (runes []rune, dim []bool) {
 	return runes, dim
 }
 
+// undimmed renders an ANSI screen as plain text with every dim cell blanked.
+// Claude Code puts a suggested next prompt in its empty composer ("❯ commit
+// it"), drawn dim; left in, it reads as an unsent draft and the chat refuses
+// every send to an idle pane.
+func undimmed(screen string) string {
+	lines := strings.Split(screen, "\n")
+	for i, line := range lines {
+		runes, dim := sgrCells(line)
+		for j := range runes {
+			if dim[j] {
+				runes[j] = ' '
+			}
+		}
+		lines[i] = string(runes)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func stripSGR(line string) string {
 	runes, _ := sgrCells(line)
 	return string(runes)
