@@ -1851,3 +1851,44 @@ func TestServeChatAnswer(t *testing.T) {
 		t.Errorf("GET status = %d, want 405", rec.Code)
 	}
 }
+
+// A claude log carries a pasted screenshot as base64 inside the user record,
+// so one line outgrows the read window. Paging back from below it must reach
+// the turns above it, not stop at an empty page that reads as the top.
+func TestClaudePagesAcrossGiantImageRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	shot := strings.Repeat("iVBO", chatReadBytes) // 4 windows of base64
+	lines := []string{
+		`{"type":"user","uuid":"u1","timestamp":"2026-09-27T04:00:00Z","message":{"role":"user","content":"first question"}}`,
+		`{"type":"assistant","uuid":"a1","timestamp":"2026-09-27T04:00:01Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"first answer"}]}}`,
+		`{"type":"user","uuid":"u2","timestamp":"2026-09-27T04:01:00Z","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + shot + `"}},{"type":"text","text":"what is this?"}]}}`,
+		`{"type":"assistant","uuid":"a2","timestamp":"2026-09-27T04:01:01Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"a screenshot"}]}}`,
+	}
+	data := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &localBackend{}
+	size := int64(len(data))
+
+	var texts []string
+	for end, pages := size, 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("paging did not reach the top")
+		}
+		page := readLogPage(b, path, "claude", size, end)
+		var got []string
+		for _, it := range page.items {
+			got = append(got, it.Text)
+		}
+		texts = append(got, texts...)
+		if page.startOffset == 0 {
+			break
+		}
+		end = page.startOffset
+	}
+	want := "first question|first answer|what is this?|a screenshot"
+	if strings.Join(texts, "|") != want {
+		t.Fatalf("history = %q, want %q", strings.Join(texts, "|"), want)
+	}
+}

@@ -34,7 +34,7 @@ import (
 //     tools.view_image, ... inside it, so the card's subject has to be read out
 //     of the code
 //   - images come back inline as base64, which is why the log is read through
-//     codexlog.go rather than the shared tail window
+//     transcriptlog.go rather than a raw byte window
 
 func isCodex(harness string) bool {
 	return strings.ToLower(strings.TrimSpace(harness)) == "codex"
@@ -154,44 +154,25 @@ func dirsDesc(b Backend, dir string) []string {
 // reading a page
 // ---------------------------------------------------------------------------
 
-// readCodexPage is serveChat's windowed read for a Codex log: the page ending at
-// `end`, widened while it holds results whose call lies above it, with calls it
-// leaves running looked up past its end.
-func readCodexPage(b Backend, path string, size, end int64) chatParse {
-	var parsed chatParse
-	for tries := 0; ; tries++ {
-		lines := codexLinesBefore(b, path, size, end, chatReadBytes*(tries+1))
-		parsed = parseCodexLines(lines)
-		// A page the scan bound cut short inside a run of image records has no
-		// rows, and a page with no rows would otherwise report the top of the
-		// conversation. Its lines still say how far it got.
-		if len(parsed.items) == 0 && len(lines) > 0 {
-			parsed.startOffset = lines[0].off
+// codexForwardResults is resolveForwardResults in Codex's record shape.
+func codexForwardResults(b Backend, path string, from, size int64, running map[string]*chatTool) {
+	for _, l := range logLinesFrom(b, path, size, from, chatReadBytes) {
+		var rec codexRecord
+		if json.Unmarshal(l.data, &rec) != nil || rec.Type != "response_item" {
+			continue
 		}
-		if parsed.pendingResults == 0 || len(lines) == 0 || lines[0].off == 0 || tries >= chatPageExtendTries {
-			break
+		var p codexPayload
+		if json.Unmarshal(rec.Payload, &p) != nil || !strings.HasSuffix(p.Type, "_output") {
+			continue
 		}
-	}
-	if len(parsed.running) > 0 && end < size {
-		for _, l := range codexLinesFrom(b, path, size, end, chatReadBytes) {
-			var rec codexRecord
-			if json.Unmarshal(l.data, &rec) != nil || rec.Type != "response_item" {
-				continue
-			}
-			var p codexPayload
-			if json.Unmarshal(rec.Payload, &p) != nil || !strings.HasSuffix(p.Type, "_output") {
-				continue
-			}
-			if t, ok := parsed.running[p.CallID]; ok {
-				codexFinish(t, p.Output)
-				delete(parsed.running, p.CallID)
-				if len(parsed.running) == 0 {
-					break
-				}
+		if t, ok := running[p.CallID]; ok {
+			codexFinish(t, p.Output)
+			delete(running, p.CallID)
+			if len(running) == 0 {
+				return
 			}
 		}
 	}
-	return parsed
 }
 
 // ---------------------------------------------------------------------------
@@ -240,13 +221,7 @@ func rawString(raw json.RawMessage) string {
 // parseCodexTranscript reads a window of a Codex log given as raw bytes, the
 // form the shared dispatch hands every harness.
 func parseCodexTranscript(data []byte, base int64) chatParse {
-	var lines []jsonlLine
-	off := base
-	for _, raw := range bytes.Split(data, []byte("\n")) {
-		lines = append(lines, jsonlLine{off: off, data: raw})
-		off += int64(len(raw)) + 1
-	}
-	return parseCodexLines(lines)
+	return parseCodexLines(splitLogLines(data, base))
 }
 
 // parseCodexLines turns log lines into chat rows.

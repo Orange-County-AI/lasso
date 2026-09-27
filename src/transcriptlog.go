@@ -10,40 +10,42 @@ import (
 	"unicode/utf8"
 )
 
-// Codex's session log cannot be read the way omp's and claude's are.
+// A session log cannot be read through a byte window.
 //
-// Codex inlines every image a tool hands back as a base64 data URL inside the
-// JSONL record, so one line routinely runs to tens of megabytes: a 408 MB log
-// on titan carried lines of 44 MB. The chat's tail window (chatReadBytes)
-// assumes a record is small next to the window. Here one record is a hundred
-// windows, so the tail lands inside an image and shows nothing, and paging back
-// from it can never get past it.
+// Every harness lasso reads inlines images as base64 inside the JSONL record:
+// Codex every image a tool hands back (a 408 MB log on titan carried 44 MB
+// lines), claude and omp every screenshot pasted into a prompt (a 52 MB claude
+// log carried fifty records past 256 KB). A fixed tail window (chatReadBytes)
+// assumes a record is small next to it. Here one record can be many windows, so
+// the window lands inside an image and parses to nothing, and paging back from
+// it can never get past it.
 //
-// So this log is read LINE by line. Each line streams through elider, which
-// cuts any string past codexStringCap down to a prefix (a data URL down to
-// nothing), so a 44 MB tool result arrives as the few hundred bytes the chat
-// actually renders. Where the lines are is remembered per file (codexLog): a
+// So a log is read LINE by line. Each line streams through elider, which cuts
+// any string past logStringCap down to a prefix (a data URL down to nothing),
+// so a 44 MB tool result arrives as the few hundred bytes the chat actually
+// renders. Where the lines are is remembered per file (transcriptLog): a
 // session log is append-only, so a line's bytes never change once written, and
 // a giant line is scanned once per process instead of on every 2s poll. Over
 // SFTP that is the difference between a chat and a stall.
 
 const (
-	// codexStringCap is the longest string kept from a record. Far past anything
-	// a card shows (chatOutputCap), well short of an inlined image.
-	codexStringCap = 8 << 10
-	// codexScanChunk is one backwards read while looking for a line start.
-	codexScanChunk = 256 << 10
-	// codexScanMax bounds the raw bytes one request may read. Past it the page
+	// logStringCap is the longest string kept from a record. Far past anything
+	// a card shows (chatOutputCap) and past any prompt a human pastes, since a
+	// user turn's text is shown whole; well short of an inlined screenshot.
+	logStringCap = 64 << 10
+	// logScanChunk is one backwards read while looking for a line start.
+	logScanChunk = 256 << 10
+	// logScanMax bounds the raw bytes one request may read. Past it the page
 	// ends where the scan got to and reports more above, so an image-heavy stretch
 	// costs a short page rather than a long stall (over SFTP, seconds per 100 MB).
 	// One line is always read whole however long it is, or a line past the bound
-	// could never be got past; codexLineMax is the sanity limit on that.
-	codexScanMax = 64 << 20
-	codexLineMax = 1 << 30
-	// codexCacheKept bounds the compacted lines one file's cache may hold, and
-	// codexCacheFiles how many files are cached at once.
-	codexCacheKept  = 32 << 20
-	codexCacheFiles = 8
+	// could never be got past; logLineMax is the sanity limit on that.
+	logScanMax = 64 << 20
+	logLineMax = 1 << 30
+	// logCacheKept bounds the compacted lines one file's cache may hold, and
+	// logCacheFiles how many files are cached at once.
+	logCacheKept  = 32 << 20
+	logCacheFiles = 8
 )
 
 // jsonlLine is one complete log line, compacted, and where it starts in the
@@ -54,9 +56,9 @@ type jsonlLine struct {
 	data []byte
 }
 
-// codexLog is what is known about one log file: the lines covering [lo, hi),
+// transcriptLog is what is known about one log file: the lines covering [lo, hi),
 // both of them line boundaries.
-type codexLog struct {
+type transcriptLog struct {
 	mu    sync.Mutex
 	init  bool
 	lo    int64
@@ -66,38 +68,38 @@ type codexLog struct {
 	used  time.Time
 }
 
-var codexLogs = struct {
+var transcriptLogs = struct {
 	sync.Mutex
-	m map[string]*codexLog
-}{m: map[string]*codexLog{}}
+	m map[string]*transcriptLog
+}{m: map[string]*transcriptLog{}}
 
-func codexLogFor(host, path string) *codexLog {
-	codexLogs.Lock()
-	defer codexLogs.Unlock()
+func transcriptLogFor(host, path string) *transcriptLog {
+	transcriptLogs.Lock()
+	defer transcriptLogs.Unlock()
 	key := host + "\x00" + path
-	c, ok := codexLogs.m[key]
+	c, ok := transcriptLogs.m[key]
 	if !ok {
-		for len(codexLogs.m) >= codexCacheFiles {
+		for len(transcriptLogs.m) >= logCacheFiles {
 			oldest, at := "", time.Time{}
-			for k, v := range codexLogs.m {
+			for k, v := range transcriptLogs.m {
 				if oldest == "" || v.used.Before(at) {
 					oldest, at = k, v.used
 				}
 			}
-			delete(codexLogs.m, oldest)
+			delete(transcriptLogs.m, oldest)
 		}
-		c = &codexLog{}
-		codexLogs.m[key] = c
+		c = &transcriptLog{}
+		transcriptLogs.m[key] = c
 	}
 	c.used = time.Now()
 	return c
 }
 
-// codexLinesBefore returns the complete lines that end at or before `end`,
+// logLinesBefore returns the complete lines that end at or before `end`,
 // newest last, walking back until `budget` compacted bytes are collected or the
 // file's start is reached.
-func codexLinesBefore(b Backend, path string, size, end int64, budget int) []jsonlLine {
-	c := codexLogFor(b.Name(), path)
+func logLinesBefore(b Backend, path string, size, end int64, budget int) []jsonlLine {
+	c := transcriptLogFor(b.Name(), path)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.sync(b, path, size) {
@@ -116,7 +118,7 @@ func codexLinesBefore(b Backend, path string, size, end int64, budget int) []jso
 			first--
 			kept += len(c.lines[first].data)
 		}
-		if kept >= budget || c.lo == 0 || scanned >= codexScanMax {
+		if kept >= budget || c.lo == 0 || scanned >= logScanMax {
 			return append([]jsonlLine(nil), c.lines[first:i]...)
 		}
 		n := c.back(b, path)
@@ -127,16 +129,16 @@ func codexLinesBefore(b Backend, path string, size, end int64, budget int) []jso
 	}
 }
 
-// codexLinesFrom returns the complete lines starting at or after `from`, up to
+// logLinesFrom returns the complete lines starting at or after `from`, up to
 // `budget` compacted bytes: where a result is looked for past a page's end.
-func codexLinesFrom(b Backend, path string, size, from int64, budget int) []jsonlLine {
-	c := codexLogFor(b.Name(), path)
+func logLinesFrom(b Backend, path string, size, from int64, budget int) []jsonlLine {
+	c := transcriptLogFor(b.Name(), path)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.sync(b, path, size) {
 		return nil
 	}
-	for scanned := int64(0); c.lo > from && scanned < codexScanMax; {
+	for scanned := int64(0); c.lo > from && scanned < logScanMax; {
 		n := c.back(b, path)
 		if n == 0 {
 			break
@@ -152,7 +154,7 @@ func codexLinesFrom(b Backend, path string, size, from int64, budget int) []json
 	return out
 }
 
-func (c *codexLog) lineEnd(i int) int64 {
+func (c *transcriptLog) lineEnd(i int) int64 {
 	if i+1 < len(c.lines) {
 		return c.lines[i+1].off
 	}
@@ -162,9 +164,9 @@ func (c *codexLog) lineEnd(i int) int64 {
 // sync brings the cache up to the file as it now is: anchored on first use,
 // dropped if the file shrank (a new file at the same path) or the cache grew
 // past its bound, and extended over whatever was appended since.
-func (c *codexLog) sync(b Backend, path string, size int64) bool {
-	if c.init && (size < c.hi || c.kept > codexCacheKept) {
-		*c = codexLog{used: c.used}
+func (c *transcriptLog) sync(b Backend, path string, size int64) bool {
+	if c.init && (size < c.hi || c.kept > logCacheKept) {
+		*c = transcriptLog{used: c.used}
 	}
 	if !c.init {
 		anchor, ok := lastLineEnd(b, path, size)
@@ -190,7 +192,7 @@ func (c *codexLog) sync(b Backend, path string, size int64) bool {
 // back prepends the lines before lo. It reads backwards until it finds a line
 // start, then streams forwards over the lines it found. Returns the raw bytes
 // read, zero when there was nothing more to read or the read failed.
-func (c *codexLog) back(b Backend, path string) int64 {
+func (c *transcriptLog) back(b Backend, path string) int64 {
 	if c.lo == 0 {
 		return 0
 	}
@@ -200,9 +202,9 @@ func (c *codexLog) back(b Backend, path string) int64 {
 	}
 	// The byte at lo-1 is the newline ending the previous line: look before it.
 	pos, start, read := c.lo-1, int64(-1), int64(0)
-	buf := make([]byte, codexScanChunk)
+	buf := make([]byte, logScanChunk)
 	for start < 0 {
-		from := pos - codexScanChunk
+		from := pos - logScanChunk
 		if from < 0 {
 			from = 0
 		}
@@ -224,7 +226,7 @@ func (c *codexLog) back(b Backend, path string) int64 {
 			start = 0
 		}
 		pos = from
-		if read > codexLineMax {
+		if read > logLineMax {
 			f.Close()
 			return 0
 		}
@@ -253,12 +255,12 @@ func lastLineEnd(b Backend, path string, size int64) (int64, bool) {
 		return 0, false
 	}
 	defer f.Close()
-	buf := make([]byte, codexScanChunk)
+	buf := make([]byte, logScanChunk)
 	for pos, read := size, int64(0); pos > 0; {
-		if read > codexLineMax {
+		if read > logLineMax {
 			return 0, false
 		}
-		from := pos - codexScanChunk
+		from := pos - logScanChunk
 		if from < 0 {
 			from = 0
 		}
@@ -317,7 +319,7 @@ func readLines(b Backend, path string, from, to int64) ([]jsonlLine, int64, erro
 	}
 }
 
-// elider copies JSON through, cutting every string longer than codexStringCap
+// elider copies JSON through, cutting every string longer than logStringCap
 // to a prefix of it. The prefix ends on a character boundary, never inside an
 // escape or a UTF-8 sequence, so the output stays valid JSON; a data URL is cut
 // to its bare scheme, since a prefix of base64 is worth nothing to a reader.
@@ -360,7 +362,7 @@ func (e *elider) write(p []byte) {
 		if e.over {
 			continue
 		}
-		if boundary && len(e.str) >= codexStringCap {
+		if boundary && len(e.str) >= logStringCap {
 			e.over = true
 			continue
 		}

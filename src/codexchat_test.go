@@ -36,8 +36,8 @@ func elide(s string) string {
 }
 
 func TestEliderCutsLongStringsToValidJSON(t *testing.T) {
-	image := "data:image/png;base64," + strings.Repeat("A", 3*codexStringCap)
-	long := strings.Repeat("é\\n\\u00e9\\\"", codexStringCap)
+	image := "data:image/png;base64," + strings.Repeat("A", 3*logStringCap)
+	long := strings.Repeat("é\\n\\u00e9\\\"", logStringCap)
 	in := `{"a":"short","img":"` + image + `","long":"` + long + `","n":[1,"x"]}`
 	out := elide(in)
 	var got struct {
@@ -55,8 +55,8 @@ func TestEliderCutsLongStringsToValidJSON(t *testing.T) {
 	if got.Img != "data:" {
 		t.Fatalf("data URL kept %d bytes, want just the scheme", len(got.Img))
 	}
-	if len(got.Long) == 0 || len(got.Long) > codexStringCap {
-		t.Fatalf("long string kept %d bytes, want a prefix of at most %d", len(got.Long), codexStringCap)
+	if len(got.Long) == 0 || len(got.Long) > logStringCap {
+		t.Fatalf("long string kept %d bytes, want a prefix of at most %d", len(got.Long), logStringCap)
 	}
 	if strings.ContainsRune(got.Long, '�') {
 		t.Fatal("prefix was cut inside a UTF-8 sequence")
@@ -96,7 +96,7 @@ func TestCodexLinesCrossGiantRecords(t *testing.T) {
 	size := int64(len(data))
 
 	// The tail: a plain window would land inside the image and show nothing.
-	page := readCodexPage(b, path, size, size)
+	page := readLogPage(b, path, "codex", size, size)
 	var kinds []string
 	for _, it := range page.items {
 		kinds = append(kinds, it.Kind)
@@ -117,7 +117,7 @@ func TestCodexLinesCrossGiantRecords(t *testing.T) {
 
 	// A page ending at the assistant row pages back across the giant line.
 	before := page.items[2].off
-	older := readCodexPage(b, path, size, before)
+	older := readLogPage(b, path, "codex", size, before)
 	if len(older.items) != 2 || older.items[0].Text != "make the banner" {
 		t.Fatalf("page above the giant line = %+v", older.items)
 	}
