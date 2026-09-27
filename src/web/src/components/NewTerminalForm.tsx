@@ -9,6 +9,7 @@ import { Orb } from "@/components/ui/orb"
 import { SCRATCH_WORKSPACE } from "@/lib/agents"
 import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
+import { revealFocused } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
 
 const NEW_WORKSPACE = "__new_workspace__"
@@ -169,11 +170,14 @@ export function NewTerminalForm({
         // The new terminal's own pane, so a split lands on it rather than on
         // its tab's previously active sibling. workspace_id/tab_id ride along
         // as the fallback for a pane herdr has not surfaced yet.
-        await api.focus({
-          pane_id: result.root_pane,
-          workspace_id: result.workspace_id,
-          tab_id: result.tab_id,
-        })
+        revealFocused(
+          await api.focus({
+            pane_id: result.root_pane,
+            workspace_id: result.workspace_id,
+            tab_id: result.tab_id,
+            reveal: true,
+          })
+        )
       } catch (error) {
         toast.warning("Terminal created, but navigation failed", {
           description: (error as Error).message,

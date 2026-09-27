@@ -1332,6 +1332,11 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID string `json:"workspace_id"`
 		TabID       string `json:"tab_id"`
 		PaneID      string `json:"pane_id"`
+		// Reveal also puts this tab's herdr client on Local when it is showing
+		// a saved machine, so the pane just focused is the one on screen (see
+		// showLocalMachine). Only the creator asks: a sidebar click keeps the
+		// machine the human chose to look at.
+		Reveal bool `json:"reveal"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -1348,7 +1353,7 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PaneID != "" {
 		if _, err := be.HerdrCall("pane.focus", map[string]any{"pane_id": req.PaneID}); err == nil {
-			writeJSON(w, map[string]any{"ok": true})
+			writeFocused(w, be, req.Reveal)
 			return
 		} else if req.WorkspaceID == "" {
 			http.Error(w, "pane.focus: "+err.Error(), http.StatusBadGateway)
@@ -1365,7 +1370,14 @@ func serveFocus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, map[string]any{"ok": true})
+	writeFocused(w, be, req.Reveal)
+}
+
+// writeFocused answers a successful focus. reattach tells the browser to
+// respawn its herdr terminal, which is how a client showing a saved machine
+// comes back to Local — herdr has no call that switches a live client.
+func writeFocused(w http.ResponseWriter, be Backend, reveal bool) {
+	writeJSON(w, map[string]any{"ok": true, "reattach": reveal && showLocalMachine(be)})
 }
 
 // serveRename renames the tab a pane lives in. pane.rename sets a pane name

@@ -1280,8 +1280,17 @@ export const api = {
   // instead of failing. A pane_id ALONE is the strict form, which 502s on an
   // unknown pane, and is what lets the creator retry a pane herdr has not
   // materialized yet. With neither, /api/focus answers 400.
-  focus: (sel: { workspace_id?: string; tab_id?: string; pane_id?: string }) =>
-    postJSON<unknown>("/api/focus", sel),
+  //
+  // `reveal` also brings this tab's herdr client back to Local when it is
+  // showing a saved machine, so the pane is actually on screen; `reattach` in
+  // the answer means that happened and the terminal must be respawned
+  // (reattachHerdrTerminal) — a live herdr client cannot be switched.
+  focus: (sel: {
+    workspace_id?: string
+    tab_id?: string
+    pane_id?: string
+    reveal?: boolean
+  }) => postJSON<{ ok: boolean; reattach?: boolean }>("/api/focus", sel),
 
   rename: (tab_id: string | undefined, label: string) =>
     postJSON<unknown>("/api/rename", { tab_id, label }),

@@ -1,6 +1,7 @@
 import * as React from "react"
 import { api } from "@/lib/api"
 import { moveTabToHost } from "@/lib/app-store"
+import { reattachHerdrTerminal } from "@/lib/terminal"
 
 // In-flight counter for pane focus operations, which can take seconds when
 // they move this tab to another host across the network. Views far from the
@@ -57,7 +58,7 @@ export async function focusCreatedAgent(
   let lastErr: unknown
   while (rootPane) {
     try {
-      await api.focus({ pane_id: rootPane })
+      revealFocused(await api.focus({ pane_id: rootPane, reveal: true }))
       return
     } catch (err) {
       lastErr = err
@@ -72,7 +73,14 @@ export async function focusCreatedAgent(
       ? lastErr
       : new Error("The created pane is not available in Herdr")
   }
-  await api.focus({ workspace_id: workspaceID })
+  revealFocused(await api.focus({ workspace_id: workspaceID, reveal: true }))
+}
+
+// revealFocused finishes a `reveal` focus: when herdr was showing another
+// machine, the server has pointed the client back at Local and the terminal
+// must reconnect to boot a client that reads it.
+export function revealFocused(res: { reattach?: boolean }) {
+  if (res.reattach) reattachHerdrTerminal()
 }
 
 // restoreHost re-points THIS TAB at the host a history entry names, on

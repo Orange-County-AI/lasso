@@ -1,13 +1,14 @@
 import * as React from "react"
 
 import { useApp } from "@/lib/app-store"
-import { termDocParams } from "@/lib/theme"
 import {
   bootTermFrame,
+  HERDR_REATTACH_EVENT,
   refitTerminal,
   type TerminalInputMode,
   terminalPasteHost,
 } from "@/lib/terminal"
+import { termDocParams } from "@/lib/theme"
 
 // A ttyd terminal iframe (the herdr terminal under /terminal/ or the
 // out-of-herdr shell under /shell/). It stays mounted across tab switches — only
@@ -68,18 +69,30 @@ export function TerminalFrame({
   const pinned = frame.current?.slug === hostSlug ? frame.current : null
   const src = pinned ? `${base}/${pinned.slug}/?${pinned.params}` : null
 
-  // Re-wire xterm whenever the iframe element is (re)created — on mount and on
-  // each host-move remount. A new src means a fresh iframe element (it is the
-  // React key), so bootTermFrame must re-run to wire the new one.
+  // Bumped to respawn the herdr client in place (reattachHerdrTerminal), which
+  // is how a terminal showing a saved machine comes back to Local. Part of the
+  // key, so it remounts the same way a host move does — no beforeunload prompt.
+  const [attach, setAttach] = React.useState(0)
   React.useEffect(() => {
-    if (!src) return
+    if (base !== "/terminal") return
+    const bump = () => setAttach((n) => n + 1)
+    window.addEventListener(HERDR_REATTACH_EVENT, bump)
+    return () => window.removeEventListener(HERDR_REATTACH_EVENT, bump)
+  }, [base])
+  const frameKey = src ? `${src}#${attach}` : null
+
+  // Re-wire xterm whenever the iframe element is (re)created — on mount and on
+  // each host-move or reattach remount. A new key means a fresh iframe element,
+  // so bootTermFrame must re-run to wire the new one.
+  React.useEffect(() => {
+    if (!frameKey) return
     return bootTermFrame(
       id,
       suppressContext,
       inputMode,
       () => pasteHostRef.current
     )
-  }, [id, suppressContext, inputMode, src])
+  }, [id, suppressContext, inputMode, frameKey])
 
   React.useEffect(() => {
     if (!hidden) refitTerminal(id)
@@ -88,7 +101,7 @@ export function TerminalFrame({
   if (!src) return null
   return (
     <iframe
-      key={src}
+      key={frameKey}
       id={id}
       src={src}
       title={title}
