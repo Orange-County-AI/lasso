@@ -24,7 +24,7 @@ import (
 //   - a systemd-supervised source checkout (the maintainer's prod): keep the
 //     existing git-pull + `systemctl --user restart` path (selfupdate.go).
 
-const githubRepo = "knowsuchagency/lasso"
+const githubRepo = "execution-associates/lasso"
 
 // release is the slice of the GitHub releases API we use.
 type release struct {

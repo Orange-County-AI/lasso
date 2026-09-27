@@ -1,13 +1,13 @@
 #!/bin/sh
 # lasso installer — downloads the latest release binary for your platform.
 #
-#   curl -fsSL https://raw.githubusercontent.com/knowsuchagency/lasso/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/execution-associates/lasso/main/install.sh | sh
 #
 # Honors:
 #   LASSO_INSTALL_DIR   where to install (default ~/.local/bin)
 set -eu
 
-REPO="knowsuchagency/lasso"
+REPO="execution-associates/lasso"
 BASE="https://github.com/${REPO}/releases/latest/download"
 
 # --- detect platform -------------------------------------------------------

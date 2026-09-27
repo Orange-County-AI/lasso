@@ -41,7 +41,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 
 # lasso self-identity
 
-If you were spawned by [lasso](https://github.com/Orange-County-AI/lasso), you are running
+If you were spawned by [lasso](https://github.com/execution-associates/lasso), you are running
 inside a herdr pane that lasso created, and your own identity is already in your
 environment. You do **not** need to call `list_repos` / `list_agents` and guess
 which entry is you — that wastes tokens. Read your pane id from the env instead.
