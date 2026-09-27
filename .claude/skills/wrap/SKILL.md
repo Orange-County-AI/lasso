@@ -171,14 +171,14 @@ git -C "$MAIN" push origin "v$VER"     # this push is what fires .github/workflo
 ```
 
 **A box with no GitHub ssh key pushes over https through `gh`.** `origin` is ssh
-(`git@github.com:Orange-County-AI/lasso.git`), and a workspace box typically holds
+(`git@github.com:execution-associates/lasso.git`), and a workspace box typically holds
 a `gh` token with `repo` scope but no deploy key — `ls-remote` then fails with
 `Permission denied (publickey)`. Push through gh's credential helper rather than
 rewriting the remote, and keep the token out of argv (`/proc/<pid>/cmdline` is
 world-readable):
 
 ```bash
-R=https://github.com/Orange-County-AI/lasso.git
+R=https://github.com/execution-associates/lasso.git
 git -C "$MAIN" -c credential.helper='!gh auth git-credential' push "$R" main
 git -C "$MAIN" tag "v$VER"
 git -C "$MAIN" -c credential.helper='!gh auth git-credential' push "$R" "v$VER"
@@ -197,7 +197,7 @@ mise `ls-remote` cache compounds this). So **wait for the release + its assets**
 ```bash
 # poll until the release exists AND a linux-amd64 binary asset is attached
 for i in $(seq 1 60); do
-  if gh release view "v$VER" --repo Orange-County-AI/lasso --json assets \
+  if gh release view "v$VER" --repo execution-associates/lasso --json assets \
        -q '.assets[].name' 2>/dev/null | grep -q lasso-linux-amd64; then
     echo "release v$VER published"; break
   fi
@@ -205,7 +205,7 @@ for i in $(seq 1 60); do
 done
 ```
 
-If it never appears, check the run: `gh run list --repo Orange-County-AI/lasso --workflow release.yml`.
+If it never appears, check the run: `gh run list --repo execution-associates/lasso --workflow release.yml`.
 Don't proceed to update against a missing/failed release.
 
 ## 7. lasso update — then restart the daemon via **whatever owns the process**

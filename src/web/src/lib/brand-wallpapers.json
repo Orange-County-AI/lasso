@@ -1,0 +1,48 @@
+{
+  "execution-associates": [
+    {
+      "id": "01-golden-hour",
+      "label": "Golden Hour",
+      "image": "/wallpapers/execution-associates/01-golden-hour.webp",
+      "thumbnail": "/wallpapers/execution-associates/thumbs/01-golden-hour.webp"
+    },
+    {
+      "id": "02-night",
+      "label": "Night",
+      "image": "/wallpapers/execution-associates/02-night.webp",
+      "thumbnail": "/wallpapers/execution-associates/thumbs/02-night.webp"
+    }
+  ],
+  "ocai": [
+    {
+      "id": "01-pier",
+      "label": "Pier",
+      "image": "/wallpapers/ocai/01-pier.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/01-pier.webp"
+    },
+    {
+      "id": "02-lifeguard-tower",
+      "label": "Lifeguard Tower",
+      "image": "/wallpapers/ocai/02-lifeguard-tower.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/02-lifeguard-tower.webp"
+    },
+    {
+      "id": "03-workshop",
+      "label": "Workshop",
+      "image": "/wallpapers/ocai/03-workshop.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/03-workshop.webp"
+    },
+    {
+      "id": "04-community",
+      "label": "Community",
+      "image": "/wallpapers/ocai/04-community.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/04-community.webp"
+    },
+    {
+      "id": "05-seal",
+      "label": "Seal",
+      "image": "/wallpapers/ocai/05-seal.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/05-seal.webp"
+    }
+  ]
+}

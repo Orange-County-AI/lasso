@@ -560,7 +560,8 @@ export interface ThemePayload {
 
 // One entry of the full theme catalog (GET /api/omarchy-themes). Every
 // selectable theme is in it, not just the Omarchy ones: lasso's own built-ins
-// come back as source:"builtin", the bundled Omarchy palettes as "official",
+// come back as source:"builtin" (or "brand" for the ones drawn from our own
+// sites), the bundled Omarchy palettes as "official",
 // and anything cloned from a community repo as "installed" — the only kind
 // that can be removed again. `name` is the same canonical key /api/theme-set
 // and /api/theme?name= take, so the catalog can drive every theme control.
@@ -568,7 +569,7 @@ export interface ThemeCatalogEntry {
   name: string
   label: string
   light: boolean
-  source: "builtin" | "official" | "installed"
+  source: "builtin" | "brand" | "official" | "installed"
   installed: boolean
   // Root-relative URLs of the backgrounds that shipped with the theme, served
   // by lasso itself ("/omarchy/bg/<theme>/<file>"). Root-relative so the same

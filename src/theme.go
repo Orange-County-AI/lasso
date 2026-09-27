@@ -62,9 +62,13 @@ type themeDef struct {
 	// only lasso knows is written as base + a generated override block that
 	// reproduces it (see themeSpecFor).
 	herdrBase string
+	// brand marks a lasso-only theme drawn from one of our own sites
+	// rather than from herdr or Omarchy, so the picker files it under its own
+	// "Brand" section (see builtinSource).
+	brand bool
 }
 
-const defaultTheme = "retro-82"
+const defaultTheme = "execution-associates"
 
 // themes is keyed by canonical (normalized) herdr theme name.
 var themes = map[string]themeDef{
@@ -90,6 +94,30 @@ var themes = map[string]themeDef{
 		// every token that differs is overridden, only shows through in herdr's
 		// own Settings list.
 		herdrBase: "vesper",
+	},
+	// Execution Associates: "one evening on the coast, golden hour to night."
+	// Surfaces, accent and text from beta.executionassociates.com's :root
+	// tokens (ink, ink-2, ink-deep, indigo, peach, text/muted over ink); the
+	// brand has no green/blue/cyan, so those ANSI slots are picked to sit in
+	// the same dusk light.
+	"execution-associates": {
+		ui: uiPalette{
+			Accent: "#febe75", PanelBg: "#1b0a2c", Surface0: "#240934", Surface1: "#28286d",
+			// overlay0 is agent-metadata text in herdr (see retro-82): the site's
+			// --muted over ink, not a border tone.
+			SurfaceDim: "#12071f", Overlay0: "#b5aab8", Overlay1: "#a88bd0", Text: "#ede4eb",
+			Subtext0: "#c9bdc9", Mauve: "#a77bd6", Green: "#7fd1a8", Yellow: "#febe75",
+			Red: "#f2607a", Blue: "#8a8ff0", Teal: "#6fc7d1", Peach: "#f78478",
+		},
+		ansi: ansiPalette{
+			Black: "#2e1a45", Red: "#f2607a", Green: "#7fd1a8", Yellow: "#febe75",
+			Blue: "#8a8ff0", Magenta: "#dd519b", Cyan: "#6fc7d1", White: "#ddd5dd",
+			BrightBlack: "#6b5a80", BrightRed: "#f78478", BrightGreen: "#a3e3c2", BrightYellow: "#ffd49e",
+			BrightBlue: "#abaef7", BrightMagenta: "#f099bf", BrightCyan: "#9adbe2", BrightWhite: "#fdf6fa",
+		},
+		// Dark, purple-black, rose accent: the nearest herdr built-in.
+		herdrBase: "rose-pine",
+		brand:     true,
 	},
 	"catppuccin": {
 		ui: uiPalette{
@@ -337,6 +365,28 @@ var themes = map[string]themeDef{
 			BrightBlue: "#6693bf", BrightMagenta: "#624c83", BrightCyan: "#5e857a", BrightWhite: "#43436c",
 		},
 	},
+	// Orange County AI "screen print": navy ink and a burnt-orange sun on cream
+	// stock, from beta.orangecountyai.com's tokens.css. Text is the site's navy
+	// and muted tiers, every other text token darkened to >= 4.5:1 on cream. The
+	// accent is sun-ink, the orange the site allows for small text on paper
+	// (4.62:1), since raw sun (2.83:1) is only for shapes.
+	"ocai": {
+		ui: uiPalette{
+			Accent: "#a23516", PanelBg: "#edd0a1", Surface0: "#e2c08c", Surface1: "#d3b07c",
+			SurfaceDim: "#e8c896", Overlay0: "#46596a", Overlay1: "#3d4f5c", Text: "#172d3c",
+			Subtext0: "#3d4f5c", Mauve: "#7a3f62", Green: "#365f32", Yellow: "#75510c",
+			Red: "#a8231a", Blue: "#1f4e6b", Teal: "#245e5e", Peach: "#8a4429",
+		},
+		ansi: ansiPalette{
+			Black: "#172d3c", Red: "#a8231a", Green: "#365f32", Yellow: "#75510c",
+			Blue: "#1f4e6b", Magenta: "#7a3f62", Cyan: "#245e5e", White: "#5a5a4c",
+			BrightBlack: "#4f6573", BrightRed: "#c23f1b", BrightGreen: "#4f7d47", BrightYellow: "#9a6c14",
+			BrightBlue: "#2f6385", BrightMagenta: "#8e4d74", BrightCyan: "#357a7a", BrightWhite: "#3d4f5c",
+		},
+		// Light, warm cream stock: the nearest herdr built-in.
+		herdrBase: "gruvbox-light",
+		brand:     true,
+	},
 	"rose-pine-dawn": {
 		ui: uiPalette{
 			Accent: "#907aa9", PanelBg: "#faf4ed", Surface0: "#f2e9e1", Surface1: "#fffaf3",
@@ -366,6 +416,7 @@ type themeOption struct {
 // first, then the light variants. Every Name is a canonical key in themes.
 var themeOptions = []themeOption{
 	{Name: "retro-82", Label: "Retro 82"},
+	{Name: "execution-associates", Label: "Execution Associates"},
 	{Name: "catppuccin", Label: "Catppuccin"},
 	{Name: "tokyo-night", Label: "Tokyo Night"},
 	{Name: "dracula", Label: "Dracula"},
@@ -377,6 +428,7 @@ var themeOptions = []themeOption{
 	{Name: "rose-pine", Label: "Rosé Pine"},
 	{Name: "vesper", Label: "Vesper"},
 	{Name: "terminal", Label: "Terminal"},
+	{Name: "ocai", Label: "Orange County AI", Light: true},
 	{Name: "catppuccin-latte", Label: "Catppuccin Latte", Light: true},
 	{Name: "tokyo-night-day", Label: "Tokyo Night Day", Light: true},
 	{Name: "gruvbox-light", Label: "Gruvbox Light", Light: true},
@@ -463,7 +515,7 @@ func herdrConfigIn(configPath, xdgConfigHome, home string) string {
 
 // loadHerdrTheme resolves the active theme. If forceName != "" and != "auto" it
 // is used directly; otherwise the name (and overrides) come from config.toml.
-// Falls back to Retro 82 on anything unreadable/unknown.
+// Falls back to defaultTheme (Execution Associates) on anything unreadable/unknown.
 func loadHerdrTheme(forceName string) resolvedTheme {
 	rt, _ := loadHerdrThemeConfig(forceName)
 	return rt

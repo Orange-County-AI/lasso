@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/lasso-wordmark.png" alt="lasso: a pixel-art terminal robot in a cowboy hat, swinging a lasso" width="460">
+<img src="docs/brand/lasso-wordmark.png" alt="lasso: the Execution Associates EXA monogram beside the word lasso, over a blue-hour Orange County coast" width="460">
 
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**
@@ -57,7 +57,7 @@ on the train. Hand the agent a photo of the whiteboard from your camera roll.
 ## Install
 
 ```bash
-curl -fsSL https://short.orangecountyai.com/install-lasso | sh
+curl -fsSL https://executionassociates.com/install-lasso | sh
 ```
 
 Then:
@@ -498,10 +498,13 @@ renders it inside a throwaway Debian incus container (`scripts/sandbox.sh`).
 The **terminal** adopts the theme from `~/.config/herdr/config.toml`
 (`[theme].name`) and repaints live when you change it — no restart. Leave
 `-theme auto` to follow herdr, or force one with `-theme <name>` (`lasso serve -h`
-lists the names). **Retro 82** is the default when no theme is configured (and
-the fallback for unknown names); an existing configured theme still wins.
-Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
-Its navy, amber, and teal palette comes from
+lists the names). **Execution Associates** (`execution-associates`: dark dusk
+violet with a peach accent, drawn from executionassociates.com) is the default
+when no theme is configured (and the fallback for unknown names); an existing
+configured theme still wins. It sits under **Brand** in the picker beside
+**Orange County AI** (`ocai`, light: navy ink and a sun-orange accent on cream,
+from orangecountyai.com). **Retro 82** (`retro-82`) is still bundled; its navy,
+amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
 Every theme can carry a **background image**. Retro 82 defaults to one of 27
@@ -513,7 +516,9 @@ and **image dimming** are saved **per theme on the server** (lasso's own
 same backdrop, and a pick in one repaints the others within a beat, with no
 reload. Switching palette restores each theme's own choices. A theme nobody has
 dressed yet defaults to shading on and 70% dimming — Retro 82 additionally to
-its Dusk Guardian still, every other theme to no image. Resetting dimming
+its Dusk Guardian still, the brand themes to their own site art (Execution
+Associates' golden-hour coast, Orange County AI's pier), every other theme to no
+image. Resetting dimming
 affects only the displayed theme. Choices made before this moved server-side
 stayed in the browser that made them and are not imported: pick the backdrop
 once more and every device follows.
@@ -813,10 +818,11 @@ match `lassoSemver` (the workflow enforces it).
 
 ## The logo
 
-The mascot is a pixel-art terminal robot in a cowboy hat, wrangling a lasso:
-the agent wrangler. It is a generated raster image, not a drawing, and the
-source is `docs/icon/icon.png`, used at every size down to the 16px browser
-tab. The wordmark is `docs/brand/lasso-wordmark.png`.
+The icon is the Execution Associates **EXA monogram**, white on the brand's
+ink (`#1B0A2C`), from the brand site at design.execution.associates. The source
+is `docs/icon/icon.png`, used at every size down to the 16px browser tab. The
+wordmark is `docs/brand/lasso-wordmark.png`, a generated raster in the brand's
+Sunset Neon look.
 Regenerate the favicon, ICO and home-screen assets in `src/web/public/`:
 
 ```bash
@@ -832,3 +838,8 @@ the art changes.
 To run lasso from *inside* a herdr session (e.g. building lasso with itself), its
 embedded terminal would otherwise refuse to nest. Set `allow_nested = true` under
 `[experimental]` in `~/.config/herdr/config.toml` to allow it.
+
+## License
+
+lasso is licensed under the [Apache License 2.0](LICENSE), the same license as
+herdr. See [NOTICE](NOTICE) for the copyright notice.

@@ -13,7 +13,7 @@
 //
 // Three rules this file exists to keep:
 //
-//   - A built-in ALWAYS wins. lasso's nineteen palettes (themes) are hand-tuned
+//   - A built-in ALWAYS wins. lasso's twenty-one palettes (themes) are hand-tuned
 //     for its own chrome and are what every existing test pins; an official
 //     Omarchy theme of the same name (catppuccin, nord, retro-82, …) contributes
 //     its backgrounds and nothing else. So `themes` stays a compile-time
@@ -321,7 +321,7 @@ func themeCatalog() []themeCatalogEntry {
 	return out
 }
 
-// builtinSource is where one of lasso's own nineteen palettes came from, which
+// builtinSource is where one of lasso's own twenty-one palettes came from, which
 // is not the same question as which map holds it.
 //
 // herdr's closed set of theme names is the evidence: a key herdr accepts on
@@ -331,10 +331,14 @@ func themeCatalog() []themeCatalogEntry {
 // herdr's, so calling it Omarchy's would be wrong in the one direction that
 // matters. A key herdr REJECTS exists here only because Omarchy has it, so a
 // name vendored under assets/omarchy/themes is reported as the official
-// Omarchy theme it is. Retro 82 is the only one today.
+// Omarchy theme it is. Retro 82 is the only one today. A brand theme is
+// neither herdr's nor Omarchy's, and says so.
 //
 // Callers hold omarchyMu.
 func builtinSource(name string, def themeDef) string {
+	if def.brand {
+		return "brand"
+	}
 	if def.herdrBase != "" && omarchyOfficial[name] {
 		return "official"
 	}

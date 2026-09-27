@@ -89,6 +89,9 @@ func TestOmarchyCatalogAndDerivedPalettes(t *testing.T) {
 			t.Errorf("%s: %d thumbs for %d backgrounds", e.Name, len(e.Thumbs), len(e.Backgrounds))
 		}
 	}
+	if byName["execution-associates"].Source != "brand" || byName["ocai"].Source != "brand" {
+		t.Fatalf("brand sources = %q, %q", byName["execution-associates"].Source, byName["ocai"].Source)
+	}
 	if byName["retro-82"].Source != "official" || byName["catppuccin"].Source != "builtin" {
 		t.Errorf("catalog must distinguish Omarchy Retro 82 from native Herdr Catppuccin")
 	}

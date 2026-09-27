@@ -94,7 +94,7 @@ func TestAliasesAndUnknown(t *testing.T) {
 		"catppuccin-mocha": "catppuccin",
 		"gruvbox-dark":     "gruvbox",
 		"onedark":          "one-dark",
-		"totally-bogus":    "retro-82",
+		"totally-bogus":    defaultTheme,
 		// light variants + herdr's alternate spellings for them
 		"tokyo-night-day": "tokyo-night-day",
 		"Tokyo Night Day": "tokyo-night-day",
@@ -133,7 +133,7 @@ func TestLightThemesAreLight(t *testing.T) {
 	}
 	for _, name := range []string{
 		"catppuccin-latte", "tokyo-night-day", "gruvbox-light", "one-light",
-		"solarized-light", "kanagawa-lotus", "rose-pine-dawn",
+		"solarized-light", "kanagawa-lotus", "rose-pine-dawn", "ocai",
 	} {
 		rt := loadHerdrTheme(name)
 		bg, fg := lum(rt.ui.PanelBg), lum(rt.ui.Text)
