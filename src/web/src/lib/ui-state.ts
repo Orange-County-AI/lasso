@@ -283,6 +283,11 @@ function sendPatch(body: UIStatePatch, intent: boolean) {
         // the follow-up write's own response carries both.
         if (seq === writeSeq && !pending)
           queryClient.setQueryData(qk.uiState, stripMeta(res))
+        // The server skips fetching unchecked providers, so the cached usage
+        // payload has no row for one just re-checked. Refetch now, after the
+        // save has landed, rather than leaving it blank until the next poll.
+        if ("usage_hidden" in body)
+          void queryClient.invalidateQueries({ queryKey: qk.usage })
       },
       () => {
         // A preference that silently failed to save is worse than one that

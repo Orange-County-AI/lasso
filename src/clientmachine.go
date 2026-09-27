@@ -208,3 +208,48 @@ func readMachineProfiles(b Backend) map[string]herdrMachineProfile {
 	}
 	return m
 }
+
+// showLocalMachine puts the terminal's herdr client back on Local so a pane
+// lasso just focused on the local server is the one on screen, and reports
+// whether the caller must reattach the terminal for that to happen.
+//
+// herdr has no API to switch a client's machine: a LIVE client only changes it
+// on user input, and reads endpoint-selection.json once, at startup. So this
+// rewrites the file and the browser respawns its client (a fresh ttyd session),
+// which then boots on Local. Other clients on this box keep their machine until
+// they switch themselves, which rewrites the file again.
+//
+// Nothing happens unless a machine that could actually be on screen is
+// selected: a disabled or unknown profile already boots (and live-reverts) to
+// Local, and reattaching for it would only flash the terminal.
+func showLocalMachine(be Backend) bool {
+	if be.Name() != "local" {
+		return false
+	}
+	id := readSelectedMachineID(be)
+	if id == "" {
+		return false
+	}
+	if p, ok := machineProfile(be, id); !ok || !p.Enabled {
+		return false
+	}
+	dir := clientStateDir(be)
+	if dir == "" {
+		return false
+	}
+	path := filepath.Join(dir, "endpoint-selection.json")
+	// Rename over the original so a client starting mid-write never reads half a
+	// file (herdr would fall back to Local anyway, but only by luck).
+	tmp := path + ".lasso-tmp"
+	if be.WriteFile(tmp, []byte(`{"version":1,"selected_profile":null}`+"\n"), 0o644) != nil {
+		return false
+	}
+	if be.Rename(tmp, path) != nil {
+		_ = be.RemoveAll(tmp)
+		return false
+	}
+	selectionCache.Lock()
+	selectionCache.m[be.Name()] = selectionEntry{id: "", at: time.Now()}
+	selectionCache.Unlock()
+	return true
+}
