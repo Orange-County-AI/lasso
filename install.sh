@@ -1,7 +1,10 @@
 #!/bin/sh
 # lasso installer — downloads the latest release binary for your platform.
 #
-#   curl -fsSL https://raw.githubusercontent.com/execution-associates/lasso/main/install.sh | sh
+#   curl -fsSL https://executionassociates.com/install-lasso | sh
+#
+# (a Cloudflare redirect rule on the executionassociates.com zone, pointing at
+# raw.githubusercontent.com/execution-associates/lasso/main/install.sh)
 #
 # Honors:
 #   LASSO_INSTALL_DIR   where to install (default ~/.local/bin)

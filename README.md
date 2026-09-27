@@ -57,7 +57,7 @@ on the train. Hand the agent a photo of the whiteboard from your camera roll.
 ## Install
 
 ```bash
-curl -fsSL https://short.orangecountyai.com/install-lasso | sh
+curl -fsSL https://executionassociates.com/install-lasso | sh
 ```
 
 Then:
