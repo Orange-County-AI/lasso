@@ -818,10 +818,11 @@ match `lassoSemver` (the workflow enforces it).
 
 ## The logo
 
-The mascot is a pixel-art terminal robot in a cowboy hat, wrangling a lasso:
-the agent wrangler. It is a generated raster image, not a drawing, and the
-source is `docs/icon/icon.png`, used at every size down to the 16px browser
-tab. The wordmark is `docs/brand/lasso-wordmark.png`.
+The icon is the Execution Associates **EXA monogram**, white on the brand's
+ink (`#1B0A2C`), from the brand site at design.execution.associates. The source
+is `docs/icon/icon.png`, used at every size down to the 16px browser tab. The
+wordmark is `docs/brand/lasso-wordmark.png`, a generated raster in the brand's
+Sunset Neon look.
 Regenerate the favicon, ICO and home-screen assets in `src/web/public/`:
 
 ```bash
@@ -837,3 +838,12 @@ the art changes.
 To run lasso from *inside* a herdr session (e.g. building lasso with itself), its
 embedded terminal would otherwise refuse to nest. Set `allow_nested = true` under
 `[experimental]` in `~/.config/herdr/config.toml` to allow it.
+
+## License
+
+lasso is source-available under the
+[PolyForm Perimeter License 1.0.1](LICENSE.md): use it, change it and share it
+for any purpose except providing others a product that competes with it (the
+license's Noncompete and Competition sections define that).
+
+Required Notice: Copyright Execution Associates (https://executionassociates.com)
