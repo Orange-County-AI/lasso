@@ -16,6 +16,13 @@ FILE MAPPING (original -> vendored output)
 03-workshop        "Workshop"        <- art-workshop.webp   (1600x1200)
 04-community       "Community"       <- art-community.webp  (1600x1200)
 05-seal            "Seal"            <- event-fallback.webp (1600x1200)
+06-laguna-cliffs   "Laguna Cliffs"   <- generated for lasso (1920x1440), mirrored
+07-pier-sunset     "Pier Sunset"     <- generated for lasso (1920x1440)
+
+06 and 07 are not from the site: they were generated with Codex image
+generation to the site's DESIGN.md (navy, sun and paper inks only), with
+navy kept to the edges and under about a third of the frame, since the
+theme's terminal text is navy and has to stay readable over the image.
 
 TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
   Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \

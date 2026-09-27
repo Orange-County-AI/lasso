@@ -43,6 +43,18 @@
       "label": "Seal",
       "image": "/wallpapers/ocai/05-seal.webp",
       "thumbnail": "/wallpapers/ocai/thumbs/05-seal.webp"
+    },
+    {
+      "id": "06-laguna-cliffs",
+      "label": "Laguna Cliffs",
+      "image": "/wallpapers/ocai/06-laguna-cliffs.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/06-laguna-cliffs.webp"
+    },
+    {
+      "id": "07-pier-sunset",
+      "label": "Pier Sunset",
+      "image": "/wallpapers/ocai/07-pier-sunset.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/07-pier-sunset.webp"
     }
   ]
 }

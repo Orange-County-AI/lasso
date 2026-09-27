@@ -41,9 +41,9 @@ const DEFAULTS: UIState = {
   // index.html paints pre-paint, so the instant before the first fetch lands
   // looks like a browser that has never been told anything — not like a
   // fourth appearance nobody chose.
-  appearance_mode: "herdr",
-  palette_light: "",
-  palette_dark: "",
+  appearance_mode: "system",
+  palette_light: "ocai",
+  palette_dark: "execution-associates",
   // "" = no pinned creator host and nothing created yet: the New dialog opens
   // on the tab's own host, which is what it always did.
   creator_default_host: "",

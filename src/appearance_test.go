@@ -24,11 +24,10 @@ func postUIStateRaw(t *testing.T, body string) *httptest.ResponseRecorder {
 func TestAppearancePatchPreservesSiblingFields(t *testing.T) {
 	openTestDB(t)
 
-	// A fresh install follows herdr with no palette of its own: the behavior
-	// that existed before these fields did.
+	// A fresh install follows the OS scheme in the brand pair.
 	got := postUIState(t, `{"client_id":"A","user_intent":false}`)
-	if got.AppearanceMode != appearanceModeHerdr || got.PaletteLight != "" || got.PaletteDark != "" {
-		t.Fatalf("fresh install is not herdr/flat: %+v", got.uiState)
+	if got.AppearanceMode != appearanceModeSystem || got.PaletteLight != "ocai" || got.PaletteDark != "execution-associates" {
+		t.Fatalf("fresh install is not system/brand: %+v", got.uiState)
 	}
 
 	postUIState(t, `{"appearance_mode":"system","client_id":"A","user_intent":true}`)
@@ -109,8 +108,11 @@ func TestAppearanceModeNormalizedOnRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getUIState: %v", err)
 	}
-	if us.AppearanceMode != appearanceModeHerdr {
-		t.Fatalf("legacy blob did not default to herdr: %q", us.AppearanceMode)
+	if us.AppearanceMode != appearanceModeSystem {
+		t.Fatalf("legacy blob did not default to system: %q", us.AppearanceMode)
+	}
+	if us.PaletteLight != "ocai" || us.PaletteDark != "execution-associates" {
+		t.Fatalf("legacy blob did not default to the brand palettes: %+v", us)
 	}
 	if us.SidebarPct != 33 || !us.UsageCompact {
 		t.Fatalf("normalization disturbed the rest of the blob: %+v", us)
@@ -124,13 +126,13 @@ func TestAppearanceModeNormalizedOnRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getUIState: %v", err)
 	}
-	if us.AppearanceMode != appearanceModeHerdr {
+	if us.AppearanceMode != appearanceModeSystem {
 		t.Fatalf("unknown stored mode not repaired: %q", us.AppearanceMode)
 	}
 	// A patch about something else must not be refused because of what was
 	// already in the db, and must write the repaired mode back.
 	got := postUIState(t, `{"usage_compact":true,"client_id":"A","user_intent":true}`)
-	if got.AppearanceMode != appearanceModeHerdr {
+	if got.AppearanceMode != appearanceModeSystem {
 		t.Fatalf("unrelated patch carried the junk mode forward: %+v", got.uiState)
 	}
 }

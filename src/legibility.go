@@ -65,7 +65,7 @@ const (
 var bundledDefaultBackground = map[string]string{
 	"retro-82":             "/wallpapers/retro-82/04-dusk-guardian.webp",
 	"execution-associates": "/wallpapers/execution-associates/01-golden-hour.webp",
-	"ocai":                 "/wallpapers/ocai/01-pier.webp",
+	"ocai":                 "/wallpapers/ocai/06-laguna-cliffs.webp",
 }
 
 // glyphCanvas is what an agent's text is drawn on, reduced to the two numbers a

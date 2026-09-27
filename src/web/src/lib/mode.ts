@@ -29,10 +29,10 @@ import { patchUIState, uiStateNow, uiStateSettled } from "@/lib/ui-state"
 
 export type Mode = AppearanceMode
 
-// Installs default to "herdr" — the chrome matches herdr's theme out of the
-// box; the Nothing light/dark palette is an explicit opt-in. Mirrors the
-// server's own default (getUIState in db.go) and index.html's pre-paint class.
-const DEFAULT_MODE: Mode = "herdr"
+// Installs default to "system" wearing the brand pair (OCAI light, Execution
+// Associates dark; see DEFAULTS in lib/ui-state.ts). Mirrors the server's own
+// default (getUIState in db.go) and index.html's pre-paint class.
+const DEFAULT_MODE: Mode = "system"
 const mql = () => window.matchMedia("(prefers-color-scheme: dark)")
 
 // getMode reads the stored mode out of the shared cache — the defaults until

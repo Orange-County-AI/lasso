@@ -10,13 +10,18 @@
     <!-- The pre-paint chrome scheme. Appearance is SERVER state (three fields
          of ui_state — see lib/mode.ts), and nothing about it is readable
          before the first paint: no localStorage, and a fetch cannot be waited
-         on here. So the class is the DEFAULT mode's ("herdr" → dark, matching
-         DEFAULTS in lib/ui-state.ts and getUIState in db.go), and lib/mode.ts
+         on here. So the class is the DEFAULT mode's ("system", matching
+         DEFAULTS in lib/ui-state.ts and getUIState in db.go): dark, flipped
+         to light by the script below when the OS says so. lib/mode.ts
          re-asserts it from the stored state the moment /api/ui-state lands —
          which is also when the --h-* palette override arrives. A lasso pinned
-         to Light therefore opens dark for that one round trip rather than
-         flashing an unstyled page. The terminal palette is herdr's, set
+         to the other scheme therefore opens wrong for that one round trip
+         rather than flashing an unstyled page. The terminal palette is set
          separately. -->
+    <script>
+      if (window.matchMedia("(prefers-color-scheme: light)").matches)
+        document.documentElement.classList.replace("dark", "light")
+    </script>
     <!-- Generated from the robot-wrangler mascot by docs/icon/build.py.
          Versioned URLs retire browsers' aggressively cached old favicons. -->
     <link rel="icon" type="image/x-icon" href="/favicon.ico?v=5" />
