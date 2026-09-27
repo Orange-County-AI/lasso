@@ -1123,6 +1123,10 @@ func claudeOverrides(p uiPalette, cv glyphCanvas) map[string]string {
 	// ink over the panel instead (screenForBg): the band keeps the ink's own
 	// muted hue rather than a saturated one, which is what a print-run palette
 	// needs.
+	//
+	// A screened line band is also held to claudeCommentFloor: Claude's syntax
+	// colors are its own, not the theme's, and on a light paper its comment gray
+	// already sits close to the band (see claudeSyntaxComment).
 	diff := func(c, ink, line, word, dimmed string) {
 		band := tintForBg
 		if ink != "" {
@@ -1131,9 +1135,18 @@ func claudeOverrides(p uiPalette, cv glyphCanvas) map[string]string {
 		if c == "" {
 			return // let Claude's base show through, as put() does
 		}
-		m[line] = band(c, bg, diffLineLift)
+		if ink != "" {
+			m[line] = screenKeepingComment(c, bg, diffLineLift)
+		} else {
+			m[line] = band(c, bg, diffLineLift)
+		}
 		m[word] = band(c, bg, diffWordLift)
 		m[dimmed] = blendHex(m[line], p.Overlay0, 0.35)
+		if ink != "" {
+			// A thinner screen, not a darker one: toward Overlay0 would sink
+			// the comment below the floor the line band was just held to.
+			m[dimmed] = blendHex(m[line], bg, 0.5)
+		}
 	}
 	diff(p.Green, p.DiffAddedInk, "diffAdded", "diffAddedWord", "diffAddedDimmed")
 	diff(p.Red, p.DiffRemovedInk, "diffRemoved", "diffRemovedWord", "diffRemovedDimmed")
@@ -1639,6 +1652,40 @@ func screenForBg(ink, bg string, lift float64) string {
 		}
 	}
 	return blendHex(bg, ink, (lo+hi)/2)
+}
+
+// Claude Code highlights diffs with a syntax theme it picks from the base alone
+// ("GitHub" for light, "Monokai Extended" for dark); a custom theme cannot
+// override those colors. Their comment gray is the faintest ink either one
+// prints, so it is the one a diff band can drown: ocai's blue screen at the
+// full line lift (#aaa997) put GitHub's #969896 at 1.22:1, unreadable.
+const (
+	claudeSyntaxCommentLight = "#969896"
+	claudeSyntaxCommentDark  = "#75715e"
+	// The floor a screened line band keeps for that comment. Not legibleQuiet:
+	// on a paper as dark as ocai's cream the comment only reaches 1.96:1 with
+	// no band at all, so the floor has to be one a visible band can still meet.
+	claudeCommentFloor = 1.6
+)
+
+func claudeSyntaxComment(bg string) string {
+	if luminance(bg) > 0.5 {
+		return claudeSyntaxCommentLight
+	}
+	return claudeSyntaxCommentDark
+}
+
+// screenKeepingComment is screenForBg at the largest lift, up to lift, that
+// keeps Claude's syntax comment at claudeCommentFloor on the band. A paper that
+// misses the floor even bare gets the faintest band tried.
+func screenKeepingComment(ink, bg string, lift float64) string {
+	comment := claudeSyntaxComment(bg)
+	band := screenForBg(ink, bg, lift)
+	for l := lift; l > 0.02 && contrastRatio(comment, band) < claudeCommentFloor; {
+		l -= 0.005
+		band = screenForBg(ink, bg, l)
+	}
+	return band
 }
 
 // ---------------------------------------------------------------------------
