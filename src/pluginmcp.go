@@ -63,8 +63,12 @@ var (
 
 // pluginLaunch is everything a runner needs to start one plugin's server.
 type pluginLaunch struct {
-	Name    string
-	Dir     string
+	Name string
+	Dir  string
+	// DataDir is the plugin's one writable place on the host
+	// (<lassoDir>/plugin-data/<name>), mounted at /data in a sandbox and named
+	// by LASSO_PLUGIN_DATA either way. "" = none (tests).
+	DataDir string
 	MCP     *pluginMCPSpec
 	Secrets map[string]string // resolved values; never logged
 }
@@ -156,6 +160,11 @@ type pluginServer struct {
 	runner  pluginRunner
 	server  func() *mcp.Server
 	notify  func()
+	// dataDir is created (0700) before each launch; ring keeps the host
+	// child's recent stderr for GET /api/plugins/<name>/log. Both are set by
+	// the manager after construction and may be empty/nil.
+	dataDir string
+	ring    *lineRing
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -281,10 +290,19 @@ func (s *pluginServer) launch(ctx context.Context) (pluginProc, error) {
 		}
 		secrets[sec.Name] = v
 	}
+	if s.dataDir != "" {
+		if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
+			return nil, unavailable("cannot create the plugin's data directory %s: %v", s.dataDir, err)
+		}
+	}
 	logw := &browserMCPStderr{tail: &tailBuffer{max: 8 << 10}, label: "plugin:" + s.name}
+	var out io.Writer = logw
+	if s.ring != nil {
+		out = io.MultiWriter(logw, s.ring)
+	}
 	lctx, cancel := context.WithTimeout(ctx, pluginStartTimeout)
 	defer cancel()
-	proc, err := s.runner.start(lctx, pluginLaunch{Name: s.name, Dir: s.dir, MCP: s.spec, Secrets: secrets}, logw)
+	proc, err := s.runner.start(lctx, pluginLaunch{Name: s.name, Dir: s.dir, DataDir: s.dataDir, MCP: s.spec, Secrets: secrets}, out)
 	if err != nil {
 		return nil, err
 	}

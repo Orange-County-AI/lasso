@@ -47,6 +47,7 @@ const (
 	pluginGuestPort   = 7700
 	pluginGuestLasso  = "/opt/lasso"
 	pluginGuestDir    = "/plugin"
+	pluginGuestData   = "/data"
 	pluginSandboxPref = "lasso-plugin-"
 	// msbStopTimeout bounds each cleanup call (msb stop / msb rm). They take a
 	// second or two; a wedged runtime must not wedge lasso's shutdown.
@@ -122,7 +123,11 @@ func pluginSandboxName(plugin string) string { return pluginSandboxPref + plugin
 // Secrets appear here by NAME only (`--secret NAME@host,host`): msb reads the
 // value from its own process environment, which is the one place lasso puts it.
 // The plain env values do ride argv — they are non-secret by definition.
-func msbRunArgs(name string, hostPort int, exe, dir string, spec *pluginMCPSpec) []string {
+//
+// dataDir, when set, is the plugin's writable data directory: mounted
+// read-write at /data and named by LASSO_PLUGIN_DATA, which is set after the
+// manifest's env so a manifest cannot point it elsewhere.
+func msbRunArgs(name string, hostPort int, exe, dir, dataDir string, spec *pluginMCPSpec) []string {
 	args := []string{
 		"run",
 		"--name", name,
@@ -142,8 +147,11 @@ func msbRunArgs(name string, hostPort int, exe, dir string, spec *pluginMCPSpec)
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, pluginGuestPort),
 		"--mount-file", exe+":"+pluginGuestLasso+":ro",
 		"--mount-dir", dir+":"+pluginGuestDir+":ro",
-		"-w", pluginGuestDir,
 	)
+	if dataDir != "" {
+		args = append(args, "--mount-dir", dataDir+":"+pluginGuestData)
+	}
+	args = append(args, "-w", pluginGuestDir)
 	keys := make([]string, 0, len(spec.Env))
 	for k := range spec.Env {
 		keys = append(keys, k)
@@ -151,6 +159,9 @@ func msbRunArgs(name string, hostPort int, exe, dir string, spec *pluginMCPSpec)
 	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "-e", k+"="+spec.Env[k])
+	}
+	if dataDir != "" {
+		args = append(args, "-e", "LASSO_PLUGIN_DATA="+pluginGuestData)
 	}
 	for _, s := range spec.Secrets {
 		args = append(args, "--secret", s.Name+"@"+strings.Join(s.Hosts, ","))
@@ -210,7 +221,7 @@ func (msbPluginRunner) start(ctx context.Context, l pluginLaunch, logw io.Writer
 	name := pluginSandboxName(l.Name)
 	removeSandbox(msb, name)
 
-	cmd := exec.Command(msb, msbRunArgs(name, port, exe, l.Dir, l.MCP)...)
+	cmd := exec.Command(msb, msbRunArgs(name, port, exe, l.Dir, l.DataDir, l.MCP)...)
 	// msb's own environment carries the secret VALUES (it reads --secret from
 	// there); lasso's credentials are stripped as for Chromium. The guest sees
 	// neither: only -e values and msb's placeholders cross into it.
@@ -338,6 +349,9 @@ func (hostPluginRunner) start(ctx context.Context, l pluginLaunch, logw io.Write
 	}
 	for k, v := range l.Secrets {
 		env = append(env, k+"="+v)
+	}
+	if l.DataDir != "" { // last, so the manifest's env cannot redirect it
+		env = append(env, "LASSO_PLUGIN_DATA="+l.DataDir)
 	}
 	cmd.Env = env
 	cmd.Stderr = logw

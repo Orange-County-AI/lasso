@@ -489,8 +489,25 @@ ships one of each:
 cp -r examples/plugins/harbor ~/.lasso/plugins/ && lasso plugin enable harbor
 ```
 
-Settings → General has a **Plugins** section (enable, disable, trust, restart,
-MCP status) and a **Sidebar** section for arranging every tab:
+Install one from GitHub, or use a local checkout while you write one:
+
+```bash
+lasso plugin install owner/repo[/subdir] [--ref v1.2]   # shows the permissions, then asks
+lasso plugin update <name>          # re-fetch; says whether the permissions change
+lasso plugin uninstall <name>       # GitHub installs only; --purge-data drops its data dir
+lasso plugin link ~/src/my-plugin   # use a checkout in place; unlink forgets it
+lasso plugin log <name>             # its MCP server's recent output
+```
+
+An install is shallow-cloned into a staging directory and validated before
+anything lands in `plugins/`, and it records the exact commit. "Install and
+enable" approves exactly the permissions the preview showed. Public plugins
+carry the GitHub topic `lasso-plugin`, which anyone can apply: it is not a
+reviewed catalog, and the approval and the microVM are the safety, not the
+listing.
+
+Settings → General has a **Plugins** section (install, update, uninstall,
+logs, enable, disable, trust, restart, MCP status) and a **Sidebar** section for arranging every tab:
 
 <img src="docs/screenshots/sidebar-tabs.png" alt="Settings' Sidebar section: every tab with a visibility toggle and up/down arrows, the hello plugin's tab among them; Settings has no toggle" width="460">
 

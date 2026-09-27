@@ -986,6 +986,47 @@ export interface PluginTabInfo {
   src: string
 }
 
+// How a plugin came to be in lasso (plugin_sources in lasso.db). "github" is
+// a managed checkout lasso cloned and can update or uninstall; "linked" is a
+// directory elsewhere registered for development (never copied, never
+// deleted); "local" is a directory someone put in the plugins dir by hand.
+// Absent on an older server — read it through lib/plugins.ts:pluginSourceOf.
+export type PluginSourceKind = "github" | "linked" | "local"
+
+export interface PluginSourceInfo {
+  kind: PluginSourceKind
+  // owner/repo[/subdir] for github.
+  source?: string
+  ref?: string
+  // The exact commit a github install is at.
+  commit?: string
+  installed_at?: string
+  // The linked directory.
+  path?: string
+}
+
+// What install/update preview staged: the same permission shape the listing
+// carries, so the approval dialog is the same list. `token` names the staged
+// checkout for confirm/cancel; it expires server-side after 10 minutes.
+export interface PluginPreview {
+  token: string
+  name: string
+  version?: string
+  description?: string
+  source: string
+  ref?: string
+  commit?: string
+  fingerprint: string
+  permissions: PluginPermissions
+  themes?: (PluginThemeInfo | string)[] | null
+  fonts?: (PluginFontInfo | PluginFontPermission)[] | null
+  warnings?: string[] | null
+  // Update previews only: the commit installed now, and whether the new
+  // manifest asks for different permissions than the approved one.
+  current_commit?: string
+  changes_permissions?: boolean
+}
+
 export type PluginState = "disabled" | "enabled" | "needs_approval" | "invalid"
 
 export type PluginMCPStatus =
@@ -1015,6 +1056,10 @@ export interface Plugin {
   fonts?: PluginFontInfo[] | null
   // Non-fatal problems (a theme id already taken, …), shown in Settings.
   warnings?: string[] | null
+  // Where it came from. Absent on an older server (read as "local").
+  source?: PluginSourceInfo | null
+  // Its one writable directory (<lassoDir>/plugin-data/<name>/).
+  data_dir?: string
   mcp?: {
     status: PluginMCPStatus
     detail?: string
@@ -1045,6 +1090,42 @@ async function postAction(url: string, body: unknown): Promise<void> {
     body: JSON.stringify(body),
   })
   if (!r.ok) throw await httpError(r)
+}
+
+export interface PluginLog {
+  lines: string[]
+  // Why the log is empty (no MCP server, msb off, nothing logged yet), so an
+  // empty box explains itself instead of reading as a failure.
+  note?: string
+}
+
+// fetchPluginLog accepts the log endpoint answering either JSON — `{lines: [...],
+// note?}` or `{log: "..."}` — or plain text.
+async function fetchPluginLog(url: string): Promise<PluginLog> {
+  const r = await hostFetch(url, { signal: AbortSignal.timeout(20_000) })
+  if (!r.ok) throw await httpError(r)
+  const body = await r.text()
+  if ((r.headers.get("content-type") || "").includes("json")) {
+    try {
+      const v = JSON.parse(body) as unknown
+      if (Array.isArray(v)) return { lines: v.map(String) }
+      if (v && typeof v === "object") {
+        const o = v as { lines?: unknown; log?: unknown; note?: unknown }
+        const note = typeof o.note === "string" ? o.note : undefined
+        if (Array.isArray(o.lines)) return { lines: o.lines.map(String), note }
+        if (typeof o.log === "string") return { lines: splitLines(o.log), note }
+      }
+    } catch {
+      // Not JSON after all: fall through to text.
+    }
+  }
+  return { lines: splitLines(body) }
+}
+
+function splitLines(s: string): string[] {
+  const lines = s.split("\n")
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
+  return lines
 }
 
 export interface PushConfig {
@@ -1214,6 +1295,48 @@ export const api = {
     postJSON<PluginCallResult>(
       `/api/plugins/${encodeURIComponent(name)}/call`,
       { tool, arguments: args }
+    ),
+  // Install from GitHub: preview clones into staging and answers what the
+  // manifest asks for; confirm sends that preview's fingerprint back (409 if
+  // the staged manifest is not the one shown) and returns the listing.
+  // Nothing here reaches GitHub from the browser — lasso does the cloning.
+  pluginInstallPreview: (source: string, ref?: string) =>
+    postJSON<PluginPreview>(
+      "/api/plugins/install/preview",
+      ref ? { source, ref } : { source }
+    ),
+  pluginInstallConfirm: (token: string, fingerprint: string, enable: boolean) =>
+    postJSON<PluginsPayload>("/api/plugins/install/confirm", {
+      token,
+      fingerprint,
+      enable,
+    }),
+  // Drops a staged checkout (install or update preview) nobody confirmed.
+  pluginInstallCancel: (token: string) =>
+    postAction("/api/plugins/install/cancel", { token }),
+  pluginLink: (path: string, enable = false) =>
+    postAction("/api/plugins/link", enable ? { path, enable } : { path }),
+  pluginUnlink: (name: string) =>
+    postAction(`/api/plugins/${encodeURIComponent(name)}/unlink`, {}),
+  pluginUninstall: (name: string, purgeData = false) =>
+    postAction(`/api/plugins/${encodeURIComponent(name)}/uninstall`, {
+      purge_data: purgeData,
+    }),
+  pluginUpdatePreview: (name: string) =>
+    postJSON<PluginPreview>(
+      `/api/plugins/${encodeURIComponent(name)}/update/preview`,
+      {}
+    ),
+  pluginUpdateConfirm: (name: string, token: string, fingerprint: string) =>
+    postAction(`/api/plugins/${encodeURIComponent(name)}/update/confirm`, {
+      token,
+      fingerprint,
+    }),
+  // Recent log lines (the microVM's `msb logs`, or a trusted child's stderr
+  // ring). A one-shot read — nothing streams.
+  pluginLog: (name: string, lines = 200) =>
+    fetchPluginLog(
+      `/api/plugins/${encodeURIComponent(name)}/log?lines=${lines}`
     ),
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>

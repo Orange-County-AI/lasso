@@ -21,7 +21,11 @@ A complete working example is in [`examples/plugins/hello`](../examples/plugins/
     server.py          the MCP server (anything that speaks MCP over stdio)
 ```
 
-Install a plugin by putting its directory there. The directory name **is** the plugin's name.
+A plugin gets there in one of three ways (see [Installing and sharing](#installing-and-sharing)):
+
+- **From GitHub**: `lasso plugin install owner/repo[/subdir]`, or Settings → Plugins → Install from GitHub.
+- **Linked**: `lasso plugin link <path>` uses a checkout where it is, without copying it. This is the way to develop one.
+- **By hand**: put its directory there. The directory name **is** the plugin's name.
 
 ```sh
 cp -r examples/plugins/hello ~/.lasso/plugins/
@@ -36,6 +40,8 @@ lasso plugin enable hello
   "name": "hello",
   "version": "0.1.0",
   "description": "one line",
+  "min_lasso_version": "3.6.0",
+  "platforms": ["linux", "darwin"],
   "tabs": [
     { "id": "main", "label": "Hello", "icon": "sparkles", "entry": "ui/index.html" },
     { "id": "docs", "label": "Docs", "icon": "book", "url": "https://example.com" }
@@ -54,6 +60,8 @@ lasso plugin enable hello
 |---|---|
 | `name` | Required. `^[a-z][a-z0-9-]{0,31}$`, and it must equal the directory name. |
 | `version`, `description` | Shown in Settings. |
+| `min_lasso_version` | Optional `X.Y.Z`. On an older lasso the plugin is `invalid` with "needs lasso >= X (this is Y)". A development build (`-dev`) always passes. |
+| `platforms` | Optional list of `linux` and `darwin` (`macos` is accepted for `darwin`). On any other OS the plugin is `invalid` with the reason. |
 | `tabs[].id` | `^[a-z][a-z0-9-]{0,31}$`, unique within the plugin. The tab's global id is `plugin:<name>:<id>`. |
 | `tabs[].label` | 1-64 characters. |
 | `tabs[].icon` | A name from lasso's curated set: `activity bell book book-open bot box calendar chart clock cloud code cpu dashboard database file-text flask folder gauge git-branch globe hammer heart image layers link list mail map message music notebook package puzzle rocket search server shield sparkles star terminal` (see `PLUGIN_ICONS` in `src/web/src/lib/plugins.ts`). An unknown name falls back to a puzzle piece and is never an error. |
@@ -66,6 +74,8 @@ lasso plugin enable hello
 | `mcp.secrets` | Secrets the server needs, each with the hosts it may be sent to. |
 | `themes` | Up to 32 themes. See [Themes](#themes). |
 | `fonts` | Up to 16 fonts. See [Fonts](#fonts). |
+
+Neither `min_lasso_version` nor `platforms` is a permission, so neither is in the fingerprint.
 
 An invalid manifest never loads anything. The plugin is listed as `invalid` with the reason, in Settings and in `lasso plugin list`.
 
@@ -84,6 +94,36 @@ lasso plugin reload
 ```
 
 These talk to the running lasso (found through `LASSO_URL` or `LASSO_LISTEN`, and sending `UI_AUTH` if it is set). Enabling a plugin starts a process, and only the server can do that.
+
+## Installing and sharing
+
+```sh
+lasso plugin install <source> [--ref R] [-y] [--no-enable]
+lasso plugin update <name> [-y]
+lasso plugin uninstall <name> [--purge-data]
+lasso plugin link <path> [--enable]
+lasso plugin unlink <name>
+lasso plugin log <name> [-n 200] [-f]
+lasso plugin data-dir <name>
+```
+
+**Install** takes `owner/repo`, `owner/repo/sub/dir`, or `https://github.com/owner/repo[/tree/<ref>/sub/dir]`. Only GitHub is supported. `--ref` pins a branch, a tag or a commit. lasso shallow-clones the repository into a hidden staging directory (`plugins/.staging/`), with git hooks off and submodules not fetched. It deletes `.git`, and refuses a checkout over 50 MB or 5000 files, or one whose plugin directory holds a symlink pointing outside it. Then it validates the manifest exactly as the scanner does, and shows you every permission, the source and the exact commit. Nothing is installed until you confirm. "Install and enable" approves exactly the fingerprint the preview showed; if the staged manifest no longer matches it, the confirm is refused and you preview again. A preview you do not confirm expires after 10 minutes. The plugin lands in `plugins/<name>/` (the name comes from its manifest), and lasso records its source, ref and commit. Without a terminal, `install` refuses unless you pass `-y`.
+
+**Update** re-fetches the recorded source and ref, shows the same preview plus the current commit, and says whether the permissions change. Confirming swaps the new directory in; if that fails, the old one is put back. Unchanged permissions keep their approval. Changed ones read `needs_approval` until you approve them.
+
+**Uninstall** removes a GitHub install's directory and forgets its approval and trust. It keeps the plugin's data directory unless you pass `--purge-data`. A hand-placed plugin is never deleted by lasso: delete the directory yourself.
+
+**Link** registers a local checkout (an absolute path holding `plugin.json`) by the name in its manifest. It is served and mounted from that path, and edits there take effect on the next rescan. **Unlink** forgets it and leaves the files alone. A link whose path disappears is listed as `invalid` with the reason. A name can only belong to one plugin: install and link refuse a name that is already installed, linked or hand-placed.
+
+`lasso plugin list` shows each plugin's source: `github owner/repo@abc1234`, `linked <path>`, or `local`.
+
+### Sharing a plugin
+
+Put `plugin.json` at the root of a public GitHub repository (or in a subdirectory, and install it as `owner/repo/sub/dir`), and tag the repository with the GitHub topic **`lasso-plugin`** so people can find it. A topic is self-applied and nobody reviews it. The listing is not what keeps you safe: the approval dialog and the microVM are.
+
+## Data directory
+
+The plugin directory is read-only to the plugin. Its one writable place is `<LASSO_DIR or ~/.lasso>/plugin-data/<name>/` (mode 0700, created when its MCP server first starts). In the sandbox it is mounted read-write at `/data`, and `LASSO_PLUGIN_DATA=/data`. A trusted server gets `LASSO_PLUGIN_DATA=<the host path>`. Keep state there, not in the plugin directory: an update replaces the plugin directory, and uninstall keeps the data directory unless asked. `lasso plugin data-dir <name>` prints the path.
 
 ## Tabs
 
@@ -205,15 +245,16 @@ msb run --name lasso-plugin-<name> --no-tty \
   --net-default-egress deny --net-default-ingress allow \
   [--net-rule allow@dns --net-rule allow@<host>:tcp:<port> ...] \
   -p 127.0.0.1:<port>:7700 \
-  --mount-file <lasso binary>:/opt/lasso:ro --mount-dir <plugin dir>:/plugin:ro -w /plugin \
-  [-e K=V ...] [--secret NAME@host,host ...] \
+  --mount-file <lasso binary>:/opt/lasso:ro --mount-dir <plugin dir>:/plugin:ro \
+  --mount-dir <data dir>:/data -w /plugin \
+  [-e K=V ...] -e LASSO_PLUGIN_DATA=/data [--secret NAME@host,host ...] \
   <image> -- /opt/lasso plugin-stdio-serve -listen :7700 -- <command...>
 ```
 
-- **Isolation.** The server has its own kernel and filesystem. The plugin directory is read-only, and nothing else from your machine is mounted. Egress is denied except to the approved hosts, and DNS is allowed only when there is some host to resolve.
+- **Isolation.** The server has its own kernel and filesystem. The plugin directory is read-only, its data directory is the only writable mount, and nothing else from your machine is mounted. Egress is denied except to the approved hosts, and DNS is allowed only when there is some host to resolve.
 - **Transport.** `msb run` does not forward piped stdin, so stdio cannot cross the VM boundary. lasso mounts its own static binary into the guest and runs `lasso plugin-stdio-serve`, a small adapter that bridges one TCP connection on a published loopback port to a fresh copy of your server's stdin/stdout.
 - **Secrets never enter the guest.** lasso resolves each approved secret from its own environment, or failing that from `secret NAME` (10s timeout). It passes the value only to the `msb` process. Inside the guest, `NAME` holds a placeholder that msb replaces with the real value only in traffic to that secret's approved hosts.
-- **Logs.** `msb run` holds the guest's output until the sandbox exits, so your server's stderr does not stream into lasso's log. When a server fails to start or dies, lasso fetches the last lines with `msb logs` and includes them in the status and the log. To follow it live: `msb logs -f lasso-plugin-<name>`.
+- **Logs.** `msb run` holds the guest's output until the sandbox exits, so your server's stderr does not stream into lasso's log. When a server fails to start or dies, lasso fetches the last lines with `msb logs` and includes them in the status and the log. `lasso plugin log <name>` (or Settings' Logs button) shows the recent output at any time; `-f` follows it (`msb logs -f lasso-plugin-<name>` underneath). A trusted server's stderr is kept in memory, the last 500 lines.
 - **Cost.** A cold boot takes about 2-3 seconds. The first boot of an image also pulls it, and lasso allows two minutes for that.
 
 msb is found through `LASSO_MSB` (a path or a name on PATH, or `off` to disable sandboxed plugins), then `msb` on PATH, then `~/.microsandbox/bin/msb`. Without it, tabs still work, and every untrusted MCP server reads `unavailable: microsandbox (msb) not found`.
@@ -231,5 +272,16 @@ These are for the Settings pane and the CLI. They are behind `UI_AUTH` like the 
 | `POST /api/plugins/<name>/trust` | `{trusted: bool}` |
 | `POST /api/plugins/<name>/restart` | |
 | `POST /api/plugins/<name>/call` | `{tool, arguments}`. The tool must be this plugin's own. Returns the `CallToolResult`. |
+| `POST /api/plugins/install/preview` | `{source, ref?}` → `{token, name, version, description, source, ref, commit, fingerprint, permissions, themes, fonts, warnings}`. Clones into staging; installs nothing. |
+| `POST /api/plugins/install/confirm` | `{token, fingerprint, enable}` → the listing. 409 if `fingerprint` is not the staged manifest's; 404 for an unknown or expired token. |
+| `POST /api/plugins/install/cancel` | `{token}` → `{ok: true}`. Discards an install **or update** preview. |
+| `POST /api/plugins/link` | `{path, enable?}` → the listing. `enable` approves the manifest as read at that moment. |
+| `POST /api/plugins/<name>/unlink` | Linked plugins only. |
+| `POST /api/plugins/<name>/uninstall` | `{purge_data?}`. GitHub installs only. |
+| `POST /api/plugins/<name>/update/preview` | The install preview plus `current_commit` and `changes_permissions`. GitHub installs only. |
+| `POST /api/plugins/<name>/update/confirm` | `{token, fingerprint}` → the listing. 409/404 as for install. |
+| `GET /api/plugins/<name>/log?lines=200` | `{name, sandboxed, lines: [string], note?}`. `note` says why there is nothing (no msb, no sandbox yet). |
+
+Each plugin in the listing also carries `source: {kind: "github"|"linked"|"local", source?, ref?, commit?, installed_at?, updated_at?, path?, url?}` (`url` is the GitHub tree at the installed commit) and `data_dir`. Refusals other than those named (a bad source, a failed clone, a name that is taken, the wrong kind of plugin for the operation) are 400 with the reason as the body.
 
 Every change bumps `plugins_rev` in the `/api/events` frames, so every open tab refetches the listing. It also bumps when the plugin themes change (a palette edited in place included), which is what makes browsers refetch the theme catalog (`GET /api/omarchy-themes`, where a plugin theme has `source: "plugin"` and `plugin: "<name>"`).

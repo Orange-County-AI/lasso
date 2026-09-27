@@ -53,6 +53,7 @@ import { Orb } from "@/components/ui/orb"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { SCRATCH_WORKSPACE } from "@/lib/agents"
 import {
+  ApiError,
   api,
   type BrowserAction,
   type BrowserMode,
@@ -60,6 +61,8 @@ import {
   type Plugin,
   type PluginAction,
   type PluginMCPStatus,
+  type PluginPermissions,
+  type PluginPreview,
   type PluginState,
   type SidebarTabPref,
   type ThemeCatalogEntry,
@@ -80,7 +83,13 @@ import {
   subscribeSystemScheme,
   systemPrefersDark,
 } from "@/lib/mode"
-import { pluginTabsOf, usePlugins } from "@/lib/plugins"
+import {
+  githubCommitURL,
+  pluginSourceOf,
+  pluginTabsOf,
+  shortCommit,
+  usePlugins,
+} from "@/lib/plugins"
 import {
   disablePush,
   enablePush,
@@ -3117,16 +3126,20 @@ const MCP_STATUS_TONE: Record<
 // PluginPermissionList spells out exactly what enabling approves — the same
 // fields the server fingerprints, so what the human reads here is what a
 // later manifest edit would have to be re-approved against.
-function PluginPermissionList({ plugin }: { plugin: Plugin }) {
+function PluginPermissionList({
+  permissions,
+}: {
+  permissions: PluginPermissions
+}) {
   // Go encodes an empty list as null, so every list is defaulted on the way in.
-  const tabs = plugin.permissions.tabs ?? []
-  const mcp = plugin.permissions.mcp
+  const tabs = permissions.tabs ?? []
+  const mcp = permissions.mcp
   const command = mcp?.command ?? []
   const network = mcp?.network ?? []
   const envKeys = mcp?.env_keys ?? []
   const secrets = mcp?.secrets ?? []
-  const themes = plugin.permissions.themes ?? []
-  const fonts = plugin.permissions.fonts ?? []
+  const themes = permissions.themes ?? []
+  const fonts = permissions.fonts ?? []
   const item = "text-[13px] text-foreground [overflow-wrap:anywhere]"
   const code = "font-mono text-[12px]"
   return (
@@ -3244,6 +3257,12 @@ function PluginsSettings({ active }: { active: boolean }) {
   const data = plugins.data
   const [approving, setApproving] = React.useState<Plugin | null>(null)
   const [trusting, setTrusting] = React.useState<Plugin | null>(null)
+  // A staged checkout awaiting confirm: a fresh install, or an update of a
+  // github-managed plugin. Dismissing it without confirming drops the staging.
+  const [staged, setStaged] = React.useState<StagedPlugin | null>(null)
+  const [uninstalling, setUninstalling] = React.useState<Plugin | null>(null)
+  const [unlinking, setUnlinking] = React.useState<Plugin | null>(null)
+  const [logsOf, setLogsOf] = React.useState<string | null>(null)
 
   // A starting MCP child settles on its own; the plugins_rev bump says when,
   // but poll lightly while one is on screen starting, in case that bump is the
@@ -3286,7 +3305,74 @@ function PluginsSettings({ active }: { active: boolean }) {
     onError: (e: Error) => toast.error(`Reloading plugins: ${e.message}`),
     onSettled: settle,
   })
-  const busy = action.isPending || trust.isPending || reload.isPending
+  const installPreview = useMutation({
+    mutationFn: ({ source, ref }: { source: string; ref?: string }) =>
+      api.pluginInstallPreview(source, ref),
+    onSuccess: (preview) => setStaged({ kind: "install", preview }),
+    onError: (e: Error) => toast.error(`Preview: ${e.message}`),
+  })
+  const installConfirm = useMutation({
+    mutationFn: ({
+      preview,
+      enable,
+    }: {
+      preview: PluginPreview
+      enable: boolean
+    }) => api.pluginInstallConfirm(preview.token, preview.fingerprint, enable),
+    onSuccess: (next, v) => {
+      if (next && Array.isArray(next.plugins)) {
+        queryClient.setQueryData(qk.plugins, next)
+      }
+      toast.success(
+        `Installed ${v.preview.name}${v.enable ? " and enabled it" : ""}`
+      )
+    },
+    onError: (e: Error, v) => toast.error(stagedError(v.preview.name, e)),
+    onSettled: settle,
+  })
+  const updatePreview = useMutation({
+    mutationFn: (name: string) => api.pluginUpdatePreview(name),
+    onSuccess: (preview, name) =>
+      setStaged({ kind: "update", plugin: name, preview }),
+    onError: (e: Error, name) => toast.error(`Update ${name}: ${e.message}`),
+  })
+  const updateConfirm = useMutation({
+    mutationFn: ({ name, preview }: { name: string; preview: PluginPreview }) =>
+      api.pluginUpdateConfirm(name, preview.token, preview.fingerprint),
+    onSuccess: (_, v) =>
+      toast.success(
+        `Updated ${v.name}${v.preview.commit ? ` to ${shortCommit(v.preview.commit)}` : ""}`
+      ),
+    onError: (e: Error, v) => toast.error(stagedError(v.name, e)),
+    onSettled: settle,
+  })
+  const uninstall = useMutation({
+    mutationFn: ({ name, purge }: { name: string; purge: boolean }) =>
+      api.pluginUninstall(name, purge),
+    onSuccess: (_, v) => toast.success(`Uninstalled ${v.name}`),
+    onError: (e: Error, v) => toast.error(`Uninstall ${v.name}: ${e.message}`),
+    onSettled: settle,
+  })
+  const unlink = useMutation({
+    mutationFn: (name: string) => api.pluginUnlink(name),
+    onSuccess: (_, name) => toast.success(`Unlinked ${name}`),
+    onError: (e: Error, name) => toast.error(`Unlink ${name}: ${e.message}`),
+    onSettled: settle,
+  })
+  // Best effort: an unconfirmed staging also expires on the server.
+  const cancelStaged = (token: string) => {
+    api.pluginInstallCancel(token).catch(() => {})
+  }
+  const busy =
+    action.isPending ||
+    trust.isPending ||
+    reload.isPending ||
+    installPreview.isPending ||
+    installConfirm.isPending ||
+    updatePreview.isPending ||
+    updateConfirm.isPending ||
+    uninstall.isPending ||
+    unlink.isPending
 
   const list = data?.plugins ?? []
 
@@ -3334,10 +3420,15 @@ function PluginsSettings({ active }: { active: boolean }) {
             )}
           </p>
           <CopyLine label="plugins directory" text={data.dir} />
+          <PluginInstallRow
+            busy={busy}
+            previewing={installPreview.isPending}
+            onPreview={(source, ref) => installPreview.mutate({ source, ref })}
+          />
           {list.length === 0 && (
             <p className="text-[13px] text-muted-foreground">
-              No plugins installed. Put one in the directory above and press
-              Reload.
+              No plugins installed. Install one from GitHub above, or put one in
+              the plugins directory and press Reload.
             </p>
           )}
           {list.map((p) => (
@@ -3348,6 +3439,13 @@ function PluginsSettings({ active }: { active: boolean }) {
               onEnable={() => setApproving(p)}
               onDisable={() => action.mutate({ name: p.name, act: "disable" })}
               onRestart={() => action.mutate({ name: p.name, act: "restart" })}
+              updating={
+                updatePreview.isPending && updatePreview.variables === p.name
+              }
+              onUpdate={() => updatePreview.mutate(p.name)}
+              onUninstall={() => setUninstalling(p)}
+              onUnlink={() => setUnlinking(p)}
+              onLogs={() => setLogsOf(p.name)}
               onTrust={(trusted) => {
                 if (trusted) setTrusting(p)
                 else trust.mutate({ name: p.name, trusted: false })
@@ -3383,7 +3481,9 @@ function PluginsSettings({ active }: { active: boolean }) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="max-h-[50vh] overflow-y-auto">
-            {approving && <PluginPermissionList plugin={approving} />}
+            {approving && (
+              <PluginPermissionList permissions={approving.permissions} />
+            )}
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -3402,6 +3502,57 @@ function PluginsSettings({ active }: { active: boolean }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <PluginStagedDialog
+        staged={staged}
+        onClose={(confirmed) => {
+          if (!confirmed && staged) cancelStaged(staged.preview.token)
+          setStaged(null)
+        }}
+        onInstall={(preview, enable) =>
+          installConfirm.mutate({ preview, enable })
+        }
+        onUpdate={(name, preview) => updateConfirm.mutate({ name, preview })}
+      />
+
+      <PluginUninstallDialog
+        plugin={uninstalling}
+        onClose={() => setUninstalling(null)}
+        onConfirm={(name, purge) => uninstall.mutate({ name, purge })}
+      />
+
+      <AlertDialog
+        open={unlinking !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnlinking(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unlink {unlinking?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              lasso forgets it: its tabs, tools, themes and fonts go away and
+              its approval is dropped. The directory
+              {unlinking && pluginSourceOf(unlinking).path
+                ? ` ${pluginSourceOf(unlinking).path}`
+                : ""}{" "}
+              is left exactly as it is.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (unlinking) unlink.mutate(unlinking.name)
+              }}
+            >
+              Unlink
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <PluginLogDialog name={logsOf} onClose={() => setLogsOf(null)} />
 
       <AlertDialog
         open={trusting !== null}
@@ -3441,20 +3592,31 @@ function PluginsSettings({ active }: { active: boolean }) {
 function PluginRow({
   plugin: p,
   busy,
+  updating,
   onEnable,
   onDisable,
   onRestart,
   onTrust,
+  onUpdate,
+  onUninstall,
+  onUnlink,
+  onLogs,
 }: {
   plugin: Plugin
   busy: boolean
+  updating: boolean
   onEnable: () => void
   onDisable: () => void
   onRestart: () => void
   onTrust: (trusted: boolean) => void
+  onUpdate: () => void
+  onUninstall: () => void
+  onUnlink: () => void
+  onLogs: () => void
 }) {
   const trustID = `settings-plugin-trust-${p.name}`
   const tools = p.mcp?.tools ?? []
+  const src = pluginSourceOf(p)
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border p-2">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -3503,6 +3665,7 @@ function PluginRow({
       {p.description && (
         <p className="text-[12px] text-muted-foreground">{p.description}</p>
       )}
+      <PluginSourceLine info={src} />
       {p.state === "invalid" && p.error && (
         <p className="text-[11px] text-bad [overflow-wrap:anywhere]">
           {p.error}
@@ -3597,6 +3760,480 @@ function PluginRow({
           </p>
         </div>
       )}
+      {/* What can be done to the checkout itself depends on who owns it:
+          lasso's own clone (github) can be updated and removed, a linked
+          directory only forgotten, and a hand-placed one is the operator's. */}
+      <div className="flex flex-wrap gap-1">
+        {src.kind === "github" && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onUpdate}
+            >
+              {updating ? "Checking…" : "Update…"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onUninstall}
+            >
+              Uninstall…
+            </Button>
+          </>
+        )}
+        {src.kind === "linked" && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={onUnlink}
+          >
+            Unlink…
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={onLogs}>
+          Logs
+        </Button>
+      </div>
     </div>
+  )
+}
+
+// A preview awaiting confirmation. The token names the staged checkout on the
+// server; the fingerprint is what confirm must send back.
+type StagedPlugin =
+  | { kind: "install"; preview: PluginPreview }
+  | { kind: "update"; plugin: string; preview: PluginPreview }
+
+// stagedError turns a failed confirm into a toast. 409 is the one that needs
+// words: the staged manifest is not the one the dialog showed.
+function stagedError(name: string, e: Error): string {
+  if (e instanceof ApiError && e.status === 409) {
+    return `${name}: the plugin changed since the preview — preview again.`
+  }
+  return `${name}: ${e.message}`
+}
+
+// PluginSourceLine says where a plugin came from: lasso's clone of a GitHub
+// repo (linked to the exact commit), a linked development directory, or a
+// directory someone put in the plugins dir by hand.
+function PluginSourceLine({
+  info,
+}: {
+  info: ReturnType<typeof pluginSourceOf>
+}) {
+  const cls =
+    "text-[11px] text-muted-foreground [overflow-wrap:anywhere] font-mono"
+  if (info.kind === "github") {
+    const href = githubCommitURL(info)
+    const commit = shortCommit(info.commit)
+    return (
+      <p className={cls}>
+        github {info.source ?? "?"}
+        {info.ref ? ` (${info.ref})` : ""}
+        {commit &&
+          (href ? (
+            <>
+              {" @ "}
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+              >
+                {commit}
+              </a>
+            </>
+          ) : (
+            ` @ ${commit}`
+          ))}
+      </p>
+    )
+  }
+  if (info.kind === "linked") {
+    return <p className={cls}>linked {info.path ?? ""}</p>
+  }
+  return <p className={cls}>local</p>
+}
+
+// PluginInstallRow is the one way into GitHub from here — and it is lasso
+// that clones, never the browser. Preview stages a checkout and shows what it
+// asks for; nothing is installed until that dialog is confirmed.
+function PluginInstallRow({
+  busy,
+  previewing,
+  onPreview,
+}: {
+  busy: boolean
+  previewing: boolean
+  onPreview: (source: string, ref?: string) => void
+}) {
+  const [source, setSource] = React.useState("")
+  const [ref, setRef] = React.useState("")
+  const [pinning, setPinning] = React.useState(false)
+  const submit = () => {
+    const s = source.trim()
+    if (!s || busy) return
+    const r = pinning ? ref.trim() : ""
+    onPreview(s, r || undefined)
+  }
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      submit()
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-border border-dashed p-2">
+      <span className={labelClass}>Install from GitHub</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          className={cn(fieldClass, "min-w-0 flex-1 basis-52 font-mono")}
+          {...NO_AUTOCORRECT}
+          aria-label="GitHub source"
+          placeholder="owner/repo or owner/repo/subdir"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          onKeyDown={onKey}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || !source.trim()}
+          onClick={submit}
+        >
+          {previewing ? "Fetching…" : "Preview…"}
+        </Button>
+      </div>
+      <button
+        type="button"
+        className="flex items-center gap-1 self-start text-[11px] text-muted-foreground hover:text-foreground"
+        aria-expanded={pinning}
+        onClick={() => setPinning((v) => !v)}
+      >
+        {pinning ? (
+          <ChevronDown className="size-3" />
+        ) : (
+          <ChevronRight className="size-3" />
+        )}
+        Pin a version
+      </button>
+      {pinning && (
+        <input
+          className={cn(fieldClass, "font-mono")}
+          {...NO_AUTOCORRECT}
+          aria-label="Git ref"
+          placeholder="tag, branch or commit (default branch if empty)"
+          value={ref}
+          onChange={(e) => setRef(e.target.value)}
+          onKeyDown={onKey}
+        />
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        Anyone can publish a plugin; nothing here is reviewed. The preview shows
+        exactly what it asks for, and its MCP server runs in a microVM.
+      </p>
+    </div>
+  )
+}
+
+// previewExtras lists the themes and fonts a preview contributes when its
+// permissions do not already (they normally do — this covers a server that
+// sends them only beside it).
+function previewExtras(preview: PluginPreview): {
+  themes: string[]
+  fonts: string[]
+} {
+  const perms = preview.permissions
+  const themes =
+    (perms.themes ?? []).length > 0
+      ? []
+      : (preview.themes ?? []).map((t) =>
+          typeof t === "string"
+            ? t
+            : `${t.label || t.id}${t.key_taken ? " (skipped: id taken)" : ""}`
+        )
+  const fonts =
+    (perms.fonts ?? []).length > 0
+      ? []
+      : (preview.fonts ?? []).map((f) => `${f.family} (${f.category})`)
+  return { themes, fonts }
+}
+
+// PluginStagedDialog is the approval dialog for a staged checkout. Install
+// offers "install only" beside the default "install and enable"; update says
+// up front whether the new version asks for different permissions (if it
+// does, it loads nothing until approved again).
+function PluginStagedDialog({
+  staged,
+  onClose,
+  onInstall,
+  onUpdate,
+}: {
+  staged: StagedPlugin | null
+  onClose: (confirmed: boolean) => void
+  onInstall: (preview: PluginPreview, enable: boolean) => void
+  onUpdate: (name: string, preview: PluginPreview) => void
+}) {
+  // Set by a confirming button just before Radix closes the dialog, so the
+  // close can tell a confirm from a dismissal (which cancels the staging).
+  const confirmed = React.useRef(false)
+  React.useEffect(() => {
+    if (staged) confirmed.current = false
+  }, [staged])
+  const pv = staged?.preview
+  const extras = pv ? previewExtras(pv) : { themes: [], fonts: [] }
+  const warnings = pv?.warnings ?? []
+  const commit = shortCommit(pv?.commit)
+  const current = shortCommit(pv?.current_commit)
+  const update = staged?.kind === "update" ? staged : null
+  return (
+    <AlertDialog
+      open={staged !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose(confirmed.current)
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {update ? "Update" : "Install"} {pv?.name}
+            {pv?.version ? ` ${pv.version}` : ""}?
+          </AlertDialogTitle>
+          <AlertDialogDescription className="[overflow-wrap:anywhere]">
+            <span className="font-mono">
+              {pv?.source}
+              {pv?.ref ? ` (${pv.ref})` : ""}
+              {update && current && commit
+                ? ` @ ${current} → ${commit}`
+                : commit
+                  ? ` @ ${commit}`
+                  : ""}
+            </span>
+            {pv?.description ? (
+              <>
+                <br />
+                {pv.description}
+              </>
+            ) : null}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto">
+          {update && (
+            <p
+              className={cn(
+                "text-[13px]",
+                update.preview.changes_permissions
+                  ? "text-warn"
+                  : "text-muted-foreground"
+              )}
+            >
+              Permissions change:{" "}
+              {update.preview.changes_permissions
+                ? "yes — it stays off until you review and approve the new ones."
+                : "no — its approval carries over."}
+            </p>
+          )}
+          <p className="text-left text-[13px] text-muted-foreground">
+            {update
+              ? "The new version asks for:"
+              : "Installing and enabling approves exactly this:"}
+          </p>
+          {pv && <PluginPermissionList permissions={pv.permissions} />}
+          {extras.themes.length > 0 && (
+            <div>
+              <p className={labelClass}>Themes</p>
+              <p className="text-[13px] text-foreground">
+                {extras.themes.join(", ")}
+              </p>
+            </div>
+          )}
+          {extras.fonts.length > 0 && (
+            <div>
+              <p className={labelClass}>Fonts</p>
+              <p className="text-[13px] text-foreground">
+                {extras.fonts.join(", ")}
+              </p>
+            </div>
+          )}
+          {warnings.map((w) => (
+            <p
+              key={w}
+              className="text-left text-[12px] text-warn [overflow-wrap:anywhere]"
+            >
+              {w}
+            </p>
+          ))}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          {update ? (
+            <AlertDialogAction
+              onClick={() => {
+                confirmed.current = true
+                onUpdate(update.plugin, update.preview)
+              }}
+            >
+              Update
+            </AlertDialogAction>
+          ) : (
+            <>
+              <AlertDialogAction
+                variant="outline"
+                onClick={() => {
+                  confirmed.current = true
+                  if (pv) onInstall(pv, false)
+                }}
+              >
+                Install only
+              </AlertDialogAction>
+              <AlertDialogAction
+                autoFocus
+                onClick={() => {
+                  confirmed.current = true
+                  if (pv) onInstall(pv, true)
+                }}
+              >
+                Install and enable
+              </AlertDialogAction>
+            </>
+          )}
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+// PluginUninstallDialog confirms removing lasso's clone of a github plugin.
+// Its data directory survives unless the box is ticked — reinstalling then
+// picks up where it left off.
+function PluginUninstallDialog({
+  plugin,
+  onClose,
+  onConfirm,
+}: {
+  plugin: Plugin | null
+  onClose: () => void
+  onConfirm: (name: string, purge: boolean) => void
+}) {
+  const [purge, setPurge] = React.useState(false)
+  React.useEffect(() => {
+    if (plugin) setPurge(false)
+  }, [plugin])
+  const id = "settings-plugin-uninstall-purge"
+  return (
+    <AlertDialog
+      open={plugin !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Uninstall {plugin?.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Stops it, withdraws its tabs, tools, themes and fonts, and deletes
+            lasso's checkout of it. Its approval and trust are dropped.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <label
+          className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+          htmlFor={id}
+        >
+          <Checkbox
+            id={id}
+            checked={purge}
+            onCheckedChange={(c) => setPurge(c === true)}
+          />
+          Also delete its data
+        </label>
+        {plugin?.data_dir && (
+          <p className="font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+            {plugin.data_dir}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => {
+              if (plugin) onConfirm(plugin.name, purge)
+            }}
+          >
+            Uninstall
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+// PluginLogDialog shows a plugin's last 200 log lines. Read once on open and
+// again on Refresh — nothing streams and nothing polls.
+function PluginLogDialog({
+  name,
+  onClose,
+}: {
+  name: string | null
+  onClose: () => void
+}) {
+  const log = useQuery({
+    queryKey: qk.pluginLog(name ?? ""),
+    queryFn: () => api.pluginLog(name ?? "", 200),
+    enabled: name !== null,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const lines = log.data?.lines ?? []
+  return (
+    <Dialog
+      open={name !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{name} logs</DialogTitle>
+        </DialogHeader>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">
+            {log.isFetching
+              ? "reading…"
+              : log.isError
+                ? ""
+                : `last ${lines.length} ${lines.length === 1 ? "line" : "lines"}`}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            disabled={log.isFetching}
+            onClick={() => log.refetch()}
+          >
+            <RotateCw />
+            Refresh
+          </Button>
+        </div>
+        {log.isError ? (
+          <p className="text-[12px] text-warn [overflow-wrap:anywhere]">
+            {log.error.message}
+          </p>
+        ) : (
+          <pre className="max-h-[60vh] overflow-auto whitespace-pre rounded-lg border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground leading-snug">
+            {lines.length > 0
+              ? lines.join("\n")
+              : log.isFetching
+                ? ""
+                : `(no log lines${log.data?.note ? ` — ${log.data.note}` : ""})`}
+          </pre>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }

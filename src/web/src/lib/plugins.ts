@@ -50,6 +50,7 @@ import {
   api,
   type PanesPayload,
   type Plugin,
+  type PluginSourceInfo,
   type PluginsPayload,
   type PluginTabInfo,
 } from "@/lib/api"
@@ -94,6 +95,49 @@ export function pluginTabsOf(data: PluginsPayload | undefined): {
     for (const tab of plugin.tabs ?? []) out.push({ plugin, tab })
   }
   return out
+}
+
+// pluginSourceOf reads where a plugin came from. A plugin with no install
+// record — hand-placed, or listed by a server older than install/link — is
+// "local", which is also what disables Update/Uninstall/Unlink for it.
+export function pluginSourceOf(p: Plugin): PluginSourceInfo {
+  const s = p.source
+  if (s && typeof s === "object" && s.kind) return s
+  return { kind: "local" }
+}
+
+const GH_PART = /^[A-Za-z0-9_.-]{1,100}$/
+
+// githubRepoOf pulls owner/repo out of an install source in any of the forms
+// the server accepts (owner/repo, owner/repo/sub/dir, a github.com URL), or
+// null when it is none of them. Only used to build a link; lasso itself never
+// contacts GitHub from the browser.
+export function githubRepoOf(source: string | undefined): string | null {
+  if (!source) return null
+  let rest = source.trim()
+  const url = rest.match(/^https:\/\/github\.com\/(.*)$/i)
+  if (url) rest = url[1]
+  const [owner, repo] = rest.split("/")
+  if (!owner || !repo) return null
+  const r = repo.replace(/\.git$/, "")
+  for (const part of [owner, r]) {
+    if (!GH_PART.test(part) || part === "." || part === "..") return null
+  }
+  return `${owner}/${r}`
+}
+
+// githubCommitURL is the commit page a github install is pinned to, or null
+// when the source or commit cannot be read as one.
+export function githubCommitURL(info: PluginSourceInfo): string | null {
+  const repo = githubRepoOf(info.source)
+  if (!repo || !info.commit || !/^[0-9a-f]{7,64}$/i.test(info.commit)) {
+    return null
+  }
+  return `https://github.com/${repo}/commit/${info.commit}`
+}
+
+export function shortCommit(commit: string | undefined): string {
+  return commit ? commit.slice(0, 7) : ""
 }
 
 // The icons a manifest may name. A curated set rather than all of lucide:

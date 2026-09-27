@@ -620,7 +620,7 @@ func TestMSBRunArgs(t *testing.T) {
 		Env:     map[string]string{"LOG_LEVEL": "info"},
 		Secrets: []pluginSecretSpec{{Name: "EXAMPLE_TOKEN", Hosts: []string{"api.example.com", "b.example.com"}}},
 	}
-	args := strings.Join(msbRunArgs("lasso-plugin-hello", 41234, "/usr/bin/lasso", "/p/hello", spec), " ")
+	args := strings.Join(msbRunArgs("lasso-plugin-hello", 41234, "/usr/bin/lasso", "/p/hello", "/d/hello", spec), " ")
 	for _, want := range []string{
 		"run --name lasso-plugin-hello --no-tty",
 		"--net-default-egress deny --net-default-ingress allow",
@@ -630,6 +630,8 @@ func TestMSBRunArgs(t *testing.T) {
 		"-p 127.0.0.1:41234:7700",
 		"--mount-file /usr/bin/lasso:/opt/lasso:ro",
 		"--mount-dir /p/hello:/plugin:ro",
+		"--mount-dir /d/hello:/data -w",
+		"-e LASSO_PLUGIN_DATA=/data",
 		"-w /plugin",
 		"-e LOG_LEVEL=info",
 		"--secret EXAMPLE_TOKEN@api.example.com,b.example.com",
@@ -643,8 +645,8 @@ func TestMSBRunArgs(t *testing.T) {
 		t.Error("--no-net also blocks the published port")
 	}
 	// No network entries: no DNS, no allow rules, egress stays denied.
-	bare := strings.Join(msbRunArgs("n", 1, "/l", "/d", &pluginMCPSpec{Image: "alpine", Command: []string{"x"}}), " ")
-	if strings.Contains(bare, "allow@") || !strings.Contains(bare, "--net-default-egress deny") {
+	bare := strings.Join(msbRunArgs("n", 1, "/l", "/d", "", &pluginMCPSpec{Image: "alpine", Command: []string{"x"}}), " ")
+	if strings.Contains(bare, "allow@") || !strings.Contains(bare, "--net-default-egress deny") || strings.Contains(bare, "/data") {
 		t.Errorf("bare args = %s", bare)
 	}
 }

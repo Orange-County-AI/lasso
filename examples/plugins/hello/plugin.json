@@ -2,6 +2,7 @@
   "name": "hello",
   "version": "0.1.0",
   "description": "Example plugin: a sidebar tab and one MCP tool (greet), sandboxed",
+  "min_lasso_version": "3.6.0",
   "tabs": [
     { "id": "main", "label": "Hello", "icon": "sparkles", "entry": "ui/index.html" }
   ],

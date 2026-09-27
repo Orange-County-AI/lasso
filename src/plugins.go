@@ -101,6 +101,11 @@ type pluginManifest struct {
 	// (pluginappearance.go).
 	Themes []pluginThemeSpec `json:"themes"`
 	Fonts  []pluginFontSpec  `json:"fonts"`
+	// MinLassoVersion and Platforms say where the plugin can run at all. A
+	// plugin that cannot is listed invalid with the reason; neither is part of
+	// the fingerprint (they grant nothing).
+	MinLassoVersion string   `json:"min_lasso_version"`
+	Platforms       []string `json:"platforms"`
 
 	// themeSig digests the files the themes are read from, so an in-place
 	// palette edit rebuilds the registry (pluginManager.syncThemes). Set by
@@ -194,8 +199,14 @@ func (m *pluginManifest) validate(dirName string) error {
 	if !pluginNameRE.MatchString(m.Name) {
 		return fmt.Errorf("name %q must match %s", m.Name, pluginNameRE)
 	}
-	if m.Name != dirName {
+	// An empty dirName is a manifest read before it has a directory of its own
+	// name (a staged install, a linked checkout): its name is what it will be
+	// keyed by, so there is nothing to compare it with yet.
+	if dirName != "" && m.Name != dirName {
 		return fmt.Errorf("name %q does not match its directory %q", m.Name, dirName)
+	}
+	if err := m.validateRuntime(); err != nil {
+		return err
 	}
 	if len(m.Tabs) > 16 {
 		return fmt.Errorf("at most 16 tabs (has %d)", len(m.Tabs))
@@ -519,6 +530,9 @@ type pluginEntry struct {
 	Man  *pluginManifest // nil when invalid
 	Err  string
 	FP   string
+	// Src is how it got here: a GitHub install, a linked checkout, or (no
+	// record) a hand-placed directory. plugininstall.go.
+	Src pluginSource
 }
 
 func (e *pluginEntry) state(g pluginGrant) string {
@@ -592,6 +606,22 @@ type pluginManager struct {
 
 	themeMu  sync.Mutex // serializes syncThemes
 	themeSig string     // digest of the contributed themes the registry was last built from
+
+	// dataRoot holds each plugin's writable data directory (<lassoDir>/plugin-data).
+	dataRoot string
+	// held names plugins whose directory is being swapped or removed
+	// (update/uninstall): reconcile treats them as not wanted, so a rescan
+	// landing mid-swap cannot restart a server on a half-moved directory.
+	held map[string]bool
+	// logs is each plugin's ring of recent host-child stderr lines, kept across
+	// restarts of its server (GET /api/plugins/<name>/log for a trusted one).
+	logs map[string]*lineRing
+	// staged are install/update previews waiting for a confirm (plugininstall.go).
+	stageMu sync.Mutex
+	staged  map[string]*pluginStage
+	// installMu serializes the operations that move directories and records:
+	// confirm, link, unlink, uninstall, update.
+	installMu sync.Mutex
 }
 
 // plugins is the process-wide manager main wires up; nil reads as "no plugins".
@@ -599,12 +629,16 @@ var plugins *pluginManager
 
 func newPluginManager(dir string, server func() *mcp.Server) *pluginManager {
 	return &pluginManager{
-		dir:     dir,
-		server:  server,
-		runner:  defaultPluginRunner,
-		ctx:     context.Background(),
-		entries: map[string]*pluginEntry{},
-		servers: map[string]*pluginServer{},
+		dir:      dir,
+		dataRoot: filepath.Join(filepath.Dir(dir), "plugin-data"),
+		server:   server,
+		runner:   defaultPluginRunner,
+		ctx:      context.Background(),
+		entries:  map[string]*pluginEntry{},
+		servers:  map[string]*pluginServer{},
+		held:     map[string]bool{},
+		logs:     map[string]*lineRing{},
+		staged:   map[string]*pluginStage{},
 	}
 }
 
@@ -621,6 +655,9 @@ func (m *pluginManager) run(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
+	// A staging directory left by a previous process belongs to no preview
+	// anyone can confirm any more.
+	m.sweepStaging(true)
 	m.rescan()
 	t := time.NewTicker(pluginRescanEvery)
 	defer t.Stop()
@@ -629,6 +666,7 @@ func (m *pluginManager) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			m.sweepStaging(false)
 			m.rescan()
 		}
 	}
@@ -637,7 +675,7 @@ func (m *pluginManager) run(ctx context.Context) {
 // rescan re-reads the directory and brings the running servers in line with
 // it, reporting (and announcing) whether the listing changed.
 func (m *pluginManager) rescan() bool {
-	entries := scanPlugins(m.dir)
+	entries := m.scan()
 	m.mu.Lock()
 	m.entries = entries
 	m.mu.Unlock()
@@ -679,7 +717,7 @@ func (m *pluginManager) reconcile() {
 	want := map[string]bool{}
 	for name, e := range m.entries {
 		g := grants[name]
-		if e.state(g) != pluginStateEnabled || e.Man.MCP == nil {
+		if e.state(g) != pluginStateEnabled || e.Man.MCP == nil || m.held[name] {
 			continue
 		}
 		want[name] = true
@@ -690,6 +728,8 @@ func (m *pluginManager) reconcile() {
 			stop = append(stop, s)
 		}
 		s := newPluginServer(e, g.Trusted, m.server, m.runner(g.Trusted), m.changed)
+		s.dataDir = m.dataDir(name)
+		s.ring = m.logRingLocked(name)
 		m.servers[name] = s
 		start = append(start, s)
 	}
@@ -867,6 +907,10 @@ type pluginPayload struct {
 	// Warnings are problems that do not invalidate the plugin — a theme whose
 	// key is taken, and so skipped — shown in Settings beside it.
 	Warnings []string `json:"warnings"`
+	// Source is how the plugin was installed (github / linked / local), and
+	// DataDir its one writable directory (created on its server's first start).
+	Source  pluginSourceOut `json:"source"`
+	DataDir string          `json:"data_dir"`
 }
 
 type pluginTabOut struct {
@@ -940,6 +984,8 @@ func (m *pluginManager) listing() pluginsPayload {
 			Themes:      []pluginThemeOut{},
 			Fonts:       []pluginFontOut{},
 			Warnings:    []string{},
+			Source:      e.Src.out(),
+			DataDir:     m.dataDir(e.Name),
 		}
 		if e.Man != nil {
 			p.Version, p.Description = e.Man.Version, e.Man.Description
@@ -989,6 +1035,9 @@ func (m *pluginManager) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		m.rescan()
 		writeJSON(w, m.listing())
+		return
+	}
+	if m.serveInstallAPI(w, r, rest) {
 		return
 	}
 	if r.Method != http.MethodPost {
