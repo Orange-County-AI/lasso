@@ -518,7 +518,7 @@ same backdrop, and a pick in one repaints the others within a beat, with no
 reload. Switching palette restores each theme's own choices. A theme nobody has
 dressed yet defaults to shading on and 70% dimming — Retro 82 additionally to
 its Dusk Guardian still, the brand themes to their own site art (Execution
-Associates' Sunset Neon key art, Orange County AI's pier), every other theme to no
+Associates' golden-hour coast, Orange County AI's pier), every other theme to no
 image. Resetting dimming
 affects only the displayed theme. Choices made before this moved server-side
 stayed in the browser that made them and are not imported: pick the backdrop

@@ -64,7 +64,7 @@ const (
 // starts flat, so an absent entry there means a flat canvas.
 var bundledDefaultBackground = map[string]string{
 	"retro-82":             "/wallpapers/retro-82/04-dusk-guardian.webp",
-	"execution-associates": "/wallpapers/execution-associates/01-key-art.webp",
+	"execution-associates": "/wallpapers/execution-associates/01-golden-hour.webp",
 	"ocai":                 "/wallpapers/ocai/01-pier.webp",
 }
 

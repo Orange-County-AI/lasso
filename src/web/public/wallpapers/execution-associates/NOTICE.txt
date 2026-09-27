@@ -1,11 +1,7 @@
 Execution Associates wallpapers — first-party brand art
 ================================================================
 
-Source : 01 from the brand site (design.execution.associates), checkout
-         ~/projects/execution-associates/design-iteration @ c81fe32, site/img/
-         — the "Sunset Neon" key art, the brand's reference image and the one
-         with the EXA logo in it.
-         02-03 from the Execution Associates site (beta.executionassociates.com),
+Source : the Execution Associates site (beta.executionassociates.com),
          checkout ~/projects/execution-associates/beta @ dc3a79a,
          site/assets/plates/
 Owner  : Execution Associates; vendored at the owner's request as the
@@ -13,9 +9,8 @@ Owner  : Execution Associates; vendored at the owner's request as the
 
 FILE MAPPING (original -> vendored output)
 --------------------------------------------------
-01-key-art     "Key Art"       <- neon-keyart.png (1672x941)
-02-golden-hour "Golden Hour"   <- day-full.webp   (2352x1008)
-03-night       "Night"         <- night.webp      (2352x1008)
+01-golden-hour "Golden Hour"   <- day-full.webp (2352x1008)
+02-night       "Night"         <- night.webp    (2352x1008)
 
 TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
   Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \
