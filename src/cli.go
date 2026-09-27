@@ -29,6 +29,7 @@ import (
 //	lasso doctor          check the local install (herdr, socket, port, version)
 //	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
 //	lasso notify          push a notification to the human (the `notify` MCP tool)
+//	lasso open            show a file in the human's sidebar viewer (the `open_file` MCP tool)
 //	lasso mcp             call any of lasso's MCP tools from a shell
 //	lasso connect         register lasso's MCP servers with this machine's agent CLIs
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
@@ -76,6 +77,9 @@ func main() {
 			return
 		case "notify":
 			cliNotify(os.Args[2:])
+			return
+		case "open":
+			cliOpen(os.Args[2:])
 			return
 		case "mcp":
 			cliMCP(os.Args[2:])
@@ -125,6 +129,7 @@ usage:
   lasso doctor             check the local install
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
   lasso notify <message>   push a notification to the human running lasso
+  lasso open <path>        show a file in the human's lasso sidebar file viewer
   lasso mcp [tool] [flags] call lasso's MCP tools (no tool = list them)
   lasso connect [flags]    register lasso's MCP servers with this machine's agent CLIs
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)

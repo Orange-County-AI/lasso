@@ -150,7 +150,9 @@ navigation, with one file's hunks expanded:
 A real tree with a markdown/code/image viewer and an editor that saves back.
 It follows the focused pane's directory until you type a path, then it stays
 put. Reads and writes go to **that pane's host**, so editing a remote agent's
-file doesn't silently save to the wrong machine.
+file doesn't silently save to the wrong machine. Ask an agent to "open it for
+me" and it can put the doc it just wrote right here (`lasso open <path>` / the
+`open_file` MCP tool).
 
 <img src="docs/screenshots/files.png" alt="the Files pane browsing a repository" width="620">
 
@@ -220,6 +222,7 @@ The binary is both the server and its own control surface:
 | `lasso doctor` | check herdr, the socket, the port, and the version |
 | `lasso version` | print the version |
 | `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
+| `lasso open <path> [-line n] [-host h]` | open a file in the human's sidebar file viewer, in every visible lasso tab (the `open_file` MCP tool) — for agents; exits non-zero when no tab is open |
 | `lasso mcp [tool] [flags]` | call lasso's MCP tools from a shell; no tool lists them, `<tool> -h` shows its flags |
 | `lasso connect` | register lasso's two MCP servers (`lasso`, `lasso-browser`) with the agent CLIs on this machine; `-url` for another machine, `-remove` to undo, `-dry-run` to preview |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
@@ -259,7 +262,8 @@ stored on the server, so every browser on the same lasso agrees.
 lasso exposes an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
 agent can spawn, list, inspect and close **other** agents — across every host
 lasso can reach. `create_agent`, `list_agents`, `get_agent`, `close_agent`,
-`list_hosts`, `whoami`, `notify`, and `shared_browser` (see
+`list_hosts`, `whoami`, `notify`, `open_file` (show the human a file in the
+sidebar viewer), and `shared_browser` (see
 [Shared browser](#shared-browser)).
 
 ```bash

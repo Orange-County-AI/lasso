@@ -48,6 +48,7 @@ import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
+import { onRevealFiles } from "@/lib/open-file"
 import { restoreHost } from "@/lib/pane-focus"
 import {
   markSidebarIntent,
@@ -354,6 +355,21 @@ function Shell() {
       onSidebarBrowserOpen(() => {
         setRightView("browser")
         openSidebar()
+      }),
+    [openSidebar]
+  )
+
+  // An agent opened a file for the human (lib/open-file.ts): show the Files
+  // tab, and open the sidebar if it is collapsed. Through openSidebar, which
+  // stamps intent like ⌘\ — the human asked the agent to show them this, so
+  // it is their layout change and must win the synced-layout claim rather than
+  // be refused as an unattended echo. An already-open sidebar is left at the
+  // width it has.
+  React.useEffect(
+    () =>
+      onRevealFiles(() => {
+        setRightView("files")
+        if (rightPanel.current?.isCollapsed()) openSidebar()
       }),
     [openSidebar]
   )

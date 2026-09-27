@@ -217,7 +217,7 @@ func toolErrorText(res *mcp.CallToolResult) string {
 		}
 	}
 	if b.Len() == 0 {
-		return "the notify tool failed without saying why"
+		return "the tool failed without saying why"
 	}
 	return b.String()
 }

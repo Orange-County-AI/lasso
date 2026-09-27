@@ -1,4 +1,5 @@
 import * as React from "react"
+import { toast } from "sonner"
 import { DiffTab } from "@/components/DiffTab"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { FileViewer } from "@/components/FileViewer"
@@ -10,13 +11,26 @@ import {
 import { Orb } from "@/components/ui/orb"
 import { useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
+import {
+  baseName,
+  type OpenFileRequest,
+  onOpenFileRequest,
+  revealFiles,
+} from "@/lib/open-file"
 import { usePaneFocusPending } from "@/lib/pane-focus"
 import { cn } from "@/lib/utils"
 
 type SubView = "files" | "diff"
 
-// The file the viewer has open, and the host it was opened on.
-type ViewerTarget = { path: string; host: string | null }
+// The file the viewer has open, and the host it was opened on. `line` and
+// `seq` are set only by an agent's open_file: the line to scroll to, and a
+// counter so the same line asked for twice still re-scrolls.
+type ViewerTarget = {
+  path: string
+  host: string | null
+  line?: number | null
+  seq?: number
+}
 
 // Per-pane state is kept only for the panes actually browsed, and capped so a
 // long session across many agents can't grow without bound. Least-recently
@@ -86,6 +100,9 @@ export function FilesPanel() {
   // editor is actually dirty, and dropping one loses real work.
   const drafts = React.useRef(new Map<string, { path: string; text: string }>())
   const openPath = viewer?.path ?? null
+  // Bumped to remount the Files tab onto a state written from outside — an
+  // agent opening a directory re-roots the tree there (see openRequested).
+  const [tabGen, setTabGen] = React.useState(0)
 
   const saveTabState = React.useCallback(
     (s: FilesTabState) => remember(tabStates.current, pane, s),
@@ -139,6 +156,73 @@ export function FilesPanel() {
 
   const dirty = data?.dirty ?? 0
 
+  // An agent asked to show the human a file (lib/open-file.ts — already gated
+  // on this tab being visible). It lands in the CURRENT pane's slot, like a
+  // click in the tree would. What it must never do is throw away unsaved
+  // edits: when the open editor is dirty and the request would replace it, the
+  // human gets a toast offering to open it instead, and taking that offer goes
+  // through the same discard confirmation the viewer's close button asks.
+  // Re-opening the file already on screen replaces nothing, so it just scrolls.
+  // Read through a ref so the subscription below is made once, yet always acts
+  // on the pane and viewer showing at the moment the event (or the toast's
+  // Open) arrives.
+  const openRequested = React.useRef<
+    (req: OpenFileRequest, offered?: boolean) => void
+  >(() => {})
+  openRequested.current = (req, offered = false) => {
+    const current = viewers.get(pane) ?? null
+    const same =
+      current != null &&
+      current.path === req.path &&
+      (current.host ?? null) === req.host
+    // A directory shows the tree, which means closing any open viewer.
+    const replaces = req.dir ? current != null : current != null && !same
+    const unsaved = replaces && drafts.current.has(pane)
+    const name = baseName(req.path)
+    if (unsaved && !offered) {
+      toast.info(`${req.from} wants to open ${name}`, {
+        id: `open-file:${req.path}`,
+        description: "You have unsaved changes open, so it was not replaced.",
+        duration: 20000,
+        action: {
+          label: "Open",
+          onClick: () => openRequested.current(req, true),
+        },
+      })
+      return
+    }
+    if (unsaved && !window.confirm("Discard unsaved changes?")) return
+    setSub("files")
+    revealFiles()
+    if (req.dir) {
+      // Rooted where the agent pointed and NOT following the focused pane —
+      // the same frozen state a human navigating there by hand leaves, or the
+      // follow effect would snap it straight back to the pane's cwd.
+      remember(tabStates.current, pane, {
+        path: req.path,
+        host: req.host,
+        follow: false,
+        pathValue: req.path,
+        expanded: [],
+      })
+      setTabGen((g) => g + 1)
+      setViewer(null)
+    } else {
+      if (replaces) drafts.current.delete(pane)
+      setViewer({
+        path: req.path,
+        host: req.host,
+        line: req.line ?? null,
+        seq: req.seq,
+      })
+    }
+    toast.info(`${req.from} opened ${name}`, { description: req.path })
+  }
+  React.useEffect(
+    () => onOpenFileRequest((req) => openRequested.current(req)),
+    []
+  )
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-none items-center gap-1 border-border border-b bg-background px-2 py-1">
@@ -168,7 +252,7 @@ export function FilesPanel() {
           )}
         >
           <FilesTab
-            key={pane}
+            key={`${pane}\u0000${tabGen}`}
             viewerPath={viewer?.path ?? null}
             onOpenFile={(path, host) => setViewer({ path, host })}
             changes={changes}
@@ -233,6 +317,8 @@ export function FilesPanel() {
               key={pane}
               path={viewer.path}
               host={viewer.host}
+              line={viewer.line ?? null}
+              lineSeq={viewer.seq ?? 0}
               initialDraft={initialDraft}
               onDraftChange={saveDraft}
               onClose={() => setViewer(null)}

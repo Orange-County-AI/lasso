@@ -2513,13 +2513,20 @@ type hub struct {
 	// poll would otherwise log the same line every couple of seconds.
 	strayTheme string
 	feeds      map[string]*hostFeed
-	// noticeClients is every connected tab, subscribed to one-shot notices. Kept
-	// as its own channel per client rather than folded into Active because a
-	// notice is an EVENT, not state: Active is snapshot-replaced on every poll
-	// and re-sent on connect, which would replay (or silently drop) a toast
-	// instead of delivering it exactly once. Global, not per feed: a notice is
-	// about lasso, not about a host.
-	noticeClients map[chan notice]struct{}
+	// eventClients is every connected tab, subscribed to one-shot events — a
+	// notice, an agent's open_file. Kept as its own channel per client rather
+	// than folded into Active because these are EVENTS, not state: Active is
+	// snapshot-replaced on every poll and re-sent on connect, which would replay
+	// (or silently drop) a toast instead of delivering it exactly once. Global,
+	// not per feed: both are about lasso, not about a host.
+	eventClients map[chan sseEvent]struct{}
+}
+
+// sseEvent is one named, one-shot SSE event: `name` becomes the stream's
+// `event:` line and data is marshalled as its JSON payload.
+type sseEvent struct {
+	name string
+	data any
 }
 
 // newHub seeds the hub's theme with the one resolved at startup, so the first
@@ -2528,10 +2535,10 @@ func newHub() *hub {
 	return &hub{
 		// Replaced by run(). Seeded so a hub built outside main — a test, a CLI
 		// path — can start feeds without a nil parent context.
-		rootCtx:       context.Background(),
-		curTheme:      theme,
-		feeds:         map[string]*hostFeed{},
-		noticeClients: map[chan notice]struct{}{},
+		rootCtx:      context.Background(),
+		curTheme:     theme,
+		feeds:        map[string]*hostFeed{},
+		eventClients: map[chan sseEvent]struct{}{},
 	}
 }
 
@@ -2543,20 +2550,42 @@ func (h *hub) revs() (themeRev, uiStateRev int) {
 }
 
 // notify fans a notice out to every connected tab, whatever host it is on.
-// Non-blocking per client (a stalled reader drops the toast rather than wedging
-// the caller), matching how state frames are pushed.
-func (h *hub) notify(n notice) {
+func (h *hub) notify(n notice) { h.broadcast("notice", n) }
+
+// broadcast fans a one-shot event out to every connected tab, whatever host it
+// is on, and reports how many tabs it was handed to. Non-blocking per client (a
+// stalled reader drops the event rather than wedging the caller), matching how
+// state frames are pushed — which is also why the count is of tabs that TOOK
+// it, not of tabs connected: a dropped event was not delivered.
+func (h *hub) broadcast(name string, data any) int {
 	h.mu.RLock()
-	clients := make([]chan notice, 0, len(h.noticeClients))
-	for c := range h.noticeClients {
+	clients := make([]chan sseEvent, 0, len(h.eventClients))
+	for c := range h.eventClients {
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()
+	ev, n := sseEvent{name: name, data: data}, 0
 	for _, c := range clients {
 		select {
-		case c <- n:
+		case c <- ev:
+			n++
 		default:
 		}
+	}
+	return n
+}
+
+// subscribeEvents registers one tab for the one-shot events; the returned func
+// unregisters it. serveSSE holds one for the life of each stream.
+func (h *hub) subscribeEvents() (chan sseEvent, func()) {
+	ch := make(chan sseEvent, 8)
+	h.mu.Lock()
+	h.eventClients[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.eventClients, ch)
+		h.mu.Unlock()
 	}
 }
 
@@ -2698,7 +2727,7 @@ func (h *hub) refreshTheme() {
 
 // serveSSE streams one tab's state. The tab names its host (?host=, since an
 // EventSource cannot set a header), and the stream carries THAT host's frames
-// plus the global notices — so two tabs on two machines each get their own
+// plus the global one-shot events — so two tabs on two machines each get their own
 // machine's panes over their own subscription.
 func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
@@ -2730,24 +2759,17 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	nch := make(chan notice, 8)
-	h.mu.Lock()
-	h.noticeClients[nch] = struct{}{}
-	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.noticeClients, nch)
-		h.mu.Unlock()
-	}()
+	nch, unsubscribe := h.subscribeEvents()
+	defer unsubscribe()
 
 	send := func(a Active) {
 		b, _ := json.Marshal(a)
 		fmt.Fprintf(w, "event: active\ndata: %s\n\n", b)
 		fl.Flush()
 	}
-	sendNotice := func(n notice) {
-		b, _ := json.Marshal(n)
-		fmt.Fprintf(w, "event: notice\ndata: %s\n\n", b)
+	sendEvent := func(ev sseEvent) {
+		b, _ := json.Marshal(ev.data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.name, b)
 		fl.Flush()
 	}
 	send(f.snapshot()) // prime with current state
@@ -2764,8 +2786,8 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case a := <-ch:
 			send(a)
-		case n := <-nch:
-			sendNotice(n)
+		case ev := <-nch:
+			sendEvent(ev)
 		case <-keep.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			fl.Flush()

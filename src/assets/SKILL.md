@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), and driving the shared browser the human watches live in lasso's Browser tab (the lasso-browser MCP server at /browser-mcp; shared_browser / `lasso mcp shared-browser` to find it; Playwright over CDP).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), showing your human a file in lasso's sidebar viewer (open_file / `lasso open <path>`), and driving the shared browser the human watches live in lasso's Browser tab (the lasso-browser MCP server at /browser-mcp; shared_browser / `lasso mcp shared-browser` to find it; Playwright over CDP).
 ---
 
 # lasso
@@ -23,6 +23,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `list_branches` | List branches for a repo |
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
+> | `open_file`     | Open a file in the human's lasso sidebar file viewer |
 > | `shared_browser`| Start the shared Chromium the human watches live; get its browser MCP URL and CDP endpoint |
 >
 > **Lasso does not talk to agents.** To prompt another agent, read its screen,
@@ -140,6 +141,33 @@ The **`notify`** MCP tool is the same call — pass `message` and your
 `$HERDR_PANE_ID` as `pane_id`. Use the CLI unless you're already in an MCP
 round trip; use the tool when you want the structured `sent` / `transports`
 reply.
+
+## Showing the human a file
+
+When the human asks to *see* something you wrote — "open it for me", "show me
+the plan" — or you want them to review a specific file, put it on their screen
+instead of pasting a path:
+
+```bash
+lasso open docs/design.md            # relative is fine: resolved against your cwd
+lasso open src/auth.go -line 120     # scroll to (and select) a line
+```
+
+It opens in lasso's right-sidebar **Files** viewer, in every lasso tab they
+have visible; a directory opens the file tree there instead.
+
+- **The file must exist** — write it first; a missing path is an error.
+- **Check the outcome.** It exits **non-zero** when no lasso tab is open —
+  nobody saw it, so don't say it's on their screen. (MCP: `delivered` is `0`.)
+- A hidden tab ignores it, and an editor holding their unsaved edits is never
+  replaced — they get a prompt offering to open yours instead.
+- On a remote fleet box without a per-host credential, pass `-host <alias>`:
+  otherwise the path is looked for on lasso's own machine.
+
+The **`open_file`** MCP tool is the same call — an **absolute** `path` (or
+`~/…`; relative paths are refused, the server can't see your cwd), optional
+`line`, and your `$HERDR_PANE_ID` as `pane_id` so the human is told who opened
+it. `host` defaults to your own host.
 
 ## The shared browser
 
