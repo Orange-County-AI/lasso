@@ -12,14 +12,17 @@ import (
 // session — typically a Claude Code session running inside herdr via lasso, or
 // Claude desktop/mobile reaching the HTTP endpoint — orchestrate OTHER lasso
 // agents: spawn them (in their own worktree/workspace, off a chosen base
-// branch), then converse with them statefully through their herdr pane.
+// branch), list and inspect them, and close them. Conversing with an agent —
+// prompting it, reading its screen, waiting on it — is deliberately NOT here:
+// that is herdr's job (`herdr agent prompt/read/wait`), and a second way to do
+// it only taught agents to reach for lasso when herdr was the right tool.
 //
 // Every tool reuses the same machinery the React UI drives (createAgent,
-// hostBackend, listAgents, paneRun, pane.read, …). Tools take an optional
+// hostBackend, listAgents, paneRun, …). Tools take an optional
 // `host` and resolve it through hostBackend, so a session can drive agents
 // on any reachable host without disturbing the UI's active host.
 //
-// That reach is bounded: an agent sees and talks to agents on its own box or on
+// That reach is bounded: an agent sees and manages agents on its own box or on
 // a host with an alias in lasso's ssh config, and nowhere else. hostscope.go
 // holds the rule and the reasons; every tool that answers a host-scoped question
 // from the agents db runs it first.
@@ -35,10 +38,9 @@ const mcpInstructions = `Lasso orchestrates coding agents in herdr panes: spawn 
 
 notify pushes a notification to the HUMAN who runs this lasso (their phone, if lasso is on its home screen). Use it only when you need them — a decision, a blocking question, a long job finishing while they are away — and check the reply's "sent": false means nobody received it.
 
-send_agent types into the pane immediately and can interleave with an in-flight turn, so use it to drive an agent you just spawned.
-message_agent queues in lasso and delivers when the recipient is idle, so it never interleaves.
+Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, list_agents, get_agent, notify, and shared_browser (a Chromium the human watches live in lasso's Browser tab: it answers the browser MCP URL, /browser-mcp, that gives you chrome-devtools-mcp's tools against it, and the raw CDP endpoint).
 
-Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, get_agent, read_agent, send_agent, message_agent, wait_agent, and notify.
+Lasso does not talk to agents. To prompt another agent, read its screen, or wait for it to finish, use herdr directly (herdr agent prompt / read / wait, or the herdr skill); a Claude Code session can also use its own native agent messaging.
 
 Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.`
 
@@ -84,8 +86,8 @@ var resolveBackend = func(host string) (Backend, error) {
 	return hostBackend(host)
 }
 
-// findAgentRecord looks up an agent created on host by its lasso id, so the
-// interaction tools can recover its root pane (the herdr pane the agent runs in)
+// findAgentRecord looks up an agent created on host by its lasso id, so a
+// caller (closeme) can recover its root pane (the herdr pane the agent runs in)
 // from the persisted record.
 func findAgentRecord(host, id string) (AgentRecord, error) {
 	if host == "" {

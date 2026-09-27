@@ -331,7 +331,7 @@ type createAgentReq struct {
 	Type string `json:"type"` // "git" | "scratch"
 	// Prompt is the agent's initial instruction, and its first line is the
 	// title. Optional: an agent created with no prompt boots its CLI idle,
-	// waiting for whoever opens the pane (or a send_agent).
+	// waiting for whoever opens the pane (or a `herdr agent prompt`).
 	Prompt string `json:"prompt"`
 	// Title is an optional explicit override; it defaults to the prompt's first
 	// line, and to untitledAgent when there is no prompt to take one from.
@@ -1218,9 +1218,9 @@ func waitPaneReady(b Backend, paneID string) {
 // readline/zsh/fish, a no-op on an empty line) discards whatever is already
 // pending on the line: the pane is focused in the UI for a boot window that can
 // run 20+ seconds, and a keystroke typed into it would otherwise concatenate
-// with our command and execute as one mangled line. For submitting to an
-// interactive agent TUI use paneSubmit instead — no ^U there, since the TUIs
-// read raw and it would edit their composer rather than clear a shell line.
+// with our command and execute as one mangled line. Never use this to submit
+// to an interactive agent TUI (chatSubmit does that, with no ^U): the TUIs read
+// raw and ^U would edit their composer rather than clear a shell line.
 // Returns the herdr RPC error so the caller (launchAgentInPane) can tell a boot
 // that never reached the pane from one that did.
 func paneRun(b Backend, paneID, command string) error {
@@ -1231,49 +1231,8 @@ func paneRun(b Backend, paneID, command string) error {
 	return err
 }
 
-// paneSubmit types text into an interactive agent's pane and submits it as a
-// turn. The caller supplies agentKind from herdr's agent metadata so compositor
-// reads use the matching harness geometry.
-//
-// The text and Enter must be separate PTY writes: raw-mode TUIs treat a newline
-// appended to bracketed paste as input, not an Enter key. After the paste lands,
-// Enter is retried until the shared detector observes an empty composer; this
-// handles a busy TUI applying the paste after its first Enter. It returns false
-// without sending bytes when a positive composer-draft read catches a human's
-// unsent input between the caller's guard and this submission.
-func paneSubmit(b Backend, paneID, agentKind, text string) bool {
-	if composerGuardEnabled() && paneComposerState(b, paneID, agentKind) == ComposerDraft {
-		return false
-	}
-	_, _ = b.HerdrCall("pane.send_text", map[string]any{
-		"pane_id": paneID,
-		"text":    text,
-	})
-	// Wait for the paste to land in the composer before pressing Enter, so we
-	// don't submit an empty box. If we never see it (read failures, an unfamiliar
-	// composer), fall through and try Enter anyway rather than dropping the turn.
-	commit := time.Now().Add(3 * time.Second)
-	for time.Now().Before(commit) {
-		time.Sleep(150 * time.Millisecond)
-		if !paneInputEmpty(b, paneID, agentKind) {
-			break
-		}
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, _ = b.HerdrCall("pane.send_text", map[string]any{
-			"pane_id": paneID,
-			"text":    "\r",
-		})
-		time.Sleep(300 * time.Millisecond)
-		if paneInputEmpty(b, paneID, agentKind) || time.Now().After(deadline) {
-			return true
-		}
-	}
-}
-
 // paneComposerState reads only the pane's visible screen. A failed read remains
-// unknown so callers fail open rather than starving a durable message queue.
+// unknown so callers fail open rather than refusing on a screen they can't parse.
 func paneComposerState(b Backend, paneID, agentKind string) ComposerState {
 	// Codex's composer is only legible with its attributes: an empty one shows
 	// a dim placeholder that plain text cannot tell from a draft.
@@ -1292,8 +1251,8 @@ func paneComposerState(b Backend, paneID, agentKind string) ComposerState {
 }
 
 // paneInputEmpty reports whether the shared detector positively recognizes an
-// empty composer. Unknown deliberately remains false: paneSubmit then tries an
-// extra Enter rather than treating an unparsed screen as a submitted turn.
+// empty composer. Unknown deliberately remains false, so an unparsed screen is
+// never read as a submitted turn.
 func paneInputEmpty(b Backend, paneID, agentKind string) bool {
 	return paneComposerState(b, paneID, agentKind) == ComposerEmpty
 }

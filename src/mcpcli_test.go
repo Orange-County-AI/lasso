@@ -39,6 +39,13 @@ func TestMCPCLIListsTheServedTools(t *testing.T) {
 			t.Errorf("tool %q missing from the listing", want)
 		}
 	}
+	// Talking to agents is herdr's job, not lasso's: these were removed because
+	// agents reached for them instead of herdr, and must not come back.
+	for _, gone := range []string{"send_agent", "message_agent", "read_agent", "wait_agent"} {
+		if findMCPTool(tools, gone) != nil {
+			t.Errorf("tool %q is registered again; prompting, reading and waiting on agents belong to herdr", gone)
+		}
+	}
 	// Sorted, so the listing doesn't follow registration order.
 	for i := 1; i < len(tools); i++ {
 		if tools[i-1].Name > tools[i].Name {
@@ -344,7 +351,7 @@ func TestMCPCLIDoesNotDoubleReportParseErrors(t *testing.T) {
 }
 
 // A blocking tool's own timeout has to outrank the CLI's transport deadline:
-// wait_agent asked to wait three minutes, cut off at two, reports a bare
+// a tool asked to wait three minutes, cut off at two, reports a bare
 // "context deadline exceeded" for a call that was going fine.
 func TestMCPCLIExtendsTheDeadlineForABlockingTool(t *testing.T) {
 	cases := []struct {

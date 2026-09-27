@@ -1926,12 +1926,9 @@ var (
 // transcript and must not be able to deliver into whatever pane a TUI happened
 // to be showing, which a focus-following keystroke cannot promise.
 //
-// Deliberately not paneSubmit (agents_create.go) even though the gestures are
-// the same. That one answers "did the bytes get handed off", discards both RPC
-// errors and returns true when its deadline expires — correct for a durable
-// message queue, which re-delivers anyway, and wrong here, where the answer
-// decides whether a human's draft is cleared or a turn is silently lost. The
-// two share the composer reader; only the reporting differs.
+// It must not report "handed off" as "delivered", discard an RPC error, or read
+// an expired deadline as success: the answer decides whether a human's draft
+// is cleared or a turn is silently lost.
 func chatSubmit(b Backend, paneID, agentKind, text string) (chatSendResult, string) {
 	if composerGuardEnabled() && paneComposerState(b, paneID, agentKind) == ComposerDraft {
 		return chatRefused, "that pane has unsent input — send the draft or clear it first"

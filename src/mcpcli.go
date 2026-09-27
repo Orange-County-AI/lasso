@@ -48,8 +48,8 @@ var errFlagReported = errors.New("flag error already reported")
 
 // mcpCLITimeout bounds the whole round trip: connect, initialize, list, call.
 // Above notifyCLITimeout because the tools it now reaches include the slow ones
-// on purpose — wait_agent blocks until an agent goes idle, and create_agent
-// waits on a worktree and an ssh hop. -timeout overrides it.
+// on purpose — create_agent waits on a worktree and an ssh hop. -timeout
+// overrides it.
 const mcpCLITimeout = 120 * time.Second
 
 // mcpCallSlack is what a tool's own timeout is padded by, to cover the round
@@ -186,11 +186,11 @@ func cliMCP(args []string) {
 		os.Exit(2)
 	}
 
-	// wait_agent blocks for as long as its own timeout_ms says, and create_agent
-	// waits on a worktree and an ssh hop. Letting the CLI's transport deadline
-	// expire under a tool that was asked to wait longer reports a bare "context
-	// deadline exceeded" for a call that was going fine — so the argument raises
-	// the deadline when it exceeds it. It only ever extends.
+	// A tool that takes its own timeout argument blocks for as long as that
+	// says. Letting the CLI's transport deadline expire under a tool that was
+	// asked to wait longer reports a bare "context deadline exceeded" for a call
+	// that was going fine — so the argument raises the deadline when it exceeds
+	// it. It only ever extends.
 	callTimeout := *timeout
 	if want := toolSelfTimeout(argv); want+mcpCallSlack > callTimeout {
 		callTimeout = want + mcpCallSlack

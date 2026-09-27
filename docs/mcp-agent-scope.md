@@ -5,7 +5,7 @@ live in `CLAUDE.md` under "Agent visibility scope"; this is how to run it.
 
 ## The model in one paragraph
 
-Two bounds decide which agents an MCP caller can see and message, and both
+Two bounds decide which agents an MCP caller can see and manage, and both
 apply. **What lasso can address** (`src/hostscope.go`) is the local box plus the
 concrete aliases in the ssh config lasso reads — membership comes from the
 config, never from the agents db, so a host whose alias was removed stops being
@@ -93,7 +93,7 @@ takes no human approval.
 ## Groups: reach between hosts
 
 `self` and `fleet` are the two ends. A **group** is the middle: a named set of
-hosts whose members may see and message each other, plus **directed grants**
+hosts whose members may see and manage each other's agents, plus **directed grants**
 between groups for the cases where reach should run one way only.
 
 The model, in the order it bites:
@@ -137,7 +137,7 @@ lasso mcp-group add norm-stack
 lasso mcp-group add-member norm-stack norm norm-darren
 ```
 
-`norm` and `norm-darren` now list and message each other's agents with their
+`norm` and `norm-darren` now list and manage each other's agents with their
 existing self-scoped credentials. titan (the lasso host, provisioned
 `--fleet`) saw both before and still does. **Nobody in norm-stack sees titan**:
 reach is mutual only among members, and titan is not one — a group is not a
@@ -164,6 +164,36 @@ One wrinkle, inherited from credential hosts: `local` is the literal name of
 the box lasso runs on, and if that box also has an ssh alias pointing at itself
 the alias is a **distinct member**. Adding one does not add the other. Pick the
 name the credential uses (`mcp-client list` shows it) and use that one.
+
+## The shared browser follows the same scope
+
+The `shared_browser` tool and the two endpoints it hands out — `/browser-mcp`
+(chrome-devtools-mcp's tools as an MCP server) and `/cdp` (see the README's
+"Shared browser") — drive a Chromium running on **lasso's own machine**, so all
+three require a caller whose reach includes `local`. A `self`-scoped credential
+for another host gets a tool error, and the same bearer token presented to
+`/browser-mcp` or `/cdp` directly is refused with 403 — the check is on the
+endpoint, not only in the tool. Fleet scope, or a group/grant that brings in
+`local`, opens it. `/browser-mcp` otherwise takes exactly what `/mcp` takes (a
+lasso bearer token, or the `UI_AUTH` basic credentials), so a host's existing
+credential works there unchanged:
+
+```bash
+claude mcp add --transport http --header "Authorization: Bearer <token>" \
+  lasso-browser https://lasso.example.com/browser-mcp
+```
+
+With `MCP_OAUTH` unset none of this applies: `/browser-mcp` and `/cdp` are open,
+or behind `UI_AUTH` basic when that is set. (That last case is stricter than
+`/mcp`, which stays open under `UI_AUTH` alone: `/browser-mcp` is a way into
+`/cdp`, so it takes `/cdp`'s rule.) lasso's own chrome-devtools-mcp processes
+reach `/cdp` with an internal per-process token, not with the caller's
+credential — the caller's credential and scope are checked on every request
+to `/browser-mcp`, which is the only door those processes open.
+
+Reaching `local` here is a bigger grant than it reads: the browser acts with
+whatever its profile is logged into, and `localhost` inside it is lasso's
+machine. Give it only to hosts you would let browse as you from there.
 
 ## Installing on a host
 

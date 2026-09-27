@@ -178,7 +178,7 @@ func findClaudeTranscript(b Backend, id, launchHint string, p pane) string {
 	if err != nil || home == "" {
 		return ""
 	}
-	root := filepath.Join(home, ".claude", "projects")
+	root := filepath.Join(claudeDir(home), "projects")
 	for _, dir := range []string{launchHint, p.Cwd, p.ForegroundCwd} {
 		if dir == "" {
 			continue

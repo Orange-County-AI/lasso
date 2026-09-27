@@ -176,39 +176,6 @@ func TestAgentInfoLassoCreatedFlag(t *testing.T) {
 	}
 }
 
-func TestSendAgentRefusesWhenComposerHasDraft(t *testing.T) {
-	openTestDB(t)
-	rec := AgentRecord{ID: "a1", Title: "clem", Agent: "claude", RootPane: "w1-1", CreatedAt: time.Now()}
-	if err := appendAgent("local", rec); err != nil {
-		t.Fatal(err)
-	}
-	b := &msgPaneBackend{memBackend: newMemBackend(), paneID: "w1-1", agent: "claude", status: "idle", drafted: true}
-	prevResolver := resolveBackend
-	resolveBackend = func(string) (Backend, error) { return b, nil }
-	t.Cleanup(func() { resolveBackend = prevResolver })
-	if got := paneComposerState(b, "w1-1", "claude"); got != ComposerDraft {
-		t.Fatalf("drafted fake state = %v, want draft", got)
-	}
-	target, targetBackend, targetErr := resolveAgentTarget("local", "a1")
-	if targetErr != nil || targetBackend != b || target.agentKind() != "claude" {
-		t.Fatalf("resolved target = %+v / %T / %v, want claude target on fake backend", target, targetBackend, targetErr)
-	}
-
-	_, out, err := sendAgentTool(nil, nil, sendAgentIn{AgentID: "a1", Text: "must not send"})
-	if err == nil {
-		t.Fatal("send_agent accepted a pane with unsent input")
-	}
-	if out.Sent {
-		t.Fatalf("send_agent result = %+v, want sent:false", out)
-	}
-	if !strings.Contains(err.Error(), "NOT delivered") || !strings.Contains(err.Error(), "message_agent") {
-		t.Fatalf("refusal = %q, want actionable queued-delivery guidance", err)
-	}
-	if len(b.sent) != 0 {
-		t.Fatalf("send_agent wrote to a drafted pane: %q", b.sent)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // create_agent: MCP input -> launch line
 // ---------------------------------------------------------------------------
@@ -413,33 +380,5 @@ func TestMCPCreateAgentPlanModeReachesOmpLaunchCommand(t *testing.T) {
 	// session on the box.
 	if strings.Contains(overlay, ".omp") {
 		t.Errorf("plan overlay must not live in the user's omp config dir: %s", overlay)
-	}
-}
-
-// The default wait has to answer "has it finished?" for every harness. herdr
-// publishes "done" for a pane whose agent finished a turn nobody has looked at
-// since, so exact-matching "idle" made the default unsatisfiable for exactly the
-// case it exists to serve: wait_agent after send_agent ran its full timeout and
-// reported matched:false about an agent that had answered seconds earlier.
-func TestWaitAgentIdleAcceptsDone(t *testing.T) {
-	if !statusSatisfies("idle", "done") {
-		t.Error(`waiting for "idle" must match "done" — it is idle wearing a badge`)
-	}
-	if !statusSatisfies("idle", "idle") {
-		t.Error(`"idle" must still match itself`)
-	}
-	// The asymmetry is deliberate: a caller asking for "done" wants the badge,
-	// and collapsing the pair both ways would make a never-worked agent read as
-	// one that had finished.
-	if statusSatisfies("done", "idle") {
-		t.Error(`waiting for "done" must not match a never-worked "idle"`)
-	}
-	for _, s := range []string{"working", "blocked", "unknown", ""} {
-		if statusSatisfies("idle", s) {
-			t.Errorf(`"idle" must not match %q`, s)
-		}
-	}
-	if !statusSatisfies("blocked", "blocked") || statusSatisfies("blocked", "working") {
-		t.Error("every other status stays an exact match")
 	}
 }

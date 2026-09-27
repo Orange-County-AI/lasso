@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your human's attention with a push notification (notify / `lasso notify`).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), showing your human a file in lasso's sidebar viewer (open_file / `lasso open <path>`), and driving the shared browser the human watches live in lasso's Browser tab (the lasso-browser MCP server at /browser-mcp; shared_browser / `lasso mcp shared-browser` to find it; Playwright over CDP).
 ---
 
 # lasso
@@ -15,9 +15,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | Tool | What it does |
 > | ---- | ------------ |
 > | `list_agents`   | List lasso agents |
-> | `get_agent`     | Fetch one agent's record/metadata |
-> | `read_agent`    | Read an agent's terminal output / transcript |
-> | `wait_agent`    | Block until an agent reaches a state (e.g. idle/done) |
+> | `get_agent`     | Fetch one agent's record and live status |
 > | `create_agent`  | Spawn a new first-class lasso agent |
 > | `close_agent`   | Shut an agent down |
 > | `list_hosts`    | List hosts lasso knows about |
@@ -25,6 +23,13 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `list_branches` | List branches for a repo |
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
+> | `open_file`     | Open a file in the human's lasso sidebar file viewer |
+> | `shared_browser`| Start the shared Chromium the human watches live; get its browser MCP URL and CDP endpoint |
+>
+> **Lasso does not talk to agents.** To prompt another agent, read its screen,
+> or wait for it to finish, use herdr: `herdr agent prompt <target> "<text>"`,
+> `herdr agent read <target>`, `herdr agent wait <target>` (or the herdr skill).
+> In Claude Code, its own native agent messaging works too.
 >
 > **No MCP client? Use `lasso mcp`.** Every tool above is also a shell command —
 > `lasso mcp` lists them, `lasso mcp <tool> -h` shows one tool's flags, and
@@ -137,6 +142,113 @@ The **`notify`** MCP tool is the same call — pass `message` and your
 round trip; use the tool when you want the structured `sent` / `transports`
 reply.
 
+## Showing the human a file
+
+When the human asks to *see* something you wrote — "open it for me", "show me
+the plan" — or you want them to review a specific file, put it on their screen
+instead of pasting a path:
+
+```bash
+lasso open docs/design.md            # relative is fine: resolved against your cwd
+lasso open src/auth.go -line 120     # scroll to (and select) a line
+```
+
+It opens in lasso's right-sidebar **Files** viewer, in every lasso tab they
+have visible; a directory opens the file tree there instead.
+
+- **The file must exist** — write it first; a missing path is an error.
+- **Check the outcome.** It exits **non-zero** when no lasso tab is open —
+  nobody saw it, so don't say it's on their screen. (MCP: `delivered` is `0`.)
+- A hidden tab ignores it, and an editor holding their unsaved edits is never
+  replaced — they get a prompt offering to open yours instead.
+- On a remote fleet box without a per-host credential, pass `-host <alias>`:
+  otherwise the path is looked for on lasso's own machine.
+
+The **`open_file`** MCP tool is the same call — an **absolute** `path` (or
+`~/…`; relative paths are refused, the server can't see your cwd), optional
+`line`, and your `$HERDR_PANE_ID` as `pane_id` so the human is told who opened
+it. `host` defaults to your own host.
+
+## The shared browser
+
+lasso runs one real Chromium on **its own machine** and shows it live in the
+sidebar's Browser tab. You drive the same browser through lasso's browser MCP
+server (chrome-devtools-mcp's tools, served by lasso), or over the Chrome
+DevTools Protocol, and the human sees every page you open, as you open it —
+and can click in it too.
+
+**Use it when a human should see the page**: checking a UI you just built,
+reproducing a bug they reported, walking a flow they want to watch, anything
+where "look at this" beats a screenshot. For headless scraping or a test suite
+nobody is watching, your own Playwright/Chromium is fine.
+
+### Connecting
+
+**Prefer the `lasso-browser` MCP server if you have it configured** — its
+tools (`new_page`, `navigate_page`, `click`, `fill`, `take_screenshot`,
+`take_snapshot`, `list_console_messages`, …) are chrome-devtools-mcp's, already
+pointed at the shared browser, and its server instructions repeat the
+etiquette below. Each MCP session gets its own chrome-devtools-mcp process, so
+your selected page is yours alone. Screenshots come back as JPEG, ≤1280px.
+
+If you don't have it, find its URL:
+
+```bash
+lasso mcp shared-browser        # starts it if needed; prints mcp_endpoint, ws_endpoint, pages
+```
+
+or the **`shared_browser`** MCP tool (pass `start: false` to only report its
+state). `mcp_endpoint` is the browser MCP URL (e.g.
+`http://127.0.0.1:8090/browser-mcp`); **ask the human to add it** unless you
+can add MCP servers yourself. The one-step way is for them to run `lasso
+connect` on your machine, which registers both `lasso` and `lasso-browser`
+with every agent CLI installed there (`-url <lasso's URL>` when lasso runs on
+another machine). By hand it is `claude mcp add --transport http lasso-browser
+<mcp_endpoint>`, or a streamable-HTTP MCP server in any other agent. A new MCP
+server usually only loads in a new session. `mcp_available: false` comes with
+`mcp_reason` (usually chrome-devtools-mcp not installed on lasso's machine).
+The reply's `note` says when the browser is unavailable or the endpoints need
+your credential (the same bearer token as `/mcp`, sent as an `Authorization`
+header; behind `UI_AUTH` alone, `Basic` credentials instead). A refusal saying
+the browser is outside your credential's reach is a scope boundary: don't
+work around it.
+
+- **Playwright / raw CDP** instead: `chromium.connectOverCDP("<ws_endpoint>")`
+  (e.g. `ws://127.0.0.1:8090/cdp`, stable across browser restarts) — then use
+  `browser.contexts()[0]` (the shared, logged-in profile) and `newPage()` on
+  it. Close your pages when done; never send CDP's `Browser.close`, which
+  shuts the browser down for everyone. Playwright's own `browser.close()` is
+  safe here: on a `connectOverCDP` connection it only disconnects. Plain CDP
+  works too: `…/cdp/json/list` over HTTP lists the targets.
+- If the browser restarts (a proxy change, an idle stop), your browser MCP
+  session is closed; your MCP client reconnects on its own, but page ids from
+  before are gone — `list_pages` again.
+
+### Etiquette — a human may be watching
+
+- **The human sees one page: the newest.** The Browser tab has no tab strip;
+  it shows whichever page was opened most recently. Open a page with
+  `new_page` / `newPage()` and the human's view follows you onto it, which is
+  usually what you want ("watch me click through this"). The page they were
+  on keeps running, just out of sight.
+- **Don't navigate away a page you didn't open** unless the human asked you
+  to work in it; it may be what they are reading. Open your own instead.
+- **Close the pages you opened when you're done.** The view then falls back
+  to another open page. Don't close pages you didn't open.
+- **The profile is shared and may be logged in.** Cookies and logins persist
+  in it. Treat any account it is signed into as the human's: reading is fine,
+  but posting, sending, buying or changing settings needs their go-ahead.
+- Don't restart or stop the browser, or change its proxy, to fix your own
+  problem — that closes everyone's pages. Ask the human.
+
+### `localhost` means lasso's machine
+
+The browser runs where lasso runs, not necessarily where you do. If your dev
+server is on the same machine as lasso, `http://localhost:5173` works. If you
+are on another host, `localhost` inside the shared browser is **not** your
+box: use an address lasso's machine can reach (your tailnet name or IP), and
+make sure your server listens on it.
+
 ## Using the rest of the herdr CLI
 
 herdr ships its own agent skill (`npx skills add herdrdev/herdr --skill
@@ -160,10 +272,13 @@ on top of it:
 Use the lasso MCP tools to inspect agent state and manage agent lifecycles:
 
 - **List:** `list_agents` (who's running), `list_hosts` / `list_repos` /
-  `list_branches` (where they can run), `get_agent` (one agent's record).
-- **Inspect:** `read_agent` to read another agent's terminal output/transcript.
-- **Wait for state:** `wait_agent` to block until an agent reaches a state
-  (e.g. idle/done).
+  `list_branches` (where they can run), `get_agent` (one agent's record and
+  live status).
+- **Talk to one:** not lasso's job. Prompt, read and wait with herdr —
+  `herdr agent prompt <target> "<text>" --wait`, `herdr agent read <target>`,
+  `herdr agent wait <target>` — using the `root_pane` or `sidebar_name`
+  `list_agents` gave you as the target. In Claude Code, its native agent
+  messaging works as well.
 - **Manage:** `create_agent` to spawn a first-class lasso agent, `close_agent`
   to shut one down.
 
@@ -180,14 +295,14 @@ installed on.
 
 ```bash
 lasso mcp                                   # every tool, one line each
-lasso mcp read-agent -h                     # one tool's flags
+lasso mcp get-agent -h                      # one tool's flags
 lasso mcp list-agents -host gigachad        # call it
 lasso mcp list-agents | jq -r '.agents[].title'
 ```
 
 - **Flags come from the server's live schema**, so they follow it
   automatically. `-h` on any tool is authoritative; don't guess a flag name.
-- **Either spelling of a name works** — `read-agent` or `read_agent`,
+- **Either spelling of a name works** — `get-agent` or `get_agent`,
   `-agent-id` or `-agent_id`.
 - **An omitted flag is left out of the call entirely**, so the tool's own
   default applies. That matters: an empty `host` means "search every host I
@@ -197,10 +312,9 @@ lasso mcp list-agents | jq -r '.agents[].title'
   structured result.
 - **Exit codes:** `0` fine, `1` the tool itself refused (its message goes to
   stderr), `2` you typed something wrong.
-- **A blocking tool's own timeout wins.** `lasso mcp wait-agent -agent-id X
-  -timeout-ms 300000` waits the full five minutes; the CLI's transport
-  deadline stretches to cover it. `-timeout <dur>` (before the tool name)
-  sets the floor for everything else.
+- **A tool's own timeout argument wins.** If a tool takes one (e.g.
+  `-timeout-ms`), the CLI's transport deadline stretches to cover it.
+  `-timeout <dur>` (before the tool name) sets the floor for everything else.
 
 **`lasso skill` prints this skill** — the binary carries its own copy, so an
 agent on a host with no checkout can read it (`lasso skill`) or install it

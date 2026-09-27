@@ -5,6 +5,7 @@ import { type ActiveState, api } from "@/lib/api"
 import { clientID } from "@/lib/client-id"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
 import { applyMode, subscribeAppearance, watchSystemMode } from "@/lib/mode"
+import { handleOpenFileEvent } from "@/lib/open-file"
 import { invalidateHostScoped } from "@/lib/query"
 import { setTermOwner, watchTermIntent } from "@/lib/term-claim"
 import { applyAtmosphere, refreshTheme } from "@/lib/theme"
@@ -158,6 +159,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         apply(JSON.parse((e as MessageEvent).data))
       )
       es.addEventListener("notice", (e) => showNotice((e as MessageEvent).data))
+      // An agent asked to show the human a file (open_file / `lasso open`).
+      // lib/open-file.ts gates it on this tab being visible and hands it on.
+      es.addEventListener("open-file", (e) =>
+        handleOpenFileEvent((e as MessageEvent).data)
+      )
     }
 
     // A tab that remembers a host from a previous page load must re-attach

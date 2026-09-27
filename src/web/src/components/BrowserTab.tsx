@@ -1,15 +1,26 @@
+import { useQuery } from "@tanstack/react-query"
 import { ExternalLink, RotateCw } from "lucide-react"
 import * as React from "react"
+import { LiveBrowser } from "@/components/LiveBrowser"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { api, type BrowserMode } from "@/lib/api"
 import { lsGet, lsSet } from "@/lib/app-store"
-
-function normalize(raw: string): string {
-  const u = raw.trim()
-  if (!u) return ""
-  return /^https?:\/\//i.test(u) ? u : `http://${u}`
-}
+import { LOOPBACK, normalize } from "@/lib/browser-url"
+import { qk } from "@/lib/query"
+import {
+  onSidebarBrowserOpen,
+  setEffectiveBrowserMode,
+} from "@/lib/sidebar-browser"
+import { patchUIState, useUIState } from "@/lib/ui-state"
+import { cn } from "@/lib/utils"
 
 // parseLocalPort extracts a local dev-server port from user input. It matches a
 // bare port ("5173"), a ":PORT" shorthand, or a full URL whose host is
@@ -27,8 +38,7 @@ function parseLocalPort(raw: string): number | null {
   if (colon) return clampPort(Number(colon[1]))
   try {
     const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`)
-    const loopback = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]
-    if (loopback.includes(u.hostname) && u.port) {
+    if (LOOPBACK.includes(u.hostname) && u.port) {
       return clampPort(Number(u.port))
     }
   } catch {
@@ -91,12 +101,22 @@ async function probeReachable(url: string): Promise<boolean> {
   }
 }
 
-// The Browser tab: a URL bar + an iframe. A bare local dev-server port (e.g.
+// EmbedBrowser is the Browser tab's Embed mode: a URL bar + an iframe. A bare local dev-server port (e.g.
 // "5173") is embedded as http://<this page's hostname>:<port>. We persist the
 // RAW input so it re-resolves on reload. When a target can't be embedded
 // (unreachable, mixed content, or a private page blocked while lasso is on a
 // public origin), we show a clear error and a prominent open-in-new-tab.
-export function BrowserTab() {
+function EmbedBrowser({
+  openRequest,
+  onOpened,
+  modeSwitch,
+  note,
+}: {
+  openRequest: OpenRequest | null
+  onOpened: () => void
+  modeSwitch: React.ReactNode
+  note: string
+}) {
   const [url, setUrl] = React.useState(() => lsGet("browserUrl") ?? "")
   const [src, setSrc] = React.useState("about:blank")
   // openTarget is the resolved URL to open in a new tab (kept even on error,
@@ -139,6 +159,20 @@ export function BrowserTab() {
     // Probe reachability/embeddability in parallel. The probe is authoritative:
     // if it fails, the iframe will be blank, so surface a clear reason.
     if (/^https?:\/\//i.test(target)) {
+      // A site that forbids framing still loads "successfully" as a blank
+      // frame, and the browser hides why. Ask lasso to read the headers.
+      void api
+        .frameable(target)
+        .then((r) => {
+          if (seq !== seqRef.current || r.frameable !== false) return
+          setErr(
+            `${hostOf(target) || target} doesn't allow other sites to embed it, so it can't show here. Open it in a new tab instead.`
+          )
+          setStatus("error")
+        })
+        .catch(() => {
+          /* advisory only: an older server or a failed fetch says nothing */
+        })
       void probeReachable(target).then((ok) => {
         if (seq !== seqRef.current || ok) return
         const host = hostOf(target)
@@ -159,6 +193,14 @@ export function BrowserTab() {
     if (saved) nav(saved)
   }, [nav])
 
+  // A link clicked in a terminal lands here (lib/sidebar-browser.ts, by way
+  // of BrowserTab, which holds it until whichever mode is showing takes it).
+  React.useEffect(() => {
+    if (!openRequest) return
+    onOpened()
+    nav(openRequest.url)
+  }, [openRequest, onOpened, nav])
+
   const openExternal = React.useCallback(() => {
     const t = openTarget || (src !== "about:blank" ? src : "")
     if (t) window.open(t, "_blank", "noopener")
@@ -167,6 +209,7 @@ export function BrowserTab() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-shrink-0 items-center gap-1.5 border-border border-b bg-background px-2 py-1.5">
+        {modeSwitch}
         <Button
           variant="outline"
           size="icon"
@@ -205,6 +248,11 @@ export function BrowserTab() {
           <ExternalLink />
         </Button>
       </div>
+      {note && (
+        <div className="flex-shrink-0 border-border border-b bg-background px-2 py-1 text-[12px] text-muted-foreground">
+          {note}
+        </div>
+      )}
       {status === "loading" && (
         <div className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-background px-2 py-1 text-[12px] text-muted-foreground">
           <Orb state="working" px={14} />
@@ -243,5 +291,152 @@ export function BrowserTab() {
         )}
       </div>
     </div>
+  )
+}
+
+// A terminal link waiting for whichever mode is on screen to open it. Held
+// here rather than handed straight to a mode, because the mode can change
+// under it: a link clicked before /api/browser answers is aimed at Live, and
+// must still land if the answer turns out to be "no Chromium".
+export interface OpenRequest {
+  url: string
+  seq: number
+}
+
+// BrowserModeSwitch is the mode toggle both toolbars carry. The UI calls the
+// modes Agent and Iframe (stored as "live" and "embed"): what a human needs to
+// know is WHO else sees the page, not how it is transported. It writes the
+// shared preference (ui_state.browser_mode), so every browser on this lasso
+// follows it. Agent is disabled while no Chromium is available; the tooltip
+// then carries the reason, on a wrapper span since a disabled button fires no
+// pointer events.
+const MODE_TIPS: Record<BrowserMode, string> = {
+  live: "A real Chrome on lasso's machine that you and your agents share. Pages an agent opens show up here, and any site loads.",
+  embed:
+    "The page loads inside this tab, straight from your own browser. Private to you, but many sites refuse to be embedded.",
+}
+
+function BrowserModeSwitch({
+  mode,
+  liveDisabled,
+  liveTitle,
+}: {
+  mode: BrowserMode
+  liveDisabled: boolean
+  liveTitle: string
+}) {
+  const pick = (m: BrowserMode) => {
+    if (m !== mode) patchUIState({ browser_mode: m })
+  }
+  const seg = (m: BrowserMode) =>
+    cn(
+      "h-7 rounded-none px-2.5 text-[12px] transition-colors",
+      mode === m
+        ? "bg-primary font-semibold text-primary-foreground hover:bg-primary"
+        : "bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+    )
+  const item = (m: BrowserMode, label: string, disabled = false) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={seg(m)}
+            aria-pressed={mode === m}
+            disabled={disabled}
+            onClick={() => pick(m)}
+          >
+            {label}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-64">
+        {disabled ? liveTitle : MODE_TIPS[m]}
+      </TooltipContent>
+    </Tooltip>
+  )
+  return (
+    <TooltipProvider delayDuration={300}>
+      <fieldset
+        aria-label="Browser mode"
+        className="m-0 flex flex-shrink-0 divide-x divide-border overflow-hidden rounded-lg border border-border p-0"
+      >
+        {item("live", "Agent", liveDisabled)}
+        {item("embed", "Iframe")}
+      </fieldset>
+    </TooltipProvider>
+  )
+}
+
+// The Browser tab. Two modes behind one toolbar switch:
+//
+//   - Live: the shared headless Chromium lasso runs on its own machine, shown
+//     as a CDP screencast and driven with forwarded input (LiveBrowser). Agents
+//     connect to the same Chromium over /cdp, so its tab strip is where their
+//     pages show up.
+//   - Embed: an iframe, exactly as the tab always was.
+//
+// Live is the stored default but not always what is shown: a lasso with no
+// Chromium (or an older server with no /api/browser) shows Embed with a line
+// saying why, without rewriting the preference. What IS shown is published to
+// lib/sidebar-browser.ts, since whether a terminal link can open here at all
+// depends on it (mixed content only binds an iframe).
+//
+// `active` is whether a human can see the tab (selected, sidebar open); Live
+// streams only then, so an unwatched browser costs lasso a closed socket and
+// lets its idle timer stop Chromium.
+export function BrowserTab({ active }: { active: boolean }) {
+  const pref = useUIState().browser_mode
+  const status = useQuery({
+    queryKey: qk.browser,
+    queryFn: () => api.browserStatus(),
+    retry: false,
+    staleTime: 5_000,
+    // Only while someone could act on it: a Chromium installed, or a proxy
+    // changed from another browser, shows up without a reload.
+    refetchInterval: active ? 30_000 : false,
+  })
+  const unavailable = status.isError || status.data?.available === false
+  const mode: BrowserMode = pref === "live" && !unavailable ? "live" : "embed"
+  React.useEffect(() => setEffectiveBrowserMode(mode), [mode])
+
+  const reason = status.isError
+    ? `this lasso has no shared browser (${status.error instanceof Error ? status.error.message : "status unavailable"})`
+    : status.data?.reason || "no Chromium was found"
+  const note =
+    pref === "live" && unavailable
+      ? `Agent browser unavailable: ${reason}. Install Chrome or Chromium, or point LASSO_BROWSER at one, to enable it.`
+      : ""
+
+  const [openRequest, setOpenRequest] = React.useState<OpenRequest | null>(null)
+  React.useEffect(() => {
+    let seq = 0
+    return onSidebarBrowserOpen((url) => setOpenRequest({ url, seq: ++seq }))
+  }, [])
+  const onOpened = React.useCallback(() => setOpenRequest(null), [])
+
+  const modeSwitch = (
+    <BrowserModeSwitch
+      mode={mode}
+      liveDisabled={unavailable}
+      liveTitle={`Agent browser unavailable: ${reason}`}
+    />
+  )
+
+  return mode === "live" ? (
+    <LiveBrowser
+      active={active}
+      openRequest={openRequest}
+      onOpened={onOpened}
+      modeSwitch={modeSwitch}
+    />
+  ) : (
+    <EmbedBrowser
+      openRequest={openRequest}
+      onOpened={onOpened}
+      modeSwitch={modeSwitch}
+      note={note}
+    />
   )
 }

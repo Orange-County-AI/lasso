@@ -90,21 +90,12 @@ CREATE TABLE IF NOT EXISTS agents (
   -- closed_at stamps the moment reconciliation (agentreap.go) confirmed the
   -- agent's herdr pane was gone. Non-empty = tombstone: the row stays for the
   -- history/reopen views, but every "which agents are there" query filters it
-  -- out, since nothing can be sent to, read from, or closed on it.
+  -- out, since nothing can be inspected or closed on it.
   closed_at    TEXT NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS agent_messages (
-  id           TEXT PRIMARY KEY,
-  host         TEXT NOT NULL DEFAULT 'local',
-  agent_id     TEXT NOT NULL,
-  sender_label TEXT NOT NULL DEFAULT '',
-  sender_addr  TEXT NOT NULL DEFAULT '',
-  body         TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'pending',
-  error        TEXT NOT NULL DEFAULT '',
-  created_at   TEXT NOT NULL DEFAULT '',
-  delivered_at TEXT NOT NULL DEFAULT ''
-);
+-- agent_messages (the queue behind the removed agent-messaging tool) is no
+-- longer created. Databases that already have it keep it, unused: a DROP would
+-- be irreversible on someone's data for no gain.
 `
 
 // groupsSchema is the host-group model (groups.go, `lasso mcp-group`), appended
@@ -273,6 +264,10 @@ type uiState struct {
 	// it expands the folder in place. Defaulted true in getUIState so a fresh
 	// install (or an older stored blob lacking the field) navigates.
 	FilesClickNavigates bool `json:"files_click_navigates"`
+	// TerminalLinksInSidebar opens a link clicked in a terminal in the right
+	// sidebar's Browser tab instead of a new browser tab. Defaulted true in
+	// getUIState, like FilesClickNavigates.
+	TerminalLinksInSidebar bool `json:"terminal_links_in_sidebar"`
 	// UsageHidden contains providers the user has turned OFF in Settings →
 	// Usage tracking. They are not merely hidden: serveUsage skips their
 	// fetchers entirely, so an unchecked provider costs no token refresh and no
@@ -343,6 +338,13 @@ type uiState struct {
 	// not answer that. The grid's own group-by-machine toggle stays ephemeral
 	// — it changes what the layout SAYS, not whether it holds still.
 	AgentsSort string `json:"agents_sort"`
+	// BrowserMode is what the sidebar's Browser tab shows: "live" (the
+	// default — the shared headless Chromium lasso supervises, streamed as a
+	// screencast and driven by humans and agents alike) or "embed" (the plain
+	// iframe it always had). Server-owned so a phone and a desktop open the
+	// same kind of browser; a lasso with no Chromium falls back to embed in
+	// the tab itself without rewriting this choice.
+	BrowserMode string `json:"browser_mode"`
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored
@@ -430,6 +432,36 @@ func normalizeAgentsSort(s string) string {
 	return agentsSortPriority
 }
 
+// The Browser tab's modes. "live" is the default.
+const (
+	browserModeLive  = "live"
+	browserModeEmbed = "embed"
+)
+
+// browserModes is the accepted set, in the order a client error lists them.
+var browserModes = []string{browserModeLive, browserModeEmbed}
+
+// validBrowserMode reports whether m is one a caller may send. Exact, for the
+// same reason validAgentsSort is.
+func validBrowserMode(m string) bool {
+	for _, v := range browserModes {
+		if m == v {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeBrowserMode repairs what is already IN the db — every blob written
+// before this field existed carries "", which means the default. Writes are
+// validated instead (see serveUIState).
+func normalizeBrowserMode(m string) string {
+	if validBrowserMode(m) {
+		return m
+	}
+	return browserModeLive
+}
+
 // normalizeAppearanceMode repairs what is already IN the db — a blob written
 // before this field existed, or one hand-edited — so every read answers a mode
 // the frontend can switch on. Writes are validated instead (see serveUIState).
@@ -445,13 +477,15 @@ func normalizeAppearanceMode(m string) string {
 // defaults true).
 func getUIState() (uiState, error) {
 	us := uiState{
-		FilesClickNavigates: true,
-		UsageHidden:         []string{},
-		UsageOrder:          []string{},
-		ThemeAtmosphere:     map[string]atmospherePref{},
-		CustomBackgrounds:   []string{},
-		AppearanceMode:      appearanceModeHerdr,
-		AgentsSort:          agentsSortPriority,
+		FilesClickNavigates:    true,
+		TerminalLinksInSidebar: true,
+		UsageHidden:            []string{},
+		UsageOrder:             []string{},
+		ThemeAtmosphere:        map[string]atmospherePref{},
+		CustomBackgrounds:      []string{},
+		AppearanceMode:         appearanceModeHerdr,
+		AgentsSort:             agentsSortPriority,
+		BrowserMode:            browserModeLive,
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -476,6 +510,7 @@ func getUIState() (uiState, error) {
 	}
 	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
 	us.AgentsSort = normalizeAgentsSort(us.AgentsSort)
+	us.BrowserMode = normalizeBrowserMode(us.BrowserMode)
 	return us, nil
 }
 
@@ -769,8 +804,8 @@ type hostAgent struct {
 
 // listAllAgents returns every LIVE recorded agent across all hosts, oldest
 // first — the cross-host counterpart of listAgents, with the same tombstone
-// filter and for the same reason: its callers (message_agent recipient
-// resolution, cross-host pane matching, closeme) all resolve a target to act on.
+// filter and for the same reason: its callers (cross-host pane matching,
+// closeme) all resolve a target to act on.
 func listAllAgents() ([]hostAgent, error) {
 	return queryHostAgents(`SELECT ` + agentCols + ` FROM agents WHERE closed_at='' ORDER BY created_at`)
 }
@@ -815,7 +850,7 @@ func updateAgentPane(id, host, workspaceID, rootPane string) error {
 }
 
 // updateAgentTitle re-titles one agent by id, keeping the record's title — the
-// address list_agents and message_agent surface — in step with the workspace
+// name list_agents and get_agent surface — in step with the workspace
 // label auto-titling just changed. Scoped by id+host since ids are only unique
 // within a host.
 func updateAgentTitle(id, host, title string) error {
@@ -829,7 +864,7 @@ func updateAgentTitle(id, host, title string) error {
 }
 
 // updateAgentTitleByWorkspace re-titles the agent living in a workspace, keeping
-// the record's title — the address list_agents and message_agent surface — in
+// the record's title — the name list_agents and get_agent surface — in
 // step with a workspace rename from the UI. Scoped by host since workspace ids
 // are only unique per host.
 func updateAgentTitleByWorkspace(host, workspaceID, title string) error {
@@ -841,75 +876,6 @@ func updateAgentTitleByWorkspace(host, workspaceID, title string) error {
 		// several share the Scratch workspace (theirs is a tab; see autotitle.go).
 		`UPDATE agents SET title=? WHERE host=? AND workspace_id=? AND type != 'scratch'`,
 		strings.TrimSpace(title), host, workspaceID)
-	return err
-}
-
-// ---------------------------------------------------------------------------
-// agent_messages — the store-and-forward queue behind the message_agent MCP
-// tool. Rows are appended by message_agent and drained by the message
-// dispatcher (messages.go), which submits into the recipient's pane only when
-// herdr reports its agent idle.
-// ---------------------------------------------------------------------------
-
-// enqueueAgentMessage appends one pending message to the queue.
-func enqueueAgentMessage(m AgentMessage) error {
-	_, err := db.Exec(
-		`INSERT INTO agent_messages(id, host, agent_id, sender_label, sender_addr, body, status, created_at)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		m.ID, m.Host, m.AgentID, m.SenderLabel, m.SenderAddr, m.Body, msgPending,
-		m.CreatedAt.Format(time.RFC3339Nano))
-	return err
-}
-
-// listPendingMessages returns every undelivered message across all hosts,
-// oldest first — the dispatcher's work list. A nil db (tests, shutdown) reads
-// as an empty queue.
-func listPendingMessages() ([]AgentMessage, error) {
-	if db == nil {
-		return nil, nil
-	}
-	rows, err := db.Query(
-		`SELECT id, host, agent_id, sender_label, sender_addr, body, created_at
-		 FROM agent_messages WHERE status=? ORDER BY created_at`, msgPending)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []AgentMessage
-	for rows.Next() {
-		var m AgentMessage
-		var created string
-		if err := rows.Scan(&m.ID, &m.Host, &m.AgentID, &m.SenderLabel, &m.SenderAddr,
-			&m.Body, &created); err != nil {
-			return nil, err
-		}
-		m.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
-// markMessageDelivered flips one message to delivered, stamping when.
-func markMessageDelivered(id string) error {
-	if db == nil {
-		return nil
-	}
-	_, err := db.Exec(
-		`UPDATE agent_messages SET status=?, delivered_at=? WHERE id=?`,
-		msgDelivered, time.Now().Format(time.RFC3339Nano), id)
-	return err
-}
-
-// markMessageFailed flips one message to failed with the reason (the recipient
-// died before delivery). Failed messages are never retried — a pane that later
-// hosts a different agent must not receive them.
-func markMessageFailed(id, detail string) error {
-	if db == nil {
-		return nil
-	}
-	_, err := db.Exec(
-		`UPDATE agent_messages SET status=?, error=? WHERE id=?`,
-		msgFailed, detail, id)
 	return err
 }
 

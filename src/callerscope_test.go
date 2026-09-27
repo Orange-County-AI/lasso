@@ -368,29 +368,6 @@ func TestListHostsHidesTheRestOfTheFleet(t *testing.T) {
 	}
 }
 
-func TestMessageAgentCannotCrossOutOfScope(t *testing.T) {
-	req := containedFleet(t)
-	_, out, err := messageAgentTool(context.Background(), req, messageAgentIn{
-		To: []string{"titan agent", "titan agent@local"}, Text: "ping", From: "pod",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range out.Results {
-		if r.Queued {
-			t.Fatalf("queued a message out of scope: %+v", r)
-		}
-	}
-	// Unqualified: the other host's agent is simply not there.
-	if strings.Contains(out.Results[0].Detail, "local") {
-		t.Errorf("detail leaked the out-of-scope host: %q", out.Results[0].Detail)
-	}
-	// Host-qualified: the caller named the host, so it learns why.
-	if !strings.Contains(out.Results[1].Detail, "credential") {
-		t.Errorf("detail = %q, want the credential refusal", out.Results[1].Detail)
-	}
-}
-
 func TestCloseAgentCannotCrossOutOfScope(t *testing.T) {
 	req := containedFleet(t)
 	local := agentBackendResolverMust(t, "local").(*closeBackend)

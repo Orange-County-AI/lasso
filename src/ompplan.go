@@ -116,8 +116,8 @@ func stageOmpConfig(b Backend, agentID string, planMode bool) (string, error) {
 //
 // So lasso reads the screen for it. ompGateStatus asks paneShowsOmpPlanReview
 // when herdr says an omp pane is at rest, and reports "blocked" when the overlay
-// is up. It is applied on the three MCP surfaces the plan_mode contract names —
-// wait_agent (via paneAgentStatus), get_agent and list_agents — and on the
+// is up. It is applied on the MCP surfaces the plan_mode contract names —
+// get_agent and list_agents (and whoami, via paneAgentStatus) — and on the
 // cross-host pane enumeration (enumerateHostPanes) behind /api/all-panes, which
 // feeds lasso's ⌘K pane switcher. That enumeration runs on a poll, so there it
 // is narrowed to the panes whose RECORD says lasso launched them in plan mode:

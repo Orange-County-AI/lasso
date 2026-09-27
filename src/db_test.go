@@ -268,3 +268,25 @@ agents:
 		t.Errorf("config.yaml.imported missing: %v", err)
 	}
 }
+
+func TestUpdateAgentTitleByWorkspace(t *testing.T) {
+	openTestDB(t)
+	rec := AgentRecord{ID: "a1", Title: "old title", WorkspaceID: "w1", RootPane: "w1-1", CreatedAt: time.Now()}
+	if err := appendAgent("local", rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateAgentTitleByWorkspace("local", "w1", "clem"); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := listAgents("local")
+	if len(recs) != 1 || recs[0].Title != "clem" {
+		t.Fatalf("title after rename = %+v, want clem", recs)
+	}
+	// Empty labels and unknown workspaces are no-ops, not errors.
+	if err := updateAgentTitleByWorkspace("local", "w1", "  "); err != nil {
+		t.Fatal(err)
+	}
+	if recs, _ = listAgents("local"); recs[0].Title != "clem" {
+		t.Fatalf("blank rename overwrote title: %+v", recs)
+	}
+}

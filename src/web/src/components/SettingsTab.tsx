@@ -7,6 +7,7 @@ import {
 import {
   ChevronDown,
   ChevronUp,
+  Copy,
   Download,
   ExternalLink,
   Keyboard,
@@ -35,11 +36,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { SCRATCH_WORKSPACE } from "@/lib/agents"
 import {
   api,
+  type BrowserAction,
+  type BrowserMode,
   completeUsageProviderOrder,
   type ThemeCatalogEntry,
   type ThemePayload,
 } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
+import { cdpURL } from "@/lib/cdp"
 import {
   fleetThemeIsPalette,
   getMode,
@@ -271,6 +275,8 @@ export function SettingsTab({
           className="min-h-0 overflow-y-auto px-3 py-4 data-[state=inactive]:hidden"
         >
           <AutoTitleToggle active={active && sub === "general"} />
+          <TerminalLinksToggle />
+          <SharedBrowserSettings active={active && sub === "general"} />
           <NotificationsSettings active={active && sub === "general"} />
           <UsageTrackingSettings />
           <CreatorHostSetting hostOptions={hostOptions} />
@@ -1349,6 +1355,338 @@ function AutoTitleToggle({ active }: { active: boolean }) {
         a title instead of the prompt's clipped first line. Runs on this
         machine, whichever host the agent was created on, and only renames the
         workspace: the branch and working directory keep their original names.
+      </p>
+    </div>
+  )
+}
+
+// capLabel names the browser's resource limits in a pill: "CPU 200% · 2G".
+function capLabel(cpu: string, mem: string): string {
+  const parts = [cpu && `CPU ${cpu}`, mem && `mem ${mem}`].filter(Boolean)
+  return parts.length ? parts.join(" · ") : "uncapped"
+}
+
+// TerminalLinksToggle: where a link clicked in a terminal opens. Stored in
+// lasso's ui_state, so every browser on this lasso follows it.
+function TerminalLinksToggle() {
+  const on = useUIState().terminal_links_in_sidebar
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <span className={labelClass}>Terminal links</span>
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+        htmlFor="settings-terminal-links"
+      >
+        <Checkbox
+          id="settings-terminal-links"
+          checked={on}
+          onCheckedChange={(c) =>
+            patchUIState({ terminal_links_in_sidebar: c === true })
+          }
+        />
+        Open terminal links in the sidebar browser
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        Cmd/Ctrl-click still opens a new browser tab. Sites that refuse to be
+        embedded (GitHub, Google and many others) show a note there with a
+        button to open them in a new tab. An http:// link on an https lasso
+        opens in a new tab in Iframe mode, since the browser won't embed it; the
+        Agent browser loads every link into the page it is showing.
+      </p>
+    </div>
+  )
+}
+
+// copyText writes to the clipboard, falling back to a throwaway textarea and
+// execCommand where navigator.clipboard is missing — lasso is routinely opened
+// over plain http on a tailnet address, which is not a secure context.
+async function copyText(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      toast.success("Copied")
+      return
+    }
+  } catch {
+    /* fall through to the textarea path */
+  }
+  const ta = document.createElement("textarea")
+  ta.value = text
+  ta.setAttribute("readonly", "")
+  ta.style.position = "fixed"
+  ta.style.top = "0"
+  ta.style.opacity = "0"
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand("copy")
+  document.body.removeChild(ta)
+  if (ok) toast.success("Copied")
+  else toast.error("Couldn't copy — select the text instead")
+}
+
+function CopyLine({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex items-start gap-1.5">
+      <code className="min-w-0 flex-1 select-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-foreground [overflow-wrap:anywhere]">
+        {text}
+      </code>
+      <Button
+        variant="outline"
+        size="icon"
+        className="size-7 flex-shrink-0"
+        title={`copy ${label}`}
+        aria-label={`copy ${label}`}
+        onClick={() => void copyText(text)}
+      >
+        <Copy />
+      </Button>
+    </div>
+  )
+}
+
+// SharedBrowserSettings: the headless Chromium lasso runs on its own machine
+// for the Browser tab's Live mode and for agents (browser.go). Server-level —
+// there is one per lasso whatever host a tab is on — so it sits with the other
+// server-wide settings above the host picker. The status is the same cache
+// entry the Browser tab reads, so a start here shows there and vice versa.
+function SharedBrowserSettings({ active }: { active: boolean }) {
+  const queryClient = useQueryClient()
+  const mode = useUIState().browser_mode
+  const status = useQuery({
+    queryKey: qk.browser,
+    queryFn: () => api.browserStatus(),
+    retry: false,
+    refetchInterval: active ? 5_000 : false,
+  })
+  const st = status.data
+  const action = useMutation({
+    mutationFn: (a: BrowserAction) => api.browserAction(a),
+    onSuccess: (next) => queryClient.setQueryData(qk.browser, next),
+    onError: (e: Error) => toast.error(`Shared browser: ${e.message}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: qk.browser }),
+  })
+
+  // The field is a draft while focused and follows the server otherwise, so a
+  // proxy changed from another browser lands here without clobbering typing.
+  const [proxy, setProxy] = React.useState("")
+  const [editing, setEditing] = React.useState(false)
+  const [proxyErr, setProxyErr] = React.useState("")
+  const stored = st?.proxy ?? ""
+  React.useEffect(() => {
+    if (!editing) setProxy(stored)
+  }, [stored, editing])
+  const saveProxy = useMutation({
+    mutationFn: (p: string) => api.setBrowserProxy(p),
+    onSuccess: (next) => {
+      setProxyErr("")
+      queryClient.setQueryData(qk.browser, next)
+      toast.success(
+        next.proxy
+          ? `Shared browser now uses ${next.proxy}`
+          : "Shared browser proxy cleared",
+        // e.g. which pages the relaunch reopened.
+        { description: next.note }
+      )
+    },
+    // The server's 400 is a sentence meant for exactly this spot.
+    onError: (e: Error) => setProxyErr(e.message),
+    // A 502 means the proxy was STORED but the relaunch failed; refetch so
+    // the field and the status show what the server now holds.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: qk.browser }),
+  })
+  const commitProxy = () => {
+    setEditing(false)
+    const p = proxy.trim()
+    if (p === stored) {
+      setProxyErr("")
+      return
+    }
+    saveProxy.mutate(p)
+  }
+
+  const endpoint = cdpURL()
+  // /browser-mcp is lasso's origin, like /cdp: there is one shared browser per
+  // lasso whatever host this tab is driving.
+  const mcpEndpoint = `${location.origin}/browser-mcp`
+  const mcpAdd = `claude mcp add --transport http lasso-browser ${mcpEndpoint}`
+  const mcpSessions = st?.mcp_sessions ?? 0
+  const busy = action.isPending || saveProxy.isPending
+
+  let state: React.ReactNode
+  if (status.isLoading) {
+    state = <Pill>checking…</Pill>
+  } else if (status.isError || !st) {
+    state = (
+      <Pill tone="warn" title={status.error?.message}>
+        unavailable on this lasso
+      </Pill>
+    )
+  } else if (!st.available) {
+    state = <Pill tone="warn">unavailable</Pill>
+  } else {
+    state = (
+      <>
+        <Pill tone={st.running ? "good" : "muted"}>
+          {st.running ? "running" : "stopped"}
+        </Pill>
+        <Pill
+          tone={st.cpu_quota || st.mem_high ? "muted" : "warn"}
+          title={
+            st.cpu_quota || st.mem_high
+              ? "systemd CPU/memory cap. Change it with LASSO_BROWSER_CPU and LASSO_BROWSER_MEM in lasso's environment."
+              : "No resource cap: headless Chromium without a GPU can use several cores"
+          }
+        >
+          {capLabel(st.cpu_quota, st.mem_high)}
+        </Pill>
+        {st.running && st.pages && (
+          <Pill>
+            {st.pages.length} {st.pages.length === 1 ? "page" : "pages"}
+          </Pill>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <div className="mb-4 flex flex-col gap-1.5">
+      <span className={labelClass}>Shared browser</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {state}
+        {st?.available && (
+          <div className="ml-auto flex gap-1">
+            {st.running ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => action.mutate("restart")}
+                >
+                  Restart
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => action.mutate("stop")}
+                >
+                  Stop
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => action.mutate("start")}
+              >
+                {action.isPending ? "Starting…" : "Start"}
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+      {st?.binary && (
+        <p className="font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+          {st.binary}
+        </p>
+      )}
+      {st?.reason && (
+        <p
+          className={cn(
+            "text-[11px] [overflow-wrap:anywhere]",
+            st.available ? "text-warn" : "text-muted-foreground"
+          )}
+        >
+          {st.reason}
+          {!st.available &&
+            " — install Chromium (or Chrome), or set LASSO_BROWSER to one, to enable it."}
+        </p>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        A real Chromium on lasso's own machine, shown in the sidebar's Browser
+        tab in Agent mode. Agents can drive the same pages you see, so localhost
+        in it means this lasso's machine. It starts on first use and stops after{" "}
+        {st?.idle_minutes ?? 15} minutes with nobody connected.
+      </p>
+
+      <label className={cn(labelClass, "mt-1")} htmlFor="settings-browser-mode">
+        Browser tab mode
+      </label>
+      <select
+        id="settings-browser-mode"
+        className={cn(fieldClass, "max-w-xs")}
+        value={mode}
+        onChange={(e) =>
+          patchUIState({ browser_mode: e.target.value as BrowserMode })
+        }
+      >
+        <option value="live">Agent — the shared Chrome agents can drive</option>
+        <option value="embed">Iframe — the page inside this tab</option>
+      </select>
+
+      <label
+        className={cn(labelClass, "mt-1")}
+        htmlFor="settings-browser-proxy"
+      >
+        Proxy
+      </label>
+      <input
+        id="settings-browser-proxy"
+        {...NO_AUTOCORRECT}
+        className={cn(fieldClass, "max-w-xs font-mono")}
+        placeholder="socks5://host:1080"
+        value={proxy}
+        disabled={status.isError || !st?.available}
+        aria-invalid={proxyErr ? true : undefined}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => {
+          setEditing(true)
+          setProxy(e.target.value)
+        }}
+        onBlur={commitProxy}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur()
+        }}
+      />
+      {proxyErr && <p className="text-[11px] text-destructive">{proxyErr}</p>}
+      <p className="text-[11px] text-muted-foreground">
+        socks5://, socks4://, http:// or https://. Changing it restarts the
+        browser and reopens its pages. With socks5:// DNS is resolved through
+        the proxy too. Chromium cannot log in to a proxy, so one that needs a
+        username and password won't work.
+      </p>
+
+      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        <span className={labelClass}>Connect an agent</span>
+        {mcpSessions > 0 && (
+          <Pill tone="good">
+            {mcpSessions} {mcpSessions === 1 ? "agent" : "agents"} connected
+          </Pill>
+        )}
+      </div>
+      {st && !st.mcp_available && st.mcp_reason && (
+        <p className="text-[11px] text-warn [overflow-wrap:anywhere]">
+          {st.mcp_reason}
+        </p>
+      )}
+      <CopyLine label="browser MCP URL" text={mcpEndpoint} />
+      <CopyLine label="claude mcp add command" text={mcpAdd} />
+      <p className="text-[11px] text-muted-foreground">
+        Gives an agent chrome-devtools-mcp's tools, already pointed at this
+        browser, with nothing to install on its machine. Other agents (Codex,
+        OpenCode, …) add the same URL as a streamable-HTTP MCP server. Behind
+        UI_AUTH or MCP_OAUTH a remote agent sends an Authorization header (a
+        token from <code className="font-mono">lasso mcp-client token</code>,
+        or Basic credentials for UI_AUTH).
+      </p>
+      <CopyLine label="CDP endpoint" text={endpoint} />
+      <p className="text-[11px] text-muted-foreground">
+        For Playwright (
+        <code className="font-mono">chromium.connectOverCDP(endpoint)</code>)
+        or any raw CDP client, which sends the same Authorization header on its
+        websocket.
       </p>
     </div>
   )

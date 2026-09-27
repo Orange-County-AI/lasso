@@ -47,6 +47,8 @@ export function FileViewer({
   onClose,
   initialDraft,
   onDraftChange,
+  line = null,
+  lineSeq = 0,
 }: {
   path: string
   // The host the file was opened from — captured at open time by the parent, so
@@ -62,6 +64,11 @@ export function FileViewer({
   // Reports the unsaved buffer (null once it matches disk again) so the parent
   // can hold it for this pane.
   onDraftChange?: (draft: string | null) => void
+  // A 1-based line to scroll to and select — set when an agent opened this
+  // file with open_file. lineSeq changes on every such request, so asking for
+  // the same line again re-scrolls.
+  line?: number | null
+  lineSeq?: number
 }) {
   const image = isImage(path)
   const pdf = isPdf(path)
@@ -164,6 +171,19 @@ export function FileViewer({
       cancelled = true
     }
   }, [path, host, binary])
+
+  // A requested line is only visible in the editor, so a markdown file asked
+  // for at a line opens raw rather than as the rendered preview — and one
+  // asked for WITHOUT a line opens as the preview, even when it is the file
+  // already on screen in the editor (lineSeq > 0 marks an agent's request; a
+  // click in the tree leaves the human's own raw/preview choice alone).
+  // Declared after the load effect above, which resets the preview on a path
+  // change, so this wins when both run in the same commit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: lineSeq is the re-request trigger
+  React.useEffect(() => {
+    if (line) setPreview(false)
+    else if (lineSeq > 0 && markdown) setPreview(true)
+  }, [line, lineSeq])
 
   // Fetch the working-tree diff (vs HEAD) for this file and bar its changed
   // lines. "working" mode lines up with the on-disk file the viewer loads, so
@@ -385,6 +405,8 @@ export function FileViewer({
             path={path}
             onChange={setDraft}
             changedLines={changedLines}
+            line={line}
+            lineSeq={lineSeq}
           />
         )}
       </div>
@@ -401,11 +423,15 @@ function CodeEditor({
   path,
   onChange,
   changedLines,
+  line,
+  lineSeq,
 }: {
   value: string
   path: string
   onChange: (v: string) => void
   changedLines: number[]
+  line: number | null
+  lineSeq: number
 }) {
   // Recompute only when the file, the large-file threshold, or the changed-line
   // set changes — not on every keystroke — so CodeMirror isn't reconfigured as
@@ -421,6 +447,23 @@ function CodeEditor({
     ]
   }, [path, big, changedLines])
 
+  // Scroll a requested line into the middle of the view and put the cursor on
+  // it, which the active-line band highlights. Not focused: on a phone that
+  // would pop the keyboard over a file the human only asked to look at. The
+  // view arrives through onCreateEditor, so this also runs once the editor
+  // exists when the line was asked for before the text had loaded.
+  const [view, setView] = React.useState<EditorView | null>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: lineSeq is the re-request trigger
+  React.useEffect(() => {
+    if (!view || !line) return
+    const doc = view.state.doc
+    const at = doc.line(Math.min(Math.max(1, line), doc.lines))
+    view.dispatch({
+      selection: { anchor: at.from },
+      effects: EditorView.scrollIntoView(at.from, { y: "center" }),
+    })
+  }, [view, line, lineSeq])
+
   return (
     <CodeMirror
       value={value}
@@ -433,6 +476,7 @@ function CodeEditor({
       extensions={extensions}
       height="100%"
       className="cm-host"
+      onCreateEditor={setView}
     />
   )
 }

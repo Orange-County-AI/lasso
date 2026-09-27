@@ -48,6 +48,7 @@ import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
+import { onRevealFiles } from "@/lib/open-file"
 import { restoreHost } from "@/lib/pane-focus"
 import {
   markSidebarIntent,
@@ -56,6 +57,7 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
+import { onSidebarBrowserOpen } from "@/lib/sidebar-browser"
 import {
   blurHerdrTerminal,
   focusHerdrTerminal,
@@ -345,6 +347,32 @@ function Shell() {
     markSidebarIntent()
     expandSidebar()
   }, [expandSidebar])
+
+  // A link clicked in a terminal (lib/sidebar-browser.ts): show it in the
+  // Browser tab. BrowserTab loads the URL itself; this only reveals it.
+  React.useEffect(
+    () =>
+      onSidebarBrowserOpen(() => {
+        setRightView("browser")
+        openSidebar()
+      }),
+    [openSidebar]
+  )
+
+  // An agent opened a file for the human (lib/open-file.ts): show the Files
+  // tab, and open the sidebar if it is collapsed. Through openSidebar, which
+  // stamps intent like ⌘\ — the human asked the agent to show them this, so
+  // it is their layout change and must win the synced-layout claim rather than
+  // be refused as an unattended echo. An already-open sidebar is left at the
+  // width it has.
+  React.useEffect(
+    () =>
+      onRevealFiles(() => {
+        setRightView("files")
+        if (rightPanel.current?.isCollapsed()) openSidebar()
+      }),
+    [openSidebar]
+  )
 
   // Footer navigation. New always opens on the agent tab — the terminal tab is
   // ⌘I's business — and the mobile dial's "new" command shares this.
@@ -729,7 +757,9 @@ function Shell() {
                   <ScratchTab />
                 </Pane>
                 <Pane show={rightView === "browser"}>
-                  <BrowserTab />
+                  {/* Live mode streams only while this is on screen, so an
+                      unwatched shared browser can idle out. */}
+                  <BrowserTab active={rightView === "browser" && !collapsed} />
                 </Pane>
                 <Pane show={rightView === "terminal"}>
                   <TerminalFrame

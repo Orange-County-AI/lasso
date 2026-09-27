@@ -80,6 +80,24 @@ var (
 		"disable the in-app self-update (git pull + systemctl --user restart); env LASSO_DISABLE_SELF_UPDATE=1")
 	devMode   = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
 	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live (default: retro-82 when unconfigured), or force a theme name — dark: retro-82/catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	// The shared browser (browser.go): a headless Chromium lasso supervises and
+	// proxies at /cdp for the Browser tab and agents alike.
+	browserBin = flag.String("browser", os.Getenv("LASSO_BROWSER"),
+		"Chromium binary for the shared browser (a path or a PATH name); empty searches PATH, Playwright's cache and the macOS app bundles; \"off\" disables it. env LASSO_BROWSER")
+	browserIdle = flag.Duration("browser-idle", envDuration("LASSO_BROWSER_IDLE", 15*time.Minute),
+		"stop the shared browser after this long with no /cdp client connected (0 = never); env LASSO_BROWSER_IDLE")
+	browserCPU = flag.String("browser-cpu", envOrDefault("LASSO_BROWSER_CPU", "200%"),
+		"CPUQuota for the shared browser's systemd user scope (linux), e.g. 300%; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_CPU")
+	browserScale = flag.String("browser-scale", envOrDefault("LASSO_BROWSER_SCALE", "2"),
+		"device scale factor the shared browser renders at, so the Browser tab is sharp on a HiDPI screen (1 = Chromium's default; costs raster CPU and makes agent screenshots larger). env LASSO_BROWSER_SCALE")
+	browserMem = flag.String("browser-mem", envOrDefault("LASSO_BROWSER_MEM", "2G"),
+		"MemoryHigh for the shared browser's systemd user scope (linux), e.g. 4G; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_MEM")
+	// /browser-mcp (browsermcp.go): chrome-devtools-mcp, one child per MCP
+	// session, bridged to agents over HTTP and pointed at the shared browser.
+	browserMCPBin = flag.String("browser-mcp", os.Getenv("LASSO_BROWSER_MCP"),
+		"chrome-devtools-mcp binary behind /browser-mcp (a path or a PATH name); empty = chrome-devtools-mcp on PATH; \"off\" disables the endpoint. There is no npx fallback. env LASSO_BROWSER_MCP")
+	browserMCPMax = flag.Int("browser-mcp-max", envInt("LASSO_BROWSER_MCP_MAX", browserMCPDefaultMax),
+		"most concurrent /browser-mcp sessions (each is one chrome-devtools-mcp process); env LASSO_BROWSER_MCP_MAX")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the
@@ -218,10 +236,6 @@ func runServer() {
 	srvCtx = ctx
 	go hub.run(ctx)
 
-	// Drain the agent-to-agent message queue (message_agent MCP tool) for the
-	// life of the server, delivering into recipient panes as they go idle.
-	go messageDispatchLoop(ctx)
-
 	// Notifications: register the transports, then watch the fleet for agents
 	// that block waiting on a human. Both are inert until a device subscribes —
 	// the watcher's first act each tick is to ask whether anything is listening,
@@ -232,6 +246,28 @@ func runServer() {
 	// Agent records: keep them reconciled against herdr's panes without a reader
 	// (see agentreap.go — the aggregation used to be driven by a browser).
 	go startAgentReaper(ctx)
+
+	// The shared browser launches lazily (first /cdp request, the Browser tab's
+	// start, or the MCP tool); nothing runs until then. run() is its idle stop
+	// and, on ctx, its shutdown — the same ctx ttyd's children hang off.
+	sharedBrowser = newBrowserManager(browserConfig{
+		Explicit:     *browserBin,
+		Idle:         *browserIdle,
+		Cap:          browserCap{CPU: capLimit(*browserCPU), Mem: capLimit(*browserMem)},
+		Dir:          lassoDir(),
+		Scale:        validBrowserScale(*browserScale),
+		AuthRequired: hasAuth || oauthCfg.Enabled,
+	})
+	go sharedBrowser.run(ctx)
+	// Its sessions' children hold CDP connections to one browser process, so
+	// when that process goes away (stop, idle stop, relaunch, crash) they are
+	// closed and their clients re-initialize onto the next one.
+	browserMCP = newBrowserMCPBridge(browserMCPConfig{
+		Binary:    *browserMCPBin,
+		ExtraArgs: os.Getenv("LASSO_BROWSER_MCP_ARGS"),
+		Max:       *browserMCPMax,
+	})
+	sharedBrowser.onStop = browserMCP.browserStopped
 
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
@@ -284,6 +320,9 @@ func runServer() {
 	mux.HandleFunc("/api/agent/reopen", serveAgentReopen)
 	mux.HandleFunc("/api/agent-history", serveAgentHistory)
 	mux.HandleFunc("/api/paste-file", servePasteFile)
+	mux.HandleFunc("/api/frameable", serveFrameable)
+	mux.HandleFunc("/api/browser", sharedBrowser.serveStatus)
+	mux.HandleFunc("/api/browser/proxy", sharedBrowser.serveProxy)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
@@ -317,7 +356,7 @@ func runServer() {
 	// withMCPAuth is a no-op unless MCP_OAUTH is set; when it is, /mcp requires a
 	// bearer token from lasso's own OAuth server (oauth.go) or the UI_AUTH
 	// credentials.
-	mcpHandler := withMCPAuth(newMCPHandler(), authUser, authPass, hasAuth)
+	mcpHandler := withMCPAuth(withRequestBase(newMCPHandler()), authUser, authPass, hasAuth)
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	// OAuth 2.1 authorization server for /mcp (oauth.go). The discovery
@@ -334,6 +373,21 @@ func runServer() {
 	mux.HandleFunc("/oauth/register", serveOAuthRegister)
 	mux.HandleFunc("/oauth/token", serveOAuthToken)
 	mux.HandleFunc("/oauth/authorize", serveOAuthAuthorize)
+	// The shared browser's CDP endpoint (cdpproxy.go), for the Browser tab and
+	// for agents (chrome-devtools-mcp --wsEndpoint ws://<lasso>/cdp). Exempt from
+	// UI_AUTH below like /mcp, because it carries its own gate: withCDPAuth
+	// applies /mcp's rule when MCP_OAUTH is set and UI_AUTH's otherwise, and
+	// serveCDP refuses any foreign Origin before either matters.
+	cdpHandler := withCDPAuth(http.HandlerFunc(sharedBrowser.serveCDP), authUser, authPass, hasAuth)
+	mux.Handle("/cdp", cdpHandler)
+	mux.Handle("/cdp/", cdpHandler)
+	// The shared browser as an MCP server (browsermcp.go): one URL an agent adds
+	// to get chrome-devtools-mcp's tools against this browser. NOT under /mcp/,
+	// which is lasso's own MCP server's prefix. Exempt from UI_AUTH below and
+	// gated by withBrowserMCPAuth, which is /cdp's rule since it fronts /cdp.
+	browserMCPHandler := withBrowserMCPAuth(browserMCP, authUser, authPass, hasAuth)
+	mux.Handle("/browser-mcp", browserMCPHandler)
+	mux.Handle("/browser-mcp/", browserMCPHandler)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -358,17 +412,22 @@ func runServer() {
 	}
 
 	// /mcp carries its own gate (withMCPAuth above — open by default, OAuth when
-	// MCP_OAUTH is set; see CLAUDE.md), and the OAuth discovery/token endpoints
+	// MCP_OAUTH is set; see CLAUDE.md), so does /cdp (withCDPAuth), and the OAuth discovery/token endpoints
 	// are meaningless behind a credential wall. Everything else — including
 	// /oauth/authorize, which is where consent is actually granted — stays
 	// behind UI_AUTH when set.
 	handler := gate.wrap(withAuthExcept(mux, authUser, authPass, hasAuth,
 		"/mcp",
+		"/cdp",
+		"/browser-mcp",
 		"/.well-known/oauth-protected-resource",
 		"/.well-known/oauth-authorization-server",
 		"/oauth/register",
 		"/oauth/token",
 	))
+	// lasso's own chrome-devtools-mcp children reach /cdp on an internal token,
+	// ahead of every gate above (see withInternalCDP for why outermost).
+	handler = withInternalCDP(handler, http.HandlerFunc(sharedBrowser.serveCDP))
 
 	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
 	// port if the requested one is taken. Outside dev a busy port is fatal — we
@@ -381,6 +440,8 @@ func runServer() {
 		log.Printf("dev:      web port %s busy → using %s", *listenAddr, boundAddr)
 		*listenAddr = boundAddr // so the URL log + isLoopback reflect reality
 	}
+	// Where /browser-mcp's children dial /cdp: the address actually bound.
+	browserMCP.setListenAddr(ln.Addr())
 
 	// Spawn ttyd only after the web port is ours — so a busy-port exit above
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
@@ -430,6 +491,10 @@ func runServer() {
 		// Streaming handlers (SSE) watch `draining` and exit immediately, so
 		// Shutdown only waits on real work — not on the drain window per se.
 		close(draining)
+		// /browser-mcp sessions hold streams open for as long as their client
+		// likes; closing them (and their children) first keeps the drain to
+		// real work, and lasso never exits ahead of a child.
+		browserMCP.closeAll("lasso shutting down")
 		log.Printf("shutdown: draining in-flight requests (up to %s)", drainTimeout)
 		sh, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		_ = srv.Shutdown(sh)
@@ -437,6 +502,10 @@ func runServer() {
 		// Only now tear down what in-flight requests depended on.
 		cancelBackends()
 		closeBackendsOnExit()
+		// Cancelling ctx asks run() to stop the shared browser, but nothing
+		// waits on that goroutine: stop it here too, synchronously, so lasso
+		// never exits ahead of its Chromium. The second stop is a no-op.
+		sharedBrowser.shutdown()
 	}()
 
 	gate.logStatus(*listenAddr, hasAuth)
@@ -1359,7 +1428,7 @@ func serveWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	// Keep the agent record's title — the address list_agents and message_agent
+	// Keep the agent record's title — the name list_agents and get_agent
 	// surface over MCP — in step with what the pane listings now show.
 	_ = updateAgentTitleByWorkspace(be.Name(), req.WorkspaceID, req.Label)
 	writeJSON(w, map[string]any{"ok": true})
@@ -2444,13 +2513,20 @@ type hub struct {
 	// poll would otherwise log the same line every couple of seconds.
 	strayTheme string
 	feeds      map[string]*hostFeed
-	// noticeClients is every connected tab, subscribed to one-shot notices. Kept
-	// as its own channel per client rather than folded into Active because a
-	// notice is an EVENT, not state: Active is snapshot-replaced on every poll
-	// and re-sent on connect, which would replay (or silently drop) a toast
-	// instead of delivering it exactly once. Global, not per feed: a notice is
-	// about lasso, not about a host.
-	noticeClients map[chan notice]struct{}
+	// eventClients is every connected tab, subscribed to one-shot events — a
+	// notice, an agent's open_file. Kept as its own channel per client rather
+	// than folded into Active because these are EVENTS, not state: Active is
+	// snapshot-replaced on every poll and re-sent on connect, which would replay
+	// (or silently drop) a toast instead of delivering it exactly once. Global,
+	// not per feed: both are about lasso, not about a host.
+	eventClients map[chan sseEvent]struct{}
+}
+
+// sseEvent is one named, one-shot SSE event: `name` becomes the stream's
+// `event:` line and data is marshalled as its JSON payload.
+type sseEvent struct {
+	name string
+	data any
 }
 
 // newHub seeds the hub's theme with the one resolved at startup, so the first
@@ -2459,10 +2535,10 @@ func newHub() *hub {
 	return &hub{
 		// Replaced by run(). Seeded so a hub built outside main — a test, a CLI
 		// path — can start feeds without a nil parent context.
-		rootCtx:       context.Background(),
-		curTheme:      theme,
-		feeds:         map[string]*hostFeed{},
-		noticeClients: map[chan notice]struct{}{},
+		rootCtx:      context.Background(),
+		curTheme:     theme,
+		feeds:        map[string]*hostFeed{},
+		eventClients: map[chan sseEvent]struct{}{},
 	}
 }
 
@@ -2474,20 +2550,42 @@ func (h *hub) revs() (themeRev, uiStateRev int) {
 }
 
 // notify fans a notice out to every connected tab, whatever host it is on.
-// Non-blocking per client (a stalled reader drops the toast rather than wedging
-// the caller), matching how state frames are pushed.
-func (h *hub) notify(n notice) {
+func (h *hub) notify(n notice) { h.broadcast("notice", n) }
+
+// broadcast fans a one-shot event out to every connected tab, whatever host it
+// is on, and reports how many tabs it was handed to. Non-blocking per client (a
+// stalled reader drops the event rather than wedging the caller), matching how
+// state frames are pushed — which is also why the count is of tabs that TOOK
+// it, not of tabs connected: a dropped event was not delivered.
+func (h *hub) broadcast(name string, data any) int {
 	h.mu.RLock()
-	clients := make([]chan notice, 0, len(h.noticeClients))
-	for c := range h.noticeClients {
+	clients := make([]chan sseEvent, 0, len(h.eventClients))
+	for c := range h.eventClients {
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()
+	ev, n := sseEvent{name: name, data: data}, 0
 	for _, c := range clients {
 		select {
-		case c <- n:
+		case c <- ev:
+			n++
 		default:
 		}
+	}
+	return n
+}
+
+// subscribeEvents registers one tab for the one-shot events; the returned func
+// unregisters it. serveSSE holds one for the life of each stream.
+func (h *hub) subscribeEvents() (chan sseEvent, func()) {
+	ch := make(chan sseEvent, 8)
+	h.mu.Lock()
+	h.eventClients[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.eventClients, ch)
+		h.mu.Unlock()
 	}
 }
 
@@ -2629,7 +2727,7 @@ func (h *hub) refreshTheme() {
 
 // serveSSE streams one tab's state. The tab names its host (?host=, since an
 // EventSource cannot set a header), and the stream carries THAT host's frames
-// plus the global notices — so two tabs on two machines each get their own
+// plus the global one-shot events — so two tabs on two machines each get their own
 // machine's panes over their own subscription.
 func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
@@ -2661,24 +2759,17 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	nch := make(chan notice, 8)
-	h.mu.Lock()
-	h.noticeClients[nch] = struct{}{}
-	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.noticeClients, nch)
-		h.mu.Unlock()
-	}()
+	nch, unsubscribe := h.subscribeEvents()
+	defer unsubscribe()
 
 	send := func(a Active) {
 		b, _ := json.Marshal(a)
 		fmt.Fprintf(w, "event: active\ndata: %s\n\n", b)
 		fl.Flush()
 	}
-	sendNotice := func(n notice) {
-		b, _ := json.Marshal(n)
-		fmt.Fprintf(w, "event: notice\ndata: %s\n\n", b)
+	sendEvent := func(ev sseEvent) {
+		b, _ := json.Marshal(ev.data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.name, b)
 		fl.Flush()
 	}
 	send(f.snapshot()) // prime with current state
@@ -2695,8 +2786,8 @@ func (h *hub) serveSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case a := <-ch:
 			send(a)
-		case n := <-nch:
-			sendNotice(n)
+		case ev := <-nch:
+			sendEvent(ev)
 		case <-keep.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			fl.Flush()
