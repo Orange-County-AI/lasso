@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID) and getting your human's attention with a push notification (notify / `lasso notify`).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), and driving the shared browser the human watches live in lasso's Browser tab (shared_browser / `lasso mcp shared-browser`, then chrome-devtools-mcp or Playwright over CDP).
 ---
 
 # lasso
@@ -25,6 +25,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `list_branches` | List branches for a repo |
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
+> | `shared_browser`| Start the shared Chromium the human watches live and get its CDP endpoint |
 >
 > **No MCP client? Use `lasso mcp`.** Every tool above is also a shell command —
 > `lasso mcp` lists them, `lasso mcp <tool> -h` shows one tool's flags, and
@@ -136,6 +137,70 @@ The **`notify`** MCP tool is the same call — pass `message` and your
 `$HERDR_PANE_ID` as `pane_id`. Use the CLI unless you're already in an MCP
 round trip; use the tool when you want the structured `sent` / `transports`
 reply.
+
+## The shared browser
+
+lasso runs one real Chromium on **its own machine** and shows it live in the
+sidebar's Browser tab. You can drive the same browser over the Chrome DevTools
+Protocol, and the human sees every page you open, as you open it — and can
+click in it too.
+
+**Use it when a human should see the page**: checking a UI you just built,
+reproducing a bug they reported, walking a flow they want to watch, anything
+where "look at this" beats a screenshot. For headless scraping or a test suite
+nobody is watching, your own Playwright/Chromium is fine.
+
+### Getting the endpoint
+
+```bash
+lasso mcp shared-browser        # starts it if needed; prints ws_endpoint and pages
+```
+
+or the **`shared_browser`** MCP tool (pass `start: false` to only report its
+state). The reply carries `ws_endpoint` (e.g. `ws://127.0.0.1:8090/cdp`), the
+pages open right now, and a `note` when something needs saying — no Chromium
+installed, or that `/cdp` needs your credential. The endpoint is stable across
+browser restarts, so it is safe to put in a config. A refusal saying the
+browser is outside your credential's reach is a scope boundary: don't work
+around it.
+
+### Connecting
+
+- **chrome-devtools-mcp:** `npx chrome-devtools-mcp@latest --wsEndpoint
+  <ws_endpoint>`; add `--wsHeaders '{"Authorization":"Bearer <token>"}'` when
+  the note says `/cdp` needs credentials (the bearer token you use for
+  `/mcp`; behind `UI_AUTH` alone, `Basic` credentials instead).
+- **Playwright:** `chromium.connectOverCDP("<ws_endpoint>")` — then use
+  `browser.contexts()[0]` (the shared, logged-in profile) and `newPage()` on
+  it. Close your pages when done; never send CDP's `Browser.close`, which
+  shuts the browser down for everyone. Playwright's own `browser.close()` is
+  safe here: on a `connectOverCDP` connection it only disconnects.
+- Plain CDP works too: `…/cdp/json/list` over HTTP lists the targets.
+
+### Etiquette — a human may be watching
+
+- **The human sees one page: the newest.** The Browser tab has no tab strip;
+  it shows whichever page was opened most recently. Open a page with
+  `new_page` / `newPage()` and the human's view follows you onto it, which is
+  usually what you want ("watch me click through this"). The page they were
+  on keeps running, just out of sight.
+- **Don't navigate away a page you didn't open** unless the human asked you
+  to work in it; it may be what they are reading. Open your own instead.
+- **Close the pages you opened when you're done.** The view then falls back
+  to another open page. Don't close pages you didn't open.
+- **The profile is shared and may be logged in.** Cookies and logins persist
+  in it. Treat any account it is signed into as the human's: reading is fine,
+  but posting, sending, buying or changing settings needs their go-ahead.
+- Don't restart or stop the browser, or change its proxy, to fix your own
+  problem — that closes everyone's pages. Ask the human.
+
+### `localhost` means lasso's machine
+
+The browser runs where lasso runs, not necessarily where you do. If your dev
+server is on the same machine as lasso, `http://localhost:5173` works. If you
+are on another host, `localhost` inside the shared browser is **not** your
+box: use an address lasso's machine can reach (your tailnet name or IP), and
+make sure your server listens on it.
 
 ## Using the rest of the herdr CLI
 

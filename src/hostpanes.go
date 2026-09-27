@@ -464,6 +464,10 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("agents_sort must be one of %s", strings.Join(agentsSorts, ", ")), http.StatusBadRequest)
 			return
 		}
+		if !validBrowserMode(us.BrowserMode) {
+			http.Error(w, fmt.Sprintf("browser_mode must be one of %s", strings.Join(browserModes, ", ")), http.StatusBadRequest)
+			return
+		}
 		if us.UsageHidden == nil {
 			us.UsageHidden = []string{}
 		}

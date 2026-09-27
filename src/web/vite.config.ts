@@ -28,6 +28,13 @@ export default defineConfig({
       "/omarchy": { target: backend, changeOrigin: true },
       "/terminal": { target: backend, changeOrigin: true, ws: true },
       "/shell": { target: backend, changeOrigin: true, ws: true },
+      // The shared browser's CDP endpoint. changeOrigin stays OFF: /cdp refuses
+      // a websocket whose Origin names a different host than its Host header
+      // (cdpOriginAllowed, the cross-site hijacking guard), and rewriting Host
+      // to the backend while the page's Origin stays the dev server would fail
+      // it. The Host passing through also makes /cdp/json's rewritten
+      // websocket URLs point back at this dev server.
+      "/cdp": { target: backend, changeOrigin: false, ws: true },
     },
   },
 })

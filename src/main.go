@@ -80,6 +80,18 @@ var (
 		"disable the in-app self-update (git pull + systemctl --user restart); env LASSO_DISABLE_SELF_UPDATE=1")
 	devMode   = flag.Bool("dev", false, "dev mode: fall forward to the next free web port if the requested one is busy (so multiple instances coexist). The frontend itself is served by the Vite dev server with hot reload — see `mise run dev`.")
 	themeName = flag.String("theme", "auto", "color theme: \"auto\" follows herdr's config.toml live (default: retro-82 when unconfigured), or force a theme name — dark: retro-82/catppuccin/tokyo-night/dracula/nord/gruvbox/one-dark/solarized/kanagawa/rose-pine/vesper/terminal; light: catppuccin-latte/tokyo-night-day/gruvbox-light/one-light/solarized-light/kanagawa-lotus/rose-pine-dawn")
+	// The shared browser (browser.go): a headless Chromium lasso supervises and
+	// proxies at /cdp for the Browser tab and agents alike.
+	browserBin = flag.String("browser", os.Getenv("LASSO_BROWSER"),
+		"Chromium binary for the shared browser (a path or a PATH name); empty searches PATH, Playwright's cache and the macOS app bundles; \"off\" disables it. env LASSO_BROWSER")
+	browserIdle = flag.Duration("browser-idle", envDuration("LASSO_BROWSER_IDLE", 15*time.Minute),
+		"stop the shared browser after this long with no /cdp client connected (0 = never); env LASSO_BROWSER_IDLE")
+	browserCPU = flag.String("browser-cpu", envOrDefault("LASSO_BROWSER_CPU", "200%"),
+		"CPUQuota for the shared browser's systemd user scope (linux), e.g. 300%; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_CPU")
+	browserScale = flag.String("browser-scale", envOrDefault("LASSO_BROWSER_SCALE", "2"),
+		"device scale factor the shared browser renders at, so the Browser tab is sharp on a HiDPI screen (1 = Chromium's default; costs raster CPU and makes agent screenshots larger). env LASSO_BROWSER_SCALE")
+	browserMem = flag.String("browser-mem", envOrDefault("LASSO_BROWSER_MEM", "2G"),
+		"MemoryHigh for the shared browser's systemd user scope (linux), e.g. 4G; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_MEM")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the
@@ -233,6 +245,19 @@ func runServer() {
 	// (see agentreap.go — the aggregation used to be driven by a browser).
 	go startAgentReaper(ctx)
 
+	// The shared browser launches lazily (first /cdp request, the Browser tab's
+	// start, or the MCP tool); nothing runs until then. run() is its idle stop
+	// and, on ctx, its shutdown — the same ctx ttyd's children hang off.
+	sharedBrowser = newBrowserManager(browserConfig{
+		Explicit:     *browserBin,
+		Idle:         *browserIdle,
+		Cap:          browserCap{CPU: capLimit(*browserCPU), Mem: capLimit(*browserMem)},
+		Dir:          lassoDir(),
+		Scale:        validBrowserScale(*browserScale),
+		AuthRequired: hasAuth || oauthCfg.Enabled,
+	})
+	go sharedBrowser.run(ctx)
+
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
@@ -285,6 +310,8 @@ func runServer() {
 	mux.HandleFunc("/api/agent-history", serveAgentHistory)
 	mux.HandleFunc("/api/paste-file", servePasteFile)
 	mux.HandleFunc("/api/frameable", serveFrameable)
+	mux.HandleFunc("/api/browser", sharedBrowser.serveStatus)
+	mux.HandleFunc("/api/browser/proxy", sharedBrowser.serveProxy)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
@@ -318,7 +345,7 @@ func runServer() {
 	// withMCPAuth is a no-op unless MCP_OAUTH is set; when it is, /mcp requires a
 	// bearer token from lasso's own OAuth server (oauth.go) or the UI_AUTH
 	// credentials.
-	mcpHandler := withMCPAuth(newMCPHandler(), authUser, authPass, hasAuth)
+	mcpHandler := withMCPAuth(withRequestBase(newMCPHandler()), authUser, authPass, hasAuth)
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	// OAuth 2.1 authorization server for /mcp (oauth.go). The discovery
@@ -335,6 +362,14 @@ func runServer() {
 	mux.HandleFunc("/oauth/register", serveOAuthRegister)
 	mux.HandleFunc("/oauth/token", serveOAuthToken)
 	mux.HandleFunc("/oauth/authorize", serveOAuthAuthorize)
+	// The shared browser's CDP endpoint (cdpproxy.go), for the Browser tab and
+	// for agents (chrome-devtools-mcp --wsEndpoint ws://<lasso>/cdp). Exempt from
+	// UI_AUTH below like /mcp, because it carries its own gate: withCDPAuth
+	// applies /mcp's rule when MCP_OAUTH is set and UI_AUTH's otherwise, and
+	// serveCDP refuses any foreign Origin before either matters.
+	cdpHandler := withCDPAuth(http.HandlerFunc(sharedBrowser.serveCDP), authUser, authPass, hasAuth)
+	mux.Handle("/cdp", cdpHandler)
+	mux.Handle("/cdp/", cdpHandler)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -359,12 +394,13 @@ func runServer() {
 	}
 
 	// /mcp carries its own gate (withMCPAuth above — open by default, OAuth when
-	// MCP_OAUTH is set; see CLAUDE.md), and the OAuth discovery/token endpoints
+	// MCP_OAUTH is set; see CLAUDE.md), so does /cdp (withCDPAuth), and the OAuth discovery/token endpoints
 	// are meaningless behind a credential wall. Everything else — including
 	// /oauth/authorize, which is where consent is actually granted — stays
 	// behind UI_AUTH when set.
 	handler := gate.wrap(withAuthExcept(mux, authUser, authPass, hasAuth,
 		"/mcp",
+		"/cdp",
 		"/.well-known/oauth-protected-resource",
 		"/.well-known/oauth-authorization-server",
 		"/oauth/register",
@@ -438,6 +474,10 @@ func runServer() {
 		// Only now tear down what in-flight requests depended on.
 		cancelBackends()
 		closeBackendsOnExit()
+		// Cancelling ctx asks run() to stop the shared browser, but nothing
+		// waits on that goroutine: stop it here too, synchronously, so lasso
+		// never exits ahead of its Chromium. The second stop is a no-op.
+		sharedBrowser.shutdown()
 	}()
 
 	gate.logStatus(*listenAddr, hasAuth)

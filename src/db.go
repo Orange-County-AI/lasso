@@ -347,6 +347,13 @@ type uiState struct {
 	// not answer that. The grid's own group-by-machine toggle stays ephemeral
 	// — it changes what the layout SAYS, not whether it holds still.
 	AgentsSort string `json:"agents_sort"`
+	// BrowserMode is what the sidebar's Browser tab shows: "live" (the
+	// default — the shared headless Chromium lasso supervises, streamed as a
+	// screencast and driven by humans and agents alike) or "embed" (the plain
+	// iframe it always had). Server-owned so a phone and a desktop open the
+	// same kind of browser; a lasso with no Chromium falls back to embed in
+	// the tab itself without rewriting this choice.
+	BrowserMode string `json:"browser_mode"`
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored
@@ -434,6 +441,36 @@ func normalizeAgentsSort(s string) string {
 	return agentsSortPriority
 }
 
+// The Browser tab's modes. "live" is the default.
+const (
+	browserModeLive  = "live"
+	browserModeEmbed = "embed"
+)
+
+// browserModes is the accepted set, in the order a client error lists them.
+var browserModes = []string{browserModeLive, browserModeEmbed}
+
+// validBrowserMode reports whether m is one a caller may send. Exact, for the
+// same reason validAgentsSort is.
+func validBrowserMode(m string) bool {
+	for _, v := range browserModes {
+		if m == v {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeBrowserMode repairs what is already IN the db — every blob written
+// before this field existed carries "", which means the default. Writes are
+// validated instead (see serveUIState).
+func normalizeBrowserMode(m string) string {
+	if validBrowserMode(m) {
+		return m
+	}
+	return browserModeLive
+}
+
 // normalizeAppearanceMode repairs what is already IN the db — a blob written
 // before this field existed, or one hand-edited — so every read answers a mode
 // the frontend can switch on. Writes are validated instead (see serveUIState).
@@ -457,6 +494,7 @@ func getUIState() (uiState, error) {
 		CustomBackgrounds:      []string{},
 		AppearanceMode:         appearanceModeHerdr,
 		AgentsSort:             agentsSortPriority,
+		BrowserMode:            browserModeLive,
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -481,6 +519,7 @@ func getUIState() (uiState, error) {
 	}
 	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
 	us.AgentsSort = normalizeAgentsSort(us.AgentsSort)
+	us.BrowserMode = normalizeBrowserMode(us.BrowserMode)
 	return us, nil
 }
 

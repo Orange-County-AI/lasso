@@ -50,6 +50,9 @@ const DEFAULTS: UIState = {
   creator_last_host: "",
   // Mirrors getUIState in db.go: the grid's historical order.
   agents_sort: "priority",
+  // Mirrors getUIState in db.go. BrowserTab still shows embed until the
+  // server says a Chromium is available.
+  browser_mode: "live",
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic

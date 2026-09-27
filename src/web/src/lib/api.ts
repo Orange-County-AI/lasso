@@ -375,6 +375,12 @@ export type AppearanceMode = "herdr" | "system" | "light" | "dark"
 // would not deliver that.
 export type AgentSort = "priority" | "alpha"
 
+// What the sidebar's Browser tab shows: "live" is the shared headless Chromium
+// lasso supervises (a CDP screencast humans and agents drive together), and
+// "embed" is the plain iframe. A lasso with no Chromium shows embed whatever
+// this says — the choice is kept for when one is installed.
+export type BrowserMode = "live" | "embed"
+
 // Persisted, global UI preferences (SQLite-backed): sidebar layout, the Files
 // tab's click behavior, footer preferences, the appearance mode and its
 // palettes, and the per-theme backdrop.
@@ -427,6 +433,9 @@ export interface UIState {
   // send "" — the server answers 400 and drops the whole patch, exactly as it
   // does for appearance_mode.
   agents_sort: AgentSort
+  // What the Browser tab shows (see BrowserMode). Never send "" — the server
+  // answers 400 and drops the whole patch, as it does for agents_sort.
+  browser_mode: BrowserMode
 }
 
 // A partial write to /api/ui-state: the preference fields to merge, plus the
@@ -777,6 +786,59 @@ export interface PushDevice {
   last_error?: string
 }
 
+// One page of the shared browser, as /api/browser lists it.
+export interface BrowserPage {
+  id: string
+  url: string
+  title: string
+}
+
+// GET /api/browser: the shared Chromium lasso supervises on its OWN machine
+// (whatever host a tab is on). `reason` says why it is unavailable, or what the
+// last launch failed with; `pages` is only filled while it runs.
+export interface BrowserStatus {
+  available: boolean
+  running: boolean
+  binary: string
+  reason: string
+  proxy: string
+  idle_minutes: number
+  started_at: string
+  // Launched under a systemd CPU/memory cap.
+  capped: boolean
+  // The limits in force (or that the next launch gets): systemd CPUQuota and
+  // MemoryHigh syntax, "" when that limit is off. Set by LASSO_BROWSER_CPU /
+  // LASSO_BROWSER_MEM or the -browser-cpu / -browser-mem flags.
+  cpu_quota: string
+  mem_high: string
+  pages: BrowserPage[] | null
+  ws_path: string
+  // What a relaunch did (e.g. which pages it reopened after a proxy change).
+  note?: string
+}
+
+export type BrowserAction = "start" | "stop" | "restart"
+
+// postBrowser answers the status the server returns, or throws its `reason`: a
+// failed start is a 502 whose body is the same status JSON, and httpError would
+// otherwise surface the raw JSON rather than the sentence inside it.
+async function postBrowser(url: string, body: unknown): Promise<BrowserStatus> {
+  const r = await hostFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (r.ok) return (await r.json()) as BrowserStatus
+  if ((r.headers.get("content-type") || "").includes("json")) {
+    const v: { reason?: unknown } | null = await r.json().catch(() => null)
+    if (typeof v?.reason === "string" && v.reason) {
+      throw new ApiError(v.reason, r.status)
+    }
+    throw new ApiError(`HTTP ${r.status}`, r.status)
+  }
+  throw await httpError(r)
+}
+
 export interface PushConfig {
   public_key: string
   devices: PushDevice[]
@@ -889,6 +951,15 @@ export const api = {
       `/api/frameable?url=${encodeURIComponent(url)}&origin=${encodeURIComponent(location.origin)}`,
       8000
     ),
+  // The shared browser (browser.go). Server-level: it always runs on lasso's
+  // own machine, so the tab's host is irrelevant to it.
+  browserStatus: () => getJSON<BrowserStatus>("/api/browser", 10_000),
+  browserAction: (action: BrowserAction) =>
+    postBrowser("/api/browser", { action }),
+  // A 400 carries the validation message as plain text, which is what the
+  // Settings field shows under the input.
+  setBrowserProxy: (proxy: string) =>
+    postBrowser("/api/browser/proxy", { proxy }),
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>
     postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),

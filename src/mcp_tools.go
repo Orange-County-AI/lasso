@@ -23,6 +23,8 @@ import (
 //                  lasso record, typically to then close_agent itself)
 //   - notifying:   notify (an agent pushes a notification to its HUMAN — the
 //                  deliberate counterpart to the blocked watcher; see notify.go)
+//   - browsing:    shared_browser (starts the Chromium a human watches in the
+//                  Browser tab and says where to connect; see mcp_browser.go)
 
 // registerMCPTools wires every tool onto the server. The In/Out struct types
 // drive the JSON Schemas the SDK advertises (field docs come from `jsonschema`
@@ -92,6 +94,11 @@ func registerMCPTools(s *mcp.Server) {
 		Name:        "notify",
 		Description: "Push a notification to the HUMAN who runs this lasso — their phone, if they have lasso on its home screen. Use it when you genuinely need them: a decision only they can make, a question that blocks you, or a long job finishing while they are away. It reaches a locked device, so it is not free: an agent that pings on every step trains them to ignore it. Pass your own $HERDR_PANE_ID as pane_id and the notification is titled with your agent's name and opens on your host, so they know who is asking without reading the body; the server cannot read your environment, so you must supply it. Nothing is collapsed or rate-limited — you asked once and it is delivered once. Check `sent` in the reply: false means no device is registered (`detail` says so) and the human did NOT get it, so do not report that you notified them. `lasso notify \"<message>\"` in a shell is the same call.",
 	}, notifyTool)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "shared_browser",
+		Description: sharedBrowserDescription,
+	}, sharedBrowserTool)
 }
 
 // ---------------------------------------------------------------------------

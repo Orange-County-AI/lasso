@@ -741,7 +741,9 @@ function Shell() {
                   <ScratchTab />
                 </Pane>
                 <Pane show={rightView === "browser"}>
-                  <BrowserTab />
+                  {/* Live mode streams only while this is on screen, so an
+                      unwatched shared browser can idle out. */}
+                  <BrowserTab active={rightView === "browser" && !collapsed} />
                 </Pane>
                 <Pane show={rightView === "terminal"}>
                   <TerminalFrame

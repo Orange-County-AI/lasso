@@ -43,6 +43,9 @@ export const qk = {
   autoTitle: ["auto-title"] as const,
   // Server-level: the VAPID key + registered notification devices.
   push: ["push"] as const,
+  // Server-level: the shared browser's status (browser.go). Shared by the
+  // Browser tab and Settings so a start in one shows in the other.
+  browser: ["browser"] as const,
   usage: ["usage"] as const,
   // The herdr theme picker's payload — refetched keyed on the live theme_rev
   // so the dropdown follows external config.toml edits too.

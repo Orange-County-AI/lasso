@@ -38,7 +38,7 @@ notify pushes a notification to the HUMAN who runs this lasso (their phone, if l
 send_agent types into the pane immediately and can interleave with an in-flight turn, so use it to drive an agent you just spawned.
 message_agent queues in lasso and delivers when the recipient is idle, so it never interleaves.
 
-Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, get_agent, read_agent, send_agent, message_agent, wait_agent, and notify.
+Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, get_agent, read_agent, send_agent, message_agent, wait_agent, notify, and shared_browser (a Chromium the human watches live in lasso's Browser tab, driven over CDP).
 
 Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.`
 

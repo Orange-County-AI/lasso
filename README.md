@@ -43,10 +43,12 @@ on the train. Hand the agent a photo of the whiteboard from your camera roll.
 - **It tells you when an agent is stuck.** Web Push to a locked phone when an
   agent blocks on a tool approval, a plan gate or a question — on any host —
   and when an agent pings you on purpose with `lasso notify "safe on prod?"`.
-- **The sidebar follows the focused pane.** A live git diff, a file browser and
-  editor, and an embedded browser for the dev server, all rooted on the machine
-  that pane is actually working on — even when the pane is an SSH window onto
-  another box.
+- **The sidebar follows the focused pane.** A live git diff and a file browser
+  and editor, rooted on the machine that pane is actually working on — even
+  when the pane is an SSH window onto another box.
+- **A browser you and your agents share.** A real Chromium streamed into the
+  sidebar: you watch — and click in — the same pages an agent is driving over
+  the Chrome DevTools Protocol.
 - **Agents driving agents.** An MCP server lets one agent list, read, message,
   spawn and close the others, across the fleet.
 - **Nothing to deploy.** One binary, no database, no container, no sidecar. It
@@ -127,13 +129,31 @@ file doesn't silently save to the wrong machine.
 
 <img src="docs/screenshots/files.png" alt="the Files pane browsing a repository" width="620">
 
-### Browser — the dev server, next to the agent editing it
+### Browser — the page the agent is working on, next to the agent
 
-Type a bare port (`5173`) or any URL and it frames it beside the terminal, so
-you watch the page reload as the agent works. There's no proxy behind this —
-it frames straight from your browser, which also means the browser's own rules
-apply (an HTTPS page can't frame an HTTP dev server; a public origin can't
-frame a private one). lasso detects both cases and offers to open in a new tab.
+Type a bare port (`5173`) or any URL and the page sits beside the terminal, so
+you watch it reload as the agent works. The tab has two modes, switched from
+its toolbar (and remembered on the server, so every device opens the same one):
+
+- **Agent** (the default whenever lasso can find a Chromium) is the
+  [shared browser](#shared-browser): a real headless Chromium running on
+  lasso's machine, streamed into the tab and driven by your mouse, keyboard and
+  touch. It shows one page at a time, **following whichever page was opened
+  last**, so when an agent opens one you're watching it click through the app
+  it just built, and it sees the page you just opened. Because it's a real browser rather than a frame, no
+  site refuses to load and no mixed-content rule applies. A bare port means
+  `localhost` **on lasso's machine**.
+- **Iframe** is a plain iframe in your own browser, with nothing in between —
+  which also means your browser's rules apply (an HTTPS page can't frame an
+  HTTP dev server, a public origin can't frame a private one, and many sites
+  forbid being framed at all). lasso detects all three and offers to open the
+  page in a new tab. A bare port means that port on the hostname you reached
+  lasso by. With no Chromium installed, the tab uses Embed and says why.
+
+Links you click in a terminal open here too (Settings → General turns that
+off; Cmd/Ctrl-click always opens a new browser tab). In Agent mode each link
+opens as a **new page**, so it never navigates away from a page an agent is
+using.
 
 <img src="docs/screenshots/browser.png" alt="the Browser pane framing a running Vite dev server" width="440">
 
@@ -189,8 +209,9 @@ Two resizable, collapsible columns:
   header row covering the workspace. ⌘K still opens herdr's own pane search.
 - **Right** — the git **Diff** of the focused pane's repo, a **Files** browser
   that follows the active pane's directory and opens files in a
-  markdown/code/image viewer, a **Browser** iframe that embeds a local
-  dev-server port (`5173`) or any URL you type, a plain **Terminal** shell
+  markdown/code/image viewer, a **Browser** that shows a local dev-server port
+  (`5173`) or any URL you type — live from the [shared
+  browser](#shared-browser), or as an iframe — a plain **Terminal** shell
   outside herdr, a **Usage** tab with every provider quota window in full
   (bars, pace, reset countdowns — the footer's detail view), and **Settings**
   (the lasso version and whether an update is available, the herdr
@@ -212,12 +233,128 @@ stored on the server, so every browser on the same lasso agrees.
 lasso exposes an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
 agent can list, read, message, spawn and close **other** agents — across every
 host lasso can reach. `list_agents`, `send_agent`, `wait_agent`, `create_agent`,
-`close_agent`, `list_hosts`, `whoami`.
+`close_agent`, `list_hosts`, `whoami`, `notify`, and `shared_browser` (see
+[Shared browser](#shared-browser)).
 
 It is **unauthenticated by default** (same trust model as the file endpoints —
 fine on loopback or a private tailnet, behind Cloudflare Access, or gated by
 setting `MCP_OAUTH`). Which agents a caller may see and address is bounded by
 per-host OAuth credentials and groups; see [`docs/mcp-agent-scope.md`](docs/mcp-agent-scope.md).
+
+## Shared browser
+
+The Browser tab's **Agent** mode and your agents use one Chromium: lasso
+launches it headless on **its own machine**, streams it into the tab, and
+exposes it to agents over the [Chrome DevTools
+Protocol](https://chromedevtools.github.io/devtools-protocol/) at `/cdp`. An
+agent testing a login flow opens its page in the shared browser and you watch
+it happen — and can take the mouse — from your phone.
+
+It costs nothing until it's used. The first `/cdp` connection, the Browser tab
+or **Settings → General → Shared browser** starts it; it stops again after 15
+minutes with nothing connected. It is the same browser whatever host a tab is
+on, so `localhost` inside it always means **lasso's machine**.
+
+### Setup
+
+Install Chromium or Google Chrome on the machine lasso runs on. lasso looks,
+first hit wins, for:
+
+1. `-browser` / `LASSO_BROWSER` — a path or a PATH name (`off` disables the
+   feature),
+2. `chromium`, `chromium-browser`, `google-chrome-stable`, `google-chrome`,
+   `chrome` on `PATH`,
+3. the newest Playwright build in `~/.cache/ms-playwright`,
+4. on macOS, `Google Chrome.app` and `Chromium.app` in `/Applications`.
+
+With none found, the Browser tab falls back to Embed and Settings says what's
+missing.
+
+| flag | env | default | effect |
+| --- | --- | --- | --- |
+| `-browser` | `LASSO_BROWSER` | search (above) | Chromium to launch: a path, a PATH name, or `off` to disable the shared browser. |
+| — | `LASSO_BROWSER_ARGS` | — | Extra Chromium flags, split on whitespace. |
+| `-browser-idle` | `LASSO_BROWSER_IDLE` | `15m` | Stop Chromium after this long with no `/cdp` client connected. `0` never stops it. |
+| `-browser-cpu` | `LASSO_BROWSER_CPU` | `200%` | `CPUQuota` of the systemd user scope it runs in. `off` (or empty) lifts it. |
+| `-browser-mem` | `LASSO_BROWSER_MEM` | `2G` | `MemoryHigh` of that scope. `off` (or empty) lifts it. |
+| `-browser-scale` | `LASSO_BROWSER_SCALE` | `2` | Device scale factor Chromium renders at, so the Agent view is sharp on a HiDPI screen. `1` for Chromium's default; each step costs raster CPU and makes agents' screenshots larger. |
+
+**The resource cap matters.** Headless Chromium on a machine with no GPU
+renders in software and will happily take several cores. On Linux, when
+`systemd-run` and a user systemd manager (`XDG_RUNTIME_DIR`) are available,
+lasso runs Chromium in a transient `systemd-run --user --scope` with those
+limits; with both limits `off`, or on macOS, it runs uncapped. Settings shows
+which.
+
+The browser's profile lives in `~/.lasso/browser-profile` (under `LASSO_DIR`
+if set): cookies and logins persist across restarts, open tabs don't — an idle
+stop closes them. Two lasso instances can't share one profile; give a second
+one its own `LASSO_DIR`.
+
+> **Ubuntu 23.10 and later:** Chromium's sandbox needs unprivileged user
+> namespaces, which Ubuntu now grants only to binaries with an AppArmor
+> profile. Playwright's download, or any Chromium you unpacked yourself, has
+> none and fails with *"No usable sandbox!"* — Settings shows that message.
+> lasso deliberately does **not** fall back to `--no-sandbox` on its own. Fix
+> it by installing a packaged Google Chrome (or your distro's Chromium), which
+> Ubuntu ships a profile for; or add an AppArmor profile granting `userns` to
+> the binary you want; or, knowingly, run it unsandboxed with
+> `LASSO_BROWSER_ARGS=--no-sandbox`. (Running lasso as root adds
+> `--no-sandbox` automatically, because Chromium refuses to start without it.)
+
+### Connecting an agent
+
+Point any CDP client at `ws://<lasso>/cdp` (`wss://` when lasso is on HTTPS).
+Settings shows the exact endpoint with a copy button. For
+[chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp):
+
+```bash
+claude mcp add lasso-browser -- npx chrome-devtools-mcp@latest \
+  --wsEndpoint ws://127.0.0.1:8090/cdp
+```
+
+From Playwright, `chromium.connectOverCDP("ws://127.0.0.1:8090/cdp")`. The
+endpoint is stable: it survives Chromium being stopped, relaunched or restarted
+with a new proxy, so it's safe to put in an agent's config.
+
+An agent already talking to lasso's MCP server can call **`shared_browser`**
+(`lasso mcp shared-browser` from a shell) instead: it starts the browser,
+answers with the endpoint to connect to and the pages currently open, and
+tells the agent the ground rules — open your own tab, leave the others alone,
+close yours when you're done.
+
+### Proxy
+
+**Settings → General → Shared browser → Proxy** sends all of the shared
+browser's traffic through `socks5://`, `socks4://`, `http://` or `https://`
+`host:port`. With `socks5://`, DNS is resolved through the proxy too. Proxies
+that need a username and password are not supported — Chromium can't
+authenticate to a SOCKS proxy, and ignores credentials in its proxy flag.
+Changing the proxy restarts Chromium and reopens the pages it had.
+
+### Security
+
+`/cdp` is full control of a browser: whoever can reach it can read every page,
+type into it and navigate it — **including every site that browser profile is
+logged into**. Log the shared browser into an account only if you're happy for
+every agent that can reach `/cdp` to act as you there.
+
+It is gated like `/mcp`: open by default (fine on loopback, a private tailnet,
+or behind Cloudflare Access), basic auth when `UI_AUTH` is set, and a lasso
+bearer token (or the `UI_AUTH` credentials) when `MCP_OAUTH` is set — a
+per-host credential must include lasso's own machine in its scope. A gated
+agent passes its credential as a header:
+
+```bash
+npx chrome-devtools-mcp@latest --wsEndpoint wss://lasso.example.com/cdp \
+  --wsHeaders '{"Authorization":"Bearer <token>"}'
+```
+
+(A token comes from `lasso mcp-client token`; see
+[`docs/mcp-agent-scope.md`](docs/mcp-agent-scope.md).) Whatever the auth
+setting, lasso refuses any `/cdp` request a *different website* sends from your
+browser, so a page you visit can't reach a lasso on your own machine and drive
+the shared browser.
 
 ## Run from source
 
@@ -388,7 +525,8 @@ lasso start -listen 127.0.0.1:8090
 Point a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 tunnel's ingress at `http://127.0.0.1:8090` and gate the hostname with
 **Cloudflare Access** (or equivalent) — that authentication is what guards the
-writable shell and the MCP endpoint. A loopback bind needs no `-insecure-no-auth`.
+writable shell, the MCP endpoint and the shared browser's `/cdp`. A loopback
+bind needs no `-insecure-no-auth`.
 Because the tunnel serves **HTTPS**, the browser runs in a secure context, so
 Files-tab downloads work (see the caveat below).
 
@@ -407,7 +545,7 @@ lasso start -listen 0.0.0.0:8090 \
 
 | flag | env | effect |
 | --- | --- | --- |
-| `-require-access-header` | `LASSO_REQUIRE_ACCESS_HEADER=1` | Every request without a non-empty `Cf-Access-Authenticated-User-Email` header gets **403** — `/api/*`, `/mcp`, `/terminal/`, `/shell/`, their websocket upgrades, `/api/file*`, the OAuth endpoints and the SPA alike. Evaluated **before** UI_AUTH and the MCP OAuth check. |
+| `-require-access-header` | `LASSO_REQUIRE_ACCESS_HEADER=1` | Every request without a non-empty `Cf-Access-Authenticated-User-Email` header gets **403** — `/api/*`, `/mcp`, `/cdp`, `/terminal/`, `/shell/`, their websocket upgrades, `/api/file*`, the OAuth endpoints and the SPA alike. Evaluated **before** UI_AUTH and the MCP OAuth check. |
 | `-access-allowed-emails` | `LASSO_ACCESS_ALLOWED_EMAILS` | Comma-separated allowlist. When set, only those identities pass (case-insensitive); when empty, any identity Access vouched for passes. |
 | `-disable-self-update` | `LASSO_DISABLE_SELF_UPDATE=1` | Turns off the in-app self-update (`git pull` + `systemctl --user restart` via `systemd-run --user`). On a fleet box an agent must not be able to move its own front door: `POST /api/self-update` returns 403 and the UI hides the action. |
 
@@ -447,14 +585,17 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 > a real HTTPS origin and makes both work without Cloudflare; see
 > [Notifications](#notifications-ios-home-screen).
 
-> **The Browser tab embeds only what your browser can embed.** A bare port
-> (`5173`) resolves to `http://<the hostname you're using>:5173`, so it frames
-> straight from your browser with nothing in between. Over an HTTPS origin
-> (behind a tunnel) that's mixed content and the tab says so — open it in a new
-> tab, or reach lasso over plain HTTP on the tailnet to frame a dev server.
+> **The Browser tab's Iframe mode embeds only what your browser can embed.** A
+> bare port (`5173`) resolves to `http://<the hostname you're using>:5173`, so
+> it frames straight from your browser with nothing in between. Over an HTTPS
+> origin (behind a tunnel) that's mixed content and the tab says so — open it
+> in a new tab, reach lasso over plain HTTP on the tailnet, or use **Agent**
+> mode, which has no such limit (there a bare port means `localhost` on
+> lasso's machine).
 
-Note `/api/file` reads any absolute path as the running user, and `/mcp` is open —
-fine on a private tailnet or behind Access, but confine it before widening access.
+Note `/api/file` reads any absolute path as the running user, and `/mcp` and
+`/cdp` (the [shared browser](#shared-browser)) are open — fine on a private
+tailnet or behind Access, but confine them before widening access.
 
 ## Notifications (iOS home screen)
 
@@ -521,8 +662,9 @@ Three things to know about the tailnet route:
   never calls back to the origin. Only *opening* one needs the tailnet up, since
   that loads the app.
 - **`tailscale serve` exposes lasso to every device on your tailnet**, with no
-  Access gate in front of the writable terminal or `/mcp`. Set `UI_AUTH=user:pass`
-  if the tailnet isn't a trust boundary you're happy with. Turn it back off with
+  Access gate in front of the writable terminal, `/mcp` or `/cdp`. Set
+  `UI_AUTH=user:pass` if the tailnet isn't a trust boundary you're happy with.
+  Turn it back off with
   `tailscale serve --https=8090 off`.
 
 Each device registers itself, and every registered device gets every

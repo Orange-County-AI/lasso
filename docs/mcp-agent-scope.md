@@ -165,6 +165,21 @@ the box lasso runs on, and if that box also has an ssh alias pointing at itself
 the alias is a **distinct member**. Adding one does not add the other. Pick the
 name the credential uses (`mcp-client list` shows it) and use that one.
 
+## The shared browser follows the same scope
+
+The `shared_browser` tool and the `/cdp` endpoint it hands out (see the README's
+"Shared browser") drive a Chromium running on **lasso's own machine**, so both
+require a caller whose reach includes `local`. A `self`-scoped credential for
+another host gets a tool error, and the same bearer token presented to `/cdp`
+directly is refused with 403 — the check is on the endpoint, not only in the
+tool. Fleet scope, or a group/grant that brings in `local`, opens it. With
+`MCP_OAUTH` unset none of this applies: `/cdp` is open (or behind `UI_AUTH`
+basic), like `/mcp`.
+
+Reaching `local` here is a bigger grant than it reads: the browser acts with
+whatever its profile is logged into, and `localhost` inside it is lasso's
+machine. Give it only to hosts you would let browse as you from there.
+
 ## Installing on a host
 
 A workspace box needs **two** credentials, and the split is the useful part: the
