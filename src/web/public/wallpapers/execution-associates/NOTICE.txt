@@ -18,7 +18,7 @@ FILE MAPPING (original -> vendored output)
 
 TRANSFORMATIONS APPLIED
   Both are built by scripts/ea-wallpapers.sh (ImageMagick 7): cropped to a
-  16:10 window on the sun side, stamped with the EXA monogram bottom right
-  (76px, 85% white, faint #F099BF halo), then encoded like retro-82's set —
+  16:10 window on the sun side, stamped with the EXA monogram near the top
+  left, just past herdr's sidebar (84px, 85% white, faint #F099BF halo), then encoded like retro-82's set —
   WebP quality 82 full size, quality 75 at 320px for thumbs/. The script's
   header explains why the crop and the mark's inset are what they are.
