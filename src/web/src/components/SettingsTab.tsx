@@ -63,7 +63,7 @@ import {
   readPushState,
 } from "@/lib/push"
 import { qk } from "@/lib/query"
-import { SHORTCUTS } from "@/lib/shortcuts"
+import { SHORTCUT_GROUPS } from "@/lib/shortcuts"
 import { primeThemeCatalog, refreshTheme, shippedPairs } from "@/lib/theme"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
@@ -1678,14 +1678,14 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
         browser, with nothing to install on its machine. Other agents (Codex,
         OpenCode, …) add the same URL as a streamable-HTTP MCP server. Behind
         UI_AUTH or MCP_OAUTH a remote agent sends an Authorization header (a
-        token from <code className="font-mono">lasso mcp-client token</code>,
-        or Basic credentials for UI_AUTH).
+        token from <code className="font-mono">lasso mcp-client token</code>, or
+        Basic credentials for UI_AUTH).
       </p>
       <CopyLine label="CDP endpoint" text={endpoint} />
       <p className="text-[11px] text-muted-foreground">
         For Playwright (
-        <code className="font-mono">chromium.connectOverCDP(endpoint)</code>)
-        or any raw CDP client, which sends the same Authorization header on its
+        <code className="font-mono">chromium.connectOverCDP(endpoint)</code>) or
+        any raw CDP client, which sends the same Authorization header on its
         websocket.
       </p>
     </div>
@@ -1995,7 +1995,7 @@ function UsageTrackingSettings() {
   )
 }
 
-// ShortcutsDialog shows the app's keyboard shortcuts (the SHORTCUTS the App key
+// ShortcutsDialog shows the app's keyboard shortcuts (the SHORTCUT_GROUPS the App key
 // handler implements) in a modal. Reference only — nothing to configure.
 // Rendered by App (so ⌘? can open it from any tab); the Settings tab's keyboard
 // button just toggles the same App-owned state.
@@ -2008,20 +2008,32 @@ export function ShortcutsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
         </DialogHeader>
-        <ul className="flex flex-col gap-1.5">
-          {SHORTCUTS.map((s) => (
-            <li key={s.keys} className="flex items-center gap-3 text-sm">
-              <kbd className="min-w-10 rounded border border-border bg-muted px-1.5 py-0.5 text-center font-mono text-muted-foreground text-xs">
-                {s.keys}
-              </kbd>
-              <span className="text-foreground">{s.label}</span>
-            </li>
+        <div className="flex flex-col gap-4">
+          {SHORTCUT_GROUPS.map((g) => (
+            <section key={g.title} className="flex flex-col gap-1.5">
+              <h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                {g.title}
+              </h3>
+              <ul className="flex flex-col gap-1.5">
+                {g.shortcuts.map((s) => (
+                  <li
+                    key={s.keys + s.label}
+                    className="flex items-center gap-3 text-sm"
+                  >
+                    <kbd className="min-w-10 rounded border border-border bg-muted px-1.5 py-0.5 text-center font-mono text-muted-foreground text-xs">
+                      {s.keys}
+                    </kbd>
+                    <span className="text-foreground">{s.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       </DialogContent>
     </Dialog>
   )
