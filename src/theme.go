@@ -37,6 +37,12 @@ import (
 type uiPalette struct {
 	Accent, PanelBg, Surface0, Surface1, SurfaceDim, Overlay0, Overlay1 string
 	Text, Subtext0, Mauve, Green, Yellow, Red, Blue, Teal, Peach        string
+	// DiffAddedInk / DiffRemovedInk, when set, are the inks an agent CLI's diff
+	// bands are SCREENED from (mixed into PanelBg, like a halftone of that ink
+	// on the paper) instead of Green/Red lightened at full saturation. For a
+	// theme whose palette is a print run rather than a rainbow, where a mint
+	// and a salmon band read as foreign colours. Empty = Green/Red.
+	DiffAddedInk, DiffRemovedInk string
 }
 
 // ansiPalette is a canonical 16-color terminal palette. (The terminal's
@@ -376,6 +382,11 @@ var themes = map[string]themeDef{
 			SurfaceDim: "#e8c896", Overlay0: "#46596a", Overlay1: "#3d4f5c", Text: "#172d3c",
 			Subtext0: "#3d4f5c", Mauve: "#7a3f62", Green: "#365f32", Yellow: "#75510c",
 			Red: "#a8231a", Blue: "#1f4e6b", Teal: "#245e5e", Peach: "#8a4429",
+			// The print run has two inks and no green: diffs are a blue
+			// screen (added) and a sun screen (removed) on the paper. The
+			// lighter blue, not navy: a navy screen on cream prints as a flat
+			// khaki that reads as disabled rather than added.
+			DiffAddedInk: "#2f6385", DiffRemovedInk: "#dc481f",
 		},
 		ansi: ansiPalette{
 			Black: "#172d3c", Red: "#a8231a", Green: "#365f32", Yellow: "#75510c",
