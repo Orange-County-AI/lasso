@@ -5,10 +5,22 @@ import { Input } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { lsGet, lsSet } from "@/lib/app-store"
 
+const LOOPBACK = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]
+
+// normalize defaults a schemeless URL to https://, except for a loopback host,
+// which gets http:// since a local server almost never has a certificate.
 function normalize(raw: string): string {
   const u = raw.trim()
   if (!u) return ""
-  return /^https?:\/\//i.test(u) ? u : `http://${u}`
+  if (/^https?:\/\//i.test(u)) return u
+  try {
+    if (LOOPBACK.includes(new URL(`https://${u}`).hostname)) {
+      return `http://${u}`
+    }
+  } catch {
+    // Unparseable: fall through and let the iframe report it.
+  }
+  return `https://${u}`
 }
 
 // parseLocalPort extracts a local dev-server port from user input. It matches a
@@ -27,8 +39,7 @@ function parseLocalPort(raw: string): number | null {
   if (colon) return clampPort(Number(colon[1]))
   try {
     const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`)
-    const loopback = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]
-    if (loopback.includes(u.hostname) && u.port) {
+    if (LOOPBACK.includes(u.hostname) && u.port) {
       return clampPort(Number(u.port))
     }
   } catch {
