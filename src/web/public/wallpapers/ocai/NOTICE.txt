@@ -16,7 +16,7 @@ FILE MAPPING (original -> vendored output)
 03-workshop        "Workshop"        <- art-workshop.webp   (1600x1200)
 04-community       "Community"       <- art-community.webp  (1600x1200)
 05-seal            "Seal"            <- event-fallback.webp (1600x1200)
-06-laguna-cliffs   "Laguna Cliffs"   <- generated for lasso (1920x1440)
+06-laguna-cliffs   "Laguna Cliffs"   <- generated for lasso (1920x1440), mirrored
 07-pier-sunset     "Pier Sunset"     <- generated for lasso (1920x1440)
 
 06 and 07 are not from the site: they were generated with Codex image
