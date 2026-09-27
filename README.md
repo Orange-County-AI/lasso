@@ -501,6 +501,9 @@ The **terminal** adopts the theme from `~/.config/herdr/config.toml`
 lists the names). **Retro 82** is the default when no theme is configured (and
 the fallback for unknown names); an existing configured theme still wins.
 Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
+Two brand themes ship beside it: **Execution Associates** (`execution-associates`,
+dark dusk violet with a peach accent) and **Orange County AI** (`ocai`, light:
+navy ink and a sun-orange accent on cream), each drawn from its website's tokens.
 Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 

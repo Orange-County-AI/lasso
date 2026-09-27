@@ -133,7 +133,7 @@ func TestLightThemesAreLight(t *testing.T) {
 	}
 	for _, name := range []string{
 		"catppuccin-latte", "tokyo-night-day", "gruvbox-light", "one-light",
-		"solarized-light", "kanagawa-lotus", "rose-pine-dawn",
+		"solarized-light", "kanagawa-lotus", "rose-pine-dawn", "ocai",
 	} {
 		rt := loadHerdrTheme(name)
 		bg, fg := lum(rt.ui.PanelBg), lum(rt.ui.Text)
