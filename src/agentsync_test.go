@@ -1163,3 +1163,46 @@ func TestDiffBandsLiftEquallyOnEveryHue(t *testing.T) {
 		}
 	}
 }
+
+// A theme that names diff inks gets its bands as screens of those inks on the
+// panel: the same lightness lifts as the accent path, but in the ink's own hue
+// (ocai's sun, not a saturated salmon), and no band from the Green/Red path.
+func TestClaudeDiffBandsScreenedFromInks(t *testing.T) {
+	rt := resolveThemeByName("ocai")
+	m := claudeOverrides(rt.ui, glyphCanvasOf(rt.ui.PanelBg, false, 1))
+	bg := rt.ui.PanelBg
+	for tok, lift := range map[string]float64{
+		"diffAdded": diffLineLift, "diffAddedWord": diffWordLift,
+		"diffRemoved": diffLineLift, "diffRemovedWord": diffWordLift,
+	} {
+		// The sun is too light to reach the word lift even solid, so that band
+		// is the ink itself: the fallback screenForBg documents.
+		if m[tok] == rt.ui.DiffRemovedInk || m[tok] == rt.ui.DiffAddedInk {
+			continue
+		}
+		got := perceivedL(bg) - perceivedL(m[tok])
+		if math.Abs(got-lift) > 0.01 {
+			t.Errorf("%s = %s sits %.3f below the panel, want %.2f", tok, m[tok], got, lift)
+		}
+	}
+	if m["diffRemoved"] == tintForBg(rt.ui.Red, bg, diffLineLift) {
+		t.Errorf("diffRemoved %s came from Red, not the sun ink", m["diffRemoved"])
+	}
+	// A screen of an ink is ink mixed into the paper: it has to sit between the
+	// two in every channel.
+	for tok, ink := range map[string]string{"diffAdded": rt.ui.DiffAddedInk, "diffRemoved": rt.ui.DiffRemovedInk} {
+		br, bgc, bb, _ := hexRGB(bg)
+		ir, ig, ib, _ := hexRGB(ink)
+		gr, gg, gb, _ := hexRGB(m[tok])
+		between := func(x, a, b int) bool { return (x-a)*(x-b) <= 1 }
+		if !between(gr, br, ir) || !between(gg, bgc, ig) || !between(gb, bb, ib) {
+			t.Errorf("%s = %s is not a screen of %s on %s", tok, m[tok], ink, bg)
+		}
+	}
+	// A theme without inks keeps the accent path exactly.
+	rp := resolveThemeByName("retro-82")
+	mp := claudeOverrides(rp.ui, glyphCanvasOf(rp.ui.PanelBg, false, 1))
+	if want := tintForBg(rp.ui.Green, rp.ui.PanelBg, diffLineLift); mp["diffAdded"] != want {
+		t.Errorf("retro-82 diffAdded = %s, want the accent path's %s", mp["diffAdded"], want)
+	}
+}
