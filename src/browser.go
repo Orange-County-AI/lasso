@@ -287,6 +287,21 @@ func envDuration(name string, def time.Duration) time.Duration {
 	return d
 }
 
+// envInt reads a positive integer from the environment, falling back to def
+// when unset or unusable (said once, at startup).
+func envInt(name string, def int) int {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		log.Printf("browser: ignoring %s=%q (want a positive whole number): using %d", name, v, def)
+		return def
+	}
+	return n
+}
+
 // browserCommand turns a binary + args into what exec runs. With a cap it is a
 // transient systemd scope: --scope makes systemd-run register the scope and
 // then exec the command IN PLACE, so the child pid lasso holds is Chromium's own
@@ -417,6 +432,12 @@ type browserManager struct {
 	lastUsed time.Time
 
 	inflight atomic.Int64
+
+	// onStop runs whenever a browser process goes away — a stop, an idle stop,
+	// a relaunch's stop half, a crash — with the reason. The /browser-mcp bridge
+	// hangs off it: every session's child holds a CDP connection to the process
+	// that just ended. It may run with sem held, so it must not block on it.
+	onStop func(why string)
 }
 
 func newBrowserManager(cfg browserConfig) *browserManager {
@@ -687,7 +708,11 @@ func (m *browserManager) watch(p *browserProc) {
 			log.Printf("browser: pid %d exited unexpectedly", p.pid)
 		}
 	}
+	crashed := !p.stopping.Load()
 	m.mu.Unlock()
+	if crashed && m.onStop != nil {
+		m.onStop("it exited unexpectedly")
+	}
 	if b, err := os.ReadFile(m.pidFile()); err == nil && strings.HasPrefix(string(b), strconv.Itoa(p.pid)+"\n") {
 		_ = os.Remove(m.pidFile())
 	}
@@ -735,6 +760,9 @@ func (m *browserManager) stopLocked(why string) {
 	log.Printf("browser: stopping pid %d (%s)", p.pid, why)
 	m.kill(p)
 	_ = os.Remove(m.pidFile())
+	if m.onStop != nil {
+		m.onStop(why)
+	}
 }
 
 // reclaimProfile deals with a Chromium the pid file says is holding the
@@ -987,10 +1015,19 @@ type browserStatus struct {
 	WSPath   string        `json:"ws_path"`
 	// Note reports the last relaunch (a proxy change reopens the pages it had).
 	Note string `json:"note,omitempty"`
+	// The /browser-mcp bridge (browsermcp.go): whether it can serve a session
+	// (chrome-devtools-mcp found and not switched off), which binary, why not,
+	// and how many sessions — one child each — are live right now.
+	MCPAvailable bool   `json:"mcp_available"`
+	MCPBinary    string `json:"mcp_binary"`
+	MCPReason    string `json:"mcp_reason"`
+	MCPSessions  int    `json:"mcp_sessions"`
 }
 
 func (m *browserManager) status() browserStatus {
 	st := browserStatus{Pages: []browserPage{}, WSPath: "/cdp"}
+	st.MCPBinary, st.MCPReason, st.MCPAvailable = browserMCP.resolve()
+	st.MCPSessions = browserMCP.sessions()
 	if m == nil {
 		st.Reason = "the shared browser is not configured"
 		return st

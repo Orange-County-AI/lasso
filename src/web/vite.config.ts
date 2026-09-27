@@ -35,6 +35,9 @@ export default defineConfig({
       // it. The Host passing through also makes /cdp/json's rewritten
       // websocket URLs point back at this dev server.
       "/cdp": { target: backend, changeOrigin: false, ws: true },
+      // The browser MCP endpoint, same Origin-guard reasoning as /cdp. Plain
+      // HTTP (streamable MCP: POST + an SSE response), no websocket.
+      "/browser-mcp": { target: backend, changeOrigin: false },
     },
   },
 })

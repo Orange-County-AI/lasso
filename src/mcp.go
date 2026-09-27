@@ -38,7 +38,7 @@ const mcpInstructions = `Lasso orchestrates coding agents in herdr panes: spawn 
 
 notify pushes a notification to the HUMAN who runs this lasso (their phone, if lasso is on its home screen). Use it only when you need them — a decision, a blocking question, a long job finishing while they are away — and check the reply's "sent": false means nobody received it.
 
-Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, list_agents, get_agent, notify, and shared_browser (a Chromium the human watches live in lasso's Browser tab, driven over CDP).
+Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, list_agents, get_agent, notify, and shared_browser (a Chromium the human watches live in lasso's Browser tab: it answers the browser MCP URL, /browser-mcp, that gives you chrome-devtools-mcp's tools against it, and the raw CDP endpoint).
 
 Lasso does not talk to agents. To prompt another agent, read its screen, or wait for it to finish, use herdr directly (herdr agent prompt / read / wait, or the herdr skill); a Claude Code session can also use its own native agent messaging.
 

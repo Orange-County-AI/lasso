@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -263,6 +266,7 @@ func (m *browserManager) serveCDP(w http.ResponseWriter, r *http.Request) {
 			// lasso's credentials are lasso's, not Chromium's.
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("Cookie")
+			pr.Out.Header.Del(internalCDPHeader)
 			if isJSON {
 				// The body is rewritten below, which needs it uncompressed.
 				pr.Out.Header.Del("Accept-Encoding")
@@ -330,6 +334,55 @@ func withCDPAuth(next http.Handler, user, pass string, hasAuth bool) http.Handle
 		return withAuth(next, user, pass, true)
 	}
 	return next
+}
+
+// internalCDPHeader carries internalCDPToken: how lasso's own
+// chrome-devtools-mcp children (browsermcp.go) get through to /cdp.
+const internalCDPHeader = "X-Lasso-Internal"
+
+// internalCDPToken is minted once per process from crypto/rand and lives only
+// in memory and in the argv of the children it is handed to — never logged,
+// never stored, never sent to a client. A child needs it because the agent's
+// credential stops at /browser-mcp: the child is lasso's process, dialing
+// lasso's loopback, and has nothing of its own to present to /cdp's gate.
+var internalCDPToken = newInternalCDPToken()
+
+func newInternalCDPToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand does not fail on a supported platform; a predictable
+		// token would be a hole, so there is no fallback to one.
+		log.Fatalf("cdp: minting the internal token: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// internalCDPRequest reports whether r is one of lasso's own children calling
+// /cdp: the path must be /cdp's and the header must match exactly (compared
+// in constant time). Anything else — a wrong or empty header, the right header
+// on another path — is an ordinary request and gets the ordinary rules.
+func internalCDPRequest(r *http.Request) bool {
+	if r.URL.Path != "/cdp" && !strings.HasPrefix(r.URL.Path, "/cdp/") {
+		return false
+	}
+	got := r.Header.Get(internalCDPHeader)
+	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(internalCDPToken)) == 1
+}
+
+// withInternalCDP lets a request carrying the internal token straight through
+// to /cdp, ahead of EVERY other gate — the Access header gate included, which
+// is why this wraps the outermost handler instead of living in withCDPAuth: with
+// -require-access-header on, a loopback dial from lasso's own child carries no
+// Cloudflare identity and would be refused before withCDPAuth ever saw it.
+// serveCDP still applies the Origin guard (the child sends no Origin).
+func withInternalCDP(outer, cdp http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if internalCDPRequest(r) {
+			cdp.ServeHTTP(w, r)
+			return
+		}
+		outer.ServeHTTP(w, r)
+	})
 }
 
 // cdpScopeCheck refuses a bearer token whose host scope does not include lasso's

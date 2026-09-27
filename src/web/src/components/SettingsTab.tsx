@@ -1505,7 +1505,11 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
   }
 
   const endpoint = cdpURL()
-  const example = `claude mcp add lasso-browser -- npx chrome-devtools-mcp@latest --wsEndpoint ${endpoint}`
+  // /browser-mcp is lasso's origin, like /cdp: there is one shared browser per
+  // lasso whatever host this tab is driving.
+  const mcpEndpoint = `${location.origin}/browser-mcp`
+  const mcpAdd = `claude mcp add --transport http lasso-browser ${mcpEndpoint}`
+  const mcpSessions = st?.mcp_sessions ?? 0
   const busy = action.isPending || saveProxy.isPending
 
   let state: React.ReactNode
@@ -1654,18 +1658,35 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
         username and password won't work.
       </p>
 
-      <span className={cn(labelClass, "mt-1")}>Connect an agent</span>
-      <CopyLine label="CDP endpoint" text={endpoint} />
-      <CopyLine label="claude mcp add command" text={example} />
+      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        <span className={labelClass}>Connect an agent</span>
+        {mcpSessions > 0 && (
+          <Pill tone="good">
+            {mcpSessions} {mcpSessions === 1 ? "agent" : "agents"} connected
+          </Pill>
+        )}
+      </div>
+      {st && !st.mcp_available && st.mcp_reason && (
+        <p className="text-[11px] text-warn [overflow-wrap:anywhere]">
+          {st.mcp_reason}
+        </p>
+      )}
+      <CopyLine label="browser MCP URL" text={mcpEndpoint} />
+      <CopyLine label="claude mcp add command" text={mcpAdd} />
       <p className="text-[11px] text-muted-foreground">
-        Any CDP client works — Playwright's{" "}
-        <code className="font-mono">chromium.connectOverCDP(endpoint)</code>{" "}
-        too. An agent reaching lasso through UI_AUTH or MCP_OAUTH adds{" "}
-        <code className="font-mono [overflow-wrap:anywhere]">
-          {`--wsHeaders '{"Authorization":"Bearer <token>"}'`}
-        </code>{" "}
-        (a token from <code className="font-mono">lasso mcp-client token</code>,
+        Gives an agent chrome-devtools-mcp's tools, already pointed at this
+        browser, with nothing to install on its machine. Other agents (Codex,
+        OpenCode, …) add the same URL as a streamable-HTTP MCP server. Behind
+        UI_AUTH or MCP_OAUTH a remote agent sends an Authorization header (a
+        token from <code className="font-mono">lasso mcp-client token</code>,
         or Basic credentials for UI_AUTH).
+      </p>
+      <CopyLine label="CDP endpoint" text={endpoint} />
+      <p className="text-[11px] text-muted-foreground">
+        For Playwright (
+        <code className="font-mono">chromium.connectOverCDP(endpoint)</code>)
+        or any raw CDP client, which sends the same Authorization header on its
+        websocket.
       </p>
     </div>
   )

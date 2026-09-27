@@ -815,6 +815,14 @@ export interface BrowserStatus {
   ws_path: string
   // What a relaunch did (e.g. which pages it reopened after a proxy change).
   note?: string
+  // /browser-mcp: chrome-devtools-mcp bridged to agents over HTTP, one child
+  // per MCP session. `mcp_available` is false when it is not installed on
+  // lasso's machine or LASSO_BROWSER_MCP=off, with `mcp_reason` saying which
+  // (and how to install it); `mcp_sessions` is the live session count.
+  mcp_available?: boolean
+  mcp_binary?: string
+  mcp_reason?: string
+  mcp_sessions?: number
 }
 
 export type BrowserAction = "start" | "stop" | "restart"

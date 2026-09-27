@@ -250,7 +250,8 @@ per-host OAuth credentials and groups; see [`docs/mcp-agent-scope.md`](docs/mcp-
 The Browser tab's **Agent** mode and your agents use one Chromium: lasso
 launches it headless on **its own machine**, streams it into the tab, and
 exposes it to agents over the [Chrome DevTools
-Protocol](https://chromedevtools.github.io/devtools-protocol/) at `/cdp`. An
+Protocol](https://chromedevtools.github.io/devtools-protocol/) at `/cdp` — and
+as an MCP server at `/browser-mcp`, so an agent just adds one URL. An
 agent testing a login flow opens its page in the shared browser and you watch
 it happen — and can take the mouse — from your phone.
 
@@ -308,22 +309,58 @@ one its own `LASSO_DIR`.
 
 ### Connecting an agent
 
-Point any CDP client at `ws://<lasso>/cdp` (`wss://` when lasso is on HTTPS).
-Settings shows the exact endpoint with a copy button. For
-[chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp):
+lasso serves Google's
+[chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)
+at **one MCP URL, `/browser-mcp`**, already pointed at the shared browser. An
+agent adds that URL and gets chrome-devtools-mcp's tools (navigate, click,
+fill, screenshot, console, network, performance traces, …) against the same
+Chromium you're watching, with nothing installed on the agent's machine:
 
 ```bash
-claude mcp add lasso-browser -- npx chrome-devtools-mcp@latest \
-  --wsEndpoint ws://127.0.0.1:8090/cdp
+claude mcp add --transport http lasso-browser http://127.0.0.1:8090/browser-mcp
 ```
 
-From Playwright, `chromium.connectOverCDP("ws://127.0.0.1:8090/cdp")`. The
-endpoint is stable: it survives Chromium being stopped, relaunched or restarted
-with a new proxy, so it's safe to put in an agent's config.
+Other agents (Codex, OpenCode, …) add the same URL as a streamable-HTTP MCP
+server. Settings shows the exact URL, a copyable command, and how many agents
+are connected.
+
+chrome-devtools-mcp only speaks stdio, so lasso runs **one
+`chrome-devtools-mcp` process per MCP session** and bridges it: each agent gets
+its own selected page, console and network buffers, and nobody steers anyone
+else's page. A session ends — and its process with it — when the agent closes
+it, after 30 minutes with no requests, or when the shared browser stops or
+restarts (an MCP client then simply re-initializes).
+
+**Install chrome-devtools-mcp on lasso's machine** (not the agent's):
+
+```bash
+npm i -g chrome-devtools-mcp        # or: mise use -g npm:chrome-devtools-mcp
+```
+
+lasso deliberately does **not** fall back to `npx chrome-devtools-mcp@latest`:
+fetching an unpinned package at runtime, on the machine holding the browser's
+logged-in profile, is a supply-chain risk. Without it `/browser-mcp` answers
+503 and Settings says what's missing.
+
+| flag | env | default | effect |
+| --- | --- | --- | --- |
+| `-browser-mcp` | `LASSO_BROWSER_MCP` | `chrome-devtools-mcp` on `PATH` | The chrome-devtools-mcp to run: a path, a PATH name, or `off` to disable `/browser-mcp`. |
+| — | `LASSO_BROWSER_MCP_ARGS` | — | Extra chrome-devtools-mcp flags, split on whitespace (e.g. `--slim`, `--no-category-performance`). |
+| `-browser-mcp-max` | `LASSO_BROWSER_MCP_MAX` | `8` | Most concurrent sessions (one node process each). Past it, a new session's initialize fails and says so. |
+
+Screenshots come back as JPEG, at most 1280 px on a side: the browser renders
+at `-browser-scale` 2, and an unbounded PNG would cost an agent about four
+times the image tokens for nothing.
+
+**Raw CDP** is still there for Playwright or any other CDP client:
+`ws://<lasso>/cdp` (`wss://` when lasso is on HTTPS), e.g.
+`chromium.connectOverCDP("ws://127.0.0.1:8090/cdp")`. The endpoint is stable:
+it survives Chromium being stopped, relaunched or restarted with a new proxy,
+so it's safe to put in an agent's config.
 
 An agent already talking to lasso's MCP server can call **`shared_browser`**
-(`lasso mcp shared-browser` from a shell) instead: it starts the browser,
-answers with the endpoint to connect to and the pages currently open, and
+(`lasso mcp shared-browser` from a shell): it starts the browser, answers with
+the `/browser-mcp` URL (and the CDP endpoint) and the pages currently open, and
 tells the agent the ground rules — open your own tab, leave the others alone,
 close yours when you're done.
 
@@ -338,27 +375,30 @@ Changing the proxy restarts Chromium and reopens the pages it had.
 
 ### Security
 
-`/cdp` is full control of a browser: whoever can reach it can read every page,
-type into it and navigate it — **including every site that browser profile is
-logged into**. Log the shared browser into an account only if you're happy for
-every agent that can reach `/cdp` to act as you there.
+`/cdp` — and `/browser-mcp`, which drives it — is full control of a browser:
+whoever can reach it can read every page, type into it and navigate it —
+**including every site that browser profile is logged into**. Log the shared
+browser into an account only if you're happy for every agent that can reach
+either to act as you there.
 
-It is gated like `/mcp`: open by default (fine on loopback, a private tailnet,
-or behind Cloudflare Access), basic auth when `UI_AUTH` is set, and a lasso
-bearer token (or the `UI_AUTH` credentials) when `MCP_OAUTH` is set — a
-per-host credential must include lasso's own machine in its scope. A gated
-agent passes its credential as a header:
+`/cdp` and `/browser-mcp` are gated alike: open by default (fine on loopback,
+a private tailnet, or behind Cloudflare Access), basic auth when `UI_AUTH` is
+set, and a lasso bearer token (or the `UI_AUTH` credentials) when `MCP_OAUTH`
+is set — a per-host credential must include lasso's own machine in its scope.
+A gated agent sends its credential as a header:
 
 ```bash
-npx chrome-devtools-mcp@latest --wsEndpoint wss://lasso.example.com/cdp \
-  --wsHeaders '{"Authorization":"Bearer <token>"}'
+claude mcp add --transport http --header "Authorization: Bearer <token>" \
+  lasso-browser https://lasso.example.com/browser-mcp
 ```
 
 (A token comes from `lasso mcp-client token`; see
 [`docs/mcp-agent-scope.md`](docs/mcp-agent-scope.md).) Whatever the auth
-setting, lasso refuses any `/cdp` request a *different website* sends from your
-browser, so a page you visit can't reach a lasso on your own machine and drive
-the shared browser.
+setting, lasso refuses any `/cdp` or `/browser-mcp` request a *different
+website* sends from your browser, so a page you visit can't reach a lasso on
+your own machine and drive the shared browser. lasso's own chrome-devtools-mcp
+processes reach `/cdp` with a random per-process token instead of your
+credential, and get a minimal environment without lasso's secrets.
 
 ## Run from source
 
@@ -529,7 +569,7 @@ lasso start -listen 127.0.0.1:8090
 Point a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 tunnel's ingress at `http://127.0.0.1:8090` and gate the hostname with
 **Cloudflare Access** (or equivalent) — that authentication is what guards the
-writable shell, the MCP endpoint and the shared browser's `/cdp`. A loopback
+writable shell, the MCP endpoint and the shared browser's `/cdp` and `/browser-mcp`. A loopback
 bind needs no `-insecure-no-auth`.
 Because the tunnel serves **HTTPS**, the browser runs in a secure context, so
 Files-tab downloads work (see the caveat below).
@@ -549,7 +589,7 @@ lasso start -listen 0.0.0.0:8090 \
 
 | flag | env | effect |
 | --- | --- | --- |
-| `-require-access-header` | `LASSO_REQUIRE_ACCESS_HEADER=1` | Every request without a non-empty `Cf-Access-Authenticated-User-Email` header gets **403** — `/api/*`, `/mcp`, `/cdp`, `/terminal/`, `/shell/`, their websocket upgrades, `/api/file*`, the OAuth endpoints and the SPA alike. Evaluated **before** UI_AUTH and the MCP OAuth check. |
+| `-require-access-header` | `LASSO_REQUIRE_ACCESS_HEADER=1` | Every request without a non-empty `Cf-Access-Authenticated-User-Email` header gets **403** — `/api/*`, `/mcp`, `/cdp`, `/browser-mcp`, `/terminal/`, `/shell/`, their websocket upgrades, `/api/file*`, the OAuth endpoints and the SPA alike. Evaluated **before** UI_AUTH and the MCP OAuth check. (lasso's own chrome-devtools-mcp processes reach `/cdp` over loopback on an internal token, ahead of this gate.) |
 | `-access-allowed-emails` | `LASSO_ACCESS_ALLOWED_EMAILS` | Comma-separated allowlist. When set, only those identities pass (case-insensitive); when empty, any identity Access vouched for passes. |
 | `-disable-self-update` | `LASSO_DISABLE_SELF_UPDATE=1` | Turns off the in-app self-update (`git pull` + `systemctl --user restart` via `systemd-run --user`). On a fleet box an agent must not be able to move its own front door: `POST /api/self-update` returns 403 and the UI hides the action. |
 
@@ -597,8 +637,8 @@ tailnet device at `http://<host>:8090/` (MagicDNS, e.g. `http://citadel:8090/`).
 > mode, which has no such limit (there a bare port means `localhost` on
 > lasso's machine).
 
-Note `/api/file` reads any absolute path as the running user, and `/mcp` and
-`/cdp` (the [shared browser](#shared-browser)) are open — fine on a private
+Note `/api/file` reads any absolute path as the running user, and `/mcp`,
+`/cdp` and `/browser-mcp` (the [shared browser](#shared-browser)) are open — fine on a private
 tailnet or behind Access, but confine them before widening access.
 
 ## Notifications (iOS home screen)
@@ -666,7 +706,7 @@ Three things to know about the tailnet route:
   never calls back to the origin. Only *opening* one needs the tailnet up, since
   that loads the app.
 - **`tailscale serve` exposes lasso to every device on your tailnet**, with no
-  Access gate in front of the writable terminal, `/mcp` or `/cdp`. Set
+  Access gate in front of the writable terminal, `/mcp`, `/cdp` or `/browser-mcp`. Set
   `UI_AUTH=user:pass` if the tailnet isn't a trust boundary you're happy with.
   Turn it back off with
   `tailscale serve --https=8090 off`.

@@ -167,14 +167,29 @@ name the credential uses (`mcp-client list` shows it) and use that one.
 
 ## The shared browser follows the same scope
 
-The `shared_browser` tool and the `/cdp` endpoint it hands out (see the README's
-"Shared browser") drive a Chromium running on **lasso's own machine**, so both
-require a caller whose reach includes `local`. A `self`-scoped credential for
-another host gets a tool error, and the same bearer token presented to `/cdp`
-directly is refused with 403 — the check is on the endpoint, not only in the
-tool. Fleet scope, or a group/grant that brings in `local`, opens it. With
-`MCP_OAUTH` unset none of this applies: `/cdp` is open (or behind `UI_AUTH`
-basic), like `/mcp`.
+The `shared_browser` tool and the two endpoints it hands out — `/browser-mcp`
+(chrome-devtools-mcp's tools as an MCP server) and `/cdp` (see the README's
+"Shared browser") — drive a Chromium running on **lasso's own machine**, so all
+three require a caller whose reach includes `local`. A `self`-scoped credential
+for another host gets a tool error, and the same bearer token presented to
+`/browser-mcp` or `/cdp` directly is refused with 403 — the check is on the
+endpoint, not only in the tool. Fleet scope, or a group/grant that brings in
+`local`, opens it. `/browser-mcp` otherwise takes exactly what `/mcp` takes (a
+lasso bearer token, or the `UI_AUTH` basic credentials), so a host's existing
+credential works there unchanged:
+
+```bash
+claude mcp add --transport http --header "Authorization: Bearer <token>" \
+  lasso-browser https://lasso.example.com/browser-mcp
+```
+
+With `MCP_OAUTH` unset none of this applies: `/browser-mcp` and `/cdp` are open,
+or behind `UI_AUTH` basic when that is set. (That last case is stricter than
+`/mcp`, which stays open under `UI_AUTH` alone: `/browser-mcp` is a way into
+`/cdp`, so it takes `/cdp`'s rule.) lasso's own chrome-devtools-mcp processes
+reach `/cdp` with an internal per-process token, not with the caller's
+credential — the caller's credential and scope are checked on every request
+to `/browser-mcp`, which is the only door those processes open.
 
 Reaching `local` here is a bigger grant than it reads: the browser acts with
 whatever its profile is logged into, and `localhost` inside it is lasso's

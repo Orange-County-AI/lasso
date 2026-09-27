@@ -92,6 +92,12 @@ var (
 		"device scale factor the shared browser renders at, so the Browser tab is sharp on a HiDPI screen (1 = Chromium's default; costs raster CPU and makes agent screenshots larger). env LASSO_BROWSER_SCALE")
 	browserMem = flag.String("browser-mem", envOrDefault("LASSO_BROWSER_MEM", "2G"),
 		"MemoryHigh for the shared browser's systemd user scope (linux), e.g. 4G; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_MEM")
+	// /browser-mcp (browsermcp.go): chrome-devtools-mcp, one child per MCP
+	// session, bridged to agents over HTTP and pointed at the shared browser.
+	browserMCPBin = flag.String("browser-mcp", os.Getenv("LASSO_BROWSER_MCP"),
+		"chrome-devtools-mcp binary behind /browser-mcp (a path or a PATH name); empty = chrome-devtools-mcp on PATH; \"off\" disables the endpoint. There is no npx fallback. env LASSO_BROWSER_MCP")
+	browserMCPMax = flag.Int("browser-mcp-max", envInt("LASSO_BROWSER_MCP_MAX", browserMCPDefaultMax),
+		"most concurrent /browser-mcp sessions (each is one chrome-devtools-mcp process); env LASSO_BROWSER_MCP_MAX")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the
@@ -253,6 +259,15 @@ func runServer() {
 		AuthRequired: hasAuth || oauthCfg.Enabled,
 	})
 	go sharedBrowser.run(ctx)
+	// Its sessions' children hold CDP connections to one browser process, so
+	// when that process goes away (stop, idle stop, relaunch, crash) they are
+	// closed and their clients re-initialize onto the next one.
+	browserMCP = newBrowserMCPBridge(browserMCPConfig{
+		Binary:    *browserMCPBin,
+		ExtraArgs: os.Getenv("LASSO_BROWSER_MCP_ARGS"),
+		Max:       *browserMCPMax,
+	})
+	sharedBrowser.onStop = browserMCP.browserStopped
 
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
@@ -366,6 +381,13 @@ func runServer() {
 	cdpHandler := withCDPAuth(http.HandlerFunc(sharedBrowser.serveCDP), authUser, authPass, hasAuth)
 	mux.Handle("/cdp", cdpHandler)
 	mux.Handle("/cdp/", cdpHandler)
+	// The shared browser as an MCP server (browsermcp.go): one URL an agent adds
+	// to get chrome-devtools-mcp's tools against this browser. NOT under /mcp/,
+	// which is lasso's own MCP server's prefix. Exempt from UI_AUTH below and
+	// gated by withBrowserMCPAuth, which is /cdp's rule since it fronts /cdp.
+	browserMCPHandler := withBrowserMCPAuth(browserMCP, authUser, authPass, hasAuth)
+	mux.Handle("/browser-mcp", browserMCPHandler)
+	mux.Handle("/browser-mcp/", browserMCPHandler)
 	dist, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		log.Fatalf("dist fs: %v", err)
@@ -397,11 +419,15 @@ func runServer() {
 	handler := gate.wrap(withAuthExcept(mux, authUser, authPass, hasAuth,
 		"/mcp",
 		"/cdp",
+		"/browser-mcp",
 		"/.well-known/oauth-protected-resource",
 		"/.well-known/oauth-authorization-server",
 		"/oauth/register",
 		"/oauth/token",
 	))
+	// lasso's own chrome-devtools-mcp children reach /cdp on an internal token,
+	// ahead of every gate above (see withInternalCDP for why outermost).
+	handler = withInternalCDP(handler, http.HandlerFunc(sharedBrowser.serveCDP))
 
 	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
 	// port if the requested one is taken. Outside dev a busy port is fatal — we
@@ -414,6 +440,8 @@ func runServer() {
 		log.Printf("dev:      web port %s busy → using %s", *listenAddr, boundAddr)
 		*listenAddr = boundAddr // so the URL log + isLoopback reflect reality
 	}
+	// Where /browser-mcp's children dial /cdp: the address actually bound.
+	browserMCP.setListenAddr(ln.Addr())
 
 	// Spawn ttyd only after the web port is ours — so a busy-port exit above
 	// never leaves an orphaned ttyd behind (its cleanup is tied to ctx, which
@@ -463,6 +491,10 @@ func runServer() {
 		// Streaming handlers (SSE) watch `draining` and exit immediately, so
 		// Shutdown only waits on real work — not on the drain window per se.
 		close(draining)
+		// /browser-mcp sessions hold streams open for as long as their client
+		// likes; closing them (and their children) first keeps the drain to
+		// real work, and lasso never exits ahead of a child.
+		browserMCP.closeAll("lasso shutting down")
 		log.Printf("shutdown: draining in-flight requests (up to %s)", drainTimeout)
 		sh, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		_ = srv.Shutdown(sh)

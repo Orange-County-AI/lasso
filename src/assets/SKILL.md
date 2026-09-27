@@ -1,6 +1,6 @@
 ---
 name: lasso
-description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), and driving the shared browser the human watches live in lasso's Browser tab (shared_browser / `lasso mcp shared-browser`, then chrome-devtools-mcp or Playwright over CDP).
+description: Use for lasso itself — inspecting and managing lasso agents, hosts, repos, and branches through its MCP server before falling back to lasso.db, the filesystem, or generic shell tooling. Also covers acting on your own identity inside a lasso-managed terminal (whoami / close_agent via $HERDR_PANE_ID), getting your human's attention with a push notification (notify / `lasso notify`), and driving the shared browser the human watches live in lasso's Browser tab (the lasso-browser MCP server at /browser-mcp; shared_browser / `lasso mcp shared-browser` to find it; Playwright over CDP).
 ---
 
 # lasso
@@ -23,7 +23,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `list_branches` | List branches for a repo |
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
-> | `shared_browser`| Start the shared Chromium the human watches live and get its CDP endpoint |
+> | `shared_browser`| Start the shared Chromium the human watches live; get its browser MCP URL and CDP endpoint |
 >
 > **Lasso does not talk to agents.** To prompt another agent, read its screen,
 > or wait for it to finish, use herdr: `herdr agent prompt <target> "<text>"`,
@@ -144,41 +144,54 @@ reply.
 ## The shared browser
 
 lasso runs one real Chromium on **its own machine** and shows it live in the
-sidebar's Browser tab. You can drive the same browser over the Chrome DevTools
-Protocol, and the human sees every page you open, as you open it — and can
-click in it too.
+sidebar's Browser tab. You drive the same browser through lasso's browser MCP
+server (chrome-devtools-mcp's tools, served by lasso), or over the Chrome
+DevTools Protocol, and the human sees every page you open, as you open it —
+and can click in it too.
 
 **Use it when a human should see the page**: checking a UI you just built,
 reproducing a bug they reported, walking a flow they want to watch, anything
 where "look at this" beats a screenshot. For headless scraping or a test suite
 nobody is watching, your own Playwright/Chromium is fine.
 
-### Getting the endpoint
+### Connecting
+
+**Prefer the `lasso-browser` MCP server if you have it configured** — its
+tools (`new_page`, `navigate_page`, `click`, `fill`, `take_screenshot`,
+`take_snapshot`, `list_console_messages`, …) are chrome-devtools-mcp's, already
+pointed at the shared browser, and its server instructions repeat the
+etiquette below. Each MCP session gets its own chrome-devtools-mcp process, so
+your selected page is yours alone. Screenshots come back as JPEG, ≤1280px.
+
+If you don't have it, find its URL:
 
 ```bash
-lasso mcp shared-browser        # starts it if needed; prints ws_endpoint and pages
+lasso mcp shared-browser        # starts it if needed; prints mcp_endpoint, ws_endpoint, pages
 ```
 
 or the **`shared_browser`** MCP tool (pass `start: false` to only report its
-state). The reply carries `ws_endpoint` (e.g. `ws://127.0.0.1:8090/cdp`), the
-pages open right now, and a `note` when something needs saying — no Chromium
-installed, or that `/cdp` needs your credential. The endpoint is stable across
-browser restarts, so it is safe to put in a config. A refusal saying the
-browser is outside your credential's reach is a scope boundary: don't work
-around it.
+state). `mcp_endpoint` is the browser MCP URL (e.g.
+`http://127.0.0.1:8090/browser-mcp`); **ask the human to add it** (`claude mcp
+add --transport http lasso-browser <mcp_endpoint>`, or as a streamable-HTTP MCP
+server in any other agent) unless you can add MCP servers yourself — a new MCP
+server usually only loads in a new session. `mcp_available: false` comes with
+`mcp_reason` (usually chrome-devtools-mcp not installed on lasso's machine).
+The reply's `note` says when the browser is unavailable or the endpoints need
+your credential (the same bearer token as `/mcp`, sent as an `Authorization`
+header; behind `UI_AUTH` alone, `Basic` credentials instead). A refusal saying
+the browser is outside your credential's reach is a scope boundary: don't
+work around it.
 
-### Connecting
-
-- **chrome-devtools-mcp:** `npx chrome-devtools-mcp@latest --wsEndpoint
-  <ws_endpoint>`; add `--wsHeaders '{"Authorization":"Bearer <token>"}'` when
-  the note says `/cdp` needs credentials (the bearer token you use for
-  `/mcp`; behind `UI_AUTH` alone, `Basic` credentials instead).
-- **Playwright:** `chromium.connectOverCDP("<ws_endpoint>")` — then use
+- **Playwright / raw CDP** instead: `chromium.connectOverCDP("<ws_endpoint>")`
+  (e.g. `ws://127.0.0.1:8090/cdp`, stable across browser restarts) — then use
   `browser.contexts()[0]` (the shared, logged-in profile) and `newPage()` on
   it. Close your pages when done; never send CDP's `Browser.close`, which
   shuts the browser down for everyone. Playwright's own `browser.close()` is
-  safe here: on a `connectOverCDP` connection it only disconnects.
-- Plain CDP works too: `…/cdp/json/list` over HTTP lists the targets.
+  safe here: on a `connectOverCDP` connection it only disconnects. Plain CDP
+  works too: `…/cdp/json/list` over HTTP lists the targets.
+- If the browser restarts (a proxy change, an idle stop), your browser MCP
+  session is closed; your MCP client reconnects on its own, but page ids from
+  before are gone — `list_pages` again.
 
 ### Etiquette — a human may be watching
 
