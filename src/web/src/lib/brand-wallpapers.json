@@ -1,16 +1,22 @@
 {
   "execution-associates": [
     {
-      "id": "01-golden-hour",
-      "label": "Golden Hour",
-      "image": "/wallpapers/execution-associates/01-golden-hour.webp",
-      "thumbnail": "/wallpapers/execution-associates/thumbs/01-golden-hour.webp"
+      "id": "01-key-art",
+      "label": "Key Art",
+      "image": "/wallpapers/execution-associates/01-key-art.webp",
+      "thumbnail": "/wallpapers/execution-associates/thumbs/01-key-art.webp"
     },
     {
-      "id": "02-night",
+      "id": "02-golden-hour",
+      "label": "Golden Hour",
+      "image": "/wallpapers/execution-associates/02-golden-hour.webp",
+      "thumbnail": "/wallpapers/execution-associates/thumbs/02-golden-hour.webp"
+    },
+    {
+      "id": "03-night",
       "label": "Night",
-      "image": "/wallpapers/execution-associates/02-night.webp",
-      "thumbnail": "/wallpapers/execution-associates/thumbs/02-night.webp"
+      "image": "/wallpapers/execution-associates/03-night.webp",
+      "thumbnail": "/wallpapers/execution-associates/thumbs/03-night.webp"
     }
   ],
   "ocai": [

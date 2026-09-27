@@ -75,7 +75,7 @@ const BUNDLED: Record<string, readonly BackgroundChoice[]> = {
 const BUNDLED_DEFAULT: Record<string, string> = {
   "retro-82": "/wallpapers/retro-82/04-dusk-guardian.webp",
   "execution-associates":
-    "/wallpapers/execution-associates/01-golden-hour.webp",
+    "/wallpapers/execution-associates/01-key-art.webp",
   ocai: "/wallpapers/ocai/01-pier.webp",
 }
 
