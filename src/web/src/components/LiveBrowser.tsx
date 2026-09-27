@@ -1,11 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query"
-import {
-  ArrowLeft,
-  ArrowRight,
-  Keyboard,
-  Plus,
-  RotateCw,
-} from "lucide-react"
+import { ArrowLeft, ArrowRight, Keyboard, Plus, RotateCw } from "lucide-react"
 import * as React from "react"
 import type { OpenRequest } from "@/components/BrowserTab"
 import { Button } from "@/components/ui/button"
@@ -16,6 +10,7 @@ import { lsGet, lsSet } from "@/lib/app-store"
 import { resolveLive } from "@/lib/browser-url"
 import { CDPClient, type CDPParams, reconnectDelay } from "@/lib/cdp"
 import { qk } from "@/lib/query"
+import { APP_KEYS, APP_SHIFT_KEYS } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 // LiveBrowser is the Browser tab's Live mode: the shared headless Chromium
@@ -64,9 +59,6 @@ interface DrawRect {
   meta: FrameMeta
 }
 
-// The ⌘ combos lasso's own shell handles (App.tsx's keydown, lib/shortcuts.ts).
-// Left alone here so they bubble to the document exactly as they do from
-// anywhere else in the app.
 // sameURL compares two absolute URLs as the browser would ("https://a.com"
 // and "https://a.com/" are one page); unparseable input is simply unequal.
 function sameURL(a: string, b: string): boolean {
@@ -80,8 +72,6 @@ function sameURL(a: string, b: string): boolean {
 // The headless window's non-viewport height (see fit). A property of the
 // browser, not of one mount, so a Live -> Embed -> Live round trip keeps it.
 let chromeGap: number | null = null
-
-const APP_KEYS = new Set(["k", "o", "i", "\\", "/"])
 
 // Editing chords go to the page as key events carrying the editor COMMAND,
 // which is what makes them work in a headless Chromium on any OS: the
@@ -977,13 +967,13 @@ export function LiveBrowser({
     if (e.nativeEvent.isComposing) return
     if (e.metaKey || e.ctrlKey) {
       const k = e.key.toLowerCase()
-      // lasso's own ⌘ shortcuts bubble on to App's document listener.
+      // lasso's own ⌘ shortcuts (lib/shortcuts.ts) bubble on to App's
+      // document listener, exactly as they do from anywhere else in the app.
       if (
         e.metaKey &&
         !e.ctrlKey &&
         !e.altKey &&
-        !e.shiftKey &&
-        APP_KEYS.has(k)
+        (e.shiftKey ? APP_SHIFT_KEYS : APP_KEYS).has(k)
       ) {
         return
       }
@@ -1140,7 +1130,6 @@ export function LiveBrowser({
           <Keyboard />
         </Button>
       </div>
-
 
       {(statusLine || err) && (
         <div className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-background px-2 py-1 text-[12px]">

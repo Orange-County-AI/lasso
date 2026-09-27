@@ -475,16 +475,35 @@ function Shell() {
       window.removeEventListener(MOBILE_COMMAND_EVENT, onMobileCommand)
   }, [toggleSidebar, openNew, openHostMenu, toggleLeftView])
 
-  // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New dialog,
-  // keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
+  // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New
+  // dialog, ⌘J/⌘E/⌘B → the left column's views and sidebar, ⌘\ and ⌘⇧F/S/B →
+  // the right sidebar, ⌘/ → the keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
   // never clobbers terminal control keys like Ctrl-H (backspace). The
   // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
   // these work even while a terminal holds focus. (See SHORTCUTS, the reference
   // list shown in Settings.)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      if (!e.metaKey || e.ctrlKey || e.altKey) return
       const k = e.key.toLowerCase()
+      if (e.shiftKey) {
+        // ⌘⇧ + a tab's initial jumps the right sidebar to it, opening the
+        // sidebar if collapsed — through openSidebar, so it stamps intent and
+        // wins the synced-layout claim like ⌘\.
+        const face: RightView | undefined =
+          k === "f"
+            ? "files"
+            : k === "s"
+              ? "scratch"
+              : k === "b"
+                ? "browser"
+                : undefined
+        if (!face) return
+        e.preventDefault()
+        setRightView(face)
+        if (rightPanel.current?.isCollapsed()) openSidebar()
+        return
+      }
       if (k === "\\") {
         e.preventDefault()
         toggleSidebar()
@@ -508,11 +527,29 @@ function Shell() {
       } else if (k === "/") {
         e.preventDefault()
         setShortcutsOpen(true)
+      } else if (k === "j") {
+        e.preventDefault()
+        toggleLeftView()
+      } else if (k === "e") {
+        e.preventDefault()
+        toggleAgentsView()
+      } else if (k === "b") {
+        e.preventDefault()
+        // Same rule as the footer button, which is disabled in the grid: there
+        // is no docked column there, and herdr's sidebar is behind the overlay.
+        if (leftView !== "agents") toggleLeftSidebar()
       }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [toggleSidebar, leftView])
+  }, [
+    toggleSidebar,
+    openSidebar,
+    toggleLeftView,
+    toggleAgentsView,
+    toggleLeftSidebar,
+    leftView,
+  ])
 
   // Apply the synced sidebar layout continuously — including changes arriving
   // from other tabs over SSE — not just once at load. The sidebar's footprint
@@ -844,9 +881,9 @@ function Shell() {
                 ? "No sidebar in the agents grid"
                 : leftView === "chat"
                   ? chatSidebar
-                    ? "Hide agents"
-                    : "Show agents"
-                  : "Toggle herdr sidebar"
+                    ? "Hide agents (⌘B)"
+                    : "Show agents (⌘B)"
+                  : "Toggle herdr sidebar (⌘B)"
             }
             aria-label={
               leftView === "agents"
@@ -916,8 +953,8 @@ function Shell() {
             aria-pressed={leftView === "agents"}
             title={
               leftView === "agents"
-                ? "Back to the terminal"
-                : "All agents in parallel"
+                ? "Back to the terminal (⌘E)"
+                : "All agents in parallel (⌘E)"
             }
             onClick={toggleAgentsView}
           >
@@ -933,8 +970,8 @@ function Shell() {
             aria-pressed={leftView === "chat"}
             title={
               leftView === "chat"
-                ? "Back to the terminal"
-                : "Read this session as chat"
+                ? "Back to the terminal (⌘J)"
+                : "Read this session as chat (⌘J)"
             }
             onClick={toggleLeftView}
           >
