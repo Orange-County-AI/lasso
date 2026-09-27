@@ -841,9 +841,5 @@ embedded terminal would otherwise refuse to nest. Set `allow_nested = true` unde
 
 ## License
 
-lasso is source-available under the
-[PolyForm Perimeter License 1.0.1](LICENSE.md): use it, change it and share it
-for any purpose except providing others a product that competes with it (the
-license's Noncompete and Competition sections define that).
-
-Required Notice: Copyright Execution Associates (https://executionassociates.com)
+lasso is licensed under the [Apache License 2.0](LICENSE), the same license as
+herdr. See [NOTICE](NOTICE) for the copyright notice.
