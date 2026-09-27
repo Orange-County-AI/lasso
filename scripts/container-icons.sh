@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-render the icon set inside the dev-lasso container. See scripts/container.sh.
+# Re-render the icon set inside this worktree's dev container. See scripts/container.sh.
 #
 # This one is not about running the renderer, it is about installing it: uv
 # resolves Pillow from PyPI on first run, which is the same class of surface as
@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/container.sh
 . "$HERE/container.sh"
 
-container_ensure "$(cd "$HERE/../src/web" && pwd)"
+container_ensure
 container_mount icon "$(cd "$HERE/../docs/icon" && pwd)" "$GUEST_ICON"
 
 container_run_in "$GUEST_ICON" "uv run --script ./build.py"

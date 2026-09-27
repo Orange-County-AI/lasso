@@ -27,29 +27,30 @@
 go = "1.25.3"
 bun = "1.3.14"
 node = "26.7.0"
-# Runs in the dev-lasso container: the work here is uv resolving Pillow from
-# PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
+# Runs in this worktree's dev container: the work here is uv resolving Pillow
+# from PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
 # top of build.py. The source is raster art (docs/icon/icon.png); there is no
 # vector mark to render any more.
 [tasks.icons]
-description = "Re-render the favicons and home-screen icons from the raster mascot, inside the dev-lasso container"
+description = "Re-render the favicons and home-screen icons from the raster mascot, inside this worktree's dev container"
 dir = "{{config_root}}"
 run = "./scripts/container-icons.sh"
 
 # Runs in the `sandbox` incus container (scripts/sandbox.sh), a plain Debian box
-# kept apart from dev-lasso: reladraw is fetched from npm by bunx, third-party
-# code executing, and a docs task has no reason to share the frontend's mounts.
+# kept apart from the dev-lasso-* containers: reladraw is fetched from npm by
+# bunx, third-party code executing, and a docs task has no reason to share the
+# frontend's mounts.
 [tasks.diagram]
 description = "Render docs/architecture/*.reladraw to SVG, inside the sandbox incus container"
 dir = "{{config_root}}"
 run = "./scripts/container-diagram.sh"
 
-# Runs in the dev-lasso incus container, not on titan: `bun install` executes
-# third-party postinstall scripts, and that is the one place in this repo where
+# Runs in this worktree's dev container (scripts/container.sh), not on titan:
+# `bun install` executes third-party postinstall scripts, and that is the one place in this repo where
 # code we didn't write runs. See scripts/container-build-web.sh for the mount
 # and idmap details. Output still lands in src/web/dist for the Go embed.
 [tasks."build:web"]
-description = "Build the React/shadcn frontend into src/web/dist (embedded by Go), inside the dev-lasso container"
+description = "Build the React/shadcn frontend into src/web/dist (embedded by Go), inside this worktree's dev container"
 dir = "{{config_root}}"
 run = "./scripts/container-build-web.sh"
 
@@ -58,19 +59,35 @@ run = "./scripts/container-build-web.sh"
 # `tsc -b`, not `tsc --noEmit` — the root tsconfig has `files: []`, so a bare
 # --noEmit checks nothing at all and passes.
 [tasks.typecheck]
-description = "Typecheck the frontend (tsc -b) inside the dev-lasso container"
+description = "Typecheck the frontend (tsc -b) inside this worktree's dev container"
 dir = "{{config_root}}"
 run = "./scripts/container-web.sh typecheck"
 
 [tasks.lint]
-description = "Lint the frontend (biome) inside the dev-lasso container"
+description = "Lint the frontend (biome) inside this worktree's dev container"
 dir = "{{config_root}}"
 run = "./scripts/container-web.sh lint"
 
 [tasks.check]
-description = "biome check --write (format + lint fixes + sorting) inside the dev-lasso container"
+description = "biome check --write (format + lint fixes + sorting) inside this worktree's dev container"
 dir = "{{config_root}}"
 run = "./scripts/container-web.sh check"
+
+# One dev container per worktree (scripts/container.sh). These two are the
+# on-demand cleanup half. A container is only ever deleted once its worktree is
+# gone -- the one safe signal that it is unused. On titan the weekly
+# lasso-prune timer (titan-iac tools/lasso-prune.sh) applies the same rule to
+# every container carrying a user.lasso.worktree key.
+[tasks."dev:containers"]
+description = "List the per-worktree dev containers, the worktree each belongs to, and whether it still exists"
+dir = "{{config_root}}"
+run = "./scripts/container-admin.sh list"
+
+[tasks."dev:prune"]
+description = "Delete dev containers whose worktree is gone (dry run; -y to act)"
+dir = "{{config_root}}"
+usage = 'flag "-y --yes" help="Actually delete (default is a dry run)"'
+run = './scripts/container-admin.sh prune ${usage_yes:+-y}'
 
 [tasks.build]
 description = "Build the frontend then the lasso binary"
@@ -151,7 +168,7 @@ done
 tail -n +1 -f "$logf" & tailpid=$!
 trap 'kill "$backend" "$tailpid" 2>/dev/null; rm -f "$logf"' EXIT
 
-echo "lasso (dev): backend on 127.0.0.1:$port · Vite UI in the dev-lasso container, URL printed below (frontend hot reload ON)"
+echo "lasso (dev): backend on 127.0.0.1:$port · Vite UI in this worktree's dev container, URL printed below (frontend hot reload ON)"
 echo "edit anything under src/web/src and the browser hot-reloads; restart this task for Go changes."
 ./scripts/container-dev-web.sh "$port" "$ip"
 '''

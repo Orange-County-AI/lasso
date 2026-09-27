@@ -4,7 +4,7 @@
 #
 # reladraw comes from npm via bunx: a package we did not write, fetched and
 # run. So it runs in the sandbox with only docs/architecture mounted, never on
-# the host and never next to dev-lasso's frontend checkout.
+# the host and never next to a dev container's frontend checkout.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/sandbox.sh
