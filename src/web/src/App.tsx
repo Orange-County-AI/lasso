@@ -56,6 +56,7 @@ import {
   sidebarIntentFresh,
   sidebarPctNow,
 } from "@/lib/sidebar"
+import { onSidebarBrowserOpen } from "@/lib/sidebar-browser"
 import {
   blurHerdrTerminal,
   focusHerdrTerminal,
@@ -345,6 +346,17 @@ function Shell() {
     markSidebarIntent()
     expandSidebar()
   }, [expandSidebar])
+
+  // A link clicked in a terminal (lib/sidebar-browser.ts): show it in the
+  // Browser tab. BrowserTab loads the URL itself; this only reveals it.
+  React.useEffect(
+    () =>
+      onSidebarBrowserOpen(() => {
+        setRightView("browser")
+        openSidebar()
+      }),
+    [openSidebar]
+  )
 
   // Footer navigation. New always opens on the agent tab — the terminal tab is
   // ⌘I's business — and the mobile dial's "new" command shares this.

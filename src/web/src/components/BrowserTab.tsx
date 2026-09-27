@@ -3,7 +3,9 @@ import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
+import { api } from "@/lib/api"
 import { lsGet, lsSet } from "@/lib/app-store"
+import { onSidebarBrowserOpen } from "@/lib/sidebar-browser"
 
 const LOOPBACK = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]
 
@@ -150,6 +152,20 @@ export function BrowserTab() {
     // Probe reachability/embeddability in parallel. The probe is authoritative:
     // if it fails, the iframe will be blank, so surface a clear reason.
     if (/^https?:\/\//i.test(target)) {
+      // A site that forbids framing still loads "successfully" as a blank
+      // frame, and the browser hides why. Ask lasso to read the headers.
+      void api
+        .frameable(target)
+        .then((r) => {
+          if (seq !== seqRef.current || r.frameable !== false) return
+          setErr(
+            `${hostOf(target) || target} doesn't allow other sites to embed it, so it can't show here. Open it in a new tab instead.`
+          )
+          setStatus("error")
+        })
+        .catch(() => {
+          /* advisory only: an older server or a failed fetch says nothing */
+        })
       void probeReachable(target).then((ok) => {
         if (seq !== seqRef.current || ok) return
         const host = hostOf(target)
@@ -169,6 +185,9 @@ export function BrowserTab() {
     const saved = lsGet("browserUrl")
     if (saved) nav(saved)
   }, [nav])
+
+  // A link clicked in a terminal lands here (lib/sidebar-browser.ts).
+  React.useEffect(() => onSidebarBrowserOpen(nav), [nav])
 
   const openExternal = React.useCallback(() => {
     const t = openTarget || (src !== "about:blank" ? src : "")

@@ -1,5 +1,6 @@
 import { api } from "@/lib/api"
 import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
+import { openInSidebarBrowser, routeLinkToSidebar } from "@/lib/sidebar-browser"
 import {
   mayResizeTerminal,
   onTermOwnerChange,
@@ -788,6 +789,46 @@ function wireReconnect(id: string, tries: number) {
   )
 }
 
+// wireLinkOpen sends a clicked terminal link to the sidebar's Browser tab.
+// xterm opens links (both a detected URL and an OSC 8 hyperlink) the same way:
+// `window.open()` with no URL, then `location.href = url` on what it returns.
+// So an argument-less open returns a stand-in whose href setter decides where
+// the link goes. Cmd/Ctrl-click keeps the old new-tab behavior; the modifier is
+// read off the pointer event, since xterm's handler never passes one along.
+function wireLinkOpen(doc: Document, win: Window) {
+  let forceNewTab = false
+  const noteMods = (e: MouseEvent) => {
+    forceNewTab = e.metaKey || e.ctrlKey
+  }
+  doc.addEventListener("mousedown", noteMods, true)
+  doc.addEventListener("mouseup", noteMods, true)
+
+  const nativeOpen = win.open.bind(win)
+  const openNewTab = (url: string) => {
+    const w = nativeOpen()
+    if (!w) return
+    try {
+      w.opener = null
+    } catch {
+      /* same as xterm: best effort */
+    }
+    w.location.href = url
+  }
+  win.open = ((...args: Parameters<Window["open"]>) => {
+    if (args.length > 0 && args[0]) return nativeOpen(...args)
+    const stand = {
+      opener: null as unknown,
+      location: {
+        set href(url: string) {
+          if (!forceNewTab && routeLinkToSidebar(url)) openInSidebarBrowser(url)
+          else openNewTab(url)
+        },
+      },
+    }
+    return stand as unknown as Window
+  }) as Window["open"]
+}
+
 // wireTerminalIframe: (1) for the herdr terminal, suppress the native context
 // menu so right-click only triggers herdr's handling; (2) intercept image paste
 // — save it server-side and insert its path at the cursor (xterm only pastes
@@ -883,6 +924,7 @@ export function wireTerminalIframe(
     true
   )
 
+  if (win) wireLinkOpen(doc, win)
   wireShiftEnter(id, inputMode, 0)
   wireOsc52(id, 0)
   wireResizeGate(id, 0)

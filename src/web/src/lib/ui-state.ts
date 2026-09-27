@@ -31,6 +31,7 @@ const DEFAULTS: UIState = {
   sidebar_collapsed: false,
   sidebar_pct: 0,
   files_click_navigates: true,
+  terminal_links_in_sidebar: true,
   usage_hidden: [],
   usage_order: [],
   usage_compact: false,

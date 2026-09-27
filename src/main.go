@@ -284,6 +284,7 @@ func runServer() {
 	mux.HandleFunc("/api/agent/reopen", serveAgentReopen)
 	mux.HandleFunc("/api/agent-history", serveAgentHistory)
 	mux.HandleFunc("/api/paste-file", servePasteFile)
+	mux.HandleFunc("/api/frameable", serveFrameable)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)

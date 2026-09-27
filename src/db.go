@@ -273,6 +273,10 @@ type uiState struct {
 	// it expands the folder in place. Defaulted true in getUIState so a fresh
 	// install (or an older stored blob lacking the field) navigates.
 	FilesClickNavigates bool `json:"files_click_navigates"`
+	// TerminalLinksInSidebar opens a link clicked in a terminal in the right
+	// sidebar's Browser tab instead of a new browser tab. Defaulted true in
+	// getUIState, like FilesClickNavigates.
+	TerminalLinksInSidebar bool `json:"terminal_links_in_sidebar"`
 	// UsageHidden contains providers the user has turned OFF in Settings →
 	// Usage tracking. They are not merely hidden: serveUsage skips their
 	// fetchers entirely, so an unchecked provider costs no token refresh and no
@@ -445,13 +449,14 @@ func normalizeAppearanceMode(m string) string {
 // defaults true).
 func getUIState() (uiState, error) {
 	us := uiState{
-		FilesClickNavigates: true,
-		UsageHidden:         []string{},
-		UsageOrder:          []string{},
-		ThemeAtmosphere:     map[string]atmospherePref{},
-		CustomBackgrounds:   []string{},
-		AppearanceMode:      appearanceModeHerdr,
-		AgentsSort:          agentsSortPriority,
+		FilesClickNavigates:    true,
+		TerminalLinksInSidebar: true,
+		UsageHidden:            []string{},
+		UsageOrder:             []string{},
+		ThemeAtmosphere:        map[string]atmospherePref{},
+		CustomBackgrounds:      []string{},
+		AppearanceMode:         appearanceModeHerdr,
+		AgentsSort:             agentsSortPriority,
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)

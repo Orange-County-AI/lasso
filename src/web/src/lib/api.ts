@@ -388,6 +388,9 @@ export interface UIState {
   // Files tab folder-click behavior: true re-roots the tree into the folder,
   // false expands it in place. Defaults true (see getUIState in db.go).
   files_click_navigates: boolean
+  // A link clicked in a terminal opens in the sidebar's Browser tab rather
+  // than a new browser tab. Defaults true (see getUIState in db.go).
+  terminal_links_in_sidebar: boolean
   // Providers NOT tracked: the server skips their fetch, and neither the
   // footer nor the Usage tab lists them. Empty = track everything.
   usage_hidden: string[]
@@ -879,6 +882,13 @@ export const api = {
   // (autotitle.go). A server-level setting of the box lasso runs on — the CLI
   // runs there, not on the host the agent was created on — so unlike the
   // creator defaults it isn't host-scoped.
+  // Whether a page lets the Browser tab embed it (frameable.go). null = the
+  // server couldn't fetch it, so nothing is known.
+  frameable: (url: string) =>
+    getJSON<{ frameable: boolean | null; reason?: string }>(
+      `/api/frameable?url=${encodeURIComponent(url)}&origin=${encodeURIComponent(location.origin)}`,
+      8000
+    ),
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>
     postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),

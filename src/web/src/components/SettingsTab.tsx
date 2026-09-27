@@ -271,6 +271,7 @@ export function SettingsTab({
           className="min-h-0 overflow-y-auto px-3 py-4 data-[state=inactive]:hidden"
         >
           <AutoTitleToggle active={active && sub === "general"} />
+          <TerminalLinksToggle />
           <NotificationsSettings active={active && sub === "general"} />
           <UsageTrackingSettings />
           <CreatorHostSetting hostOptions={hostOptions} />
@@ -1349,6 +1350,36 @@ function AutoTitleToggle({ active }: { active: boolean }) {
         a title instead of the prompt's clipped first line. Runs on this
         machine, whichever host the agent was created on, and only renames the
         workspace: the branch and working directory keep their original names.
+      </p>
+    </div>
+  )
+}
+
+// TerminalLinksToggle: where a link clicked in a terminal opens. Stored in
+// lasso's ui_state, so every browser on this lasso follows it.
+function TerminalLinksToggle() {
+  const on = useUIState().terminal_links_in_sidebar
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <span className={labelClass}>Terminal links</span>
+      <label
+        className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+        htmlFor="settings-terminal-links"
+      >
+        <Checkbox
+          id="settings-terminal-links"
+          checked={on}
+          onCheckedChange={(c) =>
+            patchUIState({ terminal_links_in_sidebar: c === true })
+          }
+        />
+        Open terminal links in the sidebar browser
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        Cmd/Ctrl-click still opens a new browser tab. Sites that refuse to be
+        embedded (GitHub, Google and many others) show a note there with a
+        button to open them in a new tab. An http:// link on an https lasso
+        always opens in a new tab, since the browser won't embed it.
       </p>
     </div>
   )
