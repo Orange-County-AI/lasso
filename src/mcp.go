@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -46,6 +47,11 @@ Lasso does not talk to agents. To prompt another agent, read its screen, or wait
 
 Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.`
 
+// sharedMCPServer is the one *mcp.Server behind /mcp, kept so the plugin
+// manager (plugins.go) can add and remove a plugin's mirrored tools at runtime;
+// the SDK tells every connected session with tools/list_changed.
+var sharedMCPServer atomic.Pointer[mcp.Server]
+
 func newMCPHandler() *mcp.StreamableHTTPHandler {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "lasso",
@@ -53,6 +59,7 @@ func newMCPHandler() *mcp.StreamableHTTPHandler {
 		Version: lassoSemver,
 	}, &mcp.ServerOptions{Instructions: mcpInstructions})
 	registerMCPTools(srv)
+	sharedMCPServer.Store(srv)
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
 		// lasso binds to loopback and is reached over the Cloudflare tunnel under a
 		// public hostname (e.g. lasso.knowsuchagency.ai). The SDK's default DNS-

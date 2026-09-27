@@ -1,0 +1,14 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Example plugin: a sidebar tab and one MCP tool (greet), sandboxed",
+  "tabs": [
+    { "id": "main", "label": "Hello", "icon": "sparkles", "entry": "ui/index.html" }
+  ],
+  "mcp": {
+    "image": "python:3.12-slim",
+    "command": ["python3", "-u", "server.py"],
+    "network": [],
+    "env": { "GREETING": "Hello" }
+  }
+}

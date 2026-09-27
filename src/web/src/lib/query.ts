@@ -47,6 +47,9 @@ export const qk = {
   // Browser tab and Settings so a start in one shows in the other.
   browser: ["browser"] as const,
   usage: ["usage"] as const,
+  // Server-level: the plugin listing. Refetched on the plugins_rev SSE bump
+  // (app-store), so the sidebar strip and Settings share one answer.
+  plugins: ["plugins"] as const,
   // The herdr theme picker's payload — refetched keyed on the live theme_rev
   // so the dropdown follows external config.toml edits too.
   theme: (rev: number) => ["theme", rev] as const,

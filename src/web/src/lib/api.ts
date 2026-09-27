@@ -31,6 +31,10 @@ export interface ActiveState {
   // may be an ssh window onto another host's herdr, in which case this is that
   // host and file/diff requests must address it explicitly.
   cwd_host?: string
+  // Bumps on every plugin state change (discovered, enabled, disabled, trusted,
+  // its MCP child starting or dying) so every open tab refetches /api/plugins.
+  // Server-level, like ui_state_rev: absent on an older server.
+  plugins_rev?: number
 }
 
 // One ssh-config host as a herdr target. Selectable in the footer switcher only
@@ -436,6 +440,33 @@ export interface UIState {
   // What the Browser tab shows (see BrowserMode). Never send "" — the server
   // answers 400 and drops the whole patch, as it does for agents_sort.
   browser_mode: BrowserMode
+  // The right sidebar's tabs, in order, with the ones the human hid (see
+  // lib/sidebar-tabs.ts). A whole value: one Settings screen reorders it, so
+  // a write replaces it rather than merging. Empty = the default order with
+  // nothing hidden. Optional because an older server never sends it.
+  sidebar_tabs?: SidebarTabPref[]
+  // The typeface for each typography slot, as a plugin font's global id
+  // ("plugin:<name>:<font>"); an absent or "" slot is lasso's own default.
+  // Merged PER SLOT on the server (and in the optimistic copy), so two devices
+  // editing different slots cannot clobber each other. An id no enabled plugin
+  // provides is kept and falls back to the default. Optional because an older
+  // server never sends it.
+  typography?: Typography
+}
+
+// The places a typeface can be chosen for (see lib/typography.ts for where
+// each one lands).
+export type TypographySlot = "sans" | "display" | "label" | "mono" | "terminal"
+
+export type Typography = Partial<Record<TypographySlot, string>>
+
+// One entry of ui_state.sidebar_tabs. `id` is a built-in tab ("files",
+// "browser", …) or a plugin's `plugin:<name>:<tab>`; an id nothing currently
+// provides is kept, not dropped, so a plugin disabled for a while comes back
+// where it was.
+export interface SidebarTabPref {
+  id: string
+  hidden: boolean
 }
 
 // A partial write to /api/ui-state: the preference fields to merge, plus the
@@ -569,7 +600,8 @@ export interface ThemeCatalogEntry {
   name: string
   label: string
   light: boolean
-  source: "builtin" | "brand" | "official" | "installed"
+  // "plugin" is a theme an enabled plugin contributes (named in `plugin`).
+  source: "builtin" | "brand" | "official" | "installed" | "plugin"
   installed: boolean
   // Root-relative URLs of the backgrounds that shipped with the theme, served
   // by lasso itself ("/omarchy/bg/<theme>/<file>"). Root-relative so the same
@@ -587,6 +619,8 @@ export interface ThemeCatalogEntry {
   background: string
   // The git origin a theme was cloned from — only present for an installed one.
   url?: string
+  // The plugin that contributes it — only present for source "plugin".
+  plugin?: string
 }
 
 // httpError builds a concise Error from a non-OK response. lasso/herdr return
@@ -870,6 +904,149 @@ async function postBrowser(url: string, body: unknown): Promise<BrowserStatus> {
   throw await httpError(r)
 }
 
+// ---------------------------------------------------------------------------
+// Plugins (plugins.go) — see lib/plugins.ts
+// ---------------------------------------------------------------------------
+
+// One tab as the operator approves it: exactly one of `entry` (a file in the
+// plugin's directory, served by lasso) or `url` (framed as-is).
+export interface PluginTabPermission {
+  id: string
+  label?: string
+  entry?: string
+  url?: string
+}
+
+export interface PluginSecretPermission {
+  name: string
+  // The only hosts the secret's value may be sent to — the sandbox substitutes
+  // it into traffic to these and nowhere else.
+  hosts: string[]
+}
+
+// Everything enabling a plugin approves. The server fingerprints exactly this,
+// so a manifest that changes any of it reads as needs_approval again.
+export interface PluginPermissions {
+  tabs: PluginTabPermission[] | null
+  mcp?: {
+    image: string
+    command: string[]
+    // host[:port] egress allowlist; empty = no network at all.
+    network: string[]
+    env_keys: string[]
+    secrets: PluginSecretPermission[]
+  }
+  // Themes and fonts it contributes. Absent on an older server.
+  themes?: string[] | null
+  fonts?: PluginFontPermission[] | null
+}
+
+export type PluginFontCategory = "sans" | "serif" | "display" | "mono"
+
+export interface PluginFontPermission {
+  id: string
+  family: string
+  category: PluginFontCategory
+}
+
+// A theme a plugin contributes. `key_taken` means another theme already owns
+// the id, so this one is skipped (and a warning says so).
+export interface PluginThemeInfo {
+  id: string
+  label: string
+  key_taken?: boolean
+}
+
+// One file of a plugin font. `url` is "/plugins/<name>/<file>".
+export interface PluginFontFace {
+  url: string
+  weight: number
+  style: "normal" | "italic"
+}
+
+export interface PluginFontInfo {
+  id: string
+  // "plugin:<name>:<id>" — what ui_state.typography stores.
+  global_id: string
+  family: string
+  category: PluginFontCategory
+  license?: string
+  // Only filled while the plugin is enabled.
+  faces?: PluginFontFace[] | null
+}
+
+// A tab lasso will render: only present while the plugin is enabled and
+// approved. `src` is "/plugins/<name>/<entry>" or the tab's own url.
+export interface PluginTabInfo {
+  id: string
+  // "plugin:<name>:<id>" — the id ui_state.sidebar_tabs orders by.
+  global_id: string
+  label: string
+  icon: string
+  src: string
+}
+
+export type PluginState = "disabled" | "enabled" | "needs_approval" | "invalid"
+
+export type PluginMCPStatus =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "error"
+  | "unavailable"
+
+export interface Plugin {
+  name: string
+  version: string
+  description: string
+  dir: string
+  state: PluginState
+  // Why an invalid manifest was refused.
+  error?: string
+  // Operator-only: its MCP server runs on this machine, outside the sandbox.
+  trusted: boolean
+  // Digest of `permissions`. Enable sends it back so the server approves only
+  // what the human was shown (409 if the manifest changed in between).
+  fingerprint?: string
+  permissions: PluginPermissions
+  tabs: PluginTabInfo[] | null
+  // Appearance contributions. Absent on an older server.
+  themes?: PluginThemeInfo[] | null
+  fonts?: PluginFontInfo[] | null
+  // Non-fatal problems (a theme id already taken, …), shown in Settings.
+  warnings?: string[] | null
+  mcp?: {
+    status: PluginMCPStatus
+    detail?: string
+    tools: string[] | null
+    sandboxed: boolean
+  }
+}
+
+export interface PluginsPayload {
+  dir: string
+  msb: { available: boolean; path?: string; reason?: string }
+  plugins: Plugin[] | null
+}
+
+// What a plugin's MCP tool answered — MCP's CallToolResult, passed through
+// untouched to the tab that asked.
+export type PluginCallResult = Record<string, unknown>
+
+export type PluginAction = "enable" | "disable" | "restart"
+
+// postAction is postJSON for endpoints whose body the caller does not read:
+// an empty or non-JSON 200 is still a success, where postJSON would throw
+// parsing it.
+async function postAction(url: string, body: unknown): Promise<void> {
+  const r = await hostFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw await httpError(r)
+}
+
 export interface PushConfig {
   public_key: string
   devices: PushDevice[]
@@ -1016,6 +1193,28 @@ export const api = {
     )
     if (!r.ok) throw await httpError(r)
   },
+  // Plugins (plugins.go). Server-level like the browser: plugins run on
+  // lasso's own machine whatever host a tab is driving. Every state change also
+  // bumps plugins_rev, which is what refetches every OTHER tab.
+  plugins: () => getJSON<PluginsPayload>("/api/plugins", 10_000),
+  reloadPlugins: () => postJSON<PluginsPayload>("/api/plugins/reload", {}),
+  // enable carries the fingerprint of the permissions the human was shown, so
+  // a manifest edited while the dialog was open is refused (409) rather than
+  // approved unseen.
+  pluginAction: (name: string, action: PluginAction, fingerprint?: string) =>
+    postAction(
+      `/api/plugins/${encodeURIComponent(name)}/${action}`,
+      fingerprint ? { fingerprint } : {}
+    ),
+  setPluginTrusted: (name: string, trusted: boolean) =>
+    postAction(`/api/plugins/${encodeURIComponent(name)}/trust`, { trusted }),
+  // One of THIS plugin's own MCP tools (the server refuses another's), for the
+  // tab bridge's tool.call.
+  pluginCall: (name: string, tool: string, args: Record<string, unknown>) =>
+    postJSON<PluginCallResult>(
+      `/api/plugins/${encodeURIComponent(name)}/call`,
+      { tool, arguments: args }
+    ),
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>
     postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),

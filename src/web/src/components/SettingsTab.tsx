@@ -10,6 +10,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   Keyboard,
   Monitor,
   Moon,
@@ -22,6 +24,16 @@ import {
 import * as React from "react"
 import { toast } from "sonner"
 import { Pill } from "@/components/Pill"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -39,8 +51,14 @@ import {
   type BrowserAction,
   type BrowserMode,
   completeUsageProviderOrder,
+  type Plugin,
+  type PluginAction,
+  type PluginMCPStatus,
+  type PluginState,
+  type SidebarTabPref,
   type ThemeCatalogEntry,
   type ThemePayload,
+  type TypographySlot,
 } from "@/lib/api"
 import { lsGet, lsSet, useApp } from "@/lib/app-store"
 import { cdpURL } from "@/lib/cdp"
@@ -56,6 +74,7 @@ import {
   subscribeSystemScheme,
   systemPrefersDark,
 } from "@/lib/mode"
+import { pluginTabsOf, usePlugins } from "@/lib/plugins"
 import {
   disablePush,
   enablePush,
@@ -64,7 +83,24 @@ import {
 } from "@/lib/push"
 import { qk } from "@/lib/query"
 import { SHORTCUT_GROUPS } from "@/lib/shortcuts"
+import {
+  arrangeTabs,
+  BUILTIN_LABELS,
+  isBuiltinTab,
+  moveTab,
+  resolveSidebarTabs,
+  setTabHidden,
+} from "@/lib/sidebar-tabs"
 import { primeThemeCatalog, refreshTheme, shippedPairs } from "@/lib/theme"
+import {
+  fontForSlot,
+  type ResolvedFont,
+  resolvePluginFonts,
+  SLOT_LABELS,
+  setTypography,
+  slotAccepts,
+  TYPOGRAPHY_SLOTS,
+} from "@/lib/typography"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 import {
@@ -279,6 +315,8 @@ export function SettingsTab({
           <SharedBrowserSettings active={active && sub === "general"} />
           <NotificationsSettings active={active && sub === "general"} />
           <UsageTrackingSettings />
+          <SidebarSettings />
+          <PluginsSettings active={active && sub === "general"} />
           <CreatorHostSetting hostOptions={hostOptions} />
           <div className="mb-4 flex flex-col gap-1">
             <label className={labelClass} htmlFor="settings-host">
@@ -485,6 +523,7 @@ function ThemesSettings({ active }: { active: boolean }) {
         themes={catalog}
         governs={fleetThemeIsPalette()}
       />
+      <TypographySettings />
       <ThemeBackgrounds
         theme={effective}
         shipped={shipped}
@@ -494,6 +533,114 @@ function ThemesSettings({ active }: { active: boolean }) {
       <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
       <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
     </>
+  )
+}
+
+// What each typography slot reaches, for the line under its select.
+const SLOT_HINTS: Record<TypographySlot, string> = {
+  sans: "body and UI text",
+  display: "hero headings",
+  label: "small-caps labels",
+  mono: "code, the file viewer and diffs",
+  terminal: "every terminal; icon glyphs still come from the Nerd Font",
+}
+
+// TypographySettings picks a typeface per slot from the fonts enabled plugins
+// contribute. Server state like the rest of appearance: a pick writes just that
+// slot (the server merges per slot), and every browser re-applies it from the
+// ui_state_rev bump through lib/typography.ts — this pane only reads the cache
+// and writes. A slot whose font was withdrawn (its plugin disabled) keeps its
+// stored id and shows lasso's default until the plugin comes back.
+function TypographySettings() {
+  const plugins = usePlugins()
+  const ui = useUIState()
+  const fonts = React.useMemo(
+    () => resolvePluginFonts(plugins.data),
+    [plugins.data]
+  )
+  const typography = ui.typography ?? {}
+  return (
+    <div className="mb-4 flex flex-col gap-2">
+      <span className={labelClass}>Typography</span>
+      {fonts.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No enabled plugin provides fonts. A plugin can add typefaces for the
+          interface, code and the terminal — see docs/plugins.md.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {TYPOGRAPHY_SLOTS.map((slot) => (
+            <TypographySlotSelect
+              key={slot}
+              slot={slot}
+              fonts={fonts.filter((f) => slotAccepts(slot, f.category))}
+              stored={typography[slot] ?? ""}
+              active={fontForSlot(slot, fonts, typography)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// previewStack renders a font's own name in its own face, over the interface
+// stack while it loads (or if it never does). The family is validated
+// (lib/typography.ts), and a React style is CSSOM rather than CSS text anyway.
+function previewStack(f: ResolvedFont): string {
+  return `"${f.family}", var(--font-sans)`
+}
+
+function TypographySlotSelect({
+  slot,
+  fonts,
+  stored,
+  active,
+}: {
+  slot: TypographySlot
+  fonts: ResolvedFont[]
+  stored: string
+  // What the slot actually resolves to right now (null = lasso's default).
+  active: ResolvedFont | null
+}) {
+  const id = `settings-typography-${slot}`
+  // A stored id no enabled plugin provides still has to be the selected
+  // option, or the <select> would display its first ("lasso default") while
+  // the stored choice waits for its plugin to come back.
+  const orphan = stored && !fonts.some((f) => f.globalID === stored)
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <label className="text-[11px] text-muted-foreground" htmlFor={id}>
+        {SLOT_LABELS[slot]}
+      </label>
+      <select
+        id={id}
+        className={cn(fieldClass, "max-w-[15rem]")}
+        value={stored}
+        onChange={(e) => setTypography(slot, e.target.value)}
+        style={active ? { fontFamily: previewStack(active) } : undefined}
+      >
+        <option value="">lasso default</option>
+        {orphan && <option value={stored}>{stored} (unavailable)</option>}
+        {fonts.map((f) => (
+          <option
+            key={f.globalID}
+            value={f.globalID}
+            style={{ fontFamily: previewStack(f) }}
+          >
+            {f.family} — {f.plugin}
+          </option>
+        ))}
+      </select>
+      <p
+        className="text-[11px] text-muted-foreground"
+        style={active ? { fontFamily: previewStack(active) } : undefined}
+      >
+        {SLOT_HINTS[slot]}
+        {active?.license ? ` · ${active.license}` : ""}
+        {orphan ? " · its plugin is off, so lasso's default applies" : ""}
+      </p>
+    </div>
   )
 }
 
@@ -635,7 +782,7 @@ function PalettePrefs({
 function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
   return (
     <>
-      {(["brand", "builtin", "official", "installed"] as const).flatMap(
+      {(["brand", "builtin", "official", "installed", "plugin"] as const).flatMap(
         (source) =>
           [false, true].map((light) => {
             const options = themes.filter(
@@ -649,7 +796,9 @@ function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
                   ? "Brand"
                   : source === "official"
                     ? "Omarchy"
-                    : "Omarchy · Installed"
+                    : source === "installed"
+                      ? "Omarchy · Installed"
+                      : "Plugin"
             return (
               <optgroup
                 key={`${source}-${light}`}
@@ -658,6 +807,11 @@ function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
                 {options.map((theme) => (
                   <option key={theme.name} value={theme.name}>
                     {theme.label}
+                    {/* Which plugin, since two plugins' themes share a group
+                      and disabling that plugin withdraws the theme. */}
+                    {theme.source === "plugin" && theme.plugin
+                      ? ` — plugin ${theme.plugin}`
+                      : ""}
                   </option>
                 ))}
               </optgroup>
@@ -2403,6 +2557,662 @@ function CreationSettings({ active, host }: { active: boolean; host: string }) {
           </Field>
         </section>
       </div>
+    </div>
+  )
+}
+
+// SidebarSettings arranges the right sidebar's tabs: order (up/down) and which
+// are hidden, for the built-ins and every enabled plugin's tabs alike. Stored
+// in ui_state.sidebar_tabs, so every browser on this lasso follows it; the
+// merge rules (what an absent plugin keeps, where a new tab lands) are
+// lib/sidebar-tabs.ts's.
+//
+// The editor moves rows within the FULL arrangement — including entries for
+// plugins that are disabled right now — so re-enabling one puts its tab back
+// where the human left it rather than at the end.
+function SidebarSettings() {
+  const ui = useUIState()
+  const plugins = usePlugins()
+  const pluginTabs = React.useMemo(
+    () => pluginTabsOf(plugins.data),
+    [plugins.data]
+  )
+  const infos = React.useMemo(() => pluginTabs.map((p) => p.tab), [pluginTabs])
+  const arrangement = arrangeTabs(ui.sidebar_tabs, infos)
+  const rows = resolveSidebarTabs(ui.sidebar_tabs, infos)
+  const save = (next: SidebarTabPref[]) => patchUIState({ sidebar_tabs: next })
+
+  const describe = (id: string): { label: string; hint?: string } => {
+    if (isBuiltinTab(id))
+      return {
+        label: BUILTIN_LABELS[id],
+        hint: id === "agents" ? "phones and narrow windows only" : undefined,
+      }
+    const p = pluginTabs.find((t) => t.tab.global_id === id)
+    return {
+      label: p?.tab.label ?? id,
+      hint: p ? `plugin ${p.plugin.name}` : undefined,
+    }
+  }
+
+  return (
+    <div className="mb-4 flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className={labelClass}>Sidebar</span>
+        {(ui.sidebar_tabs?.length ?? 0) > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="ml-auto"
+            onClick={() => save([])}
+          >
+            Reset
+          </Button>
+        )}
+      </div>
+      <div className="flex max-w-xs flex-col gap-1">
+        {rows.map((row, index) => {
+          const { label, hint } = describe(row.id)
+          const Icon = row.hidden ? EyeOff : Eye
+          return (
+            <div key={row.id} className="flex items-center gap-2">
+              <span
+                aria-hidden
+                className="w-3 text-right font-label text-[11px] text-muted-foreground"
+              >
+                {index + 1}
+              </span>
+              {/* Settings can never be hidden — it is where the switch to
+                  unhide everything else lives — so it gets no toggle, only a
+                  spacer that keeps the column aligned. */}
+              {row.id === "settings" ? (
+                <span aria-hidden className="size-6 flex-none" />
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-pressed={!row.hidden}
+                  aria-label={row.hidden ? `Show ${label}` : `Hide ${label}`}
+                  title={row.hidden ? `Show ${label}` : `Hide ${label}`}
+                  onClick={() =>
+                    save(setTabHidden(arrangement, row.id, !row.hidden))
+                  }
+                >
+                  <Icon />
+                </Button>
+              )}
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-[13px]",
+                  row.hidden
+                    ? "text-muted-foreground line-through"
+                    : "text-foreground"
+                )}
+              >
+                {label}
+                {hint && (
+                  <span className="ml-1.5 text-[11px] text-muted-foreground no-underline">
+                    {hint}
+                  </span>
+                )}
+              </span>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={index === 0}
+                  aria-label={`Move ${label} up`}
+                  title={`Move ${label} up`}
+                  onClick={() => {
+                    const next = moveTab(arrangement, rows, row.id, -1)
+                    if (next) save(next)
+                  }}
+                >
+                  <ChevronUp />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={index === rows.length - 1}
+                  aria-label={`Move ${label} down`}
+                  title={`Move ${label} down`}
+                  onClick={() => {
+                    const next = moveTab(arrangement, rows, row.id, 1)
+                    if (next) save(next)
+                  }}
+                >
+                  <ChevronDown />
+                </Button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Which tabs this sidebar shows, and in what order. Applies to every
+        browser on this lasso. A hidden tab still opens when something needs it
+        — a terminal link shows the Browser, an agent opening a file shows Files
+        — until you pick another tab.
+      </p>
+    </div>
+  )
+}
+
+const PLUGIN_STATE_LABEL: Record<PluginState, string> = {
+  disabled: "disabled",
+  enabled: "enabled",
+  needs_approval: "needs approval",
+  invalid: "invalid",
+}
+
+const PLUGIN_STATE_TONE: Record<
+  PluginState,
+  "muted" | "good" | "warn" | "bad"
+> = {
+  disabled: "muted",
+  enabled: "good",
+  needs_approval: "warn",
+  invalid: "bad",
+}
+
+const MCP_STATUS_TONE: Record<
+  PluginMCPStatus,
+  "muted" | "good" | "warn" | "bad"
+> = {
+  stopped: "muted",
+  starting: "muted",
+  running: "good",
+  error: "bad",
+  unavailable: "warn",
+}
+
+// PluginPermissionList spells out exactly what enabling approves — the same
+// fields the server fingerprints, so what the human reads here is what a
+// later manifest edit would have to be re-approved against.
+function PluginPermissionList({ plugin }: { plugin: Plugin }) {
+  // Go encodes an empty list as null, so every list is defaulted on the way in.
+  const tabs = plugin.permissions.tabs ?? []
+  const mcp = plugin.permissions.mcp
+  const command = mcp?.command ?? []
+  const network = mcp?.network ?? []
+  const envKeys = mcp?.env_keys ?? []
+  const secrets = mcp?.secrets ?? []
+  const themes = plugin.permissions.themes ?? []
+  const fonts = plugin.permissions.fonts ?? []
+  const item = "text-[13px] text-foreground [overflow-wrap:anywhere]"
+  const code = "font-mono text-[12px]"
+  return (
+    <div className="flex flex-col gap-2 text-left">
+      {/* Low-risk (data, never code or CSS), but a human should see
+          everything a plugin adds — and they are part of what is approved. */}
+      {themes.length > 0 && (
+        <div>
+          <p className={labelClass}>Themes</p>
+          <p className={item}>
+            <code className={code}>{themes.join(", ")}</code>
+          </p>
+        </div>
+      )}
+      {fonts.length > 0 && (
+        <div>
+          <p className={labelClass}>Fonts</p>
+          <p className={item}>
+            {fonts.map((f) => `${f.family} (${f.category})`).join(", ")}
+          </p>
+        </div>
+      )}
+      <div>
+        <p className={labelClass}>Sidebar tabs</p>
+        {tabs.length === 0 ? (
+          <p className="text-[13px] text-muted-foreground">none</p>
+        ) : (
+          <ul className="list-disc pl-5">
+            {tabs.map((t) => (
+              <li key={t.id} className={item}>
+                {t.label ?? t.id}:{" "}
+                {t.url ? (
+                  <>
+                    frames <code className={code}>{t.url}</code>
+                  </>
+                ) : (
+                  <>
+                    serves <code className={code}>{t.entry}</code> from the
+                    plugin's directory
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {mcp && (
+        <>
+          <div>
+            <p className={labelClass}>
+              MCP server (its tools join lasso's /mcp)
+            </p>
+            <ul className="list-disc pl-5">
+              <li className={item}>
+                image <code className={code}>{mcp.image}</code>
+              </li>
+              <li className={item}>
+                runs <code className={code}>{command.join(" ")}</code>
+              </li>
+              {envKeys.length > 0 && (
+                <li className={item}>
+                  environment <code className={code}>{envKeys.join(", ")}</code>
+                </li>
+              )}
+            </ul>
+          </div>
+          <div>
+            <p className={labelClass}>Network</p>
+            {network.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">
+                none — no outbound connections at all
+              </p>
+            ) : (
+              <ul className="list-disc pl-5">
+                {network.map((n) => (
+                  <li key={n} className={item}>
+                    <code className={code}>{n}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div>
+            <p className={labelClass}>Secrets</p>
+            {secrets.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">none</p>
+            ) : (
+              <ul className="list-disc pl-5">
+                {secrets.map((s) => (
+                  <li key={s.name} className={item}>
+                    <code className={code}>{s.name}</code>, sent only to{" "}
+                    <code className={code}>{(s.hosts ?? []).join(", ")}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// PluginsSettings lists what is in the plugins directory and lets the
+// operator approve it. Server-level, like the shared browser: plugins run on
+// lasso's own machine whatever host a tab is driving.
+//
+// Nothing a manifest says grants anything. Enabling approves the permissions
+// shown in the dialog — and only those: a manifest that later asks for more
+// reads "needs approval" and loads nothing until approved again. Trusted
+// (run on the host, outside the microVM) is likewise only ever this switch.
+function PluginsSettings({ active }: { active: boolean }) {
+  const queryClient = useQueryClient()
+  const plugins = usePlugins()
+  const data = plugins.data
+  const [approving, setApproving] = React.useState<Plugin | null>(null)
+  const [trusting, setTrusting] = React.useState<Plugin | null>(null)
+
+  // A starting MCP child settles on its own; the plugins_rev bump says when,
+  // but poll lightly while one is on screen starting, in case that bump is the
+  // one a reconnecting stream missed.
+  const starting = (data?.plugins ?? []).some(
+    (p) => p.mcp?.status === "starting"
+  )
+  React.useEffect(() => {
+    if (!active || !starting) return
+    const t = setInterval(
+      () => queryClient.invalidateQueries({ queryKey: qk.plugins }),
+      3000
+    )
+    return () => clearInterval(t)
+  }, [active, starting, queryClient])
+
+  const settle = () => queryClient.invalidateQueries({ queryKey: qk.plugins })
+  const action = useMutation({
+    mutationFn: ({
+      name,
+      act,
+      fingerprint,
+    }: {
+      name: string
+      act: PluginAction
+      fingerprint?: string
+    }) => api.pluginAction(name, act, fingerprint),
+    onError: (e: Error, v) => toast.error(`Plugin ${v.name}: ${e.message}`),
+    onSettled: settle,
+  })
+  const trust = useMutation({
+    mutationFn: ({ name, trusted }: { name: string; trusted: boolean }) =>
+      api.setPluginTrusted(name, trusted),
+    onError: (e: Error, v) => toast.error(`Plugin ${v.name}: ${e.message}`),
+    onSettled: settle,
+  })
+  const reload = useMutation({
+    mutationFn: () => api.reloadPlugins(),
+    onSuccess: (next) => queryClient.setQueryData(qk.plugins, next),
+    onError: (e: Error) => toast.error(`Reloading plugins: ${e.message}`),
+    onSettled: settle,
+  })
+  const busy = action.isPending || trust.isPending || reload.isPending
+
+  const list = data?.plugins ?? []
+
+  return (
+    <div className="mb-4 flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span className={labelClass}>Plugins</span>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          disabled={busy}
+          onClick={() => reload.mutate()}
+        >
+          <RotateCw />
+          {reload.isPending ? "Reloading…" : "Reload"}
+        </Button>
+      </div>
+      {plugins.isLoading ? (
+        <Pill>checking…</Pill>
+      ) : plugins.isError || !data ? (
+        <Pill tone="warn" title={plugins.error?.message}>
+          unavailable on this lasso
+        </Pill>
+      ) : (
+        <>
+          <p className="text-[11px] text-muted-foreground">
+            {data.msb.available ? (
+              <>
+                Sandbox: microsandbox
+                {data.msb.path && (
+                  <>
+                    {" "}
+                    at <code className="font-mono">{data.msb.path}</code>
+                  </>
+                )}
+                . Plugin MCP servers run in their own microVM.
+              </>
+            ) : (
+              <span className="text-warn">
+                Sandbox unavailable
+                {data.msb.reason ? ` — ${data.msb.reason}` : ""}. Plugin MCP
+                servers won't start unless trusted; tabs still work.
+              </span>
+            )}
+          </p>
+          <CopyLine label="plugins directory" text={data.dir} />
+          {list.length === 0 && (
+            <p className="text-[13px] text-muted-foreground">
+              No plugins installed. Put one in the directory above and press
+              Reload.
+            </p>
+          )}
+          {list.map((p) => (
+            <PluginRow
+              key={p.name}
+              plugin={p}
+              busy={busy}
+              onEnable={() => setApproving(p)}
+              onDisable={() => action.mutate({ name: p.name, act: "disable" })}
+              onRestart={() => action.mutate({ name: p.name, act: "restart" })}
+              onTrust={(trusted) => {
+                if (trusted) setTrusting(p)
+                else trust.mutate({ name: p.name, trusted: false })
+              }}
+            />
+          ))}
+        </>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        A plugin adds sidebar tabs, MCP tools, themes, fonts, or any mix. A new
+        plugin stays disabled until you enable it here, and enabling approves
+        exactly the permissions it shows. If its manifest later asks for
+        anything more, it stops loading until you approve it again. Its tabs run
+        sandboxed and can't read lasso or your other tabs.
+      </p>
+
+      <AlertDialog
+        open={approving !== null}
+        onOpenChange={(open) => {
+          if (!open) setApproving(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {approving?.state === "needs_approval" ? "Re-approve" : "Enable"}{" "}
+              {approving?.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {approving?.state === "needs_approval"
+                ? "Its manifest changed since you approved it. Enabling approves exactly this:"
+                : "Enabling approves exactly this:"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-[50vh] overflow-y-auto">
+            {approving && <PluginPermissionList plugin={approving} />}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (approving)
+                  action.mutate({
+                    name: approving.name,
+                    act: "enable",
+                    fingerprint: approving.fingerprint,
+                  })
+              }}
+            >
+              Enable
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={trusting !== null}
+        onOpenChange={(open) => {
+          if (!open) setTrusting(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Trust {trusting?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its MCP server will run as your user on this machine, outside the
+              sandbox — with your files, your network and everything else your
+              account can reach. Its network allowlist no longer applies, and
+              its secrets are handed to it as plain environment variables. Only
+              trust code you have read or wrote yourself.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (trusting)
+                  trust.mutate({ name: trusting.name, trusted: true })
+              }}
+            >
+              Run outside the sandbox
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+function PluginRow({
+  plugin: p,
+  busy,
+  onEnable,
+  onDisable,
+  onRestart,
+  onTrust,
+}: {
+  plugin: Plugin
+  busy: boolean
+  onEnable: () => void
+  onDisable: () => void
+  onRestart: () => void
+  onTrust: (trusted: boolean) => void
+}) {
+  const trustID = `settings-plugin-trust-${p.name}`
+  const tools = p.mcp?.tools ?? []
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-border p-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-medium text-[13px] text-foreground">
+          {p.name}
+        </span>
+        {p.version && (
+          <span className="text-[11px] text-muted-foreground">{p.version}</span>
+        )}
+        <Pill tone={PLUGIN_STATE_TONE[p.state]}>
+          {PLUGIN_STATE_LABEL[p.state]}
+        </Pill>
+        <div className="ml-auto flex gap-1">
+          {(p.state === "disabled" || p.state === "needs_approval") && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onEnable}
+            >
+              {p.state === "needs_approval" ? "Review…" : "Enable…"}
+            </Button>
+          )}
+          {p.state === "enabled" && p.permissions.mcp && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onRestart}
+            >
+              Restart
+            </Button>
+          )}
+          {(p.state === "enabled" || p.state === "needs_approval") && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onDisable}
+            >
+              Disable
+            </Button>
+          )}
+        </div>
+      </div>
+      {p.description && (
+        <p className="text-[12px] text-muted-foreground">{p.description}</p>
+      )}
+      {p.state === "invalid" && p.error && (
+        <p className="text-[11px] text-bad [overflow-wrap:anywhere]">
+          {p.error}
+        </p>
+      )}
+      {p.state === "needs_approval" && (
+        <p className="text-[11px] text-warn">
+          Its permissions changed since you approved them, so its tabs and tools
+          are off until you review them.
+        </p>
+      )}
+      {p.state === "enabled" && (p.tabs?.length ?? 0) > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Tabs: {(p.tabs ?? []).map((t) => t.label).join(", ")}
+        </p>
+      )}
+      {(p.themes?.length ?? 0) > 0 && (
+        <p className="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+          Themes:{" "}
+          {(p.themes ?? [])
+            .map((t) => (t.key_taken ? `${t.label} (skipped)` : t.label))
+            .join(", ")}
+        </p>
+      )}
+      {(p.fonts?.length ?? 0) > 0 && (
+        <p className="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+          Fonts:{" "}
+          {(p.fonts ?? [])
+            .map(
+              (f) =>
+                `${f.family} (${f.category}${f.license ? `, ${f.license}` : ""})`
+            )
+            .join(", ")}
+        </p>
+      )}
+      {(p.warnings ?? []).map((w) => (
+        <p key={w} className="text-[11px] text-warn [overflow-wrap:anywhere]">
+          {w}
+        </p>
+      ))}
+      {p.mcp && p.state === "enabled" && (
+        <div className="flex flex-col gap-0.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">MCP</span>
+            <Pill tone={MCP_STATUS_TONE[p.mcp.status]}>{p.mcp.status}</Pill>
+            <Pill tone={p.mcp.sandboxed ? "muted" : "warn"}>
+              {p.mcp.sandboxed ? "sandboxed" : "on this machine"}
+            </Pill>
+          </div>
+          {p.mcp.detail && (
+            <p
+              className={cn(
+                "text-[11px] [overflow-wrap:anywhere]",
+                p.mcp.status === "error" || p.mcp.status === "unavailable"
+                  ? "text-warn"
+                  : "text-muted-foreground"
+              )}
+            >
+              {p.mcp.detail}
+            </p>
+          )}
+          {tools.length > 0 && (
+            <p className="font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+              {tools.join(", ")}
+            </p>
+          )}
+        </div>
+      )}
+      {p.permissions.mcp && p.state !== "invalid" && (
+        <div className="flex flex-col gap-0.5">
+          <label
+            className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-foreground"
+            htmlFor={trustID}
+          >
+            <Checkbox
+              id={trustID}
+              checked={p.trusted}
+              disabled={busy}
+              onCheckedChange={(c) => onTrust(c === true)}
+            />
+            Trusted
+          </label>
+          <p
+            className={cn(
+              "text-[11px]",
+              p.trusted ? "text-warn" : "text-muted-foreground"
+            )}
+          >
+            {p.trusted
+              ? "Its MCP server runs as your user on this machine, outside the sandbox."
+              : "Off: its MCP server runs in a microVM. Trusting it runs it as your user on this machine, outside the sandbox."}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

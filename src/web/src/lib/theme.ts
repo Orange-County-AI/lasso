@@ -46,9 +46,50 @@ const TERM_FONT_FACE_CSS = (
   })
   .join("")
 
-interface FontDoc extends Document {
-  __herdrFontWired?: boolean
+// A plugin font chosen for the terminal slot (lib/typography.ts): its family,
+// already validated, and the @font-face rules lasso composed for it from the
+// plugin listing's validated fields. null = lasso's own stack, exactly as it
+// was before typography existed.
+export interface TermFontChoice {
+  family: string
+  css: string
 }
+
+let termFontChoice: TermFontChoice | null = null
+
+// The plugin font's @font-face lives in its OWN <style> beside the Nerd Font's,
+// so switching back to the default removes it and leaves the Nerd Font sheet —
+// which the default stack still needs — untouched.
+const TERM_PLUGIN_FONT_STYLE_ID = "herdr-term-plugin-font"
+
+// termFontStack is the fontFamily every terminal should be wearing. A chosen
+// family goes FIRST with the Nerd Font right behind it: a plugin's mono face
+// carries none of the private-use icon glyphs TUIs draw with, and the fallback
+// is what keeps those from rendering as tofu.
+function termFontStack(): string {
+  if (!termFontChoice) return TERM_FONT_STACK
+  return `"${termFontChoice.family}", ${TERM_FONT_STACK}`
+}
+
+// setTermFontChoice points every terminal at a plugin font (or back at the
+// default with null). A no-op when nothing changed, so the typography
+// subscription can call it on every relevant cache event.
+export function setTermFontChoice(choice: TermFontChoice | null) {
+  if (
+    choice?.family === termFontChoice?.family &&
+    choice?.css === termFontChoice?.css
+  )
+    return
+  termFontChoice = choice
+  applyTermFont(0)
+}
+
+// The stack most recently REQUESTED for each xterm instance (not necessarily
+// applied yet — the font load in between is async). Keyed by the Terminal
+// object rather than the document so a ttyd that rebuilds its xterm inside the
+// same document is wired afresh, and so a changed choice re-wires an already
+// wired terminal while an unchanged one costs nothing.
+const termFontWanted = new WeakMap<object, string>()
 
 // ttyd's own stylesheet reserves a 5px frame around the terminal, and xterm's
 // FitAddon then subtracts a scrollbar gutter on top of it — 27px of dead
@@ -122,14 +163,21 @@ export function applyTermFit(tries = 0) {
 // We deliberately set it *after* the load resolves (not before): xterm only
 // rebuilds its glyph atlas when the option value changes, so assigning the final
 // family after the font is ready guarantees a remeasure against real metrics
-// rather than the fallback it would otherwise cache at startup.
+// rather than the fallback it would otherwise cache at startup. The same holds
+// for a plugin's family, whose faces are loaded alongside the Nerd Font's.
 function setTermFontWhenReady(
   doc: Document,
-  term: { options?: Record<string, unknown> }
+  term: { options?: Record<string, unknown> },
+  stack: string,
+  family: string | null
 ) {
   const apply = () => {
+    // A newer choice was requested while this load was in flight: it owns the
+    // terminal now, and landing this stale one would flash it.
+    if (termFontWanted.get(term) !== stack) return
     try {
-      if (term.options) term.options.fontFamily = TERM_FONT_STACK
+      if (!term.options || term.options.fontFamily === stack) return
+      term.options.fontFamily = stack
     } catch {
       /* private/locked options: never break the terminal */
       return
@@ -159,36 +207,59 @@ function setTermFontWhenReady(
   }
   const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts
   if (fonts && typeof fonts.load === "function") {
-    Promise.all([
+    const loads = [
       fonts.load(`400 1em "${TERM_FONT_FAMILY}"`),
       fonts.load(`700 1em "${TERM_FONT_FAMILY}"`),
-    ]).then(apply, apply)
+    ]
+    if (family) {
+      loads.push(fonts.load(`400 1em "${family}"`))
+      loads.push(fonts.load(`700 1em "${family}"`))
+    }
+    Promise.all(loads).then(apply, apply)
   } else {
     setTimeout(apply, 300)
   }
 }
 
-// applyTermFont injects the Nerd Font @font-face into every terminal iframe and
-// points xterm at it. Mirrors applyTermTheme: iterates the same frames, and
-// retries while an iframe is still (re)connecting. Each fresh xterm lives in a
-// fresh iframe document, so the per-document guard re-arms on ttyd reconnects.
+// syncStyle makes a document's <style id> hold exactly `css`, or removes it
+// when `css` is empty. Writes only on a real difference.
+function syncStyle(doc: Document, id: string, css: string) {
+  const have = doc.getElementById(id)
+  if (!css) {
+    have?.remove()
+    return
+  }
+  if (have) {
+    if (have.textContent !== css) have.textContent = css
+    return
+  }
+  const style = doc.createElement("style")
+  style.id = id
+  style.textContent = css
+  doc.head.appendChild(style)
+}
+
+// applyTermFont injects the Nerd Font @font-face (and a chosen plugin font's)
+// into every terminal iframe and points xterm at the stack. Mirrors
+// applyTermTheme: iterates the same frames, and retries while an iframe is
+// still (re)connecting. Idempotent per terminal: a stack already requested for
+// that xterm is not requested again.
 export function applyTermFont(tries = 0) {
+  const stack = termFontStack()
+  const family = termFontChoice?.family ?? null
+  const pluginCSS = termFontChoice?.css ?? ""
   let pending = false
   for (const el of termFrames()) {
     try {
-      const doc = el.contentDocument as FontDoc | null
+      const doc = el.contentDocument
       if (!doc?.head) {
         pending = true
         continue
       }
       // Inject the @font-face ASAP (even before xterm is ready) so the browser
       // starts fetching; idempotent via the style id.
-      if (!doc.getElementById(TERM_FONT_STYLE_ID)) {
-        const style = doc.createElement("style")
-        style.id = TERM_FONT_STYLE_ID
-        style.textContent = TERM_FONT_FACE_CSS
-        doc.head.appendChild(style)
-      }
+      syncStyle(doc, TERM_FONT_STYLE_ID, TERM_FONT_FACE_CSS)
+      syncStyle(doc, TERM_PLUGIN_FONT_STYLE_ID, pluginCSS)
       const w = el.contentWindow as unknown as {
         term?: { options?: Record<string, unknown> }
       }
@@ -196,9 +267,9 @@ export function applyTermFont(tries = 0) {
         pending = true
         continue
       }
-      if (doc.__herdrFontWired) continue
-      doc.__herdrFontWired = true
-      setTermFontWhenReady(doc, w.term)
+      if (termFontWanted.get(w.term) === stack) continue
+      termFontWanted.set(w.term, stack)
+      setTermFontWhenReady(doc, w.term, stack, family)
     } catch {
       /* same-origin: shouldn't throw, but never let it break the caller */
     }
@@ -264,6 +335,31 @@ export function effectiveThemeName(): string {
   return effectiveTheme
 }
 
+// paletteColors is the palette this browser is wearing as plain hexes — the
+// theme's own xterm ITheme (background, foreground, the sixteen ANSI colors…),
+// with the OPAQUE background rather than the transparent one the terminals get
+// under a backdrop. It is what a plugin tab's theme.get answers (lib/plugins.ts),
+// so only string colors pass: nothing else about the theme is a plugin's
+// business, and that reply is posted to an opaque origin with targetOrigin "*".
+export function paletteColors(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(lastPalette?.xterm ?? {})) {
+    if (typeof v === "string" && /^#[0-9a-f]{3,8}$/i.test(v)) out[k] = v
+  }
+  return out
+}
+
+// Listeners told when refreshTheme has applied a palette — for surfaces that
+// live outside the React tree's theme and must be pushed to (a plugin iframe
+// cannot read the parent's CSS custom properties).
+const themeListeners = new Set<() => void>()
+export function onThemeApplied(fn: () => void): () => void {
+  themeListeners.add(fn)
+  return () => {
+    themeListeners.delete(fn)
+  }
+}
+
 // The theme catalog, for the backgrounds a theme shipped with. Cached for the
 // page's life ONCE IT ARRIVES — it only changes when a theme is installed, and
 // that response is primed straight in (primeThemeCatalog). In-flight requests
@@ -318,6 +414,30 @@ export function primeThemeCatalog(themes: ThemeCatalogEntry[]) {
   catalog = themes
   catalogGen++
   applyAtmosphere()
+}
+
+// invalidateThemeCatalog drops the cached catalog so the next read fetches it
+// again. The catalog is otherwise kept for the page's life, which stops being
+// true once a plugin can contribute themes: enabling, disabling or editing one
+// changes the list with no install response to prime it from. The generation
+// bump keeps a request already in flight from caching the pre-change list.
+export function invalidateThemeCatalog() {
+  catalog = null
+  catalogGen++
+}
+
+// refreshThemeCatalog re-reads the catalog after a plugins_rev bump and
+// repaints only when it actually changed — a plugin theme appearing,
+// disappearing, or its palette edited in place (the swatch hexes move with
+// it). plugins_rev also moves for things that touch no theme (an MCP child
+// starting), and those must not cost a re-theme. refreshTheme is the repaint
+// because a palette named in the appearance setting may be the plugin theme
+// that changed, and no theme_rev bump announces that.
+export async function refreshThemeCatalog() {
+  const before = JSON.stringify(catalog ?? [])
+  invalidateThemeCatalog()
+  const themes = await loadCatalog()
+  if (JSON.stringify(themes) !== before) await refreshTheme()
 }
 
 // The backgrounds the effective theme shipped with, as url/thumb pairs (the
@@ -906,6 +1026,7 @@ export async function refreshTheme() {
   }
   applyAtmosphere()
   applyTermFont(0)
+  for (const fn of themeListeners) fn()
   // The catalog only matters for the backgrounds a theme SHIPPED with, so the
   // repaint above never waits on it: the bundled and hand-given halves are
   // already resolved, and a first load (or a fresh install) gets a second pass

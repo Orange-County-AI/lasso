@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -345,6 +347,102 @@ type uiState struct {
 	// same kind of browser; a lasso with no Chromium falls back to embed in
 	// the tab itself without rewriting this choice.
 	BrowserMode string `json:"browser_mode"`
+	// SidebarTabs is the right sidebar's tab strip as the human arranged it:
+	// order, and which are hidden. Built-in ids (sidebarBuiltinTabs) and plugin
+	// tabs ("plugin:<name>:<tab>") alike. Empty means the default order with
+	// nothing hidden; ids the frontend knows but the list lacks are placed by
+	// the frontend (a built-in at its default position, a plugin's before
+	// settings), and ids the list names that are not present right now — a
+	// plugin temporarily disabled — are KEPT, so re-enabling it restores where
+	// it was. A whole-value field: one Settings screen edits it, so replace on
+	// write is the right merge.
+	SidebarTabs []sidebarTab `json:"sidebar_tabs"`
+	// Typography is the font each slot wears (typographySlots): a plugin
+	// font's global id ("plugin:<name>:<font>"), or absent for lasso's own
+	// default. Only explicit choices are stored — "" in a patch deletes the
+	// slot — and it is merged PER SLOT on the way in (serveUIState), since two
+	// devices editing two slots must not clobber each other. An id whose plugin
+	// is disabled right now is KEPT: the frontend falls back to the default
+	// while it is gone, and re-enabling the plugin brings the choice back.
+	Typography map[string]string `json:"typography"`
+}
+
+// typographySlots are the keys ui_state.typography may hold. Where each one
+// applies is the frontend's business (lib/typography.ts); the server only
+// keeps the set closed so a typo cannot be stored as a slot nothing reads.
+var typographySlots = []string{"sans", "display", "label", "mono", "terminal"}
+
+const typographyValueMax = 100
+
+// validTypographyEntry reports whether one slot/value pair may be stored.
+// The value is empty (lasso's default) or a font's global id; the shape is
+// checked, not that the font exists, since its plugin may be disabled.
+func validTypographyEntry(slot, v string) error {
+	if !slices.Contains(typographySlots, slot) {
+		return fmt.Errorf("typography: unknown slot %q (one of %s)", slot, strings.Join(typographySlots, ", "))
+	}
+	if len(v) > typographyValueMax || (v != "" && !fontGlobalIDRE.MatchString(v)) {
+		return fmt.Errorf("typography.%s: must be empty or a font id like plugin:<name>:<font>", slot)
+	}
+	return nil
+}
+
+// mergeTypography folds a patch onto the stored slots: a named slot is set,
+// or deleted when set to "" (the default is the absence of a choice); a slot
+// the patch does not name is left as it was.
+func mergeTypography(stored, patch map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(stored)+len(patch))
+	maps.Copy(out, stored)
+	for slot, v := range patch {
+		if err := validTypographyEntry(slot, v); err != nil {
+			return nil, err
+		}
+		if v == "" {
+			delete(out, slot)
+		} else {
+			out[slot] = v
+		}
+	}
+	return out, nil
+}
+
+// sidebarTab is one entry of uiState.SidebarTabs.
+type sidebarTab struct {
+	ID     string `json:"id"`
+	Hidden bool   `json:"hidden"`
+}
+
+// sidebarBuiltinTabs are the right sidebar's own tabs, in default order.
+var sidebarBuiltinTabs = []string{"agents", "files", "scratch", "browser", "terminal", "usage", "settings"}
+
+const (
+	sidebarTabsMax  = 64
+	sidebarTabIDMax = 100
+)
+
+// normalizeSidebarTabs validates a caller's list and repairs the one rule the
+// server owns: settings can never be hidden, since it is where a hidden tab is
+// un-hidden — hiding it would leave no way back but a hand-edited db.
+func normalizeSidebarTabs(tabs []sidebarTab) ([]sidebarTab, error) {
+	if len(tabs) > sidebarTabsMax {
+		return nil, fmt.Errorf("sidebar_tabs: at most %d entries", sidebarTabsMax)
+	}
+	out := make([]sidebarTab, 0, len(tabs))
+	seen := map[string]bool{}
+	for _, t := range tabs {
+		if t.ID == "" || len(t.ID) > sidebarTabIDMax {
+			return nil, fmt.Errorf("sidebar_tabs: every id must be 1-%d characters", sidebarTabIDMax)
+		}
+		if seen[t.ID] {
+			return nil, fmt.Errorf("sidebar_tabs: duplicate id %q", t.ID)
+		}
+		seen[t.ID] = true
+		if t.ID == "settings" {
+			t.Hidden = false
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 // atmospherePref is one theme's backdrop. Every field is optional in the stored
@@ -499,6 +597,8 @@ func getUIState() (uiState, error) {
 		PaletteDark:            defaultPaletteDark,
 		AgentsSort:             agentsSortPriority,
 		BrowserMode:            browserModeLive,
+		SidebarTabs:            []sidebarTab{},
+		Typography:             map[string]string{},
 	}
 	var v string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='ui_state'`).Scan(&v)
@@ -524,6 +624,21 @@ func getUIState() (uiState, error) {
 	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
 	us.AgentsSort = normalizeAgentsSort(us.AgentsSort)
 	us.BrowserMode = normalizeBrowserMode(us.BrowserMode)
+	if tabs, err := normalizeSidebarTabs(us.SidebarTabs); err == nil {
+		us.SidebarTabs = tabs
+	} else {
+		us.SidebarTabs = []sidebarTab{} // a hand-edited blob: fall back to the default strip
+	}
+	// A hand-edited blob loses only the entries that could not have been
+	// written through the API, never the whole map.
+	for slot, v := range us.Typography {
+		if v == "" || validTypographyEntry(slot, v) != nil {
+			delete(us.Typography, slot)
+		}
+	}
+	if us.Typography == nil {
+		us.Typography = map[string]string{}
+	}
 	return us, nil
 }
 

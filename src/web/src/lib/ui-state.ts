@@ -53,6 +53,10 @@ const DEFAULTS: UIState = {
   // Mirrors getUIState in db.go. BrowserTab still shows embed until the
   // server says a Chromium is available.
   browser_mode: "live",
+  // Mirrors getUIState in db.go: the default order, nothing hidden.
+  sidebar_tabs: [],
+  // Every slot on lasso's own default typeface.
+  typography: {},
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic
@@ -148,17 +152,24 @@ function mergePatch(a: UIStatePatch, b: UIStatePatch): UIStatePatch {
       a.theme_atmosphere,
       b.theme_atmosphere
     )
+  // Typography is merged per slot on the server, so two queued slot writes
+  // must fold into one patch carrying both rather than the second replacing
+  // the first.
+  if (a.typography && b.typography)
+    out.typography = { ...a.typography, ...b.typography }
   return out
 }
 
 function mergeLocal(cached: UIState, patch: UIStatePatch): UIState {
   const {
     theme_atmosphere: atmosphere,
+    typography,
     remember_background: remember,
     forget_background: forget,
     ...fields
   } = patch
   const out: UIState = { ...cached, ...fields }
+  if (typography) out.typography = { ...cached.typography, ...typography }
   if (atmosphere)
     out.theme_atmosphere = mergeAtmosphereInto(
       cached.theme_atmosphere,

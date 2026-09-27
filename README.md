@@ -224,6 +224,7 @@ The binary is both the server and its own control surface:
 | `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
 | `lasso open <path> [-line n] [-host h]` | open a file in the human's sidebar file viewer, in every visible lasso tab (the `open_file` MCP tool) — for agents; exits non-zero when no tab is open |
 | `lasso mcp [tool] [flags]` | call lasso's MCP tools from a shell; no tool lists them, `<tool> -h` shows its flags |
+| `lasso plugin list\|enable\|disable\|trust\|untrust\|restart\|reload [name]` | manage [plugins](#plugins); `enable` prints the permissions it approves |
 | `lasso connect` | register lasso's two MCP servers (`lasso`, `lasso-browser`) with the agent CLIs on this machine; `-url` for another machine, `-remove` to undo, `-dry-run` to preview |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
@@ -247,6 +248,9 @@ Two resizable, collapsible columns:
   protocol/version with a one-click `herdr update`, notifications for blocked
   agents, and the New-Agent defaults).
 
+Which of those tabs show, and in what order, is yours: Settings → General →
+Sidebar. [Plugins](#plugins) add tabs of their own to the same strip.
+
 Desktop navigation lives in the footer, not a floating overlay. On phones the
 footer stays out of the terminal viewport and the existing ⌘ input dial supplies
 New, host switching, sidebar access, and the keys a touch keyboard lacks.
@@ -264,7 +268,8 @@ agent can spawn, list, inspect and close **other** agents — across every host
 lasso can reach. `create_agent`, `list_agents`, `get_agent`, `close_agent`,
 `list_hosts`, `whoami`, `notify`, `open_file` (show the human a file in the
 sidebar viewer), and `shared_browser` (see
-[Shared browser](#shared-browser)).
+[Shared browser](#shared-browser)). Enabled [plugins](#plugins) add their own
+tools beside them, as `<plugin>__<tool>`.
 
 ```bash
 lasso connect      # or: claude mcp add --transport http lasso http://127.0.0.1:8090/mcp
@@ -441,6 +446,56 @@ website* sends from your browser, so a page you visit can't reach a lasso on
 your own machine and drive the shared browser. lasso's own chrome-devtools-mcp
 processes reach `/cdp` with a random per-process token instead of your
 credential, and get a minimal environment without lasso's secrets.
+
+## Plugins
+
+A plugin is a directory in `~/.lasso/plugins/<name>/` with a `plugin.json`, and
+it can add **sidebar tabs** (its own web page, next to Files and Browser),
+**MCP tools** (on lasso's `/mcp`, as `<plugin>__<tool>`, so every connected
+agent — and `lasso mcp` — gets them), **themes** and **fonts**.
+
+<img src="docs/screenshots/plugin-tab.png" alt="the example hello plugin's sidebar tab: the focused pane's context, a Greet button that called the plugin's MCP tool and got 'Hello, lasso! (from a microVM: lasso-plugin-hello)', and file-open and toast buttons" width="460">
+
+```bash
+cp -r examples/plugins/hello ~/.lasso/plugins/
+lasso plugin enable hello        # prints exactly what you are approving
+lasso mcp hello__greet --name you
+```
+
+The design is the trust model:
+
+- **Nothing runs until you enable it**, and enabling approves exactly the
+  permissions shown — tabs, image, command, network hosts, env names, and which
+  secret may go to which host. If the manifest later asks for more, the plugin
+  stops loading until you approve again.
+- **Its MCP server runs in a [microsandbox](https://github.com/microsandbox/microsandbox)
+  microVM**, with the plugin directory mounted read-only, nothing else from your
+  machine, and no network except the hosts it listed. Secrets never enter the
+  guest: msb substitutes them only in traffic to their approved hosts.
+  **Trusted** (run it on the host instead) is a flag only you can set.
+- **Its tabs can't call lasso.** They are served as an opaque, sandboxed origin,
+  so a plugin page cannot use your session to reach the file endpoints. What it
+  can do goes through a small `postMessage` bridge: read the focused pane and
+  the theme, open a file in the viewer, call its own tools, and show a toast.
+
+Themes and fonts are data, never CSS. A plugin theme is an Omarchy-format
+palette that joins the theme picker, the appearance palettes and the fleet sync
+like any installed theme (it never replaces an existing one), and a plugin font
+becomes a choice in Settings' **Typography** section for the interface,
+display, label, code and terminal text. [`examples/plugins/harbor`](examples/plugins/harbor)
+ships one of each:
+
+```bash
+cp -r examples/plugins/harbor ~/.lasso/plugins/ && lasso plugin enable harbor
+```
+
+Settings → General has a **Plugins** section (enable, disable, trust, restart,
+MCP status) and a **Sidebar** section for arranging every tab:
+
+<img src="docs/screenshots/sidebar-tabs.png" alt="Settings' Sidebar section: every tab with a visibility toggle and up/down arrows, the hello plugin's tab among them; Settings has no toggle" width="460">
+
+Writing one: [`docs/plugins.md`](docs/plugins.md) — the manifest, the bridge
+protocol, the sandbox, and the HTTP API.
 
 ## Run from source
 

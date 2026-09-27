@@ -34,6 +34,7 @@ import (
 //	lasso connect         register lasso's MCP servers with this machine's agent CLIs
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
+//	lasso plugin          list, enable/disable, trust, restart plugins
 //	lasso skill           print lasso's agent skill (SKILL.md) to stdout
 //	lasso version         print the version
 //
@@ -96,6 +97,14 @@ func main() {
 		case "skill":
 			cliSkill(os.Args[2:])
 			return
+		case "plugin", "plugins":
+			cliPlugin(os.Args[2:])
+			return
+		case "plugin-stdio-serve":
+			// Hidden: the adapter lasso runs INSIDE a plugin's microVM
+			// (pluginsandbox.go). Not a command for humans, so not in the usage.
+			cliPluginStdioServe(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Println(lassoVersion())
 			return
@@ -134,6 +143,7 @@ usage:
   lasso connect [flags]    register lasso's MCP servers with this machine's agent CLIs
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
+  lasso plugin <cmd>       plugins: list|enable|disable|trust|untrust|restart|reload (see -h)
   lasso skill              print lasso's agent skill (SKILL.md) to stdout
   lasso version            print the version
 

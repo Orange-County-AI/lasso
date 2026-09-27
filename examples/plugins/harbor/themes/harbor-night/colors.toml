@@ -1,0 +1,32 @@
+# Harbor Night — deep harbour water, sodium-lamp amber, sea-glass greens.
+mode = "dark"
+
+accent = "#f2b35e"
+selection = "#23384a"
+muted = "#4a6273"
+
+background = "#0f1b24"
+dark_background = "#0b151c"
+darker_background = "#071016"
+lighter_background = "#172835"
+
+foreground = "#c3d2da"
+dark_foreground = "#7f97a5"
+light_foreground = "#d4e0e6"
+bright_foreground = "#e6eef2"
+
+red = "#ef7f7a"
+yellow = "#f2b35e"
+orange = "#ee9a5d"
+green = "#8fcf9c"
+cyan = "#6cc6c9"
+blue = "#79aee8"
+magenta = "#c39ae6"
+brown = "#8a5a36"
+
+bright_red = "#ff9b95"
+bright_yellow = "#ffcd85"
+bright_green = "#abe6b6"
+bright_cyan = "#8fdfe1"
+bright_blue = "#9cc7f5"
+bright_magenta = "#d8b7f5"

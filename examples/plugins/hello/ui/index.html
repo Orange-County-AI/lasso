@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello plugin</title>
+<style>
+  /* Theme colors arrive over the bridge (theme.get / the "theme" push) and are
+     applied as custom properties; these are only the pre-bridge fallbacks. */
+  :root { --bg: #111; --fg: #ddd; --accent: #6cf; --muted: #888; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  main { padding: 12px 16px; display: grid; gap: 14px; }
+  h1 { font-size: 14px; margin: 0; color: var(--accent); }
+  section { display: grid; gap: 6px; }
+  label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  input, button { font: inherit; color: var(--fg); background: transparent;
+    border: 1px solid var(--muted); border-radius: 4px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  .row { display: flex; gap: 6px; }
+  .row input { flex: 1; min-width: 0; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hello from a lasso plugin</h1>
+
+  <section>
+    <label>Context</label>
+    <pre id="context">asking lasso…</pre>
+  </section>
+
+  <section>
+    <label>Call this plugin's MCP tool (greet)</label>
+    <div class="row">
+      <input id="name" placeholder="your name" value="lasso">
+      <button id="greet">Greet</button>
+    </div>
+    <pre id="greeting"></pre>
+  </section>
+
+  <section>
+    <label>Open a file in the Files viewer</label>
+    <div class="row">
+      <input id="path" placeholder="/absolute/path or ~/file">
+      <button id="open">Open</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="row"><button id="toast">Say hi (toast)</button></div>
+  </section>
+</main>
+<script>
+  // The lasso-plugin/1 bridge. This document is served under a CSP sandbox, so
+  // it is an opaque origin: it cannot call lasso's API directly, only ask the
+  // parent page, which checks that the message came from THIS iframe and
+  // answers for this plugin alone.
+  const pending = new Map()
+  let nextId = 1
+
+  function call(method, params = {}) {
+    const id = nextId++
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject })
+      // The parent is lasso; "*" because an opaque origin cannot name it.
+      window.parent.postMessage({ lasso: 1, id, method, params }, "*")
+      setTimeout(() => {
+        if (pending.delete(id)) reject(new Error(method + ": no answer from lasso"))
+      }, 30000)
+    })
+  }
+
+  window.addEventListener("message", (ev) => {
+    if (ev.source !== window.parent) return
+    const msg = ev.data
+    if (!msg || msg.lasso !== 1) return
+    if (msg.event === "context") showContext(msg.data)
+    else if (msg.event === "theme") applyTheme(msg.data)
+    else if (msg.id !== undefined && pending.has(msg.id)) {
+      const p = pending.get(msg.id)
+      pending.delete(msg.id)
+      if (msg.error !== undefined) p.reject(new Error(msg.error))
+      else p.resolve(msg.result)
+    }
+  })
+
+  function showContext(ctx) {
+    document.getElementById("context").textContent =
+      `host ${ctx.host} · pane ${ctx.pane_id || "-"} · agent ${ctx.agent || "-"}\ncwd ${ctx.cwd || "-"} (on ${ctx.cwd_host || ctx.host})`
+    const path = document.getElementById("path")
+    if (!path.value && ctx.cwd) path.value = ctx.cwd
+  }
+
+  function applyTheme(theme) {
+    if (!theme || !theme.colors) return
+    const c = theme.colors
+    const root = document.documentElement.style
+    if (c.background) root.setProperty("--bg", c.background)
+    if (c.foreground) root.setProperty("--fg", c.foreground)
+    const accent = c.blue || c.cyan || c.accent
+    if (accent) root.setProperty("--accent", accent)
+  }
+
+  document.getElementById("greet").onclick = async () => {
+    const out = document.getElementById("greeting")
+    out.textContent = "…"
+    try {
+      const res = await call("tool.call", {
+        tool: "greet",
+        arguments: { name: document.getElementById("name").value },
+      })
+      out.textContent = (res.content || []).map((c) => c.text || "").join("\n")
+    } catch (e) {
+      out.textContent = "error: " + e.message
+    }
+  }
+
+  document.getElementById("open").onclick = () => {
+    const path = document.getElementById("path").value.trim()
+    if (path) call("file.open", { path }).catch((e) => alert(e.message))
+  }
+
+  document.getElementById("toast").onclick = () => {
+    call("toast", { message: "hi from the hello plugin" }).catch(() => {})
+  }
+
+  call("context.get").then(showContext).catch((e) => {
+    document.getElementById("context").textContent = "error: " + e.message
+  })
+  call("theme.get").then(applyTheme).catch(() => {})
+</script>
+</body>
+</html>

@@ -21,6 +21,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeBrowserMCPEnv); mode != "" {
 		os.Exit(runFakeBrowserMCP(mode))
 	}
+	// Likewise a plugin's stdio MCP server (plugins_test.go).
+	if mode := os.Getenv(fakePluginMCPEnv); mode != "" {
+		os.Exit(runFakePluginMCP(mode))
+	}
 	home, err := os.MkdirTemp("", "lasso-test-home-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)

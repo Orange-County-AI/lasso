@@ -1,0 +1,20 @@
+{
+  "name": "harbor",
+  "version": "0.1.0",
+  "description": "Example appearance plugin: the Harbor Night theme and Space Mono as a font choice",
+  "themes": [
+    { "id": "harbor-night", "label": "Harbor Night", "dir": "themes/harbor-night" }
+  ],
+  "fonts": [
+    {
+      "id": "space-mono",
+      "family": "Space Mono",
+      "category": "mono",
+      "faces": [
+        { "file": "fonts/space-mono-latin-400-normal.woff2", "weight": 400, "style": "normal" },
+        { "file": "fonts/space-mono-latin-700-normal.woff2", "weight": 700, "style": "normal" }
+      ],
+      "license": "OFL-1.1"
+    }
+  ]
+}

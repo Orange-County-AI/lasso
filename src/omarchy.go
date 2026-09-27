@@ -56,6 +56,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -106,15 +107,21 @@ type omarchyTheme struct {
 	Name   string // canonical lasso key
 	Label  string
 	Light  bool
-	Source string // "official" (vendored) or "installed" (git URL)
+	Source string // "official" (vendored), "installed" (git URL) or "plugin"
 	URL    string // git origin, installed themes only
+	Plugin string // the contributing plugin, plugin themes only
 	def    themeDef
 }
 
 var (
 	omarchyMu     sync.RWMutex
 	omarchyByName = map[string]omarchyTheme{}
-	omarchyNames  []string // display order: official first, then installed
+	omarchyNames  []string // display order: official first, then installed, then plugin
+	// omarchyPluginSkips is, per plugin, each contributed theme id that did NOT
+	// make it into the registry and why (a key already taken, an unreadable
+	// palette). The plugin listing reports these as warnings: a theme that
+	// silently fails to appear is the support question nobody can answer.
+	omarchyPluginSkips = map[string]map[string]string{}
 	// omarchyOfficial is every vendored official name, INCLUDING the ones a
 	// built-in shadows: where a theme came from is a property of Omarchy's set,
 	// not of which map ends up holding the palette.
@@ -128,9 +135,15 @@ func omarchyLoaded() {
 	omarchyLoadOnce.Do(func() { reloadOmarchyThemes() })
 }
 
-// reloadOmarchyThemes rebuilds the registry from the embedded palettes and the
-// install directory, then swaps it in. Called at boot (via omarchyLoaded) and
-// after an install.
+// reloadOmarchyThemes rebuilds the registry from the embedded palettes, the
+// install directory and the themes enabled plugins contribute, then swaps it
+// in. Called at boot (via omarchyLoaded), after an install, and whenever the
+// plugin manager sees the contributed set change (pluginManager.syncThemes).
+//
+// Precedence is built-in > official > installed > plugin: a plugin is the
+// least vetted source, and a theme key is written into herdr's config.toml and
+// synced across the fleet, so a plugin must never be able to redefine what a
+// name the human already knows paints.
 func reloadOmarchyThemes() {
 	byName := map[string]omarchyTheme{}
 	vendored := map[string]bool{}
@@ -198,12 +211,81 @@ func reloadOmarchyThemes() {
 		}, &installed)
 	}
 
+	// Plugin themes last. Refs arrive ordered by plugin name, so of two plugins
+	// claiming one id the one that sorts first wins — deterministic, and
+	// independent of the order the directory happened to be read in.
+	skips := map[string]map[string]string{}
+	bgs := map[string]pluginBGRoot{}
+	var fromPlugins []string
+	skip := func(ref pluginThemeRef, why string) {
+		if skips[ref.Plugin] == nil {
+			skips[ref.Plugin] = map[string]string{}
+		}
+		skips[ref.Plugin][ref.ID] = why
+	}
+	for _, ref := range pluginThemeRefsNow() {
+		key := ref.ID
+		if canon := normalizeThemeName(key); canon != key {
+			skip(ref, fmt.Sprintf("theme %q is another spelling of %q, so it could never be selected; skipped", key, canon))
+			continue
+		}
+		if _, builtin := themes[key]; builtin {
+			skip(ref, fmt.Sprintf("theme %q is taken by one of lasso's built-in themes; skipped", key))
+			continue
+		}
+		if t, dup := byName[key]; dup {
+			by := "an official Omarchy theme"
+			switch t.Source {
+			case "installed":
+				by = "an installed theme"
+			case "plugin":
+				by = fmt.Sprintf("plugin %q", t.Plugin)
+			}
+			skip(ref, fmt.Sprintf("theme %q is taken by %s; skipped", key, by))
+			continue
+		}
+		p, err := ref.palette()
+		if err != nil {
+			skip(ref, fmt.Sprintf("theme %q: %v", key, err))
+			continue
+		}
+		label := ref.Label
+		if label == "" {
+			label = omarchyLabel(key)
+		}
+		byName[key] = omarchyTheme{Name: key, Label: label, Light: p.light, Source: "plugin", Plugin: ref.Plugin, def: p.themeDef()}
+		bgs[key] = pluginBGRoot{dir: ref.PluginDir, rel: path.Join(ref.Dir, "backgrounds")}
+		fromPlugins = append(fromPlugins, key)
+	}
+
 	sort.Strings(official)
 	sort.Strings(installed)
+	sort.Strings(fromPlugins)
 
 	omarchyMu.Lock()
-	omarchyByName, omarchyNames, omarchyOfficial = byName, append(official, installed...), vendored
+	omarchyByName, omarchyOfficial = byName, vendored
+	omarchyNames = append(append(official, installed...), fromPlugins...)
+	omarchyPluginSkips = skips
+	omarchyPluginBG.Store(&bgs)
 	omarchyMu.Unlock()
+}
+
+// pluginThemeSkips is the reason each of one plugin's themes was left out of
+// the registry, keyed by theme id. Nil when every one of them made it.
+func pluginThemeSkips(plugin string) map[string]string {
+	omarchyLoaded()
+	omarchyMu.RLock()
+	defer omarchyMu.RUnlock()
+	return omarchyPluginSkips[plugin]
+}
+
+// themeSourceOf is where the registry's copy of a key came from ("" for a
+// built-in or an unknown key).
+func themeSourceOf(key string) string {
+	omarchyLoaded()
+	omarchyMu.RLock()
+	defer omarchyMu.RUnlock()
+	return omarchyByName[key].Source
 }
 
 // lookupThemeDef resolves a canonical theme key to its palette: lasso's
@@ -238,11 +320,12 @@ func logOmarchyThemes() {
 	defer omarchyMu.RUnlock()
 	official, installed := 0, []string{}
 	for _, n := range omarchyNames {
-		if omarchyByName[n].Source == "installed" {
+		switch omarchyByName[n].Source {
+		case "installed":
 			installed = append(installed, n)
-			continue
+		case "official":
+			official++
 		}
-		official++
 	}
 	if len(installed) == 0 {
 		log.Printf("themes:   %d built-in + %d omarchy", len(themeOptions), official)
@@ -280,9 +363,10 @@ type themeCatalogEntry struct {
 	Name       string `json:"name"`
 	Label      string `json:"label"`
 	Light      bool   `json:"light"`
-	Source     string `json:"source"` // builtin | official | installed (see builtinSource)
+	Source     string `json:"source"` // builtin | official | installed | plugin (see builtinSource)
 	Installed  bool   `json:"installed"`
 	URL        string `json:"url,omitempty"`
+	Plugin     string `json:"plugin,omitempty"` // the contributing plugin, source "plugin" only
 	Accent     string `json:"accent"`
 	Background string `json:"background"`
 	// Backgrounds are root-relative URLs of this theme's wallpapers: the ones
@@ -313,7 +397,7 @@ func themeCatalog() []themeCatalogEntry {
 		t := omarchyByName[n]
 		out = append(out, themeCatalogEntry{
 			Name: t.Name, Label: t.Label, Light: t.Light, Source: t.Source,
-			Installed: t.Source == "installed", URL: t.URL,
+			Installed: t.Source == "installed", URL: t.URL, Plugin: t.Plugin,
 			Accent: t.def.ui.Accent, Background: t.def.ui.PanelBg,
 			Backgrounds: omarchyBackgroundURLs(t.Name), Thumbs: omarchyThumbURLs(t.Name),
 		})
@@ -395,6 +479,14 @@ func omarchyBackgroundFiles(name string) []string {
 		}
 		seen[n] = true
 		files = append(files, n)
+	}
+	// A plugin theme's own backgrounds/ first, read through its plugin's
+	// os.Root. Only a registered plugin theme has one, and a registered key is
+	// never also an official or installed one, so this shadows nothing real.
+	if b, ok := pluginBackgroundOf(name); ok {
+		for _, n := range b.list() {
+			keep(n, false)
+		}
 	}
 	for _, root := range omarchyBackgroundRoots(name) {
 		ents, err := os.ReadDir(root)
@@ -571,6 +663,20 @@ func serveOmarchyBackground(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeContent(w, r, "thumb.webp", time.Time{}, bytes.NewReader(body))
 		return
+	}
+	if b, ok := pluginBackgroundOf(theme); ok && validBackgroundFile(file) {
+		if f, st, err := b.open(file); err == nil {
+			defer f.Close()
+			if ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(file))); ct != "" {
+				w.Header().Set("Content-Type", ct)
+			}
+			// A plugin's wallpaper is edited in place like the rest of the
+			// plugin, so it must not sit in a cache for a day.
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			http.ServeContent(w, r, file, st.ModTime(), f)
+			return
+		}
 	}
 	if path, ok := omarchyBackgroundPath(theme, file); ok {
 		f, err := os.Open(path)
@@ -970,15 +1076,23 @@ func (p omarchyPalette) colorsTOML(srcURL string) []byte {
 // legacy alacritty.toml. A `light.mode` marker file (Omarchy's own) overrides
 // the mode either way.
 func readThemePalette(dir string) (omarchyPalette, error) {
+	return readThemePaletteFS(os.DirFS(dir))
+}
+
+// readThemePaletteFS is readThemePalette over a filesystem rooted at the theme
+// directory. A plugin's theme is read through its plugin directory's os.Root
+// (pluginappearance.go), so a colors.toml symlinked out of the plugin is
+// refused the same way a served file would be.
+func readThemePaletteFS(fsys fs.FS) (omarchyPalette, error) {
 	var p omarchyPalette
-	body, err := os.ReadFile(filepath.Join(dir, "colors.toml"))
+	body, err := fs.ReadFile(fsys, "colors.toml")
 	switch {
 	case err == nil:
 		if p, err = paletteFromColorsTOML(string(body)); err != nil {
 			return omarchyPalette{}, err
 		}
 	case errors.Is(err, fs.ErrNotExist):
-		legacy, lerr := os.ReadFile(filepath.Join(dir, "alacritty.toml"))
+		legacy, lerr := fs.ReadFile(fsys, "alacritty.toml")
 		if lerr != nil {
 			return omarchyPalette{}, errors.New("no colors.toml and no alacritty.toml — not an Omarchy theme")
 		}
@@ -988,7 +1102,7 @@ func readThemePalette(dir string) (omarchyPalette, error) {
 	default:
 		return omarchyPalette{}, err
 	}
-	if _, err := os.Stat(filepath.Join(dir, "light.mode")); err == nil {
+	if _, err := fs.Stat(fsys, "light.mode"); err == nil {
 		p.light = true
 	}
 	return p, nil

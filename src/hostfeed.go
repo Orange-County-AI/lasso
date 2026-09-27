@@ -156,6 +156,7 @@ func (f *hostFeed) push(a Active) {
 func (f *hostFeed) pushCurrent() {
 	f.mu.Lock()
 	f.cur.ThemeRev, f.cur.UIStateRev = f.h.revs()
+	f.cur.PluginsRev = f.h.pluginsRevNow()
 	f.cur.TermOwner = termOwner(f.host, time.Now())
 	cur := f.cur
 	f.mu.Unlock()
@@ -235,6 +236,7 @@ func (f *hostFeed) refresh() {
 	a.PanesRev = f.rev
 	a.ThemeRev = themeRev
 	a.UIStateRev = uiStateRev
+	a.PluginsRev = f.h.pluginsRevNow()
 	a.TermOwner = termOwner(f.host, time.Now())
 	a.Host = f.host
 	a.HostSlug = hostSlug(f.host)

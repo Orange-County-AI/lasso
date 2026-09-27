@@ -31,6 +31,7 @@ import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewDialog, type NewDialogTab } from "@/components/NewDialog"
+import { PluginTab } from "@/components/PluginTab"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
 import { TerminalFrame } from "@/components/TerminalFrame"
@@ -51,6 +52,7 @@ import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
 import { onRevealFiles } from "@/lib/open-file"
 import { restoreHost } from "@/lib/pane-focus"
+import { pluginIcon, pluginTabsOf, usePlugins } from "@/lib/plugins"
 import {
   markSidebarIntent,
   noteSidebarResize,
@@ -59,6 +61,11 @@ import {
   sidebarPctNow,
 } from "@/lib/sidebar"
 import { onSidebarBrowserOpen } from "@/lib/sidebar-browser"
+import {
+  fallbackTab,
+  isBuiltinTab,
+  resolveSidebarTabs,
+} from "@/lib/sidebar-tabs"
 import {
   blurHerdrTerminal,
   focusHerdrTerminal,
@@ -69,16 +76,11 @@ import { patchUIState, uiStateNow, useUIState } from "@/lib/ui-state"
 import { getQueryParam, setQueryParams } from "@/lib/url"
 import { cn } from "@/lib/utils"
 
-type RightView =
-  | "files"
-  | "scratch"
-  | "browser"
-  | "terminal"
-  | "usage"
-  | "settings"
-  // Below md only: the fleet's agents, which at md+ is the docked column beside
-  // the chat instead (AgentsTab, AgentSidebar).
-  | "agents"
+// A built-in tab id (lib/sidebar-tabs.ts:BUILTIN_TABS — "agents" being below
+// md only: at md+ the fleet's agents are the docked column beside the chat
+// instead, AgentsTab/AgentSidebar) or a plugin tab's `plugin:<name>:<tab>`.
+// Which of them the strip shows, and in what order, is ui_state.sidebar_tabs.
+type RightView = string
 // The left column's faces: the terminal, the focused session read as a
 // conversation (ChatView), and the fleet as parallel conversations (AgentsView).
 // Not a RightView — the sidebar and the left column answer different questions,
@@ -201,6 +203,21 @@ export function App() {
 
 function Shell() {
   const [rightView, setRightView] = React.useState<RightView>("files")
+  // A tab brought on screen by something other than the strip — a terminal
+  // link revealing Browser, an agent's open_file revealing Files — while the
+  // human has that tab HIDDEN. The Browser and Files panes are the only places
+  // those land, so the reveal shows the tab anyway, lit in its usual slot,
+  // until the human picks another; hiding a tab hides it from the strip, not
+  // from the things that need it. Cleared by any other selection.
+  const [revealed, setRevealed] = React.useState<RightView | null>(null)
+  const reveal = React.useCallback((id: RightView) => {
+    setRevealed(id)
+    setRightView(id)
+  }, [])
+  const selectRightView = React.useCallback((id: RightView) => {
+    setRightView(id)
+    setRevealed((r) => (r === id ? r : null))
+  }, [])
   // Which face of the focused pane the left column shows: the herdr terminal,
   // or the agent session as a conversation. The terminal iframe stays MOUNTED
   // and sized underneath either way — the chat is an overlay, not a swap — so
@@ -264,6 +281,46 @@ function Shell() {
   const gitReady = diff.data?.isRepo === true
   const rightPanel = React.useRef<PanelImperativeHandle>(null)
   const ui = useUIState()
+
+  // The strip: built-ins plus every enabled plugin's tabs, ordered and hidden
+  // by ui_state.sidebar_tabs (lib/sidebar-tabs.ts). `strip` is what renders —
+  // the visible tabs, plus a revealed one the human had hidden.
+  const plugins = usePlugins()
+  const pluginTabs = React.useMemo(
+    () => pluginTabsOf(plugins.data),
+    [plugins.data]
+  )
+  const pluginTabInfos = React.useMemo(
+    () => pluginTabs.map((p) => p.tab),
+    [pluginTabs]
+  )
+  const tabOrder = React.useMemo(
+    () => resolveSidebarTabs(ui.sidebar_tabs, pluginTabInfos),
+    [ui.sidebar_tabs, pluginTabInfos]
+  )
+  const visibleTabs = React.useMemo(
+    () => tabOrder.filter((t) => !t.hidden).map((t) => t.id),
+    [tabOrder]
+  )
+  const strip = React.useMemo(
+    () =>
+      tabOrder.filter((t) => !t.hidden || t.id === revealed).map((t) => t.id),
+    [tabOrder, revealed]
+  )
+  // Plugin panes mount on first selection — an unvisited plugin tab costs no
+  // iframe, no page load and no bridge — and stay mounted after, like the
+  // built-in panes, so switching away and back keeps the page's own state. A
+  // plugin that goes away (disabled, or awaiting re-approval) drops out of
+  // pluginTabs, which unmounts its frame.
+  const [visitedPlugins, setVisitedPlugins] = React.useState<Set<string>>(
+    () => new Set()
+  )
+  React.useEffect(() => {
+    if (!rightView.startsWith("plugin:")) return
+    setVisitedPlugins((prev) =>
+      prev.has(rightView) ? prev : new Set(prev).add(rightView)
+    )
+  }, [rightView])
 
   // The active host (SSE-driven), mirrored into a ref so the (referentially
   // stable) popstate handler always sees the current one. herdr's focused pane
@@ -354,10 +411,10 @@ function Shell() {
   React.useEffect(
     () =>
       onSidebarBrowserOpen(() => {
-        setRightView("browser")
+        reveal("browser")
         openSidebar()
       }),
-    [openSidebar]
+    [openSidebar, reveal]
   )
 
   // An agent opened a page in the shared browser (lib/browser-profiles.ts):
@@ -381,10 +438,10 @@ function Shell() {
   React.useEffect(
     () =>
       onRevealFiles(() => {
-        setRightView("files")
+        reveal("files")
         if (rightPanel.current?.isCollapsed()) openSidebar()
       }),
-    [openSidebar]
+    [openSidebar, reveal]
   )
 
   // Footer navigation. New always opens on the agent tab — the terminal tab is
@@ -443,12 +500,26 @@ function Shell() {
     if (rightView !== "agents") return
     const mq = window.matchMedia("(min-width: 768px)")
     const check = () => {
-      if (mq.matches) setRightView("files")
+      if (mq.matches) selectRightView(fallbackTab(visibleTabs, true))
     }
     check()
     mq.addEventListener("change", check)
     return () => mq.removeEventListener("change", check)
-  }, [rightView])
+  }, [rightView, visibleTabs, selectRightView])
+
+  // The selected tab stopped existing — hidden in Settings (here or in another
+  // browser), or its plugin disabled or awaiting re-approval. Fall back to
+  // Files, or the first tab that can show at this width when Files is hidden
+  // too, rather than leave a pane with nothing lit above it. A plugin tab is
+  // only judged once the listing has ANSWERED: before that every plugin tab
+  // looks absent, and bouncing off one would be a flicker on every load.
+  React.useEffect(() => {
+    if (strip.includes(rightView)) return
+    if (rightView.startsWith("plugin:") && plugins.isPending) return
+    selectRightView(
+      fallbackTab(visibleTabs, window.matchMedia("(min-width: 768px)").matches)
+    )
+  }, [strip, rightView, visibleTabs, plugins.isPending, selectRightView])
 
   // The footer button is separate from the menu's mobile-capable anchor.
   // Capture its pointer-down state before Radix's outside-click dismissal, so
@@ -614,6 +685,38 @@ function Shell() {
     []
   )
 
+  // The built-in tabs' triggers, by id; the strip picks and orders them.
+  const builtinTabs: Record<string, TabDef> = {
+    // Agents leads by default, and only ever shows below md: this panel IS a
+    // phone's chrome, so the list of what you could be reading belongs before
+    // the files you are reading. At md+ the chat's docked column is the same
+    // list and this tab is not rendered, wherever the arrangement puts it.
+    agents: {
+      value: "agents",
+      label: "Agents",
+      icon: Bot,
+      className: "md:hidden",
+    },
+    files: {
+      value: "files",
+      label: "Files",
+      icon: Files,
+      badge: (
+        <GitStatusBadge
+          dirty={diffDirty}
+          ready={gitReady}
+          className="ml-1.5"
+          textClassName="text-[13px]"
+        />
+      ),
+    },
+    scratch: { value: "scratch", label: "Scratch", icon: NotebookPen },
+    browser: { value: "browser", label: "Browser", icon: Globe },
+    terminal: { value: "terminal", label: "Terminal", icon: SquareTerminal },
+    usage: { value: "usage", label: "Usage", icon: Gauge },
+    settings: { value: "settings", label: "Settings", icon: Settings },
+  }
+
   return (
     <div className="relative flex h-full w-full flex-col">
       <div className="relative min-h-0 flex-1">
@@ -721,44 +824,19 @@ function Shell() {
           >
             <Tabs
               value={rightView}
-              onValueChange={(v) => setRightView(v as RightView)}
+              onValueChange={selectRightView}
               className="flex h-full flex-col gap-0"
             >
               <FitTabs
-                tabs={[
-                  // Agents leads, and only below md: this panel IS a phone's
-                  // chrome, so the list of what you could be reading belongs
-                  // before the files you are reading. At md+ the chat's docked
-                  // column is the same list and this tab is not rendered.
-                  {
-                    value: "agents",
-                    label: "Agents",
-                    icon: Bot,
-                    className: "md:hidden",
-                  },
-                  {
-                    value: "files",
-                    label: "Files",
-                    icon: Files,
-                    badge: (
-                      <GitStatusBadge
-                        dirty={diffDirty}
-                        ready={gitReady}
-                        className="ml-1.5"
-                        textClassName="text-[13px]"
-                      />
-                    ),
-                  },
-                  { value: "scratch", label: "Scratch", icon: NotebookPen },
-                  { value: "browser", label: "Browser", icon: Globe },
-                  {
-                    value: "terminal",
-                    label: "Terminal",
-                    icon: SquareTerminal,
-                  },
-                  { value: "usage", label: "Usage", icon: Gauge },
-                  { value: "settings", label: "Settings", icon: Settings },
-                ]}
+                tabs={strip.map((id): TabDef => {
+                  if (isBuiltinTab(id)) return builtinTabs[id]
+                  const p = pluginTabs.find((t) => t.tab.global_id === id)
+                  return {
+                    value: id,
+                    label: p?.tab.label ?? id,
+                    icon: pluginIcon(p?.tab.icon),
+                  }
+                })}
                 trailing={
                   <>
                     {/* Scoped to the Agents tab: it makes an agent, which is what
@@ -830,6 +908,20 @@ function Shell() {
                     onOpenShortcuts={() => setShortcutsOpen(true)}
                   />
                 </Pane>
+                {pluginTabs
+                  .filter(({ tab }) => visitedPlugins.has(tab.global_id))
+                  .map(({ plugin, tab }) => (
+                    <Pane
+                      key={`${tab.global_id}\u0000${tab.src}`}
+                      show={rightView === tab.global_id}
+                    >
+                      <PluginTab
+                        plugin={plugin.name}
+                        tab={tab}
+                        active={rightView === tab.global_id && !collapsed}
+                      />
+                    </Pane>
+                  ))}
               </div>
             </Tabs>
           </ResizablePanel>
