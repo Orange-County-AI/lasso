@@ -1171,9 +1171,10 @@ func TestClaudeDiffBandsScreenedFromInks(t *testing.T) {
 	rt := resolveThemeByName("ocai")
 	m := claudeOverrides(rt.ui, glyphCanvasOf(rt.ui.PanelBg, false, 1))
 	bg := rt.ui.PanelBg
+	// The line bands give up lift for Claude's syntax comment instead
+	// (TestClaudeScreenedLineKeepsCommentLegible); the word bands keep theirs.
 	for tok, lift := range map[string]float64{
-		"diffAdded": diffLineLift, "diffAddedWord": diffWordLift,
-		"diffRemoved": diffLineLift, "diffRemovedWord": diffWordLift,
+		"diffAddedWord": diffWordLift, "diffRemovedWord": diffWordLift,
 	} {
 		// The sun is too light to reach the word lift even solid, so that band
 		// is the ink itself: the fallback screenForBg documents.
@@ -1183,6 +1184,11 @@ func TestClaudeDiffBandsScreenedFromInks(t *testing.T) {
 		got := perceivedL(bg) - perceivedL(m[tok])
 		if math.Abs(got-lift) > 0.01 {
 			t.Errorf("%s = %s sits %.3f below the panel, want %.2f", tok, m[tok], got, lift)
+		}
+	}
+	for _, tok := range []string{"diffAdded", "diffRemoved"} {
+		if d := perceivedL(bg) - perceivedL(m[tok]); d < 0.04 {
+			t.Errorf("%s = %s sits only %.3f below the panel: no band left", tok, m[tok], d)
 		}
 	}
 	if m["diffRemoved"] == tintForBg(rt.ui.Red, bg, diffLineLift) {
@@ -1204,5 +1210,19 @@ func TestClaudeDiffBandsScreenedFromInks(t *testing.T) {
 	mp := claudeOverrides(rp.ui, glyphCanvasOf(rp.ui.PanelBg, false, 1))
 	if want := tintForBg(rp.ui.Green, rp.ui.PanelBg, diffLineLift); mp["diffAdded"] != want {
 		t.Errorf("retro-82 diffAdded = %s, want the accent path's %s", mp["diffAdded"], want)
+	}
+}
+
+// Claude's syntax colors are its own (GitHub on a light base), so a screened
+// line band has to leave its comment gray readable: ocai's blue screen at the
+// full lift put #969896 at 1.22:1.
+func TestClaudeScreenedLineKeepsCommentLegible(t *testing.T) {
+	rt := resolveThemeByName("ocai")
+	m := claudeOverrides(rt.ui, glyphCanvasOf(rt.ui.PanelBg, false, 1))
+	comment := claudeSyntaxComment(rt.ui.PanelBg)
+	for _, tok := range []string{"diffAdded", "diffRemoved", "diffAddedDimmed", "diffRemovedDimmed"} {
+		if r := contrastRatio(comment, m[tok]); r < claudeCommentFloor {
+			t.Errorf("%s = %s gives Claude's comment %s only %.2f:1, want %.1f", tok, m[tok], comment, r, claudeCommentFloor)
+		}
 	}
 }
