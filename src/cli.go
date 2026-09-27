@@ -67,7 +67,7 @@ func main() {
 			cliStatus()
 			return
 		case "update":
-			cliUpdate()
+			cliUpdate(os.Args[2:])
 			return
 		case "doctor":
 			cliDoctor()
@@ -125,7 +125,7 @@ usage:
   lasso stop|down          stop the background server
   lasso restart [flags]    restart the background server
   lasso status             show whether the background server is running
-  lasso update             update lasso to the latest release
+  lasso update             update lasso to the latest release (--no-restart: leave a running server alone)
   lasso doctor             check the local install
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
   lasso notify <message>   push a notification to the human running lasso

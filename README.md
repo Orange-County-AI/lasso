@@ -590,9 +590,20 @@ current theme straight back).
 
 `lasso update` brings the binary up to date. It auto-detects the install:
 
-- A **release binary** (the curl install) downloads the latest GitHub release for
-  your platform, verifies its checksum, atomically replaces itself, and restarts
-  the background server if one is running.
+- A **release binary** (the curl install, or a mise `ubi:` install) downloads the
+  latest GitHub release for your platform, verifies its checksum, atomically
+  replaces itself, then restarts whatever server runs it:
+  - the background daemon (`lasso start`), if its pidfile is live; otherwise
+  - on Linux, any **systemd service whose main process is this binary**. A user
+    unit gets `systemctl --user restart`; a system unit gets `systemctl restart`
+    as root, else `sudo -n systemctl restart`, and if that can't run it prints
+    the exact command to type. A unit whose main process is something else (a
+    wrapper script that starts lasso among other things) is left alone, since
+    restarting it would bounce everything it runs.
+
+  `lasso update --no-restart` swaps the binary and restarts nothing. When
+  lasso is already up to date, `lasso update` still restarts any systemd-run
+  lasso left on a replaced binary by an earlier update.
 - A **systemd-supervised source checkout** (the maintainer's prod) keeps the
   historical behavior: `git pull --ff-only` then `systemctl --user restart lasso`,
   which rebuilds from source.
