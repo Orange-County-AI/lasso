@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -188,22 +190,36 @@ func parseSemver(s string) ([3]int, bool) {
 // cliUpdate updates lasso in place. A systemd-supervised source checkout keeps
 // the historical git-pull + restart behavior; otherwise (a release binary) it
 // downloads the latest release for this platform and atomically replaces itself,
-// restarting the background daemon if one is running.
-func cliUpdate() {
+// restarting whatever server runs it: the background daemon, or (on Linux) a
+// systemd service whose main process is this binary. --no-restart swaps the
+// binary and leaves every running server alone.
+func cliUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	noRestart := fs.Bool("no-restart", false, "update the binary but don't restart a running lasso server")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		os.Exit(2)
+	}
 	if selfUpdateAvailable() {
-		updateViaSystemd()
+		updateViaSystemd(!*noRestart)
 		return
 	}
-	updateViaRelease()
+	updateViaRelease(!*noRestart)
 }
 
 // updateViaSystemd runs the supervised-install update synchronously (unlike
 // serveSelfUpdate, the CLI isn't the process being restarted, so it can wait).
-func updateViaSystemd() {
+func updateViaSystemd(restart bool) {
 	src, unit := lassoSrcDir(), lassoUnit()
 	fmt.Printf("updating supervised checkout at %s …\n", src)
 	if out, err := exec.Command("git", "-C", src, "pull", "--ff-only").CombinedOutput(); err != nil {
 		fatal("git pull: %v\n%s", err, out)
+	}
+	if !restart {
+		fmt.Printf("pulled; not restarting (run `systemctl --user restart %s` to rebuild)\n", unit)
+		return
 	}
 	if out, err := exec.Command("systemctl", "--user", "restart", unit).CombinedOutput(); err != nil {
 		fatal("systemctl --user restart %s: %v\n%s", unit, err, out)
@@ -213,7 +229,7 @@ func updateViaSystemd() {
 
 // updateViaRelease downloads the latest release binary for this platform, checks
 // it against the release's checksums.txt, and atomically swaps it in.
-func updateViaRelease() {
+func updateViaRelease(restart bool) {
 	current := lassoSemver
 	rel, err := fetchLatestRelease()
 	if err != nil {
@@ -221,6 +237,13 @@ func updateViaRelease() {
 	}
 	if !semverNewer(current, rel.TagName) {
 		fmt.Printf("lasso %s is already up to date (latest release %s)\n", current, rel.TagName)
+		// A previous update may have swapped the binary without restarting a
+		// supervised server; finish that job for anything still on the old inode.
+		if restart {
+			if exe, err := selfExe(); err == nil {
+				restartSystemdServers(exe, true)
+			}
+		}
 		return
 	}
 	fmt.Printf("updating lasso %s → %s …\n", current, rel.TagName)
@@ -255,13 +278,32 @@ func updateViaRelease() {
 	}
 	fmt.Printf("lasso updated to %s\n", rel.TagName)
 
+	if !restart {
+		fmt.Println("not restarting; a running lasso server keeps the old binary until it restarts")
+		return
+	}
 	// If a background daemon is running, restart it onto the new binary.
 	if _, alive := readPid(); alive {
 		fmt.Println("restarting the running lasso daemon …")
 		cliRestart(nil)
-	} else {
-		fmt.Println("run `lasso restart` if a lasso server is running")
+		return
 	}
+	// Otherwise a systemd unit may be serving this binary; `lasso restart`
+	// would start a second daemon beside it, so restart the unit instead.
+	if exe, err := selfExe(); err == nil && restartSystemdServers(exe, false) > 0 {
+		return
+	}
+	fmt.Println("run `lasso restart` if a lasso server is running")
+}
+
+// selfExe is this binary's path with symlinks resolved, which is what the
+// kernel reports as /proc/<pid>/exe for every process running it.
+func selfExe() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
 }
 
 // replaceSelf atomically swaps the running executable with new bytes: write to a
@@ -269,11 +311,10 @@ func updateViaRelease() {
 // it executable, then rename over the current path. On Unix the running process
 // keeps the old inode, so replacing a live binary is safe.
 func replaceSelf(data []byte) error {
-	exe, err := os.Executable()
+	exe, err := selfExe()
 	if err != nil {
 		return err
 	}
-	exe, _ = filepath.EvalSymlinks(exe)
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".lasso-update-*")
 	if err != nil {
