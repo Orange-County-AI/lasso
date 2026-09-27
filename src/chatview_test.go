@@ -354,9 +354,16 @@ func TestPaneTranscript(t *testing.T) {
 	// A harness that reports only an id and that lasso cannot resolve. Nothing
 	// is going to arrive for it, so it is a verdict rather than a wait.
 	unknown := base
-	unknown.AgentSession = &agentSession{Agent: "codex", Kind: "id", Value: "abc"}
+	unknown.AgentSession = &agentSession{Agent: "opencode", Kind: "id", Value: "abc"}
 	if got := paneTranscript(be, unknown, false); got.Path != "" || got.Note == "" || got.Starting {
 		t.Errorf("id-only session = %+v, want a note and no wait", got)
+	}
+
+	// Codex is resolved by id too; one whose log is not written yet is a wait.
+	codex := base
+	codex.AgentSession = &agentSession{Agent: "codex", Kind: "id", Value: "01a0d4d6-1c62-7fc3-a6b3-000000000000"}
+	if got := paneTranscript(be, codex, false); got.Path != "" || got.Note == "" || !got.Starting {
+		t.Errorf("unwritten codex session = %+v, want a note and a wait", got)
 	}
 
 	// A live agent whose session herdr has not reported. For a pane lasso did not

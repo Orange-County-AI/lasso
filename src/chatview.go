@@ -398,6 +398,19 @@ func paneTranscript(b Backend, p pane, booting bool) chatTranscript {
 				Starting: true,
 			}
 		}
+		if agent == "codex" {
+			if id := safeSessionID(v); id != "" {
+				if path := findCodexTranscript(b, id); path != "" {
+					return chatTranscript{Path: path, Harness: agent}
+				}
+			}
+			// Codex writes its log with the first turn, so a fresh session's id
+			// names a file that is coming.
+			return chatTranscript{
+				Note:     "This session's transcript is not on this host yet.",
+				Starting: true,
+			}
+		}
 		return chatTranscript{Note: "This agent's transcript is not readable by lasso yet."}
 	}
 	return chatTranscript{Note: "No agent session in this pane."}
@@ -983,6 +996,9 @@ func claudeTool(b claudeBlock) *chatTool {
 func parseTranscript(harness string, data []byte, base int64) chatParse {
 	if strings.ToLower(strings.TrimSpace(harness)) == "claude" {
 		return parseClaudeTranscript(data, base)
+	}
+	if isCodex(harness) {
+		return parseCodexTranscript(data, base)
 	}
 	return parseChatTranscript(data, base)
 }
@@ -1789,19 +1805,25 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 	// a call and its answer are adjacent records, so one or two windows always
 	// covers them, and the loop stops at the start of the file regardless.
 	var parsed chatParse
-	for tries := 0; ; tries++ {
-		parsed = parseTranscript(tx.Harness, readChatRange(be, path, start, end), start)
-		if parsed.pendingResults == 0 || start == 0 || tries >= chatPageExtendTries {
-			break
+	if isCodex(tx.Harness) {
+		// Codex inlines images into its log, so a record can outgrow any window;
+		// its reader walks lines instead (codexlog.go), forward results included.
+		parsed = readCodexPage(be, path, info.Size(), end)
+	} else {
+		for tries := 0; ; tries++ {
+			parsed = parseTranscript(tx.Harness, readChatRange(be, path, start, end), start)
+			if parsed.pendingResults == 0 || start == 0 || tries >= chatPageExtendTries {
+				break
+			}
+			start -= chatReadBytes
+			if start < 0 {
+				start = 0
+			}
 		}
-		start -= chatReadBytes
-		if start < 0 {
-			start = 0
-		}
+		// A page whose end is a cursor can split a call from its answer; the window
+		// above already holds that answer, but this page owns the row.
+		resolveForwardResults(be, path, tx.Harness, end, info.Size(), parsed.running)
 	}
-	// A page whose end is a cursor can split a call from its answer; the window
-	// above already holds that answer, but this page owns the row.
-	resolveForwardResults(be, path, tx.Harness, end, info.Size(), parsed.running)
 	out.Items = parsed.items
 	out.Model = parsed.model
 	out.Tokens = parsed.tokens

@@ -1275,6 +1275,15 @@ func paneSubmit(b Backend, paneID, agentKind, text string) bool {
 // paneComposerState reads only the pane's visible screen. A failed read remains
 // unknown so callers fail open rather than starving a durable message queue.
 func paneComposerState(b Backend, paneID, agentKind string) ComposerState {
+	// Codex's composer is only legible with its attributes: an empty one shows
+	// a dim placeholder that plain text cannot tell from a draft.
+	if strings.EqualFold(strings.TrimSpace(agentKind), "codex") {
+		screen, ok := paneVisibleANSI(b, paneID)
+		if !ok {
+			return ComposerUnknown
+		}
+		return detectCodexComposer(screen)
+	}
 	text, ok := paneVisibleText(b, paneID)
 	if !ok {
 		return ComposerUnknown
@@ -1392,6 +1401,28 @@ func paneVisibleText(b Backend, paneID string) (string, bool) {
 	res, err := b.HerdrCall("pane.read", map[string]any{
 		"pane_id": paneID,
 		"source":  "visible",
+	})
+	if err != nil {
+		return "", false
+	}
+	var r struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	if json.Unmarshal(res, &r) != nil {
+		return "", false
+	}
+	return r.Read.Text, true
+}
+
+// paneVisibleANSI is paneVisibleText with the SGR attributes kept.
+func paneVisibleANSI(b Backend, paneID string) (string, bool) {
+	res, err := b.HerdrCall("pane.read", map[string]any{
+		"pane_id":    paneID,
+		"source":     "visible",
+		"format":     "ansi",
+		"strip_ansi": false,
 	})
 	if err != nil {
 		return "", false

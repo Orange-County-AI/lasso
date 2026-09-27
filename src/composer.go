@@ -141,3 +141,87 @@ func claudeComposerRule(line string) bool {
 	}
 	return lead == len(trimmed) || trimmed[len(trimmed)-1] == '─'
 }
+
+// codexComposerReach is how far above the screen's last line the composer may
+// sit. Codex draws it just above its footer, with at most a slash-command popup
+// below; a `›` row higher up is a past turn in the history, which Codex draws
+// with the same prompt glyph.
+const codexComposerReach = 12
+
+// detectCodexComposer reads Codex's composer from an ANSI screen
+// (pane.read format=ansi). Plain text cannot answer it: an empty composer
+// shows a placeholder ("Ask Codex to do anything", or one of several others),
+// and the only thing telling that apart from a draft is that the placeholder is
+// drawn DIM. So the prompt row is a draft exactly when it holds text that is
+// not dim.
+func detectCodexComposer(screen string) ComposerState {
+	lines := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
+	last := len(lines) - 1
+	for last >= 0 && strings.TrimSpace(stripSGR(lines[last])) == "" {
+		last--
+	}
+	for i := last; i >= 0 && i >= last-codexComposerReach; i-- {
+		runes, dim := sgrCells(lines[i])
+		j := 0
+		for j < len(runes) && runes[j] == ' ' {
+			j++
+		}
+		if j >= len(runes) || runes[j] != '›' {
+			continue
+		}
+		for k := j + 1; k < len(runes); k++ {
+			if runes[k] != ' ' && !dim[k] {
+				return ComposerDraft
+			}
+		}
+		return ComposerEmpty
+	}
+	return ComposerUnknown
+}
+
+// sgrCells splits an ANSI line into its printed runes and whether each was drawn
+// dim (SGR 2). Every other escape is dropped.
+func sgrCells(line string) (runes []rune, dim []bool) {
+	faint := false
+	rs := []rune(line)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != '\x1b' {
+			runes = append(runes, rs[i])
+			dim = append(dim, faint)
+			continue
+		}
+		if i+1 >= len(rs) || rs[i+1] != '[' {
+			i++
+			continue
+		}
+		j := i + 2
+		for j < len(rs) && (rs[j] < 0x40 || rs[j] > 0x7e) {
+			j++
+		}
+		if j < len(rs) && rs[j] == 'm' {
+			params := strings.Split(string(rs[i+2:j]), ";")
+			for p := 0; p < len(params); p++ {
+				switch params[p] {
+				case "", "0", "22":
+					faint = false
+				case "2":
+					faint = true
+				case "38", "48", "58":
+					// Extended colour: its arguments are not attributes.
+					if p+1 < len(params) && params[p+1] == "5" {
+						p += 2
+					} else if p+1 < len(params) && params[p+1] == "2" {
+						p += 4
+					}
+				}
+			}
+		}
+		i = j
+	}
+	return runes, dim
+}
+
+func stripSGR(line string) string {
+	runes, _ := sgrCells(line)
+	return string(runes)
+}

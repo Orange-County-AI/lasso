@@ -1,0 +1,203 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestDetectCodexComposer(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		want ComposerState
+	}{
+		{"codex-empty", ComposerEmpty},
+		{"codex-draft", ComposerDraft},
+		{"codex-history-only", ComposerUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			screen, err := os.ReadFile(filepath.Join("testdata", "screens", tt.name+".ansi"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := detectCodexComposer(string(screen)); got != tt.want {
+				t.Fatalf("detectCodexComposer(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func elide(s string) string {
+	var e elider
+	e.write([]byte(s))
+	return string(e.take())
+}
+
+func TestEliderCutsLongStringsToValidJSON(t *testing.T) {
+	image := "data:image/png;base64," + strings.Repeat("A", 3*codexStringCap)
+	long := strings.Repeat("é\\n\\u00e9\\\"", codexStringCap)
+	in := `{"a":"short","img":"` + image + `","long":"` + long + `","n":[1,"x"]}`
+	out := elide(in)
+	var got struct {
+		A    string `json:"a"`
+		Img  string `json:"img"`
+		Long string `json:"long"`
+		N    []any  `json:"n"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("elided line is not JSON: %v\n%.300s", err, out)
+	}
+	if got.A != "short" || len(got.N) != 2 {
+		t.Fatalf("short values changed: %+v", got)
+	}
+	if got.Img != "data:" {
+		t.Fatalf("data URL kept %d bytes, want just the scheme", len(got.Img))
+	}
+	if len(got.Long) == 0 || len(got.Long) > codexStringCap {
+		t.Fatalf("long string kept %d bytes, want a prefix of at most %d", len(got.Long), codexStringCap)
+	}
+	if strings.ContainsRune(got.Long, '�') {
+		t.Fatal("prefix was cut inside a UTF-8 sequence")
+	}
+	if small := `{"a":"b\"c","d":[]}`; elide(small) != small {
+		t.Fatalf("a short line must pass through untouched, got %s", elide(small))
+	}
+}
+
+func codexLine(typ string, payload any) string {
+	b, _ := json.Marshal(map[string]any{"timestamp": "2026-09-24T19:13:39.783Z", "type": typ, "payload": payload})
+	return string(b)
+}
+
+func TestCodexLinesCrossGiantRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-x.jsonl")
+	giant := codexLine("response_item", map[string]any{
+		"type": "custom_tool_call_output", "call_id": "c1",
+		"output": []any{
+			map[string]any{"type": "input_text", "text": "Script completed\nWall time 2.5 seconds\nOutput:\n"},
+			map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + strings.Repeat("Q", 3*chatReadBytes)},
+		},
+	})
+	lines := []string{
+		codexLine("response_item", map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "make the banner"}}}),
+		codexLine("response_item", map[string]any{"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": `const r = await tools.view_image({path:"/tmp/a/banner.png"}); text(r)`}),
+		giant,
+		codexLine("response_item", map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "Done."}}}),
+		codexLine("event_msg", map[string]any{"type": "task_complete"}),
+	}
+	data := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &localBackend{}
+	size := int64(len(data))
+
+	// The tail: a plain window would land inside the image and show nothing.
+	page := readCodexPage(b, path, size, size)
+	var kinds []string
+	for _, it := range page.items {
+		kinds = append(kinds, it.Kind)
+	}
+	if strings.Join(kinds, ",") != "user,tool,agent" {
+		t.Fatalf("rows = %v, want user,tool,agent", kinds)
+	}
+	tool := page.items[1].Tool
+	if tool.State != "completed" || tool.Images != 1 || tool.DurationMS != 2500 {
+		t.Fatalf("tool = %+v, want completed with 1 image in 2500ms", tool)
+	}
+	if tool.Title != "Image" || tool.Subject != shortPath("/tmp/a/banner.png") {
+		t.Fatalf("card reads %q · %q, want Image · the short path", tool.Title, tool.Subject)
+	}
+	if page.run {
+		t.Fatal("a completed turn must not read as running")
+	}
+
+	// A page ending at the assistant row pages back across the giant line.
+	before := page.items[2].off
+	older := readCodexPage(b, path, size, before)
+	if len(older.items) != 2 || older.items[0].Text != "make the banner" {
+		t.Fatalf("page above the giant line = %+v", older.items)
+	}
+	// Its call's result lies past the page's end, and is found there.
+	if older.items[1].Tool.State != "completed" {
+		t.Fatalf("forward result not applied: %+v", older.items[1].Tool)
+	}
+}
+
+func TestParseCodexTranscript(t *testing.T) {
+	data := strings.Join([]string{
+		codexLine("turn_context", map[string]any{"model": "gpt-6-sol"}),
+		codexLine("response_item", map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": "<permissions instructions>"}}}),
+		codexLine("response_item", map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"}}}),
+		codexLine("response_item", map[string]any{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "<image name=[Image #1] path=\"a.png\">"},
+			map[string]any{"type": "input_image", "image_url": "data:"},
+			map[string]any{"type": "input_text", "text": "</image>"},
+		}}),
+		codexLine("event_msg", map[string]any{"type": "task_started"}),
+		codexLine("response_item", map[string]any{"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "// @exec: {\"yield_time_ms\": 1}\nconst r = await Promise.allSettled([tools.exec_command({cmd:\"cat BRIEF.md\"}), tools.exec_command({cmd:'ls'})]);"}),
+		codexLine("response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "c1", "output": []any{
+			map[string]any{"type": "input_text", "text": "Script failed\nWall time 0.1 seconds\nOutput:\n"},
+			map[string]any{"type": "input_text", "text": "Script error:\nno such file"},
+		}}),
+		codexLine("response_item", map[string]any{"type": "function_call", "call_id": "c2", "name": "exec_command", "arguments": `{"cmd":"git status"}`}),
+		codexLine("response_item", map[string]any{"type": "function_call_output", "call_id": "c2", "output": "Chunk ID: ab\nWall time: 0.0000 seconds\nProcess exited with code 0\nOutput:\nclean\n"}),
+		codexLine("response_item", map[string]any{"type": "custom_tool_call", "call_id": "c3", "name": "exec", "input": "await tools.exec_command({cmd:\"sleep 99\"})"}),
+		codexLine("event_msg", map[string]any{"type": "token_count", "info": map[string]any{"last_token_usage": map[string]any{"input_tokens": 19179}}}),
+		codexLine("event_msg", map[string]any{"type": "turn_aborted", "reason": "interrupted"}),
+	}, "\n") + "\n"
+	got := parseTranscript("codex", []byte(data), 0)
+	if got.model != "gpt-6-sol" || got.tokens != 19179 {
+		t.Fatalf("model/tokens = %q/%d", got.model, got.tokens)
+	}
+	if len(got.items) != 5 {
+		t.Fatalf("items = %d, want 5 (image turn, three cards, interrupted): %+v", len(got.items), got.items)
+	}
+	if got.items[0].Kind != "user" || got.items[0].Text != "[1 image attached]" {
+		t.Fatalf("injected context leaked or pasted image lost: %+v", got.items[0])
+	}
+	c1 := got.items[1].Tool
+	if c1.Title != "Shell" || c1.Subject != "cat BRIEF.md (+1 more)" || c1.State != "error" || c1.Error != "no such file" {
+		t.Fatalf("exec card = %+v", c1)
+	}
+	c2 := got.items[2].Tool
+	if c2.Subject != "git status" || c2.State != "completed" || c2.Output != "clean" {
+		t.Fatalf("function_call card = %+v", c2)
+	}
+	if c3 := got.items[3].Tool; c3.State != "error" || c3.Error != "interrupted" {
+		t.Fatalf("an interrupted call must not stay running: %+v", c3)
+	}
+	if got.items[4].Marker != "interrupted" || got.run {
+		t.Fatalf("turn end = %+v, run=%v", got.items[4], got.run)
+	}
+}
+
+func TestUUIDV7Time(t *testing.T) {
+	ts, ok := uuidV7Time("01a0d4d6-1c62-7fc3-a6b3-196ecbb56557")
+	if !ok || ts.UTC().Format("2006/01/02 15:04") != "2026/09/24 19:13" {
+		t.Fatalf("uuidV7Time = %v %v", ts.UTC(), ok)
+	}
+	if _, ok := uuidV7Time("4f1c2a9e-1c62-4fc3-a6b3-196ecbb56557"); ok {
+		t.Fatal("a v4 id carries no time")
+	}
+}
+
+func TestFindCodexTranscript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	id := "01a0d4d6-1c62-7fc3-a6b3-196ecbb56557"
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "24")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "rollout-2026-09-24T12-13-16-"+id+".jsonl")
+	if err := os.WriteFile(want, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCodexTranscript(&localBackend{}, id); got != want {
+		t.Fatalf("findCodexTranscript = %q, want %q", got, want)
+	}
+}
