@@ -137,7 +137,7 @@ func ompEffortLevel(s string) bool {
 // never installed, an unreadable or unparseable config — returns nothing, which
 // the caller reads as "no host answer, keep the compiled-in list".
 func ompConfiguredModels(b Backend, home string) []string {
-	data, err := b.ReadFile(filepath.Join(home, ".omp", "agent", "config.yml"))
+	data, err := b.ReadFile(filepath.Join(ompAgentDir(home), "config.yml"))
 	if err != nil {
 		return nil
 	}

@@ -119,18 +119,22 @@ func cliNotify(args []string) {
 	fmt.Println(line)
 }
 
-// mcpEndpoint is the local server's /mcp URL. LASSO_URL wins for a lasso that
-// is not on plain http loopback (a tunnel, a TLS terminator); LASSO_LISTEN
-// covers the common case of a non-default port, matching closeme.
-func mcpEndpoint() string {
+// mcpEndpoint is the local server's /mcp URL.
+func mcpEndpoint() string { return lassoBaseURL() + "/mcp" }
+
+// lassoBaseURL is where the client subcommands (notify, mcp, connect) reach the
+// server, with no trailing slash. LASSO_URL wins for a lasso that is not on
+// plain http loopback (a tunnel, a TLS terminator); LASSO_LISTEN covers the
+// common case of a non-default port, matching closeme.
+func lassoBaseURL() string {
 	if base := strings.TrimSpace(os.Getenv("LASSO_URL")); base != "" {
-		return strings.TrimSuffix(base, "/") + "/mcp"
+		return strings.TrimSuffix(base, "/")
 	}
 	addr := defaultListenAddr
 	if env := strings.TrimSpace(os.Getenv("LASSO_LISTEN")); env != "" {
 		addr = env
 	}
-	return "http://" + addr + "/mcp"
+	return "http://" + addr
 }
 
 // mcpCLIClient is an HTTP client carrying whatever credential the environment

@@ -30,6 +30,7 @@ import (
 //	lasso closeme         close the calling agent itself (uses $HERDR_PANE_ID)
 //	lasso notify          push a notification to the human (the `notify` MCP tool)
 //	lasso mcp             call any of lasso's MCP tools from a shell
+//	lasso connect         register lasso's MCP servers with this machine's agent CLIs
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
 //	lasso skill           print lasso's agent skill (SKILL.md) to stdout
@@ -79,6 +80,9 @@ func main() {
 		case "mcp":
 			cliMCP(os.Args[2:])
 			return
+		case "connect":
+			cliConnect(os.Args[2:])
+			return
 		case "mcp-client":
 			cliMCPClient(os.Args[2:])
 			return
@@ -122,6 +126,7 @@ usage:
   lasso closeme            close the calling agent itself (uses $HERDR_PANE_ID)
   lasso notify <message>   push a notification to the human running lasso
   lasso mcp [tool] [flags] call lasso's MCP tools (no tool = list them)
+  lasso connect [flags]    register lasso's MCP servers with this machine's agent CLIs
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
   lasso skill              print lasso's agent skill (SKILL.md) to stdout

@@ -484,6 +484,14 @@ func convergeThemeOnProbe(hi HostInfo) {
 	}()
 }
 
+// Where each agent CLI keeps its per-user config, relative to a home dir. The
+// theme mirror writes through these on every host, and `lasso connect`
+// (connect.go) registers lasso's MCP servers through them on this one, so the
+// two can never disagree about where a CLI lives.
+func claudeDir(home string) string         { return filepath.Join(home, ".claude") }
+func ompAgentDir(home string) string       { return filepath.Join(home, ".omp", "agent") }
+func opencodeConfigDir(home string) string { return filepath.Join(home, ".config", "opencode") }
+
 // syncAgentThemesVia mirrors rt into the agent theme files on backend b. Every
 // CLI is attempted whatever the others did — one missing config dir must not
 // cost the rest their palette — and the joined failure is returned so the caller
@@ -660,7 +668,7 @@ func opencodeThemeBody(rt resolvedTheme) []byte {
 }
 
 func syncOpencodeThemeFile(b Backend, home string, rt resolvedTheme) error {
-	dir := filepath.Join(home, ".config", "opencode", "themes")
+	dir := filepath.Join(opencodeConfigDir(home), "themes")
 	body := opencodeThemeBody(rt)
 	for _, name := range opencodeThemeNames {
 		path := filepath.Join(dir, name+".json")
@@ -679,7 +687,7 @@ func syncOpencodeThemeFile(b Backend, home string, rt resolvedTheme) error {
 }
 
 func syncOpencodeTui(b Backend, home string) error {
-	path := filepath.Join(home, ".config", "opencode", "tui.json")
+	path := filepath.Join(opencodeConfigDir(home), "tui.json")
 
 	root := map[string]json.RawMessage{}
 	data, err := b.ReadFile(path)
@@ -819,7 +827,7 @@ const ompThemeSchema = "https://raw.githubusercontent.com/can1357/oh-my-pi/main/
 // Skipped entirely on hosts where omp has never run (no ~/.omp/agent), so a
 // theme switch doesn't litter config for a CLI that isn't there.
 func syncOmpTheme(b Backend, home string, rt resolvedTheme, cv glyphCanvas) error {
-	dir := filepath.Join(home, ".omp", "agent")
+	dir := ompAgentDir(home)
 	if _, err := b.Stat(dir); err != nil {
 		return nil // omp not set up on this host
 	}
@@ -1144,7 +1152,7 @@ const claudeThemePin = "custom:herdr"
 // a theme chosen inside Claude Code with /theme, which is what "sync agent
 // themes" means — the toggle and the per-host list are how you opt out.
 func syncClaudeSettingsTheme(b Backend, home string) error {
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudeDir(home), "settings.json")
 	root := map[string]any{}
 	if data, err := b.ReadFile(path); err == nil {
 		dec := json.NewDecoder(bytes.NewReader(data))
@@ -1172,7 +1180,7 @@ func syncClaudeSettingsTheme(b Backend, home string) error {
 }
 
 func syncClaudeTheme(b Backend, home string, rt resolvedTheme, light bool, cv glyphCanvas) error {
-	path := filepath.Join(home, ".claude", "themes", "herdr.json")
+	path := filepath.Join(claudeDir(home), "themes", "herdr.json")
 	base := "dark"
 	if light {
 		base = "light"

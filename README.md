@@ -5,7 +5,7 @@
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**
 
-[Install](#install) · [The tour](#the-tour) · [On a phone](#on-a-phone) · [MCP](#mcp-agents-driving-agents) · [Exposing it](#exposing-it)
+[Install](#install) · [The tour](#the-tour) · [On a phone](#on-a-phone) · [MCP](#mcp-agents-orchestrating-agents) · [Exposing it](#exposing-it)
 
 </div>
 
@@ -49,8 +49,8 @@ on the train. Hand the agent a photo of the whiteboard from your camera roll.
 - **A browser you and your agents share.** A real Chromium streamed into the
   sidebar: you watch — and click in — the same pages an agent is driving over
   the Chrome DevTools Protocol.
-- **Agents driving agents.** An MCP server lets one agent list, read, message,
-  spawn and close the others, across the fleet.
+- **Agents orchestrating agents.** An MCP server lets one agent spawn, list,
+  inspect and close the others, across the fleet.
 - **Nothing to deploy.** One binary, no database, no container, no sidecar. It
   spawns its own terminals and embeds its own frontend.
 
@@ -76,6 +76,31 @@ Herdr's native SSH machine list is separate from Lasso's host selector:
 `herdr machine add <ssh-alias> --label <name>` prepares and saves a machine.
 Upgrading an older Herdr server can end its running pane processes; checkpoint
 active work before approving a restart.
+
+### Connect your agents
+
+```bash
+lasso connect        # register lasso's MCP servers with every agent CLI here
+```
+
+It finds Claude Code, Codex, OpenCode and omp on the machine and adds two
+servers to each: **`lasso`** (`/mcp` — spawn, list and close agents, `notify`)
+and **`lasso-browser`** (`/browser-mcp` — the [shared browser](#shared-browser)).
+It checks lasso answers first, and re-running it is safe. On another machine,
+point it at the URL *that* machine reaches lasso on: `lasso connect -url
+https://lasso.example.com` (add `-header` for a Cloudflare Access service
+token; `lasso connect -h` has the rest). By hand it is:
+
+```bash
+claude mcp add --transport http lasso         http://127.0.0.1:8090/mcp
+claude mcp add --transport http lasso-browser http://127.0.0.1:8090/browser-mcp
+```
+
+Other CLIs add the same two URLs as streamable-HTTP MCP servers.
+`lasso-browser` needs Chrome or Chromium and `chrome-devtools-mcp` installed
+on **lasso's** machine ([Setup](#setup), [Connecting an
+agent](#connecting-an-agent)); without them `lasso connect` registers `lasso`
+alone and says what's missing.
 
 ## The tour
 
@@ -196,6 +221,7 @@ The binary is both the server and its own control surface:
 | `lasso version` | print the version |
 | `lasso notify "<msg>"` | push a notification to the human running lasso (the `notify` MCP tool) — for agents |
 | `lasso mcp [tool] [flags]` | call lasso's MCP tools from a shell; no tool lists them, `<tool> -h` shows its flags |
+| `lasso connect` | register lasso's two MCP servers (`lasso`, `lasso-browser`) with the agent CLIs on this machine; `-url` for another machine, `-remove` to undo, `-dry-run` to preview |
 | `lasso serve` | run in the **foreground** (what a bare `lasso` does) |
 
 `start`/`restart`/`serve` accept the server flags (`-listen`, `-theme`,
@@ -235,6 +261,18 @@ agent can spawn, list, inspect and close **other** agents — across every host
 lasso can reach. `create_agent`, `list_agents`, `get_agent`, `close_agent`,
 `list_hosts`, `whoami`, `notify`, and `shared_browser` (see
 [Shared browser](#shared-browser)).
+
+```bash
+lasso connect      # or: claude mcp add --transport http lasso http://127.0.0.1:8090/mcp
+```
+
+That registers it — and the browser server beside it — with every agent CLI on
+the machine ([Connect your agents](#connect-your-agents)). They are **two
+servers**, `lasso` at `/mcp` and `lasso-browser` at `/browser-mcp`, because
+they are two jobs: orchestrating agents, and driving the [shared
+browser](#shared-browser) with chrome-devtools-mcp's whole toolset. An agent
+that only needs one is not handed the other's tools, and each can be added,
+gated or dropped on its own.
 
 Talking to an agent is not lasso's job: prompt it, read its screen and wait on
 it with herdr (`herdr agent prompt` / `read` / `wait`), or, from Claude Code,

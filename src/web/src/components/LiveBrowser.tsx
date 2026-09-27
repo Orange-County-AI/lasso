@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Input, NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api, type BrowserPage } from "@/lib/api"
+import { lsGet, lsSet } from "@/lib/app-store"
 import { resolveLive } from "@/lib/browser-url"
 import { CDPClient, type CDPParams, reconnectDelay } from "@/lib/cdp"
 import { qk } from "@/lib/query"
@@ -66,6 +67,16 @@ interface DrawRect {
 // The ⌘ combos lasso's own shell handles (App.tsx's keydown, lib/shortcuts.ts).
 // Left alone here so they bubble to the document exactly as they do from
 // anywhere else in the app.
+// sameURL compares two absolute URLs as the browser would ("https://a.com"
+// and "https://a.com/" are one page); unparseable input is simply unequal.
+function sameURL(a: string, b: string): boolean {
+  try {
+    return new URL(a).href === new URL(b).href
+  } catch {
+    return a === b
+  }
+}
+
 // The headless window's non-viewport height (see fit). A property of the
 // browser, not of one mount, so a Live -> Embed -> Live round trip keeps it.
 let chromeGap: number | null = null
@@ -229,6 +240,9 @@ export function LiveBrowser({
   // A URL to open once a socket exists: a terminal link aimed at a tab that
   // was collapsed a moment ago, and so not yet connected.
   const pendingOpen = React.useRef<string | null>(null)
+  // Whether this mount has carried the shared address over yet (see the
+  // attach effect and the browserUrl write-through).
+  const urlSynced = React.useRef(false)
   const selectedRef = React.useRef(selected)
   selectedRef.current = selected
 
@@ -558,6 +572,20 @@ export function LiveBrowser({
       sessionRef.current = { targetId: selected, sessionId }
       await client.send("Page.enable", {}, sessionId)
       await fit()
+      // First attach of this mount: carry over the address Iframe mode (or
+      // the last visit) left, so switching modes keeps the page. Done here,
+      // once a session exists, because navigating without one opens a new
+      // page. A page already there is left alone.
+      if (!urlSynced.current && !dead) {
+        urlSynced.current = true
+        const want = resolveLive(lsGet("browserUrl") ?? "")
+        const have = targets.current.get(selected)?.url ?? ""
+        if (want && !sameURL(want, have)) {
+          await client
+            .send("Page.navigate", { url: want }, sessionId)
+            .catch(() => {})
+        }
+      }
     })().catch((e) => {
       if (!dead) setErr(errText(e))
     })
@@ -587,6 +615,18 @@ export function LiveBrowser({
   React.useEffect(() => {
     if (urlFocused.current) return
     setUrlInput(currentURL === "about:blank" ? "" : currentURL)
+  }, [currentURL])
+
+  // The address is shared with Iframe mode (one "browserUrl" slot), so a
+  // mode switch shows the same page: this records where the shown page is,
+  // and the attach below loads the slot into it. Held off until that first
+  // sync has run, or the page's old URL would overwrite the one being
+  // carried over before it was ever applied.
+  React.useEffect(() => {
+    if (!urlSynced.current || !currentURL || currentURL === "about:blank") {
+      return
+    }
+    lsSet("browserUrl", currentURL)
   }, [currentURL])
 
   // ---- page actions ---------------------------------------------------------

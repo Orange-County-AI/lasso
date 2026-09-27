@@ -171,9 +171,12 @@ lasso mcp shared-browser        # starts it if needed; prints mcp_endpoint, ws_e
 
 or the **`shared_browser`** MCP tool (pass `start: false` to only report its
 state). `mcp_endpoint` is the browser MCP URL (e.g.
-`http://127.0.0.1:8090/browser-mcp`); **ask the human to add it** (`claude mcp
-add --transport http lasso-browser <mcp_endpoint>`, or as a streamable-HTTP MCP
-server in any other agent) unless you can add MCP servers yourself — a new MCP
+`http://127.0.0.1:8090/browser-mcp`); **ask the human to add it** unless you
+can add MCP servers yourself. The one-step way is for them to run `lasso
+connect` on your machine, which registers both `lasso` and `lasso-browser`
+with every agent CLI installed there (`-url <lasso's URL>` when lasso runs on
+another machine). By hand it is `claude mcp add --transport http lasso-browser
+<mcp_endpoint>`, or a streamable-HTTP MCP server in any other agent. A new MCP
 server usually only loads in a new session. `mcp_available: false` comes with
 `mcp_reason` (usually chrome-devtools-mcp not installed on lasso's machine).
 The reply's `note` says when the browser is unavailable or the endpoints need
