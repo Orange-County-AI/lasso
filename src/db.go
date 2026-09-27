@@ -302,17 +302,17 @@ type uiState struct {
 	// forgot.
 	CustomBackgrounds []string `json:"custom_backgrounds"`
 	// AppearanceMode is which scheme the chrome wears: "herdr" (follow the
-	// shared herdr palette, the default and the historical behavior), "system"
-	// (follow the device's OS scheme), or a pinned "light"/"dark". Server-owned
+	// shared herdr palette, the historical behavior), "system" (follow the
+	// device's OS scheme, the default), or a pinned "light"/"dark". Server-owned
 	// like every other preference here — the OS scheme itself stays a device
 	// observation and is never persisted, only the CHOICE to follow it is.
 	AppearanceMode string `json:"appearance_mode"`
 	// PaletteLight / PaletteDark name the theme this lasso wears in each
 	// scheme outside "herdr" mode, resolved read-only through
 	// GET /api/theme?name= so naming one writes nothing to herdr's config and
-	// re-themes no other host. "" — the default, and what every existing
-	// install reads as — means the flat Nothing chrome and herdr's shared
-	// palette in the terminals, i.e. the behavior before this existed.
+	// re-themes no other host. "" means the flat Nothing chrome and herdr's
+	// shared palette in the terminals. A fresh install starts on the brand
+	// pair (defaultPaletteLight/defaultPaletteDark).
 	PaletteLight string `json:"palette_light"`
 	PaletteDark  string `json:"palette_dark"`
 	// CreatorDefaultHost is the host the New dialog opens on — both tabs, agent
@@ -370,14 +370,25 @@ const atmosphereNoBackground = "none"
 // human curates, not a store: past a couple of dozen the picker is the problem.
 const maxCustomBackgrounds = 24
 
-// The appearance modes a browser may name. "herdr" is the default and the
-// historical behavior (the chrome follows the shared herdr palette); "system"
+// The appearance modes a browser may name. "herdr" is the historical behavior
+// (the chrome follows the shared herdr palette); "system" — the default —
 // defers to the device's OS scheme; "light"/"dark" pin one.
 const (
 	appearanceModeHerdr  = "herdr"
 	appearanceModeSystem = "system"
 	appearanceModeLight  = "light"
 	appearanceModeDark   = "dark"
+)
+
+// A fresh lasso wears the two brand themes: System mode, Orange County AI in
+// the light scheme and Execution Associates in the dark. These only fill a
+// field the stored blob does not carry — saveUIState writes every field, so an
+// install that has ever saved keeps what it had, including an explicit "".
+// Mirrored by DEFAULTS in lib/ui-state.ts.
+const (
+	defaultAppearanceMode = appearanceModeSystem
+	defaultPaletteLight   = "ocai"
+	defaultPaletteDark    = "execution-associates"
 )
 
 // appearanceModes is the accepted set, in the order a client error lists them.
@@ -469,7 +480,7 @@ func normalizeAppearanceMode(m string) string {
 	if validAppearanceMode(m) {
 		return m
 	}
-	return appearanceModeHerdr
+	return defaultAppearanceMode
 }
 
 // getUIState reads the persisted UI prefs (zero value — everything on, sidebar
@@ -483,7 +494,9 @@ func getUIState() (uiState, error) {
 		UsageOrder:             []string{},
 		ThemeAtmosphere:        map[string]atmospherePref{},
 		CustomBackgrounds:      []string{},
-		AppearanceMode:         appearanceModeHerdr,
+		AppearanceMode:         defaultAppearanceMode,
+		PaletteLight:           defaultPaletteLight,
+		PaletteDark:            defaultPaletteDark,
 		AgentsSort:             agentsSortPriority,
 		BrowserMode:            browserModeLive,
 	}

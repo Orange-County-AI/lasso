@@ -16,6 +16,13 @@ FILE MAPPING (original -> vendored output)
 03-workshop        "Workshop"        <- art-workshop.webp   (1600x1200)
 04-community       "Community"       <- art-community.webp  (1600x1200)
 05-seal            "Seal"            <- event-fallback.webp (1600x1200)
+06-orange-grove    "Orange Grove"    <- generated for lasso (2048x1536)
+07-coastal-bluff   "Coastal Bluff"   <- generated for lasso (2048x1536)
+
+06 and 07 are not from the site: they were generated with Codex image
+generation in the same screen-print style, briefed to keep large blue/navy
+fields out, since the theme's terminal text is navy and dark blue and has to
+stay readable over the whole image.
 
 TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
   Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \

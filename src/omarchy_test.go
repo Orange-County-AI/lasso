@@ -312,6 +312,11 @@ func TestThemePreviewAndSelectOmarchyTheme(t *testing.T) {
 	if err := setThemeSyncFor("local", false); err != nil {
 		t.Fatal(err)
 	}
+	// A fresh install names the brand palettes, which hold the herdr picker
+	// (fleetThemeIsPalette); Herdr mode hands it back.
+	if err := setSetting("ui_state", `{"appearance_mode":"herdr"}`); err != nil {
+		t.Fatal(err)
+	}
 	prevHub := srvHub
 	srvHub = newHub()
 	t.Cleanup(func() { srvHub = prevHub })

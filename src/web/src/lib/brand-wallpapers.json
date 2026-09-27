@@ -43,6 +43,18 @@
       "label": "Seal",
       "image": "/wallpapers/ocai/05-seal.webp",
       "thumbnail": "/wallpapers/ocai/thumbs/05-seal.webp"
+    },
+    {
+      "id": "06-orange-grove",
+      "label": "Orange Grove",
+      "image": "/wallpapers/ocai/06-orange-grove.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/06-orange-grove.webp"
+    },
+    {
+      "id": "07-coastal-bluff",
+      "label": "Coastal Bluff",
+      "image": "/wallpapers/ocai/07-coastal-bluff.webp",
+      "thumbnail": "/wallpapers/ocai/thumbs/07-coastal-bluff.webp"
     }
   ]
 }

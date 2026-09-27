@@ -76,7 +76,7 @@ const BUNDLED_DEFAULT: Record<string, string> = {
   "retro-82": "/wallpapers/retro-82/04-dusk-guardian.webp",
   "execution-associates":
     "/wallpapers/execution-associates/01-golden-hour.webp",
-  ocai: "/wallpapers/ocai/01-pier.webp",
+  ocai: "/wallpapers/ocai/06-orange-grove.webp",
 }
 
 // The stored value meaning "paint no image" — distinct from an absent entry,
