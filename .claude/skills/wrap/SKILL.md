@@ -77,7 +77,7 @@ mise run typecheck && mise run lint && ( cd src && go vet ./... && go test . )
 ```
 
 **Never run `bun install` on the host.** Those mise tasks run the frontend half
-inside the `dev-lasso` incus container (`scripts/container.sh`), which is the whole
+inside this worktree's own incus dev container (`scripts/container.sh`), which is the whole
 point: `bun install` and Vite are the only third-party code in this repo, and on
 the host they execute beside the SSH key, the 1Password session and — on a
 workspace box — this org's entire exported credential set. Both boxes' install
@@ -85,29 +85,20 @@ guards refuse a bare `bun install` on the first attempt for exactly that reason.
 The Go half stays on the host — Go has no install hooks, and the binary has to be
 here anyway to drive herdr.
 
-**A fresh `dev-lasso` on titan does NOT come up working today** (verified
-2026-09-21), so budget for it rather than being surprised. Two independent breaks,
-both in the container, neither in this repo's code:
-
-- **No `raw.idmap`, so the bind mount is unwritable.** `container_needs_idmap`
-  reads titan's `/etc/subuid` line `root:1000:1` as "the identity map already
-  applies" and skips the flag, so `src/web` mounts `nobody:nogroup` and
-  `bun install` dies with `EACCES ... could not create the "node_modules"
-  directory`. Fix on the existing container and restart it:
-  ```bash
-  incus config set dev-lasso raw.idmap="both 1000 1000" && incus restart dev-lasso
-  ```
-- **No DHCP lease on `incusbr0`**, so the container cannot reach npm at all
-  (`eth0` is up with no IPv4; `ConnectionRefused downloading tarball ...`). With no
-  network there is no way to install, so seed `node_modules` from a checkout that
-  already has one — a host-side copy, which executes nothing:
+**Each worktree gets its own dev container**, created on its first frontend
+task (`mise run dev:containers` lists them). A fresh one came up working on
+titan on 2026-09-27 — `raw.idmap` applied, `src/web` writable, DHCP lease, first
+`build:web` in ~40s cold and a first lint in under 30s once the shared
+bun cache volume is warm. If one ever comes up
+without a network (`eth0` up with no IPv4, `ConnectionRefused downloading
+tarball ...`), seed `node_modules` from a checkout that already has one — a
+host-side copy, which executes nothing — and only when the lockfiles match:
   ```bash
   cmp -s src/web/bun.lock "$MAIN/src/web/bun.lock" \
     && cp -a "$MAIN/src/web/node_modules" src/web/node_modules
   ```
-  Only when the lockfiles match. If they differ the deps genuinely changed and the
-  container needs its network back — stop and report rather than typechecking
-  against the wrong tree.
+If they differ the deps genuinely changed and the container needs its network
+back — stop and report rather than typechecking against the wrong tree.
 
 If anything fails, **stop and report** — do not merge. Fix or hand back to the user.
 

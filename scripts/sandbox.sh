@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # A general-purpose incus sandbox for one-off third-party tools (reladraw and
-# the like), kept apart from dev-lasso.
+# the like), kept apart from the dev-lasso-* containers.
 #
-# Why a second container: dev-lasso carries the frontend's toolchain and the
-# src/web mount, and a tool fetched from npm for a docs task has no business
-# sharing either. This one is plain Debian with bun, nothing else, and each
+# Why a separate container: the dev containers carry the frontend's toolchain
+# and a src/web mount, and a tool fetched from npm for a docs task has no
+# business sharing either. This one is plain Debian with bun, nothing else, and each
 # task mounts only the directory it works on (see container_mount).
 #
-# It is disposable, like dev-lasso: delete it and the next task recreates and
-# re-provisions it in about a minute. Unlike dev-lasso its user has no sudo, so
-# a compromised package stays an unprivileged uid inside an unprivileged
-# container.
+# It is disposable, like the dev containers: delete it and the next task
+# recreates and re-provisions it in about a minute. Unlike theirs, its user has
+# no sudo, so a compromised package stays an unprivileged uid inside an
+# unprivileged container.
 
 HERE_SANDBOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/container.sh
