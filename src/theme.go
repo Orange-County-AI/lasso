@@ -62,6 +62,10 @@ type themeDef struct {
 	// only lasso knows is written as base + a generated override block that
 	// reproduces it (see themeSpecFor).
 	herdrBase string
+	// brand marks a lasso-only theme drawn from one of our own sites
+	// rather than from herdr or Omarchy, so the picker files it under its own
+	// "Brand" section (see builtinSource).
+	brand bool
 }
 
 const defaultTheme = "retro-82"
@@ -113,6 +117,7 @@ var themes = map[string]themeDef{
 		},
 		// Dark, purple-black, rose accent: the nearest herdr built-in.
 		herdrBase: "rose-pine",
+		brand:     true,
 	},
 	"catppuccin": {
 		ui: uiPalette{
@@ -380,6 +385,7 @@ var themes = map[string]themeDef{
 		},
 		// Light, warm cream stock: the nearest herdr built-in.
 		herdrBase: "gruvbox-light",
+		brand:     true,
 	},
 	"rose-pine-dawn": {
 		ui: uiPalette{

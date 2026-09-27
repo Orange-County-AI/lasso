@@ -331,10 +331,14 @@ func themeCatalog() []themeCatalogEntry {
 // herdr's, so calling it Omarchy's would be wrong in the one direction that
 // matters. A key herdr REJECTS exists here only because Omarchy has it, so a
 // name vendored under assets/omarchy/themes is reported as the official
-// Omarchy theme it is. Retro 82 is the only one today.
+// Omarchy theme it is. Retro 82 is the only one today. A brand theme is
+// neither herdr's nor Omarchy's, and says so.
 //
 // Callers hold omarchyMu.
 func builtinSource(name string, def themeDef) string {
+	if def.brand {
+		return "brand"
+	}
 	if def.herdrBase != "" && omarchyOfficial[name] {
 		return "official"
 	}

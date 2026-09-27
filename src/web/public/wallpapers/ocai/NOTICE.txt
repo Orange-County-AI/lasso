@@ -1,0 +1,24 @@
+Orange County AI wallpapers — first-party brand art
+================================================================
+
+Source : the Orange County AI site's screen-print rebrand
+         (beta.orangecountyai.com), worktree
+         ~/.lasso/worktrees/ocai-website/ocai-screen-print-rebrand @ 85ec220,
+         public/art/
+Owner  : Orange County AI; vendored at the owner's request as the backdrop
+         set for lasso's ocai theme. The site's hero-video poster is left out
+         on purpose: it is a photograph of real attendees, not brand art.
+
+FILE MAPPING (original -> vendored output)
+--------------------------------------------------
+01-pier            "Pier"            <- art-pier.webp       (1600x1200)
+02-lifeguard-tower "Lifeguard Tower" <- art-tower.webp      (1600x1200)
+03-workshop        "Workshop"        <- art-workshop.webp   (1600x1200)
+04-community       "Community"       <- art-community.webp  (1600x1200)
+05-seal            "Seal"            <- event-fallback.webp (1600x1200)
+
+TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
+  Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \
+                     -define webp:method=6 -quality 82 <id>.webp
+  Thumbnail   magick <src> -auto-orient -strip -resize '320x320>' \
+                     -define webp:method=6 -quality 75 thumbs/<id>.webp

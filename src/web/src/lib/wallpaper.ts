@@ -25,8 +25,9 @@
 // and why nothing paints until the fetch settles (see atmosphereKnown).
 //
 // Three sources feed the gallery for a theme:
-//   1. what lasso bundles (retro-82's 27 vendored stills, served from the
-//      embedded build — the one set that never touches the network),
+//   1. what lasso bundles (retro-82's 27 vendored stills, and each brand
+//      theme's own site art, served from the embedded build — the sets that
+//      never touch the network),
 //   2. what the theme itself shipped (an installed Omarchy theme clones its own
 //      backgrounds; the server hands back root-relative URLs — see
 //      ThemeCatalogEntry.backgrounds),
@@ -36,6 +37,7 @@
 // They are additive and deduped by URL, since a theme can plausibly be both
 // bundled and installed.
 import type { AtmospherePref } from "@/lib/api"
+import bundledBrands from "@/lib/brand-wallpapers.json"
 import { qk, queryClient } from "@/lib/query"
 import bundledRetro82 from "@/lib/retro82-wallpapers.json"
 import { patchUIState, uiStateNow, uiStateSettled } from "@/lib/ui-state"
@@ -51,23 +53,30 @@ export interface BackgroundChoice {
   custom?: boolean
 }
 
-// Backgrounds lasso ships in its own bundle, keyed by theme. Only retro-82 has
-// any: a palette is a few kilobytes of hex and is vendored offline for every
-// official theme, a wallpaper set is tens of megabytes and is not (see
-// public/wallpapers/retro-82/NOTICE.txt for what was taken and why).
+// Backgrounds lasso ships in its own bundle, keyed by theme: retro-82 and the
+// two brand themes. A palette is a few kilobytes of hex and is vendored offline
+// for every official theme, a wallpaper set is megabytes and is not (see
+// public/wallpapers/<theme>/NOTICE.txt for what was taken and why).
+const toChoices = (
+  set: readonly { image: string; label: string; thumbnail: string }[]
+): BackgroundChoice[] =>
+  set.map((w) => ({ url: w.image, label: w.label, thumbnail: w.thumbnail }))
+
 const BUNDLED: Record<string, readonly BackgroundChoice[]> = {
-  "retro-82": bundledRetro82.map((w) => ({
-    url: w.image,
-    label: w.label,
-    thumbnail: w.thumbnail,
-  })),
+  "retro-82": toChoices(bundledRetro82),
+  "execution-associates": toChoices(bundledBrands["execution-associates"]),
+  ocai: toChoices(bundledBrands.ocai),
 }
 
-// The still retro-82 wears out of the box. Every OTHER theme starts with no
-// background at all: a backdrop is an explicit pick, not something a palette
-// switch drops on you — and only retro-82 has an offline set to default to.
+// The still each bundled theme wears out of the box. Every OTHER theme starts
+// with no background at all: a backdrop is an explicit pick, not something a
+// palette switch drops on you — and only these have an offline set to default
+// to. Mirrored by legibility.go's bundledDefaultBackground.
 const BUNDLED_DEFAULT: Record<string, string> = {
   "retro-82": "/wallpapers/retro-82/04-dusk-guardian.webp",
+  "execution-associates":
+    "/wallpapers/execution-associates/01-golden-hour.webp",
+  ocai: "/wallpapers/ocai/01-pier.webp",
 }
 
 // The stored value meaning "paint no image" — distinct from an absent entry,
@@ -171,7 +180,7 @@ export interface ShippedBackground {
 // what the theme itself shipped, plus every hand-given picture on this lasso.
 //
 // The two shipped sources are exclusive, not additive: where lasso bundles a
-// set (retro-82) it wins outright, because the upstream set is the same
+// set (retro-82, the brand themes) it wins outright, because the upstream set is the same
 // PICTURES under different filenames — merging them would offer every still
 // twice under two labels, and a URL dedupe cannot see that. The bundled copy is
 // also the superset and the one with real thumbnails.

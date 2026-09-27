@@ -627,37 +627,41 @@ function PalettePrefs({
 // The grouping is the server's own provenance (`source`), never a name: a
 // built-in whose key herdr itself accepts is reported "builtin" because the
 // palette actually painted is herdr's, one that herdr rejects and lasso vendors
-// from Omarchy is "official", and a clone is "installed". retro-82 used to be
+// from Omarchy is "official", a lasso theme drawn from one of our own sites is
+// "brand", and a clone is "installed". retro-82 used to be
 // special-cased to "official" here, which is exactly the kind of second
 // convention that goes stale the moment the catalog gains a row.
 function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
   return (
     <>
-      {(["builtin", "official", "installed"] as const).flatMap((source) =>
-        [false, true].map((light) => {
-          const options = themes.filter(
-            (theme) => theme.source === source && theme.light === light
-          )
-          if (!options.length) return null
-          const label =
-            source === "builtin"
-              ? "Herdr"
-              : source === "official"
-                ? "Omarchy"
-                : "Omarchy · Installed"
-          return (
-            <optgroup
-              key={`${source}-${light}`}
-              label={`${label} · ${light ? "Light" : "Dark"}`}
-            >
-              {options.map((theme) => (
-                <option key={theme.name} value={theme.name}>
-                  {theme.label}
-                </option>
-              ))}
-            </optgroup>
-          )
-        })
+      {(["builtin", "brand", "official", "installed"] as const).flatMap(
+        (source) =>
+          [false, true].map((light) => {
+            const options = themes.filter(
+              (theme) => theme.source === source && theme.light === light
+            )
+            if (!options.length) return null
+            const label =
+              source === "builtin"
+                ? "Herdr"
+                : source === "brand"
+                  ? "Brand"
+                  : source === "official"
+                    ? "Omarchy"
+                    : "Omarchy · Installed"
+            return (
+              <optgroup
+                key={`${source}-${light}`}
+                label={`${label} · ${light ? "Light" : "Dark"}`}
+              >
+                {options.map((theme) => (
+                  <option key={theme.name} value={theme.name}>
+                    {theme.label}
+                  </option>
+                ))}
+              </optgroup>
+            )
+          })
       )}
     </>
   )

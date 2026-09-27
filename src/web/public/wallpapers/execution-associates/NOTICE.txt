@@ -1,0 +1,19 @@
+Execution Associates wallpapers — first-party brand art
+================================================================
+
+Source : the Execution Associates site (beta.executionassociates.com),
+         checkout ~/projects/execution-associates/beta @ dc3a79a,
+         site/assets/plates/
+Owner  : Execution Associates; vendored at the owner's request as the
+         backdrop set for lasso's execution-associates theme.
+
+FILE MAPPING (original -> vendored output)
+--------------------------------------------------
+01-golden-hour "Golden Hour"   <- day-full.webp (2352x1008)
+02-night       "Night"         <- night.webp    (2352x1008)
+
+TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
+  Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \
+                     -define webp:method=6 -quality 82 <id>.webp
+  Thumbnail   magick <src> -auto-orient -strip -resize '320x320>' \
+                     -define webp:method=6 -quality 75 thumbs/<id>.webp

@@ -503,7 +503,8 @@ the fallback for unknown names); an existing configured theme still wins.
 Select **Retro 82** in Settings or pass `-theme retro-82` to use it explicitly.
 Two brand themes ship beside it: **Execution Associates** (`execution-associates`,
 dark dusk violet with a peach accent) and **Orange County AI** (`ocai`, light:
-navy ink and a sun-orange accent on cream), each drawn from its website's tokens.
+navy ink and a sun-orange accent on cream), each drawn from its website's tokens
+and listed under **Brand** in the picker.
 Its navy, amber, and teal palette comes from
 [OldJobobo's Omarchy Retro 82](https://github.com/OldJobobo/omarchy-retro-82-theme).
 
@@ -516,7 +517,9 @@ and **image dimming** are saved **per theme on the server** (lasso's own
 same backdrop, and a pick in one repaints the others within a beat, with no
 reload. Switching palette restores each theme's own choices. A theme nobody has
 dressed yet defaults to shading on and 70% dimming — Retro 82 additionally to
-its Dusk Guardian still, every other theme to no image. Resetting dimming
+its Dusk Guardian still, the brand themes to their own site art (Execution
+Associates' golden-hour coast, Orange County AI's pier), every other theme to no
+image. Resetting dimming
 affects only the displayed theme. Choices made before this moved server-side
 stayed in the browser that made them and are not imported: pick the backdrop
 once more and every device follows.

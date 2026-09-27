@@ -59,11 +59,13 @@ const (
 	legibleQuiet = 3.0
 )
 
-// bundledDefaultBackground mirrors lib/wallpaper.ts's BUNDLED_DEFAULT: the one
-// theme that wears a still with nothing stored for it. Every other theme starts
-// flat, so an absent entry there means a flat canvas.
+// bundledDefaultBackground mirrors lib/wallpaper.ts's BUNDLED_DEFAULT: the
+// themes that wear a still with nothing stored for them. Every other theme
+// starts flat, so an absent entry there means a flat canvas.
 var bundledDefaultBackground = map[string]string{
-	"retro-82": "/wallpapers/retro-82/04-dusk-guardian.webp",
+	"retro-82":             "/wallpapers/retro-82/04-dusk-guardian.webp",
+	"execution-associates": "/wallpapers/execution-associates/01-golden-hour.webp",
+	"ocai":                 "/wallpapers/ocai/01-pier.webp",
 }
 
 // glyphCanvas is what an agent's text is drawn on, reduced to the two numbers a
