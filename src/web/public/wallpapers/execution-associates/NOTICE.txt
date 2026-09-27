@@ -7,13 +7,18 @@ Source : the Execution Associates site (beta.executionassociates.com),
 Owner  : Execution Associates; vendored at the owner's request as the
          backdrop set for lasso's execution-associates theme.
 
+Monogram: exa-mark-white-alpha.png from the brand site
+         (design.execution.associates), checkout
+         ~/projects/execution-associates/design-iteration @ c81fe32, site/img/
+
 FILE MAPPING (original -> vendored output)
 --------------------------------------------------
-01-golden-hour "Golden Hour"   <- day-full.webp (2352x1008)
-02-night       "Night"         <- night.webp    (2352x1008)
+01-golden-hour "Golden Hour"   <- day-full.webp (2352x1008) -> 1613x1008
+02-night       "Night"         <- night.webp    (2352x1008) -> 1613x1008
 
-TRANSFORMATIONS APPLIED (ImageMagick 7, same recipe as retro-82/NOTICE.txt)
-  Full image  magick <src> -auto-orient -strip -resize '1920x1920>' \
-                     -define webp:method=6 -quality 82 <id>.webp
-  Thumbnail   magick <src> -auto-orient -strip -resize '320x320>' \
-                     -define webp:method=6 -quality 75 thumbs/<id>.webp
+TRANSFORMATIONS APPLIED
+  Both are built by scripts/ea-wallpapers.sh (ImageMagick 7): cropped to a
+  16:10 window on the sun side, stamped with the EXA monogram bottom right
+  (76px, 85% white, faint #F099BF halo), then encoded like retro-82's set —
+  WebP quality 82 full size, quality 75 at 320px for thumbs/. The script's
+  header explains why the crop and the mark's inset are what they are.
