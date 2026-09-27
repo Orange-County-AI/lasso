@@ -815,9 +815,8 @@ match `lassoSemver` (the workflow enforces it).
 
 The mascot is a pixel-art terminal robot in a cowboy hat, wrangling a lasso:
 the agent wrangler. It is a generated raster image, not a drawing, and the
-sources live in `docs/icon/`: `icon.png` is the full mascot, and
-`favicon-art.png` is the same character simplified for 16 and 32px, where the
-full one turns to mush. The wordmark is `docs/brand/lasso-wordmark.png`.
+source is `docs/icon/icon.png`, used at every size down to the 16px browser
+tab. The wordmark is `docs/brand/lasso-wordmark.png`.
 Regenerate the favicon, ICO and home-screen assets in `src/web/public/`:
 
 ```bash
