@@ -368,6 +368,31 @@ func paneTranscript(b Backend, p pane, booting bool) chatTranscript {
 	if !paneHasLiveAgent(p) {
 		return chatTranscript{Note: "No agent session in this pane."}
 	}
+	// Codex is resolved from the pane's own process, not herdr's session alone:
+	// herdr has been seen reporting no session for a codex pane while naming its
+	// session on a different pane (see codexPaneTranscript).
+	harness := p.Agent
+	if s != nil {
+		harness = s.Agent
+	}
+	if isCodex(harness) {
+		herdrID := ""
+		if s != nil && s.Kind == "id" {
+			herdrID = safeSessionID(strings.TrimSpace(s.Value))
+		}
+		if path := codexPaneTranscript(b, p, herdrID); path != "" {
+			return chatTranscript{Path: path, Harness: "codex"}
+		}
+		if s == nil {
+			return chatTranscript{Note: "No agent session in this pane."}
+		}
+		// Codex writes its log with the first turn, so a fresh session's id
+		// names a file that is coming.
+		return chatTranscript{
+			Note:     "This session's transcript is not on this host yet.",
+			Starting: true,
+		}
+	}
 	// A live agent with no session reported, that lasso is not starting: herdr has
 	// no session for this pane and never will (a bot, a session someone started by
 	// hand). A wait here would promise a transcript that is not coming.
@@ -392,19 +417,6 @@ func paneTranscript(b Backend, p pane, booting bool) chatTranscript {
 			// The id is real but its log is not on this machine yet — the session
 			// has not written one, or it lives on the other side of an ssh hop.
 			// A running agent's log is expected to arrive, so this is a wait.
-			return chatTranscript{
-				Note:     "This session's transcript is not on this host yet.",
-				Starting: true,
-			}
-		}
-		if agent == "codex" {
-			if id := safeSessionID(v); id != "" {
-				if path := findCodexTranscript(b, id); path != "" {
-					return chatTranscript{Path: path, Harness: agent}
-				}
-			}
-			// Codex writes its log with the first turn, so a fresh session's id
-			// names a file that is coming.
 			return chatTranscript{
 				Note:     "This session's transcript is not on this host yet.",
 				Starting: true,
