@@ -1,12 +1,19 @@
 // lasso: one Go binary between browsers/agents and a fleet of herdr sessions.
 // Read left to right: clients -> edge -> lasso -> herdr on each host.
 
-style client  fill: #1b2433  border: #5b7bb0
-style edge    fill: #2a2118  border: #d2904e
-style core    fill: #182a1c  border: #5e9a62
-style store   fill: #142814  border: #486544  badge: database
-style fleet   fill: #2a1a2a  border: #a06aa6
-style aside   text: (size: small, color: #8a8f98)
+// Execution Associates palette (the lasso default theme): ink page, peach for
+// lasso itself, the sunset hues for everything around it.
+diagram  background: #1B0A2C  text: (color: #EDE4EB)
+default container  fill: #240934  border: #3d2a5c
+default leaf       fill: #1f0e33  border: #4a3570
+default edge       line: #A88BD0  text: (color: #C9BDC9, size: small)
+
+style client  fill: #28286D  border: #8A8FF0
+style edge    fill: #3a1a2e  border: #F78478
+style core    fill: #2e1a3a  border: #FEBE75
+style store   fill: #1f1440  border: #A88BD0  badge: database
+style fleet   fill: #3a1030  border: #DD519B
+style aside   text: (size: small, color: #B5AAB8)
 
 // ---- Clients ----
 node browser "Browser tab / React SPA (embedded) / terminal · chat · files" style: client
@@ -39,7 +46,7 @@ edge browser -> cf "HTTPS + SSE"  from: right  to: top
 edge agents -> cf "MCP"  from: right  to: left
 edge cf -> lasso  from: right  to: left
 edge lasso -> db  from: bottom  to: top
-edge lasso -> push "VAPID"  from: bottom  to: right
+edge lasso -> push "VAPID"  from: left  to: right
 edge push -> phone "notification"  from: left  to: right
 edge lasso -> local "socket API"  from: right  to: left
 edge lasso -> pool  from: right  to: left

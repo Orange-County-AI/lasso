@@ -1,90 +1,100 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1406" height="707" viewBox="0 0 1406 707" font-family="'DejaVu Sans Mono', 'Menlo', 'Consolas', 'Liberation Mono', 'Courier New', monospace" font-size="14px">
+<svg xmlns="http://www.w3.org/2000/svg" width="1374" height="707" viewBox="0 0 1374 707" font-family="'DejaVu Sans Mono', 'Menlo', 'Consolas', 'Liberation Mono', 'Courier New', monospace" font-size="14px">
   <defs>
-    <marker id="arrow-5c5c7c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5c5c7c"/>
+    <marker id="arrow-A88BD0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#A88BD0"/>
     </marker>
-    <marker id="arrow-5c5c7c-back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5c5c7c"/>
+    <marker id="arrow-A88BD0-back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#A88BD0"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="1406" height="707" fill="#111111"/>
-  <path d="M52.5 40 H258.5 a8 8 0 0 1 8 8 V117 a8 8 0 0 1 -8 8 H52.5 a8 8 0 0 1 -8 -8 V48 a8 8 0 0 1 8 -8 Z" fill="#1b2433" stroke="#5b7bb0"/>
-  <text x="155.5" y="68.4" fill="#d9d9d9" text-anchor="middle">Browser tab</text>
-  <text x="155.5" y="87.4" fill="#d9d9d9" text-anchor="middle">React SPA (embedded)</text>
-  <text x="155.5" y="106.4" fill="#d9d9d9" text-anchor="middle">terminal · chat · files</text>
-  <path d="M57 235 H254 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H57 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#1b2433" stroke="#5b7bb0"/>
-  <text x="155.5" y="263.4" fill="#d9d9d9" text-anchor="middle">MCP clients</text>
-  <text x="155.5" y="282.4" fill="#d9d9d9" text-anchor="middle">agents · lasso mcp CLI</text>
-  <path d="M57 411 H254 a8 8 0 0 1 8 8 V469 a8 8 0 0 1 -8 8 H57 a8 8 0 0 1 -8 -8 V419 a8 8 0 0 1 8 -8 Z" fill="#1b2433" stroke="#5b7bb0"/>
-  <text x="155.5" y="439.4" fill="#d9d9d9" text-anchor="middle">Phone</text>
-  <text x="155.5" y="458.4" fill="#d9d9d9" text-anchor="middle">service worker (sw.js)</text>
-  <path d="M380 235 H560 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H380 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#2a2118" stroke="#d2904e"/>
-  <text x="470" y="263.4" fill="#d9d9d9" text-anchor="middle">Cloudflare Access</text>
-  <text x="470" y="282.4" fill="#d9d9d9" text-anchor="middle">+ cloudflared tunnel</text>
-  <path d="M720.8 64 H1029.8 a8 8 0 0 1 8 8 V464 a8 8 0 0 1 -8 8 H720.8 a8 8 0 0 1 -8 -8 V72 a8 8 0 0 1 8 -8 Z" fill="#182a1c" stroke="#5e9a62"/>
-  <text x="726.8" y="92.4" fill="#d9d9d9" text-anchor="start">lasso (Go, one binary)</text>
-  <path d="M734.8 107 H1015.8 a8 8 0 0 1 8 8 V146 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V115 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="875.3" y="135.4" fill="#d9d9d9" text-anchor="middle">HTTP API  /api/*  (per-tab host)</text>
-  <path d="M734.8 164 H990.8 a8 8 0 0 1 8 8 V203 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V172 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="862.8" y="192.4" fill="#d9d9d9" text-anchor="middle">SSE host feeds  (hostfeed.go)</text>
-  <path d="M734.8 221 H990.8 a8 8 0 0 1 8 8 V260 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V229 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="862.8" y="249.4" fill="#d9d9d9" text-anchor="middle">ttyd proxy  /terminal/&lt;slug&gt;/</text>
-  <path d="M734.8 278 H956.8 a8 8 0 0 1 8 8 V317 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V286 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="845.8" y="306.4" fill="#d9d9d9" text-anchor="middle">MCP server  /mcp  + OAuth</text>
-  <path d="M734.8 335 H948.8 a8 8 0 0 1 8 8 V374 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V343 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="841.8" y="363.4" fill="#d9d9d9" text-anchor="middle">chat view  (transcripts)</text>
-  <path d="M734.8 392 H973.8 a8 8 0 0 1 8 8 V450 a8 8 0 0 1 -8 8 H734.8 a8 8 0 0 1 -8 -8 V400 a8 8 0 0 1 8 -8 Z" fill="#191728" stroke="#4f5367"/>
-  <text x="854.3" y="420.4" fill="#d9d9d9" text-anchor="middle">background: agent reaper ·</text>
-  <text x="854.3" y="439.4" fill="#d9d9d9" text-anchor="middle">notify watcher · theme sync</text>
-  <path d="M735.8 582 H1014.8 a8 8 0 0 1 8 8 V659 a8 8 0 0 1 -8 8 H735.8 a8 8 0 0 1 -8 -8 V590 a8 8 0 0 1 8 -8 Z" fill="#142814" stroke="#486544"/>
-  <text x="851.3" y="610.4" fill="#d9d9d9" text-anchor="middle">lasso.db</text>
-  <text x="851.3" y="629.4" fill="#d9d9d9" text-anchor="middle">(sqlite: agents, ui_state,</text>
-  <text x="851.3" y="648.4" fill="#d9d9d9" text-anchor="middle">oauth_*, push subs)</text>
-  <g transform="translate(970.8 605.5) scale(1.58333)">
+  <rect x="0" y="0" width="1374" height="707" fill="#1B0A2C"/>
+  <path d="M52.5 40 H258.5 a8 8 0 0 1 8 8 V117 a8 8 0 0 1 -8 8 H52.5 a8 8 0 0 1 -8 -8 V48 a8 8 0 0 1 8 -8 Z" fill="#28286D" stroke="#8A8FF0"/>
+  <text x="155.5" y="68.4" fill="#EDE4EB" text-anchor="middle">Browser tab</text>
+  <text x="155.5" y="87.4" fill="#EDE4EB" text-anchor="middle">React SPA (embedded)</text>
+  <text x="155.5" y="106.4" fill="#EDE4EB" text-anchor="middle">terminal · chat · files</text>
+  <path d="M57 235 H254 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H57 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#28286D" stroke="#8A8FF0"/>
+  <text x="155.5" y="263.4" fill="#EDE4EB" text-anchor="middle">MCP clients</text>
+  <text x="155.5" y="282.4" fill="#EDE4EB" text-anchor="middle">agents · lasso mcp CLI</text>
+  <path d="M57 411 H254 a8 8 0 0 1 8 8 V469 a8 8 0 0 1 -8 8 H57 a8 8 0 0 1 -8 -8 V419 a8 8 0 0 1 8 -8 Z" fill="#28286D" stroke="#8A8FF0"/>
+  <text x="155.5" y="439.4" fill="#EDE4EB" text-anchor="middle">Phone</text>
+  <text x="155.5" y="458.4" fill="#EDE4EB" text-anchor="middle">service worker (sw.js)</text>
+  <path d="M380 235 H560 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H380 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#3a1a2e" stroke="#F78478"/>
+  <text x="470" y="263.4" fill="#EDE4EB" text-anchor="middle">Cloudflare Access</text>
+  <text x="470" y="282.4" fill="#EDE4EB" text-anchor="middle">+ cloudflared tunnel</text>
+  <path d="M700.8 64 H1009.8 a8 8 0 0 1 8 8 V464 a8 8 0 0 1 -8 8 H700.8 a8 8 0 0 1 -8 -8 V72 a8 8 0 0 1 8 -8 Z" fill="#2e1a3a" stroke="#FEBE75"/>
+  <text x="706.8" y="92.4" fill="#EDE4EB" text-anchor="start">lasso (Go, one binary)</text>
+  <path d="M714.8 107 H995.8 a8 8 0 0 1 8 8 V146 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V115 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="855.3" y="135.4" fill="#EDE4EB" text-anchor="middle">HTTP API  /api/*  (per-tab host)</text>
+  <path d="M714.8 164 H970.8 a8 8 0 0 1 8 8 V203 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V172 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="842.8" y="192.4" fill="#EDE4EB" text-anchor="middle">SSE host feeds  (hostfeed.go)</text>
+  <path d="M714.8 221 H970.8 a8 8 0 0 1 8 8 V260 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V229 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="842.8" y="249.4" fill="#EDE4EB" text-anchor="middle">ttyd proxy  /terminal/&lt;slug&gt;/</text>
+  <path d="M714.8 278 H936.8 a8 8 0 0 1 8 8 V317 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V286 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="825.8" y="306.4" fill="#EDE4EB" text-anchor="middle">MCP server  /mcp  + OAuth</text>
+  <path d="M714.8 335 H928.8 a8 8 0 0 1 8 8 V374 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V343 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="821.8" y="363.4" fill="#EDE4EB" text-anchor="middle">chat view  (transcripts)</text>
+  <path d="M714.8 392 H953.8 a8 8 0 0 1 8 8 V450 a8 8 0 0 1 -8 8 H714.8 a8 8 0 0 1 -8 -8 V400 a8 8 0 0 1 8 -8 Z" fill="#1f0e33" stroke="#4a3570"/>
+  <text x="834.3" y="420.4" fill="#EDE4EB" text-anchor="middle">background: agent reaper ·</text>
+  <text x="834.3" y="439.4" fill="#EDE4EB" text-anchor="middle">notify watcher · theme sync</text>
+  <path d="M715.8 582 H994.8 a8 8 0 0 1 8 8 V659 a8 8 0 0 1 -8 8 H715.8 a8 8 0 0 1 -8 -8 V590 a8 8 0 0 1 8 -8 Z" fill="#1f1440" stroke="#A88BD0"/>
+  <text x="831.3" y="610.4" fill="#EDE4EB" text-anchor="middle">lasso.db</text>
+  <text x="831.3" y="629.4" fill="#EDE4EB" text-anchor="middle">(sqlite: agents, ui_state,</text>
+  <text x="831.3" y="648.4" fill="#EDE4EB" text-anchor="middle">oauth_*, push subs)</text>
+  <g transform="translate(950.8 605.5) scale(1.58333)">
     <path d="M3 6.4 v11.2 a9 3.4 0 0 0 18 0 v-11.2 Z" fill="#3e3d58" stroke="#8d8d8e" stroke-width="1.1" stroke-linejoin="round"/>
     <path d="M3 6.4 a9 3.4 0 0 1 18 0 a9 3.4 0 0 1 -18 0 Z" fill="#3e3d58" stroke="#8d8d8e" stroke-width="1.1" stroke-linejoin="round"/>
     <path d="M3 11 a9 3.4 0 0 0 18 0" fill="none" stroke="#8d8d8e" stroke-width="1.1" stroke-linejoin="round"/>
     <path d="M3 15.6 a9 3.4 0 0 0 18 0" fill="none" stroke="#8d8d8e" stroke-width="1.1" stroke-linejoin="round"/>
   </g>
-  <path d="M443.4 411 H590.4 a8 8 0 0 1 8 8 V469 a8 8 0 0 1 -8 8 H443.4 a8 8 0 0 1 -8 -8 V419 a8 8 0 0 1 8 -8 Z" fill="#2a2118" stroke="#d2904e"/>
-  <text x="516.9" y="439.4" fill="#d9d9d9" text-anchor="middle">Web Push service</text>
-  <text x="516.9" y="458.4" fill="#d9d9d9" text-anchor="middle">(Apple, FCM)</text>
-  <path d="M1177.2 235 H1349.2 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H1177.2 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#2a1a2a" stroke="#a06aa6"/>
-  <text x="1263.2" y="263.4" fill="#d9d9d9" text-anchor="middle">SSH pool</text>
-  <text x="1263.2" y="282.4" fill="#d9d9d9" text-anchor="middle">one master per host</text>
-  <path d="M1202.2 59 H1324.2 a8 8 0 0 1 8 8 V117 a8 8 0 0 1 -8 8 H1202.2 a8 8 0 0 1 -8 -8 V67 a8 8 0 0 1 8 -8 Z" fill="#2a1a2a" stroke="#a06aa6"/>
-  <text x="1263.2" y="87.4" fill="#d9d9d9" text-anchor="middle">herdr (local)</text>
-  <text x="1263.2" y="106.4" fill="#d9d9d9" text-anchor="middle">unix socket</text>
-  <path d="M1168.7 357 H1357.7 a8 8 0 0 1 8 8 V415 a8 8 0 0 1 -8 8 H1168.7 a8 8 0 0 1 -8 -8 V365 a8 8 0 0 1 8 -8 Z" fill="#2a1a2a" stroke="#a06aa6"/>
-  <text x="1263.2" y="385.4" fill="#d9d9d9" text-anchor="middle">herdr on remote hosts</text>
-  <text x="1263.2" y="404.4" fill="#d9d9d9" text-anchor="middle">(ssh config aliases)</text>
-  <path d="M1177.2 479 H1349.2 a8 8 0 0 1 8 8 V537 a8 8 0 0 1 -8 8 H1177.2 a8 8 0 0 1 -8 -8 V487 a8 8 0 0 1 8 -8 Z" fill="#2a1a2a" stroke="#a06aa6"/>
-  <text x="1263.2" y="507.4" fill="#d9d9d9" text-anchor="middle">SFTP: transcripts,</text>
-  <text x="1263.2" y="526.4" fill="#d9d9d9" text-anchor="middle">files, agent themes</text>
+  <path d="M429.4 411 H576.4 a8 8 0 0 1 8 8 V469 a8 8 0 0 1 -8 8 H429.4 a8 8 0 0 1 -8 -8 V419 a8 8 0 0 1 8 -8 Z" fill="#3a1a2e" stroke="#F78478"/>
+  <text x="502.9" y="439.4" fill="#EDE4EB" text-anchor="middle">Web Push service</text>
+  <text x="502.9" y="458.4" fill="#EDE4EB" text-anchor="middle">(Apple, FCM)</text>
+  <path d="M1145.2 235 H1317.2 a8 8 0 0 1 8 8 V293 a8 8 0 0 1 -8 8 H1145.2 a8 8 0 0 1 -8 -8 V243 a8 8 0 0 1 8 -8 Z" fill="#3a1030" stroke="#DD519B"/>
+  <text x="1231.2" y="263.4" fill="#EDE4EB" text-anchor="middle">SSH pool</text>
+  <text x="1231.2" y="282.4" fill="#EDE4EB" text-anchor="middle">one master per host</text>
+  <path d="M1170.2 59 H1292.2 a8 8 0 0 1 8 8 V117 a8 8 0 0 1 -8 8 H1170.2 a8 8 0 0 1 -8 -8 V67 a8 8 0 0 1 8 -8 Z" fill="#3a1030" stroke="#DD519B"/>
+  <text x="1231.2" y="87.4" fill="#EDE4EB" text-anchor="middle">herdr (local)</text>
+  <text x="1231.2" y="106.4" fill="#EDE4EB" text-anchor="middle">unix socket</text>
+  <path d="M1136.7 357 H1325.7 a8 8 0 0 1 8 8 V415 a8 8 0 0 1 -8 8 H1136.7 a8 8 0 0 1 -8 -8 V365 a8 8 0 0 1 8 -8 Z" fill="#3a1030" stroke="#DD519B"/>
+  <text x="1231.2" y="385.4" fill="#EDE4EB" text-anchor="middle">herdr on remote hosts</text>
+  <text x="1231.2" y="404.4" fill="#EDE4EB" text-anchor="middle">(ssh config aliases)</text>
+  <path d="M1145.2 479 H1317.2 a8 8 0 0 1 8 8 V537 a8 8 0 0 1 -8 8 H1145.2 a8 8 0 0 1 -8 -8 V487 a8 8 0 0 1 8 -8 Z" fill="#3a1030" stroke="#DD519B"/>
+  <text x="1231.2" y="507.4" fill="#EDE4EB" text-anchor="middle">SFTP: transcripts,</text>
+  <text x="1231.2" y="526.4" fill="#EDE4EB" text-anchor="middle">files, agent themes</text>
   <g font-size="12px">
-  <text x="40" y="599.2" fill="#8a8f98" text-anchor="start">Which host a view drives is a</text>
-  <text x="40" y="615.2" fill="#8a8f98" text-anchor="start">property of the browser TAB</text>
-  <text x="40" y="631.2" fill="#8a8f98" text-anchor="start">(X-Lasso-Host or ?host=), not of</text>
-  <text x="40" y="647.2" fill="#8a8f98" text-anchor="start">the process.</text>
+  <text x="40" y="599.2" fill="#B5AAB8" text-anchor="start">Which host a view drives is a</text>
+  <text x="40" y="615.2" fill="#B5AAB8" text-anchor="start">property of the browser TAB</text>
+  <text x="40" y="631.2" fill="#B5AAB8" text-anchor="start">(X-Lasso-Host or ?host=), not of</text>
+  <text x="40" y="647.2" fill="#B5AAB8" text-anchor="start">the process.</text>
   </g>
-  <path d="M 266.5 82.5 C 368.22 82.5, 470 133.28, 470 235" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <rect x="354.9" y="111.1" width="103" height="19" fill="#111111"/>
-  <text x="406.4" y="125.5" fill="#d9d9d9" text-anchor="middle">HTTPS + SSE</text>
-  <path d="M 262 268 C 306 268, 328 268, 372 268" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <rect x="299" y="258.5" width="36" height="19" fill="#111111"/>
-  <text x="317" y="272.9" fill="#d9d9d9" text-anchor="middle">MCP</text>
-  <path d="M 568 268 C 625.92 268, 654.88 268, 712.8 268" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <path d="M 883.3 472 C 883.3 516.12, 875.3 537.88, 875.3 582" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <path d="M 867.3 472 C 867.3 580.14, 706.54 444, 598.4 444" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <rect x="747.4" y="489.05" width="52" height="19" fill="#111111"/>
-  <text x="773.4" y="503.45" fill="#d9d9d9" text-anchor="middle">VAPID</text>
-  <path d="M 435.4 444 C 366.04 444, 331.36 444, 262 444" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <rect x="293.2" y="434.5" width="111" height="19" fill="#111111"/>
-  <text x="348.7" y="448.9" fill="#d9d9d9" text-anchor="middle">notification</text>
-  <path d="M 1037.8 260 C 1129.61 260, 1102.39 92, 1194.2 92" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <rect x="1069" y="166.5" width="94" height="19" fill="#111111"/>
-  <text x="1116" y="180.9" fill="#d9d9d9" text-anchor="middle">socket API</text>
-  <path d="M 1037.8 276 C 1090.46 276, 1116.54 268, 1169.2 268" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <path d="M 1263.2 301 C 1263.2 325, 1263.2 333, 1263.2 357" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
-  <path d="M 1263.2 423 C 1263.2 447, 1263.2 455, 1263.2 479" fill="none" stroke="#5c5c7c" stroke-width="1.6" marker-end="url(#arrow-5c5c7c)"/>
+  <path d="M 266.5 82.5 C 368.22 82.5, 470 133.28, 470 235" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <rect x="361.4" y="112.6" width="90" height="16" fill="#1B0A2C"/>
+  <g font-size="12px">
+  <text x="406.4" y="124.8" fill="#C9BDC9" text-anchor="middle">HTTPS + SSE</text>
+  </g>
+  <path d="M 262 268 C 306 268, 328 268, 372 268" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <rect x="301" y="260" width="32" height="16" fill="#1B0A2C"/>
+  <g font-size="12px">
+  <text x="317" y="272.2" fill="#C9BDC9" text-anchor="middle">MCP</text>
+  </g>
+  <path d="M 568 268 C 618.02 268, 642.78 260, 692.8 260" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <path d="M 855.3 472 C 855.3 516, 855.3 538, 855.3 582" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <path d="M 692.8 276 C 612.83 276, 664.37 444, 584.4 444" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <rect x="615.6" y="352" width="46" height="16" fill="#1B0A2C"/>
+  <g font-size="12px">
+  <text x="638.6" y="364.2" fill="#C9BDC9" text-anchor="middle">VAPID</text>
+  </g>
+  <path d="M 421.4 444 C 357.64 444, 325.76 444, 262 444" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <rect x="293.2" y="436" width="97" height="16" fill="#1B0A2C"/>
+  <g font-size="12px">
+  <text x="341.7" y="448.2" fill="#C9BDC9" text-anchor="middle">notification</text>
+  </g>
+  <path d="M 1017.8 260 C 1106.41 260, 1073.59 92, 1162.2 92" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <rect x="1049" y="168" width="82" height="16" fill="#1B0A2C"/>
+  <g font-size="12px">
+  <text x="1090" y="180.2" fill="#C9BDC9" text-anchor="middle">socket API</text>
+  </g>
+  <path d="M 1017.8 276 C 1065.67 276, 1089.33 268, 1137.2 268" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <path d="M 1231.2 301 C 1231.2 325, 1231.2 333, 1231.2 357" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
+  <path d="M 1231.2 423 C 1231.2 447, 1231.2 455, 1231.2 479" fill="none" stroke="#A88BD0" stroke-width="1.6" marker-end="url(#arrow-A88BD0)"/>
 </svg>
