@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,11 @@ type clientStateBackend struct {
 func (b *clientStateBackend) Name() string                      { return b.name }
 func (b *clientStateBackend) HomeDir() (string, error)          { return b.home, nil }
 func (b *clientStateBackend) ReadFile(p string) ([]byte, error) { return os.ReadFile(p) }
+func (b *clientStateBackend) WriteFile(p string, d []byte, m fs.FileMode) error {
+	return os.WriteFile(p, d, m)
+}
+func (b *clientStateBackend) Rename(o, n string) error { return os.Rename(o, n) }
+func (b *clientStateBackend) RemoveAll(p string) error { return os.RemoveAll(p) }
 
 // The shapes herdr 0.9's client actually writes, trimmed to the fields lasso
 // reads (captured from titan while switching machines in the sidebar).
@@ -171,5 +177,63 @@ func TestClientMachineHopRereadsProfilesForUnknownID(t *testing.T) {
 	hop, ok := clientMachineHop(be)
 	if !ok || hop.host != "ticket500" {
 		t.Fatalf("clientMachineHop(after machine add) = (%+v, %v), want host ticket500", hop, ok)
+	}
+}
+
+// A focused create on Local while the client shows a machine: the selection is
+// rewritten to Local (what a respawned client boots on) and the caller is told
+// to reattach.
+func TestShowLocalMachineResetsSelection(t *testing.T) {
+	be := machineFixture(t, "local", map[string]string{
+		"endpoint-selection.json": selectionTicket500,
+		"endpoints.json":          machineEndpoints,
+	})
+	if !showLocalMachine(be) {
+		t.Fatal("showLocalMachine = false with ticket500 selected, want true")
+	}
+	path := filepath.Join(be.home, ".local", "state", "herdr", "client", "endpoint-selection.json")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readSelectedMachineID(be) != "" || selectedMachineID(be) != "" {
+		t.Fatalf("selection after reset = %q, want Local", got)
+	}
+	if _, err := os.Stat(path + ".lasso-tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left behind: %v", err)
+	}
+	if showLocalMachine(be) {
+		t.Fatal("second showLocalMachine = true, want false (already Local)")
+	}
+}
+
+// Nothing to reveal: already Local, a disabled profile (never on screen), a
+// remote tab (no machine sidebar), or no state at all. The file is untouched.
+func TestShowLocalMachineNoop(t *testing.T) {
+	cases := []struct {
+		name, backend, selection string
+	}{
+		{"local", "local", selectionLocal},
+		{"disabled", "local", `{"version":1,"selected_profile":"0fb972d6907b631dd4410d4ce1eda82e"}`},
+		{"unknown", "local", `{"version":1,"selected_profile":"nope"}`},
+		{"remote tab", "ticket500", selectionTicket500},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			be := machineFixture(t, c.backend, map[string]string{
+				"endpoint-selection.json": c.selection,
+				"endpoints.json":          machineEndpoints,
+			})
+			if showLocalMachine(be) {
+				t.Fatal("showLocalMachine = true, want false")
+			}
+			got, _ := os.ReadFile(filepath.Join(be.home, ".local", "state", "herdr", "client", "endpoint-selection.json"))
+			if string(got) != c.selection {
+				t.Fatalf("selection rewritten to %q", got)
+			}
+		})
+	}
+	if showLocalMachine(machineFixture(t, "local", nil)) {
+		t.Fatal("showLocalMachine with no state = true, want false")
 	}
 }

@@ -60,6 +60,15 @@ export type TerminalInputMode = "herdr" | "shell"
 // ttyd itself runs on the active host. ActiveState.cwd_host is Lasso's
 // structured answer for that focused pane's filesystem; the plain shell still
 // belongs to the active backend.
+// Respawning the herdr terminal is the only way to move it off a saved
+// machine: a live herdr client switches machine on user input alone, and a new
+// one boots on whatever endpoint-selection.json names (see the server's
+// showLocalMachine). TerminalFrame remounts the herdr iframe on this event.
+export const HERDR_REATTACH_EVENT = "lasso:herdr-reattach"
+export function reattachHerdrTerminal() {
+  window.dispatchEvent(new Event(HERDR_REATTACH_EVENT))
+}
+
 export function terminalPasteHost(
   inputMode: TerminalInputMode,
   activeHost: string | null,
@@ -689,7 +698,10 @@ function wireReconnect(id: string, tries: number) {
     const now = Date.now()
     if (now - lastArmed > reconnectHealthy) attempt = 0
     lastArmed = now
-    const delay = Math.min(reconnectFirstDelay * 2 ** attempt, reconnectMaxDelay)
+    const delay = Math.min(
+      reconnectFirstDelay * 2 ** attempt,
+      reconnectMaxDelay
+    )
     attempt += 1
     timer = setTimeout(() => {
       timer = undefined
