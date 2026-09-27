@@ -99,7 +99,7 @@ func serveAutoTitle(w http.ResponseWriter, r *http.Request) {
 
 // autoTitleAgent generates a title for rec from its prompt and applies it to
 // the agent's herdr workspace (what the agents sidebar shows) and to the
-// persisted record (the address list_agents / message_agent surface). Runs in
+// persisted record (the name list_agents / get_agent surface). Runs in
 // its own goroutine off createAgent, alongside the boot: nothing downstream
 // waits on the title, and the CLI takes seconds.
 //

@@ -228,13 +228,17 @@ The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 device's system light/dark preference, or a pinned scheme — and that choice is
 stored on the server, so every browser on the same lasso agrees.
 
-## MCP: agents driving agents
+## MCP: agents orchestrating agents
 
 lasso exposes an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
-agent can list, read, message, spawn and close **other** agents — across every
-host lasso can reach. `list_agents`, `send_agent`, `wait_agent`, `create_agent`,
-`close_agent`, `list_hosts`, `whoami`, `notify`, and `shared_browser` (see
+agent can spawn, list, inspect and close **other** agents — across every host
+lasso can reach. `create_agent`, `list_agents`, `get_agent`, `close_agent`,
+`list_hosts`, `whoami`, `notify`, and `shared_browser` (see
 [Shared browser](#shared-browser)).
+
+Talking to an agent is not lasso's job: prompt it, read its screen and wait on
+it with herdr (`herdr agent prompt` / `read` / `wait`), or, from Claude Code,
+its native agent messaging.
 
 It is **unauthenticated by default** (same trust model as the file endpoints —
 fine on loopback or a private tailnet, behind Cloudflare Access, or gated by

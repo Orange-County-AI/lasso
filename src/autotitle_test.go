@@ -132,7 +132,7 @@ func TestTitleInstructionCarriesThePromptAndItsGuardRails(t *testing.T) {
 
 // autoTitleAgent's job is a rename that reaches BOTH places an agent's name
 // lives: the herdr workspace (what the agents sidebar shows) and the lasso
-// record (the address list_agents/message_agent hand out). Renaming one and not
+// record (the name list_agents/get_agent hand out). Renaming one and not
 // the other is how an agent ends up unreachable by the name on screen.
 //
 // The herdr TAB is not one of those places — it's the user's own organization

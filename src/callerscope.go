@@ -70,7 +70,7 @@ type mcpCaller struct {
 	Reach map[string]bool
 }
 
-// anyCaller is the unidentified, fleet-wide caller: the HTTP endpoints (which
+// have their own UI_AUTH gate) and tests.
 // have their own UI_AUTH gate), the message dispatcher, and tests.
 func anyCaller() mcpCaller { return mcpCaller{Fleet: true} }
 
@@ -143,9 +143,9 @@ func (c mcpCaller) hostOr(host string) string {
 // documented fleet-wide search into a local-only lookup and stop finding the
 // remote agent the caller asked about.
 //
-// Groups do NOT widen this. whoami and message_agent's sender resolution stay
-// pinned to the caller's own host — a caller's own pane is by definition on the
-// host its credential names, and searching a group-mate for it would only
+// Groups do NOT widen this. whoami stays pinned to the caller's own host — a
+// caller's own pane is by definition on the host its credential names, and
+// searching a group-mate for it would only
 // reintroduce the cross-host pane-id collision that per-host identity retired.
 // close_agent is the exception, and it overrides the result itself (see
 // closeAgentTool) rather than bending the rule here for both.

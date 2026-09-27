@@ -215,29 +215,6 @@ func TestMCPHostGroupsOverTheRealEndpoint(t *testing.T) {
 		t.Fatal("a host outside the group listed a group member's agents")
 	}
 
-	// message_agent resolves recipients against the same bound. There is no live
-	// herdr behind these hosts, so an in-group recipient can only get as far as
-	// dialing its host — but that is the distinction under test: the group-mate
-	// resolves to its host, while the outsider is stopped by the credential.
-	var msg messageAgentOut
-	if errMsg = callTool(t, norm, "message_agent", map[string]any{
-		"to":   []string{"darren agent@norm-darren", "outsider agent@outsider"},
-		"text": "ping", "from": "norm",
-	}, &msg); errMsg != "" {
-		t.Fatalf("message_agent: %s", errMsg)
-	}
-	if len(msg.Results) != 2 {
-		t.Fatalf("results = %+v, want two", msg.Results)
-	}
-	if !strings.Contains(msg.Results[0].Detail, "norm-darren") ||
-		strings.Contains(msg.Results[0].Detail, "credential") {
-		t.Errorf("group-mate detail = %q, want it resolved to the host rather than refused",
-			msg.Results[0].Detail)
-	}
-	if !strings.Contains(msg.Results[1].Detail, "credential") {
-		t.Errorf("outsider detail = %q, want the credential refusal", msg.Results[1].Detail)
-	}
-
 	// The live-edit claim: the verifier resolves reach per request, so removing a
 	// member takes effect on the caller's next call — no re-mint, no reconnect.
 	if _, err := removeGroupMember("norm-stack", "norm-darren", memberKindHost); err != nil {

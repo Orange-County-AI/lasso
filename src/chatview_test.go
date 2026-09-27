@@ -796,8 +796,8 @@ func TestCleanPaneTitle(t *testing.T) {
 	}
 }
 
-// chatSendBackend emulates a pane's composer the way msgPaneBackend does: the
-// pasted text is drawn into the harness's composer box, and Enter clears it.
+// chatSendBackend emulates a pane's composer: the pasted text is drawn into the
+// harness's composer box, and Enter clears it.
 // The knobs reproduce the two failures that matter — a pane that refuses the
 // write, and one that swallows it without ever drawing it.
 type chatSendBackend struct {

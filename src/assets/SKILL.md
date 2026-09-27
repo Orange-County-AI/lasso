@@ -15,9 +15,7 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | Tool | What it does |
 > | ---- | ------------ |
 > | `list_agents`   | List lasso agents |
-> | `get_agent`     | Fetch one agent's record/metadata |
-> | `read_agent`    | Read an agent's terminal output / transcript |
-> | `wait_agent`    | Block until an agent reaches a state (e.g. idle/done) |
+> | `get_agent`     | Fetch one agent's record and live status |
 > | `create_agent`  | Spawn a new first-class lasso agent |
 > | `close_agent`   | Shut an agent down |
 > | `list_hosts`    | List hosts lasso knows about |
@@ -26,6 +24,11 @@ description: Use for lasso itself — inspecting and managing lasso agents, host
 > | `whoami`        | Resolve your own agent record |
 > | `notify`        | Push a notification to the human running lasso |
 > | `shared_browser`| Start the shared Chromium the human watches live and get its CDP endpoint |
+>
+> **Lasso does not talk to agents.** To prompt another agent, read its screen,
+> or wait for it to finish, use herdr: `herdr agent prompt <target> "<text>"`,
+> `herdr agent read <target>`, `herdr agent wait <target>` (or the herdr skill).
+> In Claude Code, its own native agent messaging works too.
 >
 > **No MCP client? Use `lasso mcp`.** Every tool above is also a shell command —
 > `lasso mcp` lists them, `lasso mcp <tool> -h` shows one tool's flags, and
@@ -225,10 +228,13 @@ on top of it:
 Use the lasso MCP tools to inspect agent state and manage agent lifecycles:
 
 - **List:** `list_agents` (who's running), `list_hosts` / `list_repos` /
-  `list_branches` (where they can run), `get_agent` (one agent's record).
-- **Inspect:** `read_agent` to read another agent's terminal output/transcript.
-- **Wait for state:** `wait_agent` to block until an agent reaches a state
-  (e.g. idle/done).
+  `list_branches` (where they can run), `get_agent` (one agent's record and
+  live status).
+- **Talk to one:** not lasso's job. Prompt, read and wait with herdr —
+  `herdr agent prompt <target> "<text>" --wait`, `herdr agent read <target>`,
+  `herdr agent wait <target>` — using the `root_pane` or `sidebar_name`
+  `list_agents` gave you as the target. In Claude Code, its native agent
+  messaging works as well.
 - **Manage:** `create_agent` to spawn a first-class lasso agent, `close_agent`
   to shut one down.
 
@@ -245,14 +251,14 @@ installed on.
 
 ```bash
 lasso mcp                                   # every tool, one line each
-lasso mcp read-agent -h                     # one tool's flags
+lasso mcp get-agent -h                      # one tool's flags
 lasso mcp list-agents -host gigachad        # call it
 lasso mcp list-agents | jq -r '.agents[].title'
 ```
 
 - **Flags come from the server's live schema**, so they follow it
   automatically. `-h` on any tool is authoritative; don't guess a flag name.
-- **Either spelling of a name works** — `read-agent` or `read_agent`,
+- **Either spelling of a name works** — `get-agent` or `get_agent`,
   `-agent-id` or `-agent_id`.
 - **An omitted flag is left out of the call entirely**, so the tool's own
   default applies. That matters: an empty `host` means "search every host I
@@ -262,10 +268,9 @@ lasso mcp list-agents | jq -r '.agents[].title'
   structured result.
 - **Exit codes:** `0` fine, `1` the tool itself refused (its message goes to
   stderr), `2` you typed something wrong.
-- **A blocking tool's own timeout wins.** `lasso mcp wait-agent -agent-id X
-  -timeout-ms 300000` waits the full five minutes; the CLI's transport
-  deadline stretches to cover it. `-timeout <dur>` (before the tool name)
-  sets the floor for everything else.
+- **A tool's own timeout argument wins.** If a tool takes one (e.g.
+  `-timeout-ms`), the CLI's transport deadline stretches to cover it.
+  `-timeout <dur>` (before the tool name) sets the floor for everything else.
 
 **`lasso skill` prints this skill** — the binary carries its own copy, so an
 agent on a host with no checkout can read it (`lasso skill`) or install it

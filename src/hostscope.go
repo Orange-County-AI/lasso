@@ -14,10 +14,10 @@ import "fmt"
 // ~/.ssh/config (exactly what list_hosts enumerates). The two drift apart the
 // moment an alias is renamed, removed, or was only ever known to some other
 // lasso — and the cross-host paths that resolve targets from the db
-// (message_agent's recipients, whoami/close_agent with no host) used to span
-// the db's hosts. So an agent on a machine this lasso can no longer connect to
-// stayed visible and addressable while every call against it was doomed: the
-// listing promised a peer that no send, read, or close could ever reach.
+// (whoami/close_agent with no host) used to span the db's hosts. So an agent
+// on a machine this lasso can no longer connect to stayed visible and
+// addressable while every call against it was doomed: the listing promised a
+// peer that no inspection or close could ever reach.
 //
 // Membership below therefore comes from the ssh config, never from the db.
 

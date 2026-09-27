@@ -15,10 +15,9 @@ import (
 // resolveBackend. Three groups:
 //   - discovery:   list_hosts, list_repos, list_branches
 //   - spawning:    create_agent (loop it for the bulk "one per repo" case)
-//   - interaction: list_agents, get_agent, send_agent, read_agent, wait_agent,
-//                  close_agent  (the herdr pane is the stateful conversation)
-//   - messaging:   message_agent (queued, sender-enveloped, multi-recipient
-//                  agent-to-agent messages, delivered when the recipient idles)
+//   - orchestration: list_agents, get_agent, close_agent. Talking to an agent —
+//                  prompting it, reading its screen, waiting on it — is herdr's
+//                  job (`herdr agent prompt/read/wait`), not lasso's.
 //   - introspection: whoami (an agent maps its own $HERDR_PANE_ID back to its
 //                  lasso record, typically to then close_agent itself)
 //   - notifying:   notify (an agent pushes a notification to its HUMAN — the
@@ -32,7 +31,7 @@ import (
 func registerMCPTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_hosts",
-		Description: "List the hosts lasso can drive (the local box plus reachable, protocol-compatible SSH hosts). These are the ONLY hosts whose agents you can see, message, or manage: an agent reaches agents on its own box and on hosts with an alias in lasso's ssh config, and nothing else — and if your credential is scoped to a single host, that host is the only row you get — a host that is absent here is refused by the other tools rather than answered from lasso's records. Use the returned alias as the `host` argument of the other tools; omit `host` to target the local box. Answers immediately from lasso's background host probe, so it may be a PARTIAL picture: an entry with state \"probing\" has not finished being probed and one with state \"timeout\" did not answer in time — neither means the host is down, so call again in a second or two (or with refresh:true) instead of reporting those hosts as unavailable. Top-level `probing:true` says at least one entry is still filling in.",
+		Description: "List the hosts lasso can drive (the local box plus reachable, protocol-compatible SSH hosts). These are the ONLY hosts whose agents you can see or manage: an agent reaches agents on its own box and on hosts with an alias in lasso's ssh config, and nothing else — and if your credential is scoped to a single host, that host is the only row you get — a host that is absent here is refused by the other tools rather than answered from lasso's records. Use the returned alias as the `host` argument of the other tools; omit `host` to target the local box. Answers immediately from lasso's background host probe, so it may be a PARTIAL picture: an entry with state \"probing\" has not finished being probed and one with state \"timeout\" did not answer in time — neither means the host is down, so call again in a second or two (or with refresh:true) instead of reporting those hosts as unavailable. Top-level `probing:true` says at least one entry is still filling in.",
 	}, listHostsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -52,7 +51,7 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to send_agent/get_agent/read_agent to act on either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. Only agents herdr still has a pane for are listed: a lasso agent whose pane or workspace was closed is reconciled away on this call, so every id you get back is one you can actually send to, read, and close. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing, nothing was reconciled (an unreachable herdr is not evidence that an agent died, so records are kept), and the host may well have agents this call cannot see.",
+		Description: "List the agents on a host, each with its live status (working/idle/blocked/unknown) and its sidebar_name — the display name shown in the herdr pane switcher, which is the handle a human is most likely to use to reference it. Covers BOTH the agents lasso created (lasso_created:true, addressable by id) AND foreign herdr sessions lasso did not create — long-lived bots like \"Clem (OCAI)\" running in their own panes (lasso_created:false, no lasso id; address them by sidebar_name or root_pane). Pass a sidebar_name or root_pane to get_agent to inspect either kind. `host` must be one list_hosts shows you: the local box or an ssh-config alias, and within your credential's scope. Any other host is refused, so agents on machines this lasso cannot connect to — or in another trust zone — are not listable. Omitting `host` lists YOUR OWN host, not lasso's. Only agents herdr still has a pane for are listed: a lasso agent whose pane or workspace was closed is reconciled away on this call, so every id you get back is one you can actually inspect and close. `agents` is an empty array when the host genuinely has none; a `herdr_error` alongside it means the listing is PARTIAL — herdr could not be enumerated, so live statuses, sidebar names, and every foreign session are missing, nothing was reconciled (an unreachable herdr is not evidence that an agent died, so records are kept), and the host may well have agents this call cannot see.",
 	}, listAgentsTool)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -62,28 +61,8 @@ func registerMCPTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_agent",
-		Description: "Get one agent's details, its live status, and a tail of its recent terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be inspected too.",
+		Description: "Get one agent's details and its live status (working/idle/blocked/unknown, or failed for a boot that never came up). It does not read the agent's terminal — use herdr for that (`herdr agent read`). Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be inspected too.",
 	}, getAgentTool)
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "send_agent",
-		Description: "Send a message to a running agent — the text is typed into its pane and submitted (as if you typed it and pressed Enter). Target it by lasso agent id, by its sidebar/display name (the name in the herdr pane switcher — the handle a human is most likely to use), or by herdr pane id, so this reaches a foreign herdr session lasso did not create (e.g. a bot like \"Clem (OCAI)\") as well as lasso's own agents. A name matching more than one agent/session on the host is refused with the candidates listed rather than guessed — names are only unique per host, so pass `host` (or an id/pane id) to disambiguate. Use this to give follow-up instructions or answer a prompt the agent is blocked on. Works whether the agent is idle or busy: a message sent mid-turn is queued and the agent picks it up after its current turn (it does not interrupt). The call confirms the message actually submitted before returning, so you don't need to re-send; follow with wait_agent + read_agent to get the reply. For agent-to-agent messaging — sender identification, multiple recipients, delivery deferred until the recipient is idle — use message_agent instead.",
-	}, sendAgentTool)
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "message_agent",
-		Description: "Send one message to one or MORE lasso agents (multi-recipient = broadcast), with a sender envelope and store-and-forward delivery. Unlike send_agent — which types into the pane immediately and suits driving an agent you spawned — message_agent queues the message in lasso and delivers it only when the recipient goes idle, so it never interleaves with an in-flight turn and concurrent senders never race in the composer; everything queued for a recipient arrives together, in order, as one turn. Address recipients by agent title or agent id, optionally host-qualified (\"clem\", \"clem@gigachad\", \"<id>@titan\") — a title must resolve to exactly one live agent, else that recipient is refused with the candidates listed. Only agents on hosts list_hosts shows you are addressable — an ssh-config alias (or the local box) that your credential's scope covers. Agents on any other host are invisible here, and naming such a host is refused with the reason. Identify yourself with from_pane (your $HERDR_PANE_ID) so recipients can reply to your id, or with a free-text `from` label if you are not a lasso agent. Delivery is asynchronous: the call returns per-recipient queued/error results immediately; messages for an agent that stays busy wait, and messages whose agent exits are marked failed rather than delivered to a later occupant of the pane.",
-	}, messageAgentTool)
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "read_agent",
-		Description: "Read an agent's terminal output. Target it by lasso agent id, by its sidebar/display name, or by herdr pane id (via agent_id or to) — so a foreign herdr session lasso did not create can be read too. source 'recent' returns scrollback (default), 'visible' just the current screen. Pair with wait_agent to do request/response round-trips.",
-	}, readAgentTool)
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "wait_agent",
-		Description: "Block until an agent reaches a status (default 'idle', i.e. done working and waiting) or the timeout elapses. Use after send_agent to wait for the agent to finish before reading its reply.",
-	}, waitAgentTool)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "close_agent",
@@ -115,8 +94,7 @@ type agentInfo struct {
 	Host string `json:"host"`
 	// SidebarName is the display name a human sees for this agent in the herdr
 	// sidebar/pane switcher (herdr's workspace label). It is the handle a user is
-	// most likely to reference — send_agent/get_agent/read_agent accept it as the
-	// target. For a lasso agent it tracks Title; for a foreign session it is the
+	// most likely to reference — get_agent accepts it as the target. For a lasso agent it tracks Title; for a foreign session it is the
 	// only human-facing name.
 	SidebarName string `json:"sidebar_name,omitempty"`
 	Title       string `json:"title"`
@@ -207,9 +185,9 @@ func sidebarName(gp hostPane) string {
 // target resolution: id / pane id / sidebar name → one addressable pane
 // ---------------------------------------------------------------------------
 
-// resolvedTarget is one addressable pane the interaction tools can drive: either
-// a lasso agent (Record set) or a foreign herdr session (Pane set). Both carry
-// the Host and the PaneID to send_text / read from.
+// resolvedTarget is one addressable pane get_agent can inspect: either a lasso
+// agent (Record set) or a foreign herdr session (Pane set). Both carry the Host
+// and the PaneID herdr knows it by.
 type resolvedTarget struct {
 	Host   string
 	PaneID string
@@ -232,17 +210,6 @@ func (t resolvedTarget) info(host, status string) agentInfo {
 		ai.Status = status
 	}
 	return ai
-}
-
-// agentKind is herdr's harness label for this resolved target.
-func (t resolvedTarget) agentKind() string {
-	if t.Record != nil {
-		return t.Record.Agent
-	}
-	if t.Pane != nil {
-		return t.Pane.Agent
-	}
-	return ""
 }
 
 // resolveTarget maps needle to exactly one addressable pane on host. needle may
@@ -348,8 +315,7 @@ func findPane(panes []hostPane, paneID string) (hostPane, bool) {
 	return hostPane{}, false
 }
 
-// resolveAgentTarget is the tool-facing resolver behind get_agent/read_agent/
-// send_agent: it maps needle (id, pane id, or name) to one addressable pane on
+// resolveAgentTarget is the tool-facing resolver behind get_agent: it maps needle (id, pane id, or name) to one addressable pane on
 // host and hands back the backend to drive it. An exact lasso id resolves
 // without touching herdr (preserving the old id-only cost); anything else
 // enumerates the host's panes so names and foreign sessions resolve.
@@ -396,10 +362,9 @@ func surfacedStatus(rec AgentRecord, herdrStatus string) string {
 }
 
 // paneAgentStatus returns the agent status for a pane (working/idle/blocked/
-// unknown), or "" if the pane is gone or carries no agent. This is what
-// wait_agent polls, so it goes through paneAgentPresence: on a host where herdr
-// cannot identify the agent its status would otherwise be "unknown" forever, and
-// a wait for "idle" could never be satisfied.
+// unknown), or "" if the pane is gone or carries no agent — what whoami reports.
+// It goes through paneAgentPresence: on a host where herdr cannot identify the
+// agent its status would otherwise be "unknown" forever.
 //
 // It then adds the one gate herdr cannot see: omp's plan approval is a TUI
 // overlay raised after the turn ends, so herdr's omp integration has already
@@ -411,25 +376,6 @@ func paneAgentStatus(b Backend, paneID string) string {
 	}
 	kind, status := paneAgentPresence(p)
 	return ompGateStatus(b, paneID, kind, status)
-}
-
-// statusSatisfies decides whether the status a pane is reporting answers the one
-// a caller is waiting for. Everything is an exact match except "idle", which
-// also accepts "done": herdr publishes "done" for a pane whose agent finished a
-// turn nobody has looked at since, which agentAtRest already calls idle wearing
-// a badge. Matching only the literal made the DEFAULT wait unsatisfiable for
-// exactly the case it exists to serve — an agent that has finished — so
-// `wait_agent` after a `send_agent` ran to its full timeout and reported
-// matched:false about an agent that had answered seconds earlier.
-//
-// The asymmetry is deliberate: a caller that asks for "done" specifically wants
-// the badge, and collapsing the pair in that direction too would make a
-// never-worked agent read as one that had finished.
-func statusSatisfies(want, got string) bool {
-	if want == "idle" {
-		return agentAtRest(got)
-	}
-	return want == got
 }
 
 // paneHasAgent reports whether an agent is still running in the pane. It returns
@@ -491,27 +437,6 @@ func killPaneAgent(b Backend, paneID string) bool {
 		}
 	}
 	return !paneHasAgent(b, paneID)
-}
-
-// paneReadText reads a pane's output via herdr's pane.read.
-func paneReadText(b Backend, paneID, source string, lines int) (string, error) {
-	params := map[string]any{"pane_id": paneID, "source": source}
-	if lines > 0 {
-		params["lines"] = lines
-	}
-	res, err := b.HerdrCall("pane.read", params)
-	if err != nil {
-		return "", err
-	}
-	var r struct {
-		Read struct {
-			Text string `json:"text"`
-		} `json:"read"`
-	}
-	if err := json.Unmarshal(res, &r); err != nil {
-		return "", err
-	}
-	return r.Read.Text, nil
 }
 
 // herdrPaneInfo is herdr's pane.get response: the canonical public pane id and
@@ -707,9 +632,9 @@ type createAgentIn struct {
 	Model        string `json:"model,omitempty" jsonschema:"Model for the agent's CLI (passed to its --model flag), e.g. \"fable\", \"opus\", \"sonnet\", or \"haiku\" for claude; \"gpt-5.6-sol\" or \"gpt-5.6-terra\" for codex; and provider/model selectors for omp, whose suggested choices are \"openai-codex/gpt-5.6-sol\", \"openai-codex/gpt-5.6-terra\", \"anthropic/claude-fable-5\", and \"anthropic/claude-opus-5\". OMP and pi also accept other patterns matched against their authenticated provider catalogs. Omit for the harness default."`
 	Effort       string `json:"effort,omitempty" jsonschema:"Thinking/reasoning effort for the agent's CLI. The levels are harness-dependent — claude: \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; codex: \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"; pi: \"off\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; omp: those plus \"auto\" (it picks per turn); opencode has no effort knob. A level the chosen harness doesn't list is DROPPED (the agent launches at the CLI's own default) rather than passed through, because an unknown level makes the CLI exit at launch and would fail the whole boot. Omit for the CLI's default."`
 	ExtraArgs    string `json:"extra_args,omitempty" jsonschema:"Extra CLI flags appended verbatim to the agent's launch command, for options without a dedicated field."`
-	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent. Omit to launch it with no instruction at all: the CLI comes up idle, waiting for a send_agent (or for the human watching the pane) — which is how you park a ready-to-go agent on a branch without starting any work."`
+	Prompt       string `json:"prompt,omitempty" jsonschema:"Initial task/instructions for the agent. Omit to launch it with no instruction at all: the CLI comes up idle, waiting for a prompt from the human watching the pane (or from 'herdr agent prompt') — which is how you park a ready-to-go agent on a branch without starting any work."`
 	Notes        string `json:"notes,omitempty" jsonschema:"Extra notes; written to NOTES.md in the work dir and referenced in the prompt."`
-	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case: wait for the gate with wait_agent status=blocked, read the plan with read_agent, approve with send_agent — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; send the option number (\"1\" accepts). omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (wait_agent, get_agent and list_agents see that; the web all-panes listing still shows idle). Because the overlay takes arrow keys, an omp plan is approved by the Enter send_agent presses and your message text is DISCARDED: any send_agent accepts the highlighted default, \"Approve and execute\". To revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
+	PlanMode     bool   `json:"plan_mode,omitempty" jsonschema:"Start the agent in plan mode: it researches and proposes a plan but does not edit anything until the plan is approved. claude, opencode and omp only — dropped for codex and pi, neither of which lasso can start in a plan mode from the launch line, rather than silently recorded. Answering questions does NOT need approval; the agent only stops when it wants to EXECUTE. In every case the agent parks on a gate lasso reports as status \"blocked\" (get_agent and list_agents show it); to review or answer it from another agent, use herdr — 'herdr agent wait <target> --until blocked', 'herdr agent read <target>', then 'herdr agent send-keys' (a blocked agent refuses 'herdr agent prompt') — or leave it parked for a human watching the pane, which is a valid way to keep a plan under review. The gate itself differs by harness. claude/opencode show a numbered \"Would you like to proceed?\" prompt and herdr reports \"blocked\" natively; option \"1\" accepts. omp shows a Plan Review overlay whose options are chosen with the arrow keys, NOT numbered — herdr's own detection reports it as idle/done, so lasso recognizes the overlay itself and reports \"blocked\" for it (get_agent and list_agents see that; herdr's own wait/status and the web all-panes listing still show idle, so poll get_agent for an omp gate rather than waiting on herdr). Enter accepts the highlighted default, \"Approve and execute\"; to revise an omp plan instead, a human must pick \"Refine plan\" in the pane."`
 	Focus        bool   `json:"focus,omitempty" jsonschema:"Switch the herdr view to the new agent's pane as it boots. Defaults to false so spawning an agent doesn't yank you away from your current pane."`
 	Advisor      bool   `json:"advisor,omitempty" jsonschema:"Turn on the harness's per-turn advisor runtime: a background pass that reviews each turn and injects notes into the session (omp's --advisor). omp only — DROPPED for every other harness rather than silently recorded, since none of them has the flag. Use it when you want a second opinion woven into the agent's context; it does not change what the agent is allowed to do."`
 }
@@ -1068,12 +993,14 @@ type getAgentIn struct {
 	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
 	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id (from create_agent / list_agents). Alternatively use 'to' to target by sidebar name or herdr pane id."`
 	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
-	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines of recent output to include (default 50)."`
 }
 
+// getAgentOut carries the record and live status only. It used to include a
+// tail of the pane's terminal output; reading an agent's screen is herdr's job
+// (`herdr agent read`), and offering it here made agents reach for lasso to
+// talk to one another.
 type getAgentOut struct {
-	Agent  agentInfo `json:"agent"`
-	Output string    `json:"output"` // tail of recent terminal output
+	Agent agentInfo `json:"agent"`
 }
 
 func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*mcp.CallToolResult, getAgentOut, error) {
@@ -1090,10 +1017,6 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 	if err != nil {
 		return nil, getAgentOut{}, err
 	}
-	lines := in.Lines
-	if lines == 0 {
-		lines = 50
-	}
 	// Re-enumerate so the returned agent carries a live status and sidebar name
 	// even when it resolved by id (the fast path skips herdr).
 	gp, ok := findPane(hostHerdrPanes(b, b.Name()), t.PaneID)
@@ -1101,272 +1024,10 @@ func getAgentTool(_ context.Context, req *mcp.CallToolRequest, in getAgentIn) (*
 		t.Pane = &gp
 	}
 	// omp's plan gate is invisible to herdr's own detection, so a resting omp
-	// pane is checked for it here too — get_agent is where a caller reads the
-	// plan, and it would be an odd contract if the status beside it disagreed
-	// with the one wait_agent just matched on. See ompplan.go.
+	// pane is checked for it here too, so get_agent and list_agents report the
+	// same "blocked" for a pane parked on its plan review. See ompplan.go.
 	status := ompGateStatus(b, t.PaneID, gp.Agent, gp.AgentStatus)
-	output, _ := paneReadText(b, t.PaneID, "recent", lines)
-	return nil, getAgentOut{Agent: t.info(b.Name(), status), Output: output}, nil
-}
-
-// ---------------------------------------------------------------------------
-// send_agent
-// ---------------------------------------------------------------------------
-
-type sendAgentIn struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped. Names are only unique per host — set this when a name exists on more than one host."`
-	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
-	To      string `json:"to,omitempty" jsonschema:"Who to send to: a lasso agent id, its sidebar/display name (the name shown in the herdr pane switcher), or a herdr pane id — including a foreign herdr session lasso did not create (a long-lived bot). A name that matches more than one agent/session is refused with the candidates listed, so re-target by id or pane id. Given instead of, or as well as, agent_id."`
-	Text    string `json:"text" jsonschema:"Message to send; it is typed into the agent's pane and submitted with Enter. Refuses without sending when the recipient has unsent composer input; retry after it clears or use message_agent for queued delivery."`
-}
-
-type sendAgentOut struct {
-	Sent bool `json:"sent"`
-}
-
-func sendAgentTool(_ context.Context, req *mcp.CallToolRequest, in sendAgentIn) (*mcp.CallToolResult, sendAgentOut, error) {
-	if strings.TrimSpace(in.Text) == "" {
-		return nil, sendAgentOut{}, fmt.Errorf("text is required")
-	}
-	needle := in.To
-	if needle == "" {
-		needle = in.AgentID
-	}
-	cs := callerFrom(req)
-	host := cs.hostOr(in.Host)
-	if err := cs.requireHost(host); err != nil {
-		return nil, sendAgentOut{}, err
-	}
-	t, b, err := resolveAgentTarget(host, needle)
-	if err != nil {
-		return nil, sendAgentOut{}, err
-	}
-	if t.PaneID == "" {
-		return nil, sendAgentOut{}, fmt.Errorf("target %q has no pane to send to", needle)
-	}
-	if composerGuardEnabled() && paneComposerState(b, t.PaneID, t.agentKind()) == ComposerDraft {
-		return nil, sendAgentOut{Sent: false}, fmt.Errorf("message was NOT delivered: recipient %q has unsent input in its composer; retry after it clears or use message_agent for queued delivery", needle)
-	}
-	if !paneSubmit(b, t.PaneID, t.agentKind(), in.Text) {
-		return nil, sendAgentOut{Sent: false}, fmt.Errorf("message was NOT delivered: recipient %q has unsent input in its composer; retry after it clears or use message_agent for queued delivery", needle)
-	}
-	return nil, sendAgentOut{Sent: true}, nil
-}
-
-// ---------------------------------------------------------------------------
-// message_agent
-// ---------------------------------------------------------------------------
-
-type messageAgentIn struct {
-	To       []string `json:"to" jsonschema:"Recipients. Each entry is an agent title or agent id, optionally host-qualified with @ (\"clem\", \"clem@gigachad\", \"<id>@titan\"). A title must resolve to exactly one LIVE agent; ambiguous or dead matches are refused per-recipient with the candidates listed. The same text goes to every recipient."`
-	Text     string   `json:"text" jsonschema:"The message body. Delivered verbatim under an envelope header naming the sender, the message id, and (when the sender is a lasso agent) the reply address."`
-	FromPane string   `json:"from_pane,omitempty" jsonschema:"If you are a lasso agent: your own $HERDR_PANE_ID, so the envelope identifies you and recipients can reply to your id. Resolved exactly like whoami (searching every host unless from_host narrows it)."`
-	FromHost string   `json:"from_host,omitempty" jsonschema:"Host your own pane runs on, to disambiguate from_pane when the same pane id exists on several hosts."`
-	From     string   `json:"from,omitempty" jsonschema:"Free-text sender label for non-agent callers (e.g. \"user\", \"ci\"). Ignored when from_pane resolves."`
-}
-
-type messageResult struct {
-	To          string `json:"to"`                     // the recipient spec as given
-	Host        string `json:"host,omitempty"`         // resolved host
-	AgentID     string `json:"agent_id,omitempty"`     // resolved agent id
-	Title       string `json:"title,omitempty"`        // resolved agent title
-	AgentStatus string `json:"agent_status,omitempty"` // recipient's live status at enqueue time
-	MessageID   string `json:"message_id,omitempty"`
-	Queued      bool   `json:"queued"`
-	Detail      string `json:"detail,omitempty"` // why the message was not queued
-}
-
-type messageAgentOut struct {
-	Sender  string          `json:"sender"` // the identity recipients will see in the envelope
-	Results []messageResult `json:"results"`
-}
-
-func messageAgentTool(ctx context.Context, req *mcp.CallToolRequest, in messageAgentIn) (*mcp.CallToolResult, messageAgentOut, error) {
-	if strings.TrimSpace(in.Text) == "" {
-		return nil, messageAgentOut{}, fmt.Errorf("text is required")
-	}
-	if len(in.To) == 0 {
-		return nil, messageAgentOut{}, fmt.Errorf("at least one recipient is required")
-	}
-	cs := callerFrom(req)
-	label, addr, err := resolveMessageSender(ctx, cs, in.FromPane, in.FromHost, in.From)
-	if err != nil {
-		return nil, messageAgentOut{}, err
-	}
-	all, err := listAllAgents()
-	if err != nil {
-		return nil, messageAgentOut{}, err
-	}
-	// Recipients are resolved against the agents THIS CALLER may address — on a
-	// host with an alias in lasso's ssh config, and within the caller's own scope.
-	// Records for any other host stay out of resolution entirely, so an agent
-	// lasso cannot connect to (or this caller may not reach) is neither offered as
-	// a candidate in an ambiguity error nor accepted as a target.
-	records := cs.agents(all)
-	// One pane.list per involved host for the whole call; a host that failed
-	// once is not re-dialed per recipient.
-	cache := map[string]map[string]pane{}
-	lookup := func(host string) (map[string]pane, error) {
-		if m, ok := cache[host]; ok {
-			if m == nil {
-				return nil, fmt.Errorf("unreachable")
-			}
-			return m, nil
-		}
-		b, err := resolveBackend(host)
-		if err == nil {
-			var m map[string]pane
-			if m, err = hostPanes(b); err == nil {
-				cache[host] = m
-				return m, nil
-			}
-		}
-		cache[host] = nil
-		return nil, err
-	}
-	out := messageAgentOut{Sender: label}
-	if addr != "" {
-		out.Sender = fmt.Sprintf("%s (%s)", label, addr)
-	}
-	queued := map[string]bool{} // host|id → already queued in this call
-	for _, spec := range in.To {
-		res := messageResult{To: spec}
-		rec, status, err := resolveRecipient(spec, records, lookup)
-		if err != nil {
-			res.Detail = err.Error()
-			// The caller named a host itself ("clem@somebox") and it isn't one it may
-			// address: say so, rather than leaving them to read "no agent matches"
-			// as "that agent died". Only when resolution failed — a title that
-			// legitimately contains "@" still resolves as a whole spec first.
-			if _, h := splitRecipientHost(spec); h != "" {
-				if herr := cs.requireHost(h); herr != nil {
-					res.Detail = herr.Error()
-				}
-			}
-			out.Results = append(out.Results, res)
-			continue
-		}
-		res.Host, res.AgentID, res.Title, res.AgentStatus = rec.Host, rec.ID, rec.Title, status
-		key := rec.Host + "|" + rec.ID
-		if queued[key] {
-			res.Detail = "duplicate recipient (already queued in this call)"
-			out.Results = append(out.Results, res)
-			continue
-		}
-		m := AgentMessage{
-			ID: newMessageID(), Host: rec.Host, AgentID: rec.ID,
-			SenderLabel: label, SenderAddr: addr, Body: in.Text, CreatedAt: time.Now(),
-		}
-		if err := enqueueAgentMessage(m); err != nil {
-			res.Detail = "enqueue failed: " + err.Error()
-			out.Results = append(out.Results, res)
-			continue
-		}
-		queued[key] = true
-		res.MessageID, res.Queued = m.ID, true
-		out.Results = append(out.Results, res)
-	}
-	kickMessageDispatch()
-	return nil, out, nil
-}
-
-// ---------------------------------------------------------------------------
-// read_agent
-// ---------------------------------------------------------------------------
-
-type readAgentIn struct {
-	Host    string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
-	AgentID string `json:"agent_id,omitempty" jsonschema:"The agent's id. Alternatively use 'to' to target by sidebar name or herdr pane id."`
-	To      string `json:"to,omitempty" jsonschema:"Target: a lasso agent id, its sidebar/display name, or a herdr pane id — including a foreign herdr session lasso did not create. Given instead of, or as well as, agent_id."`
-	Source  string `json:"source,omitempty" jsonschema:"\"recent\" (scrollback, default) or \"visible\" (current screen)."`
-	Lines   int    `json:"lines,omitempty" jsonschema:"How many lines to return (default 100)."`
-}
-
-type readAgentOut struct {
-	Text string `json:"text"`
-}
-
-func readAgentTool(_ context.Context, req *mcp.CallToolRequest, in readAgentIn) (*mcp.CallToolResult, readAgentOut, error) {
-	needle := in.To
-	if needle == "" {
-		needle = in.AgentID
-	}
-	cs := callerFrom(req)
-	host := cs.hostOr(in.Host)
-	if err := cs.requireHost(host); err != nil {
-		return nil, readAgentOut{}, err
-	}
-	t, b, err := resolveAgentTarget(host, needle)
-	if err != nil {
-		return nil, readAgentOut{}, err
-	}
-	source := in.Source
-	if source == "" {
-		source = "recent"
-	}
-	lines := in.Lines
-	if lines == 0 {
-		lines = 100
-	}
-	text, err := paneReadText(b, t.PaneID, source, lines)
-	if err != nil {
-		return nil, readAgentOut{}, err
-	}
-	return nil, readAgentOut{Text: text}, nil
-}
-
-// ---------------------------------------------------------------------------
-// wait_agent
-// ---------------------------------------------------------------------------
-
-type waitAgentIn struct {
-	Host      string `json:"host,omitempty" jsonschema:"Host the agent is on; omit to target your OWN host — the host your credential was issued for, or the box lasso runs on when it is not host-scoped."`
-	AgentID   string `json:"agent_id" jsonschema:"The agent's id."`
-	Status    string `json:"status,omitempty" jsonschema:"Status to wait for: idle (default), working, blocked, done, or unknown. \"idle\" also matches \"done\" — herdr reports done for an agent that finished a turn nobody has looked at since, which is idle wearing a badge — so the default answers \"has it finished?\" for every harness. Ask for \"done\" specifically only when you want that badge and not a never-worked agent."`
-	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"Max time to wait in milliseconds (default 120000)."`
-}
-
-type waitAgentOut struct {
-	Status  string `json:"status"`  // the status observed when waiting ended
-	Matched bool   `json:"matched"` // true if it reached the requested status before timeout
-}
-
-func waitAgentTool(ctx context.Context, req *mcp.CallToolRequest, in waitAgentIn) (*mcp.CallToolResult, waitAgentOut, error) {
-	cs := callerFrom(req)
-	host := cs.hostOr(in.Host)
-	if err := cs.requireHost(host); err != nil {
-		return nil, waitAgentOut{}, err
-	}
-	rec, err := findAgentRecord(host, in.AgentID)
-	if err != nil {
-		return nil, waitAgentOut{}, err
-	}
-	b, err := resolveBackend(host)
-	if err != nil {
-		return nil, waitAgentOut{}, err
-	}
-	want := in.Status
-	if want == "" {
-		want = "idle"
-	}
-	timeout := time.Duration(in.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-	var last string
-	for time.Now().Before(deadline) {
-		last = paneAgentStatus(b, rec.RootPane)
-		if statusSatisfies(want, last) {
-			return nil, waitAgentOut{Status: last, Matched: true}, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, waitAgentOut{Status: last}, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-	return nil, waitAgentOut{Status: last, Matched: false}, nil
+	return nil, getAgentOut{Agent: t.info(b.Name(), status)}, nil
 }
 
 // ---------------------------------------------------------------------------

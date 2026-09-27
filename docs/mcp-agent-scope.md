@@ -5,7 +5,7 @@ live in `CLAUDE.md` under "Agent visibility scope"; this is how to run it.
 
 ## The model in one paragraph
 
-Two bounds decide which agents an MCP caller can see and message, and both
+Two bounds decide which agents an MCP caller can see and manage, and both
 apply. **What lasso can address** (`src/hostscope.go`) is the local box plus the
 concrete aliases in the ssh config lasso reads — membership comes from the
 config, never from the agents db, so a host whose alias was removed stops being
@@ -93,7 +93,7 @@ takes no human approval.
 ## Groups: reach between hosts
 
 `self` and `fleet` are the two ends. A **group** is the middle: a named set of
-hosts whose members may see and message each other, plus **directed grants**
+hosts whose members may see and manage each other's agents, plus **directed grants**
 between groups for the cases where reach should run one way only.
 
 The model, in the order it bites:
@@ -137,7 +137,7 @@ lasso mcp-group add norm-stack
 lasso mcp-group add-member norm-stack norm norm-darren
 ```
 
-`norm` and `norm-darren` now list and message each other's agents with their
+`norm` and `norm-darren` now list and manage each other's agents with their
 existing self-scoped credentials. titan (the lasso host, provisioned
 `--fleet`) saw both before and still does. **Nobody in norm-stack sees titan**:
 reach is mutual only among members, and titan is not one — a group is not a

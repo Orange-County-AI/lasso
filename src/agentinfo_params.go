@@ -71,7 +71,7 @@ var agentInfoParams = map[string]agentInfoParam{
 		// This is the agent's full initial prompt. list_agents returns every
 		// agent on a host, so surfacing it would multiply an unbounded body by
 		// the agent count on a call whose job is enumeration.
-		Skip: "the agent's full prompt — unbounded, and list_agents would repeat it per agent; read it from the pane with read_agent",
+		Skip: "the agent's full prompt — unbounded, and list_agents would repeat it per agent; read it from the pane with herdr (`herdr agent read`)",
 	},
 	"Notes": {
 		Skip: "unbounded free text, same reason as Description; bootAgent writes it to NOTES.md in the work dir",

@@ -207,7 +207,7 @@ const ompPlanReviewScreen = `╭─ Plan Review ──────────�
 // herdr cannot see omp's plan gate: its omp integration publishes state from
 // tool-approval and `ask` events, and the plan review is a TUI overlay raised
 // after the turn ended — so herdr has already said "done". lasso reads the
-// screen and reports "blocked", which is what wait_agent status=blocked needs.
+// screen and reports "blocked", which is what get_agent and list_agents show.
 func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -242,7 +242,7 @@ func TestPaneAgentStatusReportsOmpPlanReviewAsBlocked(t *testing.T) {
 
 // The cross-host pane enumeration feeds lasso's ⌘K switcher, so it has to reach
 // the same verdict the MCP tools do — an agent the switcher shows idle while
-// wait_agent calls it blocked is the contradiction the whole check exists to
+// get_agent calls it blocked is the contradiction the whole check exists to
 // remove. The enumeration runs on a poll, so it only screen-reads panes whose
 // record says lasso launched them in omp's plan mode.
 func TestEnumerateHostPanesReportsOmpPlanGate(t *testing.T) {
