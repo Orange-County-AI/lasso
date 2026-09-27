@@ -22,6 +22,7 @@ import * as React from "react"
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels"
 import { toast } from "sonner"
 import { AgentSidebar } from "@/components/AgentSidebar"
+import { AgentSwitcher } from "@/components/AgentSwitcher"
 import { AgentsTab } from "@/components/AgentsTab"
 import { AgentsView } from "@/components/AgentsView"
 import { BrowserTab } from "@/components/BrowserTab"
@@ -251,6 +252,7 @@ function Shell() {
   const [newOpen, setNewOpen] = React.useState(false)
   const [newTab, setNewTab] = React.useState<NewDialogTab>("agent")
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+  const [switcherOpen, setSwitcherOpen] = React.useState(false)
   const [hostMenuOpen, setHostMenuOpen] = React.useState(false)
   // Keep the Files tab's git badge live even while another sidebar tab is
   // selected — the footer shows the same badge while the sidebar is collapsed.
@@ -460,7 +462,11 @@ function Shell() {
         toggleSidebar()
       } else if (k === "k") {
         e.preventDefault()
-        openHerdrGoto()
+        // From a reading view the question is "which conversation next",
+        // across the fleet — herdr's search only knows one machine's panes and
+        // answers by moving a terminal nobody is looking at.
+        if (leftView === "terminal") openHerdrGoto()
+        else setSwitcherOpen(true)
       } else if (k === "o" || k === "i") {
         e.preventDefault()
         setNewTab(k === "o" ? "agent" : "terminal")
@@ -478,7 +484,7 @@ function Shell() {
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [toggleSidebar])
+  }, [toggleSidebar, leftView])
 
   // Apply the synced sidebar layout continuously — including changes arriving
   // from other tabs over SSE — not just once at load. The sidebar's footprint
@@ -772,6 +778,11 @@ function Shell() {
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <AgentSwitcher
+          open={switcherOpen}
+          onOpenChange={setSwitcherOpen}
+          onPicked={() => setLeftView("chat")}
+        />
       </div>
       {/* The app's only chrome. There is no header and no floating navigation,
         so this footer is always present at desktop widths and has no visibility
