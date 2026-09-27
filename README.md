@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/lasso-wordmark.png" alt="lasso: a pixel-art terminal robot in a cowboy hat, swinging a lasso" width="460">
+<img src="docs/brand/lasso-wordmark.png" alt="lasso: the Execution Associates EXA monogram beside the word lasso, over a blue-hour Orange County coast" width="460">
 
 **Run coding agents on every machine you own. Watch them from a browser tab.
 Answer them from your phone.**
