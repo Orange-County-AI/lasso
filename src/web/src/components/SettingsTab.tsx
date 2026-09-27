@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query"
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Copy,
   Download,
@@ -36,6 +37,11 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -201,6 +207,100 @@ function SaveStatus({
   )
 }
 
+// Which settings groups are open, per BROWSER rather than in ui_state: it is a
+// reading convenience for the screen in front of someone, and syncing it would
+// have a phone collapsing a group fold it on the desktop too. One key holding
+// the whole map, and an absent entry means the group's own default — so a
+// browser whose storage is blocked or cleared simply renders the defaults.
+const GROUPS_KEY = "lasso-settings-groups"
+function readGroups(): Record<string, boolean> {
+  try {
+    const v: unknown = JSON.parse(lsGet(GROUPS_KEY) ?? "{}")
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, boolean>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+function useGroupOpen(id: string, defaultOpen: boolean) {
+  const [open, setOpen] = React.useState(() => {
+    const v = readGroups()[id]
+    return typeof v === "boolean" ? v : defaultOpen
+  })
+  const change = React.useCallback(
+    (next: boolean) => {
+      setOpen(next)
+      // Read-modify-write rather than a copy held in state: another group (or
+      // another tab of this browser) may have written its entry since.
+      lsSet(GROUPS_KEY, JSON.stringify({ ...readGroups(), [id]: next }))
+    },
+    [id]
+  )
+  return [open, change] as const
+}
+
+// SettingsGroup folds a run of related sections under one header, so the pane
+// reads as a table of contents on a phone instead of a scroll through every
+// knob. A collapsed header carries a one-line summary of what is inside, which
+// is also where anything needing attention stays visible (a plugin awaiting
+// approval) — groups never open themselves, since that would fight whoever
+// just closed one.
+//
+// `keepMounted` is for groups holding state that must not be dropped by a
+// collapse — a draft, an upload in flight, a scrolled gallery — which then stay
+// mounted and only hide. Everything else unmounts. `children` may take the
+// open flag, so a section that polls while `active` can be handed
+// `active && open` and a collapsed group costs nothing.
+function SettingsGroup({
+  id,
+  title,
+  defaultOpen = false,
+  summary,
+  keepMounted = false,
+  children,
+}: {
+  id: string
+  title: string
+  defaultOpen?: boolean
+  summary?: React.ReactNode
+  keepMounted?: boolean
+  children: React.ReactNode | ((open: boolean) => React.ReactNode)
+}) {
+  const [open, setOpen] = useGroupOpen(id, defaultOpen)
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="border-border/60 border-t first:border-t-0"
+    >
+      <CollapsibleTrigger className="-mx-1 flex min-h-9 w-[calc(100%+0.5rem)] items-center gap-2 rounded-md px-1 py-2 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50">
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            "size-3.5 flex-none text-muted-foreground transition-transform",
+            open && "rotate-90"
+          )}
+        />
+        <span className="flex-none font-medium text-[13px] text-foreground">
+          {title}
+        </span>
+        {!open && summary && (
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+            {summary}
+          </span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        forceMount={keepMounted ? true : undefined}
+        className="pt-1 pb-1 data-[state=closed]:hidden"
+      >
+        {typeof children === "function" ? children(open) : children}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 // The Settings tab, in two panes. General is lasso↔herdr socket-protocol
 // compatibility (top) plus the "New Agent" creator configuration: lasso targets
 // a fixed protocol (baked in at build time), the daemon reports its own over the
@@ -265,6 +365,7 @@ export function SettingsTab({
     if (selectedHost == null && activeHost) setSelectedHost(activeHost)
   }, [activeHost, selectedHost])
   const host = selectedHost ?? activeHost ?? "local"
+  const generalActive = active && sub === "general"
 
   // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
   let herdr: React.ReactNode
@@ -310,41 +411,88 @@ export function SettingsTab({
           forceMount
           className="min-h-0 overflow-y-auto px-3 py-4 data-[state=inactive]:hidden"
         >
-          <AutoTitleToggle active={active && sub === "general"} />
-          <TerminalLinksToggle />
-          <SharedBrowserSettings active={active && sub === "general"} />
-          <NotificationsSettings active={active && sub === "general"} />
-          <UsageTrackingSettings />
-          <SidebarSettings />
-          <PluginsSettings active={active && sub === "general"} />
-          <CreatorHostSetting hostOptions={hostOptions} />
-          <div className="mb-4 flex flex-col gap-1">
-            <label className={labelClass} htmlFor="settings-host">
-              Configuring host
-            </label>
-            <select
-              id="settings-host"
-              className={cn(fieldClass, "max-w-xs")}
-              value={host}
-              onChange={(e) => setSelectedHost(e.target.value)}
-            >
-              {/* Ensure the current value is always selectable even before the
-                  host probe returns (e.g. an active remote not yet in the list). */}
-              {!hostOptions.some((o) => o.value === host) && (
-                <option value={host}>{host}</option>
-              )}
-              {hostOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                  {o.value === activeHost ? " (active)" : ""}
-                </option>
-              ))}
-            </select>
-            <p className="text-[11px] text-muted-foreground">
-              These settings live in {host}'s own ~/.lasso/lasso.db.
-            </p>
-          </div>
-          <CreationSettings active={active && sub === "general"} host={host} />
+          {/* Grouped so a phone opens on a short list of headers. Agents is
+              kept mounted: CreationSettings is a set of autosaving drafts
+              with a save status, and the host picker's choice lives here. */}
+          <SettingsGroup
+            id="agents"
+            title="Agents"
+            keepMounted
+            summary={<AgentsSummary active={generalActive} />}
+          >
+            {(open) => (
+              <>
+                <AutoTitleToggle active={generalActive && open} />
+                <CreatorHostSetting hostOptions={hostOptions} />
+                <div className="mb-4 flex flex-col gap-1">
+                  <label className={labelClass} htmlFor="settings-host">
+                    Configuring host
+                  </label>
+                  <select
+                    id="settings-host"
+                    className={cn(fieldClass, "max-w-xs")}
+                    value={host}
+                    onChange={(e) => setSelectedHost(e.target.value)}
+                  >
+                    {/* Ensure the current value is always selectable even before the
+                        host probe returns (e.g. an active remote not yet in the list). */}
+                    {!hostOptions.some((o) => o.value === host) && (
+                      <option value={host}>{host}</option>
+                    )}
+                    {hostOptions.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                        {o.value === activeHost ? " (active)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-muted-foreground">
+                    These settings live in {host}'s own ~/.lasso/lasso.db.
+                  </p>
+                </div>
+                <CreationSettings active={generalActive && open} host={host} />
+              </>
+            )}
+          </SettingsGroup>
+          {/* Kept mounted for the proxy field, which is a draft while focused
+              and reports a refused value inline — a collapse must not eat the
+              error. Its status query runs either way (the Browser tab shares
+              it); only the 5s poll stops while the group is closed. */}
+          <SettingsGroup
+            id="terminal-browser"
+            title="Terminal & browser"
+            keepMounted
+            summary={<BrowserSummary />}
+          >
+            {(open) => (
+              <>
+                <TerminalLinksToggle />
+                <SharedBrowserSettings active={generalActive && open} />
+              </>
+            )}
+          </SettingsGroup>
+          <SettingsGroup
+            id="notifications"
+            title="Notifications"
+            summary={<PushSummary active={generalActive} />}
+          >
+            {(open) => <NotificationsSettings active={generalActive && open} />}
+          </SettingsGroup>
+          <SettingsGroup
+            id="sidebar-usage"
+            title="Sidebar & usage"
+            summary={<SidebarSummary />}
+          >
+            <SidebarSettings />
+            <UsageTrackingSettings />
+          </SettingsGroup>
+          <SettingsGroup
+            id="plugins"
+            title="Plugins"
+            summary={<PluginsSummary />}
+          >
+            {(open) => <PluginsSettings active={generalActive && open} />}
+          </SettingsGroup>
           <footer className="mt-4 border-border border-t bg-background px-3 py-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
@@ -413,6 +561,125 @@ export function SettingsTab({
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+// The collapsed groups' one-line summaries. Each is rendered only while its
+// group is closed, and reads nothing the pane was not already reading: the
+// same query keys and options its sections use (React Query dedupes the
+// observers, so no request is added), the shared ui_state cache, or the
+// plugin listing the sidebar strip already holds. Anything that could only be
+// had by fetching for the summary alone is left out.
+const sep = " · "
+
+function AgentsSummary({ active }: { active: boolean }) {
+  const autoTitle = useQuery({
+    queryKey: qk.autoTitle,
+    queryFn: () => api.autoTitle(),
+    enabled: active,
+  })
+  const pinned = useUIState().creator_default_host ?? ""
+  const parts = [
+    autoTitle.data && `auto-title ${autoTitle.data.enabled ? "on" : "off"}`,
+    `new on ${pinned || "last used host"}`,
+  ].filter(Boolean)
+  return <>{parts.join(sep)}</>
+}
+
+function BrowserSummary() {
+  // Same key and options as SharedBrowserSettings, minus the poll — which is
+  // mounted beside this (its group keeps it), so this is one query.
+  const status = useQuery({
+    queryKey: qk.browser,
+    queryFn: () => api.browserStatus(),
+    retry: false,
+  })
+  const links = useUIState().terminal_links_in_sidebar
+  const st = status.data
+  const browser = !st
+    ? ""
+    : !st.available
+      ? "browser unavailable"
+      : `browser ${st.running ? "running" : "stopped"}`
+  const parts = [
+    browser,
+    `links open ${links ? "in the sidebar" : "in a new tab"}`,
+  ].filter(Boolean)
+  return <>{parts.join(sep)}</>
+}
+
+function PushSummary({ active }: { active: boolean }) {
+  const config = useQuery({
+    queryKey: qk.push,
+    queryFn: () => api.pushConfig(),
+    enabled: active,
+  })
+  if (!config.data) return null
+  const devices = config.data.devices ?? []
+  const failing = devices.filter((d) => d.last_error).length
+  return (
+    <>
+      {devices.length === 0
+        ? "no devices"
+        : `${devices.length} ${devices.length === 1 ? "device" : "devices"}`}
+      {failing > 0 && (
+        <>
+          {sep}
+          <span className="text-warn">{failing} failing</span>
+        </>
+      )}
+    </>
+  )
+}
+
+function SidebarSummary() {
+  const ui = useUIState()
+  const plugins = usePlugins()
+  const infos = React.useMemo(
+    () => pluginTabsOf(plugins.data).map((p) => p.tab),
+    [plugins.data]
+  )
+  const hiddenTabs = resolveSidebarTabs(ui.sidebar_tabs, infos).filter(
+    (r) => r.hidden
+  ).length
+  const untracked = (ui.usage_hidden ?? []).length
+  const parts = [
+    hiddenTabs === 0
+      ? "all tabs shown"
+      : `${hiddenTabs} ${hiddenTabs === 1 ? "tab" : "tabs"} hidden`,
+    untracked > 0 &&
+      `${untracked} ${untracked === 1 ? "provider" : "providers"} untracked`,
+    ui.usage_compact && "compact footer",
+  ].filter(Boolean)
+  return <>{parts.join(sep)}</>
+}
+
+// A plugin waiting on re-approval has silently unloaded its tabs and tools, so
+// it is the one thing here that must read at a glance on a closed header.
+function PluginsSummary() {
+  const list = usePlugins().data?.plugins
+  if (!list) return null
+  const count = (s: PluginState) => list.filter((p) => p.state === s).length
+  const enabled = count("enabled")
+  const pending = count("needs_approval")
+  const invalid = count("invalid")
+  if (list.length === 0) return <>none installed</>
+  return (
+    <>
+      {enabled} enabled
+      {pending > 0 && (
+        <>
+          {sep}
+          <span className="text-warn">{pending} need approval</span>
+        </>
+      )}
+      {invalid > 0 && (
+        <>
+          {sep}
+          <span className="text-destructive">{invalid} invalid</span>
+        </>
+      )}
+    </>
   )
 }
 
@@ -509,31 +776,148 @@ function ThemesSettings({ active }: { active: boolean }) {
 
   return (
     <>
-      <AppearanceToggle mode={mode} onChoose={setMode} />
-      {mode !== "herdr" && (
-        <PalettePrefs
-          mode={mode}
-          prefs={prefs}
+      {/* Appearance, Background and Install are kept mounted: a herdr theme
+          pick is held optimistically until the server re-announces it, the
+          gallery has an upload in flight and a scroll position, and the
+          install field is a URL draft with a clone that can take a while. */}
+      <SettingsGroup
+        id="appearance"
+        title="Appearance"
+        keepMounted
+        summary={[MODE_LABEL[mode], entry?.label || effective]
+          .filter(Boolean)
+          .join(sep)}
+      >
+        <AppearanceToggle mode={mode} onChoose={setMode} />
+        {mode !== "herdr" && (
+          <PalettePrefs
+            mode={mode}
+            prefs={prefs}
+            themes={catalog}
+            onChoose={setPalettePref}
+          />
+        )}
+        <HerdrThemeSelect
+          theme={t}
           themes={catalog}
-          onChoose={setPalettePref}
+          governs={fleetThemeIsPalette()}
         />
-      )}
-      <HerdrThemeSelect
-        theme={t}
-        themes={catalog}
-        governs={fleetThemeIsPalette()}
-      />
-      <TypographySettings />
-      <ThemeBackgrounds
-        theme={effective}
-        shipped={shipped}
-        chromeToo={mode === "herdr" || !!localPalette}
-      />
-      <ThemeInstall themes={catalog} loading={catalogQuery.isLoading} />
-      <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
-      <ThemeSyncHosts active={active} off={t?.theme_sync_off ?? []} />
+      </SettingsGroup>
+      <SettingsGroup
+        id="background"
+        title="Background"
+        keepMounted
+        summary={<BackgroundSummary theme={effective} shipped={shipped} />}
+      >
+        <ThemeBackgrounds
+          theme={effective}
+          shipped={shipped}
+          chromeToo={mode === "herdr" || !!localPalette}
+        />
+      </SettingsGroup>
+      <SettingsGroup
+        id="typography"
+        title="Typography"
+        summary={<TypographySummary />}
+      >
+        <TypographySettings />
+      </SettingsGroup>
+      <SettingsGroup id="install-theme" title="Install a theme" keepMounted>
+        <ThemeInstall themes={catalog} loading={catalogQuery.isLoading} />
+      </SettingsGroup>
+      <SettingsGroup
+        id="fleet-sync"
+        title="Fleet sync"
+        summary={
+          t && (
+            <FleetSyncSummary
+              active={active}
+              agents={t.sync_agent_themes}
+              off={t.theme_sync_off ?? []}
+            />
+          )
+        }
+      >
+        {(open) => (
+          <>
+            <SyncAgentThemesToggle enabled={t?.sync_agent_themes ?? true} />
+            <ThemeSyncHosts
+              active={active && open}
+              off={t?.theme_sync_off ?? []}
+            />
+          </>
+        )}
+      </SettingsGroup>
     </>
   )
+}
+
+const MODE_LABEL: Record<Mode, string> = {
+  herdr: "Herdr",
+  system: "System",
+  light: "Light",
+  dark: "Dark",
+}
+
+function BackgroundSummary({
+  theme,
+  shipped,
+}: {
+  theme: string
+  shipped: readonly ShippedBackground[]
+}) {
+  useUIState()
+  const current = backgroundFor(theme, shipped)
+  if (!current) return <>none</>
+  return (
+    <>
+      {themeBackgrounds(theme, shipped).find((w) => w.url === current)?.label ??
+        "custom picture"}
+    </>
+  )
+}
+
+function TypographySummary() {
+  const plugins = usePlugins()
+  const typography = useUIState().typography ?? {}
+  const fonts = React.useMemo(
+    () => resolvePluginFonts(plugins.data),
+    [plugins.data]
+  )
+  const set = TYPOGRAPHY_SLOTS.flatMap((slot) => {
+    const f = fontForSlot(slot, fonts, typography)
+    return f ? [`${SLOT_LABELS[slot]} ${f.family}`] : []
+  })
+  return <>{set.length ? set.join(sep) : "lasso default"}</>
+}
+
+// Hosts are the same query ThemeSyncHosts and the General pane's pickers read.
+function FleetSyncSummary({
+  active,
+  agents,
+  off,
+}: {
+  active: boolean
+  agents: boolean
+  off: string[]
+}) {
+  const hosts = useQuery({
+    queryKey: ["hosts"],
+    queryFn: () => api.hosts(),
+    enabled: active,
+  })
+  // Counted against the listed hosts: an opt-out can outlive its ssh alias.
+  const listed = new Set([
+    "local",
+    ...(hosts.data?.hosts ?? []).map((h) => h.alias),
+  ])
+  const all = hosts.data ? listed.size : 0
+  const synced = all - off.filter((h) => listed.has(h)).length
+  const parts = [
+    `agent themes ${agents ? "on" : "off"}`,
+    all > 1 && `${synced} of ${all} hosts`,
+  ].filter(Boolean)
+  return <>{parts.join(sep)}</>
 }
 
 // What each typography slot reaches, for the line under its select.
