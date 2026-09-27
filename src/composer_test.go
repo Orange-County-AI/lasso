@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,38 @@ func TestComposerGuardEnabled(t *testing.T) {
 			t.Setenv("LASSO_COMPOSER_GUARD", tt.value)
 			if got := composerGuardEnabled(); got != tt.want {
 				t.Fatalf("composerGuardEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Claude Code draws a suggested next prompt, dim, in an empty composer. Only
+// the ANSI screen tells it from a typed draft.
+func TestClaudeComposerIgnoresDimSuggestion(t *testing.T) {
+	rule := "\x1b[0m\x1b[38;2;162;53;22m" + strings.Repeat("─", 40) + "\r"
+	screen := func(prompt string) string {
+		return strings.Join([]string{
+			"● done",
+			"",
+			rule,
+			"❯ " + prompt + "\r",
+			rule,
+			"  \x1b[0m\x1b[38;5;6mOpus 5.5\x1b[0m",
+			"  ⏵⏵ bypass permissions on",
+		}, "\n")
+	}
+	for _, tt := range []struct {
+		name   string
+		prompt string
+		want   ComposerState
+	}{
+		{"suggestion", "\x1b[0m\x1b[2mcommit it\x1b[0m", ComposerEmpty},
+		{"empty", "", ComposerEmpty},
+		{"draft", "\x1b[0mcommit it", ComposerDraft},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectClaudeComposer(undimmed(screen(tt.prompt))); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
 	}
