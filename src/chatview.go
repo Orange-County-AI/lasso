@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -40,9 +39,9 @@ import (
 // Caps. The transcript is polled while the view is open, so every one of these
 // is a bandwidth decision, not just a layout one.
 const (
-	// chatReadBytes is the tail window parsed on each request. A session that
-	// outgrows it simply shows its most recent history; the item cap below
-	// usually binds first for a chatty one.
+	// chatReadBytes is how much of a log one page parses, counted in compacted
+	// line bytes (transcriptlog.go), so an inlined image costs its elided size,
+	// not its size on disk. Older history pages in with ?before=.
 	chatReadBytes = 512 << 10
 	// chatMaxItems is the newest N rows kept after parsing.
 	chatMaxItems = 120
@@ -55,8 +54,8 @@ const (
 	chatDiffHunks = 2
 	chatDiffLines = 20
 	// chatPageExtendTries bounds how far a page may grow backwards to keep a
-	// tool call with its result. Three doublings is 4 MiB, far past the
-	// adjacent records this exists for.
+	// tool call with its result. Each try adds a chatReadBytes of budget, far
+	// past the adjacent records this exists for.
 	chatPageExtendTries = 3
 )
 
@@ -475,8 +474,13 @@ type chatParse struct {
 // where it came from. The first line of a window is usually a fragment; it
 // simply fails to parse, like any other line that isn't a JSON object.
 func parseChatTranscript(data []byte, base int64) chatParse {
+	return parseOmpLines(splitLogLines(data, base))
+}
+
+// parseOmpLines is parseChatTranscript over lines the log reader has already
+// split and compacted (logLinesBefore), each carrying its own file offset.
+func parseOmpLines(lines []jsonlLine) chatParse {
 	var out chatParse
-	lines := bytes.Split(data, []byte("\n"))
 
 	// Tool results routinely land before the call they answer (the call is
 	// written when the model finishes streaming it, the result when the tool
@@ -494,11 +498,9 @@ func parseChatTranscript(data []byte, base int64) chatParse {
 		out.items = append(out.items, chatItem{Kind: "tool", ID: t.CallID, Tool: t})
 	}
 
-	off := int64(0)
-	for _, raw := range lines {
-		lineStart := base + off
-		off += int64(len(raw)) + 1 // the newline bytes.Split took away
-		line := bytes.TrimSpace(raw)
+	for _, l := range lines {
+		lineStart := l.off
+		line := bytes.TrimSpace(l.data)
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
@@ -804,6 +806,12 @@ func claudeResultBody(raw json.RawMessage) (body string, images int) {
 // card still carries the call and its result, which is the part the parent's
 // conversation is actually about.
 func parseClaudeTranscript(data []byte, base int64) chatParse {
+	return parseClaudeLines(splitLogLines(data, base))
+}
+
+// parseClaudeLines is parseClaudeTranscript over lines the log reader has
+// already split and compacted, each carrying its own file offset.
+func parseClaudeLines(lines []jsonlLine) chatParse {
 	var out chatParse
 	byCall := map[string]*chatTool{}
 	type pendingResult struct {
@@ -817,11 +825,9 @@ func parseClaudeTranscript(data []byte, base int64) chatParse {
 	pending := map[string]pendingResult{}
 	lastStop := ""
 
-	off := int64(0)
-	for _, raw := range bytes.Split(data, []byte("\n")) {
-		lineStart := base + off
-		off += int64(len(raw)) + 1 // the newline bytes.Split took away
-		line := bytes.TrimSpace(raw)
+	for _, l := range lines {
+		lineStart := l.off
+		line := bytes.TrimSpace(l.data)
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
@@ -994,13 +1000,32 @@ func claudeTool(b claudeBlock) *chatTool {
 // log that cannot be parsed is reported as such instead of being read as some
 // other harness's format.
 func parseTranscript(harness string, data []byte, base int64) chatParse {
+	return parseTranscriptLines(harness, splitLogLines(data, base))
+}
+
+// parseTranscriptLines dispatches already-split log lines to the harness's
+// parser. Every harness is read this way (readLogPage), because every one of
+// them can inline an image into a record far bigger than any byte window.
+func parseTranscriptLines(harness string, lines []jsonlLine) chatParse {
 	if strings.ToLower(strings.TrimSpace(harness)) == "claude" {
-		return parseClaudeTranscript(data, base)
+		return parseClaudeLines(lines)
 	}
 	if isCodex(harness) {
-		return parseCodexTranscript(data, base)
+		return parseCodexLines(lines)
 	}
-	return parseChatTranscript(data, base)
+	return parseOmpLines(lines)
+}
+
+// splitLogLines cuts a raw window of a log into lines stamped with their file
+// offsets, the shape the line parsers take. base is where the window starts.
+func splitLogLines(data []byte, base int64) []jsonlLine {
+	var lines []jsonlLine
+	off := base
+	for _, raw := range bytes.Split(data, []byte("\n")) {
+		lines = append(lines, jsonlLine{off: off, data: raw})
+		off += int64(len(raw)) + 1
+	}
+	return lines
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,36 +1819,7 @@ func serveChat(w http.ResponseWriter, r *http.Request) {
 			end = n
 		}
 	}
-	start := end - chatReadBytes
-	if start < 0 {
-		start = 0
-	}
-	// A window that starts between a tool call and the result that answers it
-	// parses the result with no call to attach it to, and that result is then
-	// gone: the call is in the page below, which renders as still running
-	// forever. So read wider until the window can be parsed whole. Bounded —
-	// a call and its answer are adjacent records, so one or two windows always
-	// covers them, and the loop stops at the start of the file regardless.
-	var parsed chatParse
-	if isCodex(tx.Harness) {
-		// Codex inlines images into its log, so a record can outgrow any window;
-		// its reader walks lines instead (codexlog.go), forward results included.
-		parsed = readCodexPage(be, path, info.Size(), end)
-	} else {
-		for tries := 0; ; tries++ {
-			parsed = parseTranscript(tx.Harness, readChatRange(be, path, start, end), start)
-			if parsed.pendingResults == 0 || start == 0 || tries >= chatPageExtendTries {
-				break
-			}
-			start -= chatReadBytes
-			if start < 0 {
-				start = 0
-			}
-		}
-		// A page whose end is a cursor can split a call from its answer; the window
-		// above already holds that answer, but this page owns the row.
-		resolveForwardResults(be, path, tx.Harness, end, info.Size(), parsed.running)
-	}
+	parsed := readLogPage(be, path, tx.Harness, info.Size(), end)
 	out.Items = parsed.items
 	out.Model = parsed.model
 	out.Tokens = parsed.tokens
@@ -1882,38 +1878,6 @@ func panesRaw(be Backend) ([]pane, error) {
 		return nil, err
 	}
 	return pl.Panes, nil
-}
-
-// readChatRange reads [start, end) of a transcript. end comes from a Stat, and
-// the file grows while this runs, so the read is capped rather than trusted to
-// be exactly the window that was measured.
-func readChatRange(b Backend, path string, start, end int64) []byte {
-	f, err := b.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	if start > 0 {
-		if _, err := f.Seek(start, io.SeekStart); err != nil {
-			return nil
-		}
-	}
-	n := end - start
-	if n <= 0 {
-		return nil
-	}
-	// The window is already bounded by construction (chatReadBytes, grown by
-	// chatPageExtendTries); this only guards against a caller that isn't. A
-	// tighter cap here would silently TRUNCATE a widened window, which is the
-	// very loss it was widened to avoid.
-	if max := int64(chatReadBytes) * (chatPageExtendTries + 1); n > max {
-		n = max
-	}
-	data, err := io.ReadAll(io.LimitReader(f, n))
-	if err != nil {
-		return nil
-	}
-	return data
 }
 
 // ---------------------------------------------------------------------------
@@ -2435,6 +2399,40 @@ func shortPath(p string) string {
 	return "…/" + strings.Join(parts[len(parts)-3:], "/")
 }
 
+// readLogPage is serveChat's windowed read: the page ending at `end`, widened
+// while it holds results whose call lies above it, with calls it leaves running
+// looked up past its end.
+//
+// Every harness goes through the line reader (transcriptlog.go), never a raw
+// byte window. They ALL inline images as base64 — Codex a tool's screenshot,
+// claude and omp a pasted one — so a single record routinely outgrows any
+// window: a 52 MB claude log carried fifty records over 256 KB, the largest
+// 1.3 MB. A byte window that lands inside one parses to nothing, and a page
+// with nothing in it read as the top of the conversation, so scrolling back
+// stopped one page up.
+func readLogPage(b Backend, path, harness string, size, end int64) chatParse {
+	var parsed chatParse
+	for tries := 0; ; tries++ {
+		lines := logLinesBefore(b, path, size, end, chatReadBytes*(tries+1))
+		parsed = parseTranscriptLines(harness, lines)
+		// A page the scan bound cut short inside a run of image records has no
+		// rows, and a page with no rows would otherwise report the top of the
+		// conversation. Its lines still say how far it got.
+		if len(parsed.items) == 0 && len(lines) > 0 {
+			parsed.startOffset = lines[0].off
+		}
+		// A window that starts between a tool call and the result that answers
+		// it parses the result with no call to attach it to; the call is in the
+		// page above and would render as running forever. So read wider. Bounded:
+		// a call and its answer are adjacent records.
+		if parsed.pendingResults == 0 || len(lines) == 0 || lines[0].off == 0 || tries >= chatPageExtendTries {
+			break
+		}
+	}
+	resolveForwardResults(b, path, harness, end, size, parsed.running)
+	return parsed
+}
+
 // resolveForwardResults looks for the answers to calls a window left running,
 // in the records AFTER that window's end.
 //
@@ -2450,8 +2448,12 @@ func resolveForwardResults(b Backend, path, harness string, from, size int64, ru
 	if len(running) == 0 || from >= size {
 		return
 	}
-	for _, raw := range bytes.Split(readChatRange(b, path, from, from+chatReadBytes), []byte("\n")) {
-		line := bytes.TrimSpace(raw)
+	if isCodex(harness) {
+		codexForwardResults(b, path, from, size, running)
+		return
+	}
+	for _, l := range logLinesFrom(b, path, size, from, chatReadBytes) {
+		line := bytes.TrimSpace(l.data)
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
