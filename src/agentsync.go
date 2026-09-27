@@ -1118,16 +1118,25 @@ func claudeOverrides(p uiPalette, cv glyphCanvas) map[string]string {
 	// darkening it further, which is the move the built-ins make: on a dark
 	// canvas a grayer band at the same luminance reads as the quieter one,
 	// while a darker one would just vanish into the background.
-	diff := func(c, line, word, dimmed string) {
+	//
+	// A theme that names diff inks gets the same two lifts as a screen of that
+	// ink over the panel instead (screenForBg): the band keeps the ink's own
+	// muted hue rather than a saturated one, which is what a print-run palette
+	// needs.
+	diff := func(c, ink, line, word, dimmed string) {
+		band := tintForBg
+		if ink != "" {
+			c, band = ink, screenForBg
+		}
 		if c == "" {
 			return // let Claude's base show through, as put() does
 		}
-		m[line] = tintForBg(c, bg, diffLineLift)
-		m[word] = tintForBg(c, bg, diffWordLift)
+		m[line] = band(c, bg, diffLineLift)
+		m[word] = band(c, bg, diffWordLift)
 		m[dimmed] = blendHex(m[line], p.Overlay0, 0.35)
 	}
-	diff(p.Green, "diffAdded", "diffAddedWord", "diffAddedDimmed")
-	diff(p.Red, "diffRemoved", "diffRemovedWord", "diffRemovedDimmed")
+	diff(p.Green, p.DiffAddedInk, "diffAdded", "diffAddedWord", "diffAddedDimmed")
+	diff(p.Red, p.DiffRemovedInk, "diffRemoved", "diffRemovedWord", "diffRemovedDimmed")
 	legibleTokens(m, claudeLegibility, cv)
 	return m
 }
@@ -1604,6 +1613,32 @@ func tintForBg(c, bg string, lift float64) string {
 		}
 	}
 	return hslHex(h, s, (loL+hiL)/2)
+}
+
+// screenForBg is tintForBg's counterpart for an ink rather than an accent: the
+// band is ink mixed into bg — a screen of that ink printed on the paper — at
+// whatever coverage puts its perceived lightness the same lift from bg, so it
+// keeps the ink's own (muted) hue where tintForBg keeps full saturation. An ink
+// that cannot reach the lift even solid is used solid.
+func screenForBg(ink, bg string, lift float64) string {
+	target := perceivedL(bg) + lift
+	if luminance(bg) > 0.5 {
+		target = perceivedL(bg) - lift
+	}
+	if (perceivedL(ink)-target)*(perceivedL(bg)-target) > 0 {
+		return ink
+	}
+	// Lightness moves monotonically from bg to ink as coverage rises.
+	lo, hi := 0.0, 1.0
+	for range 24 {
+		mid := (lo + hi) / 2
+		if math.Abs(perceivedL(blendHex(bg, ink, mid))-perceivedL(bg)) < lift {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return blendHex(bg, ink, (lo+hi)/2)
 }
 
 // ---------------------------------------------------------------------------
