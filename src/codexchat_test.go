@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDetectCodexComposer(t *testing.T) {
@@ -199,5 +201,96 @@ func TestFindCodexTranscript(t *testing.T) {
 	}
 	if got := findCodexTranscript(&localBackend{}, id); got != want {
 		t.Fatalf("findCodexTranscript = %q, want %q", got, want)
+	}
+}
+
+// codexProcBackend is the local filesystem with a canned pane.process_info, so
+// the pane's own codex process can be staged.
+type codexProcBackend struct {
+	localBackend
+	procs map[string]string // pane id -> process_info JSON
+}
+
+func (b *codexProcBackend) HerdrCall(method string, params any) (json.RawMessage, error) {
+	id, _ := params.(map[string]any)["pane_id"].(string)
+	if method != "pane.process_info" || b.procs[id] == "" {
+		return nil, fmt.Errorf("unexpected herdr call %s", method)
+	}
+	return json.RawMessage(`{"process_info":` + b.procs[id] + `}`), nil
+}
+
+func codexProcJSON(cwd string, argv ...string) string {
+	a, _ := json.Marshal(argv)
+	return fmt.Sprintf(`{"foreground_process_group_id":7,"foreground_processes":[{"pid":7,"name":"codex","cwd":%q,"argv":%s}]}`, cwd, a)
+}
+
+func writeCodexRollout(t *testing.T, dir, id, cwd, originator string, mod time.Time) string {
+	t.Helper()
+	path := filepath.Join(dir, "rollout-2026-09-27T18-54-03-"+id+".jsonl")
+	meta := fmt.Sprintf(`{"timestamp":"x","type":"session_meta","payload":{"id":%q,"cwd":%q,"originator":%q,"thread_source":"user","base_instructions":"..."}}`+"\n", id, cwd, originator)
+	if err := os.WriteFile(path, []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The case that broke the chat view: herdr reported NO session for a fresh
+// codex pane, and named that pane's session on another codex pane that was
+// running `codex resume` of an older session in a different directory.
+func TestCodexPaneTranscriptOverridesHerdr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Now()
+	today := filepath.Join(home, ".codex", "sessions", now.UTC().Format("2006/01/02"))
+	old := filepath.Join(home, ".codex", "sessions", "2026", "09", "24")
+	for _, d := range []string{today, old} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		freshID  = "01a0e437-95bb-7c43-bcce-6a2e0687fb7b"
+		resumeID = "01a0d4d6-1c62-7fc3-a6b3-196ecbb56557"
+		execID   = "01a0e438-0000-7000-8000-000000000000"
+	)
+	fresh := writeCodexRollout(t, today, freshID, "/work/ea-og", "codex-tui", now.Add(-time.Minute))
+	resumed := writeCodexRollout(t, old, resumeID, "/work/jessica", "codex-tui", now.Add(-time.Hour))
+	// A newer `codex exec` in the same directory must not steal the pane.
+	writeCodexRollout(t, today, execID, "/work/ea-og", "codex_exec", now)
+
+	be := &codexProcBackend{procs: map[string]string{
+		"w:fresh":   codexProcJSON("/work/ea-og", "codex"),
+		"w:resumed": codexProcJSON("/work/jessica", "codex", "resume", resumeID),
+	}}
+
+	if got := codexPaneTranscript(be, pane{PaneID: "w:fresh", Agent: "codex"}, ""); got != fresh {
+		t.Errorf("session-less codex pane = %q, want %q", got, fresh)
+	}
+	if got := codexPaneTranscript(be, pane{PaneID: "w:resumed", Agent: "codex"}, freshID); got != resumed {
+		t.Errorf("misattributed codex pane = %q, want its resumed session %q", got, resumed)
+	}
+	// herdr's id is believed when it was recorded where the pane's codex runs.
+	if got := codexPaneTranscript(be, pane{PaneID: "w:fresh", Agent: "codex"}, freshID); got != fresh {
+		t.Errorf("matching herdr id = %q, want %q", got, fresh)
+	}
+	// Without process info (older herdr), herdr's id is used as before.
+	if got := codexPaneTranscript(be, pane{PaneID: "w:gone", Agent: "codex"}, resumeID); got != resumed {
+		t.Errorf("no process info = %q, want herdr's %q", got, resumed)
+	}
+}
+
+func TestCodexResumeID(t *testing.T) {
+	for argv, want := range map[string]string{
+		"codex":                     "",
+		"codex resume abc-1":        "abc-1",
+		"codex resume --yolo abc-2": "abc-2",
+		"codex resume":              "",
+	} {
+		if got := codexResumeID(strings.Fields(argv)); got != want {
+			t.Errorf("codexResumeID(%q) = %q, want %q", argv, got, want)
+		}
 	}
 }

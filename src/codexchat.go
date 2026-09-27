@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -83,6 +84,181 @@ func findCodexTranscript(b Backend, id string) string {
 		codexPaths.Store(key, found)
 	}
 	return found
+}
+
+// codexPaneTranscript resolves a codex pane's log from the pane's own codex
+// process, because herdr's codex session is not trustworthy on its own: it has
+// been seen reporting a pane with no session at all while the session it should
+// have named was reported on a DIFFERENT codex pane (one running `codex resume`
+// of an older session in another directory). So herdr's id is only believed
+// when that session was recorded in the directory the pane's codex runs in.
+//
+// In order: herdr's id, if its session's cwd matches; the id the process was
+// started with (`codex resume <id>`); otherwise the most recently written
+// interactive session recorded in that cwd. "" means none of those found one.
+// With no process info (an older herdr, a pane gone) herdr's id is used as is,
+// which is what lasso did before.
+func codexPaneTranscript(b Backend, p pane, herdrID string) string {
+	proc, ok := codexProcess(paneForeground(b, p.PaneID))
+	if !ok {
+		if herdrID == "" {
+			return ""
+		}
+		return findCodexTranscript(b, herdrID)
+	}
+	cwd := filepath.Clean(proc.Cwd)
+	if herdrID != "" {
+		if path := findCodexTranscript(b, herdrID); path != "" && codexSessionCwd(b, path) == cwd {
+			return path
+		}
+	}
+	if id := codexResumeID(proc.Argv); id != "" {
+		if path := findCodexTranscript(b, id); path != "" {
+			return path
+		}
+	}
+	return newestCodexSessionIn(b, cwd)
+}
+
+// codexProcess picks the codex CLI out of a pane's foreground processes.
+func codexProcess(pi paneProcessInfo) (paneProcess, bool) {
+	for _, proc := range pi.ForegroundProcesses {
+		name := proc.Name
+		if len(proc.Argv) > 0 {
+			name = filepath.Base(proc.Argv[0])
+		}
+		if name == "codex" && filepath.IsAbs(proc.Cwd) {
+			return proc, true
+		}
+	}
+	return paneProcess{}, false
+}
+
+// codexResumeID is the session named by `codex resume <id>`, skipping flags.
+func codexResumeID(argv []string) string {
+	for i, a := range argv {
+		if a != "resume" {
+			continue
+		}
+		for _, next := range argv[i+1:] {
+			if strings.HasPrefix(next, "-") {
+				continue
+			}
+			return safeSessionID(next)
+		}
+	}
+	return ""
+}
+
+// codexMeta is what the first record of a rollout (session_meta) says about
+// where and how the session was started.
+type codexMeta struct {
+	cwd         string
+	interactive bool // a TUI thread, not `codex exec` or a subagent's
+}
+
+// codexMetas caches each log's session_meta by path. The record is the file's
+// first line and never rewritten, so a file is read once per process.
+var codexMetas sync.Map // host + "\x00" + path -> codexMeta
+
+var (
+	codexMetaCwdRe    = regexp.MustCompile(`"cwd":"((?:[^"\\]|\\.)*)"`)
+	codexMetaOrigRe   = regexp.MustCompile(`"originator":"([^"]*)"`)
+	codexMetaThreadRe = regexp.MustCompile(`"thread_source":"([^"]*)"`)
+)
+
+// codexSessionMeta reads a log's session_meta from a bounded prefix: the line
+// also carries the whole base instructions (~20 KB), and only the fields ahead
+// of them are wanted, so nothing past the first few KB is fetched.
+func codexSessionMeta(b Backend, path string) (codexMeta, bool) {
+	key := b.Name() + "\x00" + path
+	if v, ok := codexMetas.Load(key); ok {
+		return v.(codexMeta), true
+	}
+	f, err := b.Open(path)
+	if err != nil {
+		return codexMeta{}, false
+	}
+	buf := make([]byte, 8<<10)
+	n, _ := io.ReadFull(f, buf)
+	f.Close()
+	head := buf[:n]
+	if i := bytes.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	if !bytes.Contains(head, []byte(`"type":"session_meta"`)) {
+		return codexMeta{}, false
+	}
+	m := codexMetaCwd(head)
+	if m == "" {
+		// A file Codex has only just created; try again on the next poll.
+		return codexMeta{}, false
+	}
+	meta := codexMeta{cwd: filepath.Clean(m), interactive: true}
+	if o := codexMetaOrigRe.FindSubmatch(head); o != nil && string(o[1]) == "codex_exec" {
+		meta.interactive = false
+	}
+	if t := codexMetaThreadRe.FindSubmatch(head); t != nil && string(t[1]) != "user" {
+		meta.interactive = false
+	}
+	codexMetas.Store(key, meta)
+	return meta, true
+}
+
+func codexMetaCwd(head []byte) string {
+	m := codexMetaCwdRe.FindSubmatch(head)
+	if m == nil {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(append(append([]byte{'"'}, m[1]...), '"'), &s) != nil {
+		return ""
+	}
+	return s
+}
+
+func codexSessionCwd(b Backend, path string) string {
+	meta, _ := codexSessionMeta(b, path)
+	return meta.cwd
+}
+
+// newestCodexSessionIn is the most recently written interactive session that
+// was started in cwd, from the last few days' directories (the host's local
+// date is unknown, so the UTC day and its neighbours). The live session is the
+// one being appended to, which is why mtime decides rather than the name.
+func newestCodexSessionIn(b Backend, cwd string) string {
+	home, err := b.HomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	root := filepath.Join(home, ".codex", "sessions")
+	now := time.Now().UTC()
+	best, bestAt := "", time.Time{}
+	for _, d := range []time.Time{now.Add(24 * time.Hour), now, now.Add(-24 * time.Hour), now.Add(-48 * time.Hour)} {
+		dir := filepath.Join(root, d.Format("2006/01/02"))
+		ents, err := b.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if e.Dir || !strings.HasPrefix(e.Name, "rollout-") || !strings.HasSuffix(e.Name, ".jsonl") {
+				continue
+			}
+			path := filepath.Join(dir, e.Name)
+			meta, ok := codexSessionMeta(b, path)
+			if !ok || !meta.interactive || meta.cwd != cwd {
+				continue
+			}
+			fi, err := b.Stat(path)
+			if err != nil {
+				continue
+			}
+			if best == "" || fi.ModTime().After(bestAt) {
+				best, bestAt = path, fi.ModTime()
+			}
+		}
+	}
+	return best
 }
 
 // uuidV7Time reads the timestamp out of a version-7 UUID.
