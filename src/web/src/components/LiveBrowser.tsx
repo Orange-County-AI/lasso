@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   Keyboard,
   Plus,
   RotateCw,
@@ -85,9 +86,12 @@ function sameURL(a: string, b: string): boolean {
   }
 }
 
-// The headless window's non-viewport height (see fit). A property of the
-// browser, not of one mount, so a Live -> Embed -> Live round trip keeps it.
-let chromeGap: number | null = null
+// The headless window's non-viewport height (see fit), per profile. It is a
+// property of each profile's Chromium, not of one mount, so a Live -> Embed ->
+// Live round trip keeps it. It differs between profiles (measured: 87px on
+// one, 143px on another), so one shared value made the page taller or shorter
+// than the canvas in every profile but the first, and the frame letterboxed.
+const chromeGaps = new Map<string, number>()
 
 // Editing chords go to the page as key events carrying the editor COMMAND,
 // which is what makes them work in a headless Chromium on any OS: the
@@ -372,6 +376,7 @@ export function LiveBrowser({
       // — one snapshot, so it holds whatever size the window is at — rather
       // than by resizing and re-reading innerHeight, which answers before
       // the resize lands and so reads the previous size.
+      let chromeGap = chromeGaps.get(profile) ?? null
       if (chromeGap === null) {
         chromeGap = await c
           .send<{ result: { value?: number } }>(
@@ -387,6 +392,7 @@ export function LiveBrowser({
             return typeof v === "number" && v >= 0 && v < 400 ? v : null
           })
           .catch(() => null)
+        if (chromeGap !== null) chromeGaps.set(profile, chromeGap)
       }
       await c.send("Browser.setWindowBounds", {
         windowId,
@@ -415,7 +421,7 @@ export function LiveBrowser({
         s.sessionId
       )
       .catch(() => {})
-  }, [paint])
+  }, [paint, profile])
 
   React.useEffect(() => {
     const box = boxRef.current
@@ -1220,6 +1226,33 @@ export function LiveBrowser({
             }
           }}
         />
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          disabled={!urlInput.trim()}
+          // Keep focus in the URL bar: its blur resets the field to the
+          // current page, which would throw away what was just typed.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            urlFocused.current = false
+            void navigate(urlInput)
+          }}
+        >
+          go
+        </Button>
+        {/* Opens the page in the human's own browser, not the shared one:
+            their cookies, not the shared profile's. */}
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-7"
+          title="open in new tab"
+          disabled={!currentURL || currentURL === "about:blank"}
+          onClick={() => window.open(currentURL, "_blank", "noopener")}
+        >
+          <ExternalLink />
+        </Button>
         {/* Touch only: a phone has no physical keyboard to reach the canvas,
             so this focuses the hidden textarea that raises the software one.
             With a mouse and keyboard the canvas takes keys directly and the
@@ -1325,7 +1358,12 @@ export function LiveBrowser({
           ref={canvasRef}
           tabIndex={0}
           aria-label="shared browser"
-          className="absolute inset-0 size-full touch-none select-none outline-none"
+          // A blank page (or none) screencasts as solid white, and the last
+          // frame lingers after a tab closes; hide it so the theme shows.
+          className={cn(
+            "absolute inset-0 size-full touch-none select-none outline-none",
+            (!currentURL || currentURL === "about:blank") && "opacity-0"
+          )}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

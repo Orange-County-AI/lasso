@@ -35,7 +35,6 @@ import (
 //	lasso mcp-client      provision per-host MCP credentials (caller identity + scope)
 //	lasso mcp-group       host groups: which hosts' agents may reach each other
 //	lasso plugin          list, enable/disable, trust, restart plugins
-//	lasso skill           print lasso's agent skill (SKILL.md) to stdout
 //	lasso version         print the version
 //
 // Subcommands are dispatched in main() BEFORE flag.Parse so the server's flags
@@ -94,9 +93,6 @@ func main() {
 		case "mcp-group":
 			cliMCPGroup(os.Args[2:])
 			return
-		case "skill":
-			cliSkill(os.Args[2:])
-			return
 		case "plugin", "plugins":
 			cliPlugin(os.Args[2:])
 			return
@@ -144,7 +140,6 @@ usage:
   lasso mcp-client <cmd>   per-host MCP credentials: add|list|rm (see -h)
   lasso mcp-group <cmd>    host groups: add|list|add-member|grant|reach (see -h)
   lasso plugin <cmd>       plugins: list|enable|disable|trust|untrust|restart|reload (see -h)
-  lasso skill              print lasso's agent skill (SKILL.md) to stdout
   lasso version            print the version
 
 run "lasso -h" style flags after serve/start/restart; see the README for details.

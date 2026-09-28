@@ -45,7 +45,11 @@ The shared browser has PROFILES — each its own Chromium with its own cookies, 
 
 Lasso does not talk to agents. To prompt another agent, read its screen, or wait for it to finish, use herdr directly (herdr agent prompt / read / wait, or the herdr skill); a Claude Code session can also use its own native agent messaging.
 
-Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.`
+Host reach is bounded by the calling credential, so an empty listing usually means containment is working as intended, not an outage.
+
+If you are running in a lasso-created pane, $HERDR_PANE_ID is your pane id: pass it as pane_id to whoami to find your own agent record. To shut yourself or another lasso agent down, use close_agent — never herdr pane close on a pane lasso created, which leaves its agent record and staged prompt files behind.
+
+To show the human what you are working on, put a one-line summary (under ~60 characters) on your pane's status card in the herdr sidebar and lasso's pane switcher, and update it when you change phase: herdr pane report-metadata "$HERDR_PANE_ID" --source agent:self --token summary="<what you're doing>" --ttl-ms 1800000. Don't use herdr pane report-agent; it overrides herdr's own idle/working/blocked detection and a stale claim sticks.`
 
 // sharedMCPServer is the one *mcp.Server behind /mcp, kept so the plugin
 // manager (plugins.go) can add and remove a plugin's mirrored tools at runtime;

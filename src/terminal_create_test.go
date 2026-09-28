@@ -341,3 +341,71 @@ func TestCreateTerminalExplicitTabNameWins(t *testing.T) {
 	default:
 	}
 }
+
+func postCreateTerminal(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/create-terminal", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	serveCreateTerminal(res, req)
+	return res
+}
+
+// A working directory roots the shell wherever the terminal lands: a new
+// workspace, a tab in an existing one, or Scratch. "~" expands against the
+// target host's home, not lasso's.
+func TestCreateTerminalCwd(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, workspaces, method string
+	}{
+		{name: "new workspace", body: `{"workspace_name":"proj","cwd":"~/src/proj"}`, method: "workspace.create"},
+		{name: "existing workspace", body: `{"workspace_id":"ws","workspace_name":"~","cwd":"/home/test/src/proj"}`, method: "tab.create"},
+		{
+			name:       "scratch",
+			body:       `{"cwd":"~/src/proj/"}`,
+			workspaces: `{"workspaces":[{"workspace_id":"ws","label":"Scratch","number":1,"tab_count":1}]}`,
+			method:     "tab.create",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := withTerminalBackend(t)
+			b.workspaces = tc.workspaces
+			b.mkdirAllAncestors("/home/test/src/proj")
+			res := postCreateTerminal(t, tc.body)
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+			}
+			if b.method != tc.method || b.params["cwd"] != "/home/test/src/proj" {
+				t.Fatalf("%s %#v, want %s at /home/test/src/proj", b.method, b.params, tc.method)
+			}
+		})
+	}
+}
+
+// Without a cwd a tab in an existing workspace keeps herdr's own default.
+func TestCreateTerminalNoCwdInExistingWorkspace(t *testing.T) {
+	b := withTerminalBackend(t)
+	if res := postCreateTerminal(t, `{"workspace_id":"ws","workspace_name":"~"}`); res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if _, ok := b.params["cwd"]; ok {
+		t.Fatalf("tab.create %#v, want no cwd", b.params)
+	}
+}
+
+// herdr would start a shell somewhere else for a bad cwd, so it is refused
+// before anything is created.
+func TestCreateTerminalRejectsBadCwd(t *testing.T) {
+	for _, cwd := range []string{"relative/dir", "/home/test/missing", "/home/test/notes.txt"} {
+		t.Run(cwd, func(t *testing.T) {
+			b := withTerminalBackend(t)
+			b.addFile("/home/test/notes.txt", "x")
+			res := postCreateTerminal(t, fmt.Sprintf(`{"workspace_name":"proj","cwd":%q}`, cwd))
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", res.Code, res.Body.String())
+			}
+			if b.method != "" {
+				t.Fatalf("%s was called for a refused cwd", b.method)
+			}
+		})
+	}
+}

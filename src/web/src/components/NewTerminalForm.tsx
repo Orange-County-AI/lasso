@@ -73,6 +73,7 @@ export function NewTerminalForm({
   // empty field with Scratch as its placeholder.
   const [workspaceName, setWorkspaceName] = React.useState("")
   const [tabName, setTabName] = React.useState("")
+  const [cwd, setCwd] = React.useState("")
   const commandRef = React.useRef<HTMLTextAreaElement>(null)
   const selectionTouchedRef = React.useRef(false)
 
@@ -95,6 +96,7 @@ export function NewTerminalForm({
     setWorkspace("")
     setWorkspaceName("")
     setTabName("")
+    setCwd("")
   }, [open])
 
   React.useEffect(() => {
@@ -147,6 +149,7 @@ export function NewTerminalForm({
       const result = await api.createTerminal({
         host: selectedHost,
         command,
+        cwd: cwd.trim() || undefined,
         workspace_id: workspace === NEW_WORKSPACE ? undefined : workspace,
         workspace_name: workspaceName.trim() || SCRATCH_WORKSPACE,
         tab_name: tabName.trim() || (autoTabName ? nextTabNumber : undefined),
@@ -226,6 +229,22 @@ export function NewTerminalForm({
             disabled={creating}
             onChange={(event) => setCommand(event.target.value)}
             placeholder={"git status\nbun test"}
+          />
+        </Field>
+
+        <Field
+          label="Working directory (optional)"
+          htmlFor="terminal-cwd"
+          hint="An absolute path or ~/… on the selected host. Leave blank to use the workspace's default."
+        >
+          <Input
+            id="terminal-cwd"
+            {...NO_AUTOCORRECT}
+            className="font-mono"
+            value={cwd}
+            disabled={creating}
+            onChange={(event) => setCwd(event.target.value)}
+            placeholder="~"
           />
         </Field>
 

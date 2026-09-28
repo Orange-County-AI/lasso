@@ -795,6 +795,8 @@ export interface CreateAgentPayload {
 export interface CreateTerminalPayload {
   host?: string
   command: string
+  // Absolute or ~-relative, on `host`; blank keeps the server's default.
+  cwd?: string
   workspace_id?: string
   workspace_name?: string
   tab_name?: string

@@ -13,7 +13,6 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
-  Keyboard,
   Monitor,
   Moon,
   Palette,
@@ -325,22 +324,7 @@ function SettingsGroup({
 // screen.
 type SettingsSub = "general" | "themes"
 const SUB_KEY = "lasso-settings-sub"
-export function SettingsTab({
-  active,
-  onOpenShortcuts,
-}: {
-  active: boolean
-  onOpenShortcuts: () => void
-}) {
-  const versionQuery = useQuery({
-    queryKey: qk.version,
-    queryFn: () => api.version(),
-    enabled: active,
-  })
-  const info = versionQuery.data ?? null
-  const loading = versionQuery.isLoading
-  const errored = versionQuery.isError
-
+export function SettingsTab({ active }: { active: boolean }) {
   // Which pane is showing, remembered per browser like the right-hand view
   // itself: someone iterating on a theme should not have to re-find it.
   const [sub, setSub] = React.useState<SettingsSub>(() =>
@@ -375,28 +359,6 @@ export function SettingsTab({
   }, [activeHost, selectedHost])
   const host = selectedHost ?? activeHost ?? "local"
   const generalActive = active && sub === "general"
-
-  // The herdr-side pill: the daemon's protocol and how it compares to lasso's.
-  let herdr: React.ReactNode
-  if (loading) {
-    herdr = <Pill>herdr …</Pill>
-  } else if (errored || !info) {
-    herdr = <Pill tone="warn">herdr unavailable</Pill>
-  } else if (info.err) {
-    herdr = (
-      <Pill tone="warn" title={info.err}>
-        herdr unreachable
-      </Pill>
-    )
-  } else {
-    const ver = info.herdr_version ? ` (${info.herdr_version})` : ""
-    herdr = (
-      <Pill tone={info.compatible ? "good" : "bad"} multiline>
-        herdr protocol {info.herdr_protocol}
-        {ver} · {info.compatible ? "compatible" : "incompatible"}
-      </Pill>
-    )
-  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -502,64 +464,6 @@ export function SettingsTab({
           >
             {(open) => <PluginsSettings active={generalActive && open} />}
           </SettingsGroup>
-          <footer className="mt-4 border-border border-t bg-background px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="mr-0.5 text-[13px] text-muted-foreground tracking-wide">
-                lasso
-              </span>
-              <Pill multiline>
-                targets protocol{" "}
-                {loading
-                  ? "…"
-                  : errored || !info
-                    ? "unknown"
-                    : info.lasso_protocol}
-              </Pill>
-              {info?.lasso_version && (
-                <Pill title="this lasso build's version" multiline>
-                  lasso {info.lasso_version}
-                </Pill>
-              )}
-              {info?.latest_version && info.update_state === "available" && (
-                <Pill
-                  tone="warn"
-                  title="a newer lasso release is available — run `lasso update`"
-                  multiline
-                >
-                  update available → {info.latest_version}
-                </Pill>
-              )}
-              {herdr}
-              {!loading &&
-                !errored &&
-                info &&
-                !info.err &&
-                !info.compatible && (
-                  <span className="text-[13px] text-warn">
-                    rebuild lasso (or update herdr) so both speak the same
-                    protocol
-                  </span>
-                )}
-              <Button
-                variant="outline"
-                size="icon"
-                className="ml-auto size-7"
-                title="Keyboard shortcuts"
-                onClick={onOpenShortcuts}
-              >
-                <Keyboard />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                title="re-check protocol compatibility"
-                onClick={() => versionQuery.refetch()}
-              >
-                <RotateCw />
-              </Button>
-            </div>
-          </footer>
         </TabsContent>
         <TabsContent
           value="themes"

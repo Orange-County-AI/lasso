@@ -1,1 +1,0 @@
-src/assets/SKILL.md
