@@ -6,7 +6,16 @@ import { uiStateNow } from "@/lib/ui-state"
 // app shell never import each other, so the hand-off is a tiny pub/sub: the
 // terminal wiring publishes a URL, App reveals the tab and BrowserTab loads it.
 
-type Listener = (url: string) => void
+// A link carries the mode it should open in: Iframe by default, since a link
+// clicked in a terminal is the human's own page, not one to put in front of
+// every agent sharing the Chromium. Agent mode only when an Iframe cannot
+// show it at all (below).
+export interface SidebarBrowserLink {
+  url: string
+  mode: BrowserMode
+}
+
+type Listener = (link: SidebarBrowserLink) => void
 const listeners = new Set<Listener>()
 
 export function onSidebarBrowserOpen(fn: Listener): () => void {
@@ -16,34 +25,28 @@ export function onSidebarBrowserOpen(fn: Listener): () => void {
   }
 }
 
-// The mode the Browser tab is ACTUALLY showing, which is not always the stored
-// preference: live is stored by default, but a lasso with no Chromium shows
-// embed. BrowserTab publishes it; the link routing below is the reader. Starts
-// at embed so a link clicked before the tab has ever rendered keeps the
-// conservative (mixed-content-aware) routing.
-let effectiveMode: BrowserMode = "embed"
+// Whether the Agent (live) browser can be shown here. BrowserTab publishes it
+// from /api/browser; it starts false, so a link clicked before the tab has
+// ever rendered gets the conservative routing (a new tab for mixed content).
+let liveAvailable = false
 
-export function setEffectiveBrowserMode(m: BrowserMode) {
-  effectiveMode = m
+export function setLiveBrowserAvailable(v: boolean) {
+  liveAvailable = v
 }
 
-export function effectiveBrowserMode(): BrowserMode {
-  return effectiveMode
+// sidebarLinkMode reports which mode a terminal link should open in, or null
+// for a new browser tab. Mixed content is the one case an Iframe cannot take:
+// an https lasso cannot embed an http:// page. The Agent browser is exempt (a
+// real Chromium on lasso's machine, not a frame inside this page), so such a
+// link goes there when it exists, and to a new tab (the old behavior) when it
+// does not, which beats a sidebar that opens only to show an error.
+export function sidebarLinkMode(url: string): BrowserMode | null {
+  if (!uiStateNow().terminal_links_in_sidebar) return null
+  if (!/^https?:\/\//i.test(url)) return null
+  if (location.protocol !== "https:" || /^https:\/\//i.test(url)) return "embed"
+  return liveAvailable ? "live" : null
 }
 
-// routeLinkToSidebar reports whether a terminal link should go to the sidebar.
-// Mixed content is the one case decided here rather than in the tab: an https
-// lasso cannot embed an http:// page, and a new tab (the old behavior) beats a
-// sidebar that opens only to say so. The live browser is exempt — it is a real
-// Chromium on lasso's machine, not a frame inside this page, so this page's
-// mixed-content rules never see the URL.
-export function routeLinkToSidebar(url: string): boolean {
-  if (!uiStateNow().terminal_links_in_sidebar) return false
-  if (!/^https?:\/\//i.test(url)) return false
-  if (effectiveMode === "live") return true
-  return location.protocol !== "https:" || /^https:\/\//i.test(url)
-}
-
-export function openInSidebarBrowser(url: string) {
-  for (const fn of listeners) fn(url)
+export function openInSidebarBrowser(link: SidebarBrowserLink) {
+  for (const fn of listeners) fn(link)
 }
