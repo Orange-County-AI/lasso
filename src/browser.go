@@ -378,16 +378,17 @@ func envDuration(name string, def time.Duration) time.Duration {
 	return d
 }
 
-// envInt reads a positive integer from the environment, falling back to def
-// when unset or unusable (said once, at startup).
+// envInt reads a non-negative integer from the environment (0 meaning "no
+// limit" to LASSO_BROWSER_MCP_MAX, its one caller), falling back to def when
+// unset or unusable (said once, at startup).
 func envInt(name string, def int) int {
 	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 {
-		log.Printf("browser: ignoring %s=%q (want a positive whole number): using %d", name, v, def)
+	if err != nil || n < 0 {
+		log.Printf("browser: ignoring %s=%q (want a whole number, 0 for no limit): using %d", name, v, def)
 		return def
 	}
 	return n
@@ -1165,7 +1166,7 @@ type browserProfileStatus struct {
 	Note      string        `json:"note,omitempty"`
 	Pages     []browserPage `json:"pages"`
 	WSPath    string        `json:"ws_path"`  // /cdp, or /cdp/p/<id>
-	MCPPath   string        `json:"mcp_path"` // /browser-mcp, or /browser-mcp/<id>
+	MCPPath   string        `json:"mcp_path"` // /browser-mcp for every profile (its tools take profile)
 }
 
 // profileStatus is this manager's slice of the status. It lists the pages of a

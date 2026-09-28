@@ -372,14 +372,31 @@ claude mcp add --transport http lasso-browser http://127.0.0.1:8090/browser-mcp
 
 Other agents (Codex, OpenCode, …) add the same URL as a streamable-HTTP MCP
 server. Settings shows the exact URL, a copyable command, and how many agents
-are connected.
+are using it.
 
-chrome-devtools-mcp only speaks stdio, so lasso runs **one
-`chrome-devtools-mcp` process per MCP session** and bridges it: each agent gets
-its own selected page, console and network buffers, and nobody steers anyone
-else's page. A session ends — and its process with it — when the agent closes
-it, after 30 minutes with no requests, or when the shared browser stops or
-restarts (an MCP client then simply re-initializes).
+**That one URL drives every browser profile.** A profile is a separate
+Chromium with its own cookies, logins and proxy (the picker at the bottom of
+the Browser tab; `list_browser_profiles` and friends on `/mcp`). Every
+`/browser-mcp` tool takes an optional `profile` — an id like `work` or a
+display name — and runs in that profile's browser; leave it out for the
+default. Profiles are looked up when the call runs, so one created, renamed or
+deleted later needs no new MCP server and no reconnect: add `lasso-browser`
+once, at user scope, and forget about it. Page ids belong to one profile, so
+keep passing the same `profile` for a page you opened there. (The older
+per-profile URLs, `/browser-mcp/<id>`, still work, pinned to that profile.)
+
+chrome-devtools-mcp only speaks stdio, so lasso bridges it: **each MCP session
+gets its own `chrome-devtools-mcp` process per profile it actually uses**,
+started on the first tool call for that profile. Each agent gets its own
+selected page, console and network buffers, and nobody steers anyone else's
+page. Connecting costs nothing: a session that never calls a browser tool
+starts no process (lasso answers the tool list from a copy it learned once),
+so a user-scope entry loaded by every agent session on the box is free until
+one of them actually browses. When a profile's browser stops or restarts,
+only that profile's process in each session is closed, and the next call
+starts a fresh one; the session's process for other profiles carries on. A
+session ends — and all its processes with it — when the agent closes it, after
+30 minutes with no requests, or when lasso stops.
 
 **Install chrome-devtools-mcp on lasso's machine** (not the agent's):
 
@@ -396,7 +413,7 @@ logged-in profile, is a supply-chain risk. Without it `/browser-mcp` answers
 | --- | --- | --- | --- |
 | `-browser-mcp` | `LASSO_BROWSER_MCP` | `chrome-devtools-mcp` on `PATH` | The chrome-devtools-mcp to run: a path, a PATH name, or `off` to disable `/browser-mcp`. |
 | — | `LASSO_BROWSER_MCP_ARGS` | — | Extra chrome-devtools-mcp flags, split on whitespace (e.g. `--slim`, `--no-category-performance`). |
-| `-browser-mcp-max` | `LASSO_BROWSER_MCP_MAX` | `8` | Most concurrent sessions (one node process each). Past it, a new session's initialize fails and says so. |
+| `-browser-mcp-max` | `LASSO_BROWSER_MCP_MAX` | `0` (no limit) | Opt-in cap on live chrome-devtools-mcp processes (~175 MB each), counted across every session and profile. Past it, a tool call that would start another fails with an error naming this knob; connecting never does. |
 
 Screenshots come back as JPEG, at most 1280 px on a side: the browser renders
 at `-browser-scale` 2, and an unbounded PNG would cost an agent about four
@@ -410,7 +427,7 @@ so it's safe to put in an agent's config.
 
 An agent already talking to lasso's MCP server can call **`shared_browser`**
 (`lasso mcp shared-browser` from a shell): it starts the browser, answers with
-the `/browser-mcp` URL (and the CDP endpoint) and the pages currently open, and
+the `/browser-mcp` URL (and the profile's CDP endpoint) and the pages currently open, and
 tells the agent the ground rules — open your own tab, leave the others alone,
 close yours when you're done.
 

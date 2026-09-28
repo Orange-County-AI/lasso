@@ -41,7 +41,7 @@ notify pushes a notification to the HUMAN who runs this lasso (their phone, if l
 
 Use lasso for create_agent, close_agent, whoami, list_hosts, list_repos, list_branches, list_agents, get_agent, notify, and shared_browser (a Chromium the human watches live in lasso's Browser tab: it answers the browser MCP URL, /browser-mcp, that gives you chrome-devtools-mcp's tools against it, and the raw CDP endpoint).
 
-The shared browser has PROFILES — each its own Chromium with its own cookies, logins and optional proxy (socks5://…). Manage them with list_browser_profiles, create_browser_profile, update_browser_profile and delete_browser_profile. To put a page on the human's screen (optionally in a given profile), use open_browser_tab; show_browser_tab, list_browser_tabs and close_browser_tab manage the tabs that exist. Each profile has its own browser MCP URL, /browser-mcp/<id>, for driving its pages.
+The shared browser has PROFILES — each its own Chromium with its own cookies, logins and optional proxy (socks5://…). Manage them with list_browser_profiles, create_browser_profile, update_browser_profile and delete_browser_profile. To put a page on the human's screen (optionally in a given profile), use open_browser_tab; show_browser_tab, list_browser_tabs and close_browser_tab manage the tabs that exist. One browser MCP URL, /browser-mcp, drives every profile: each of its tools takes an optional "profile" argument (id or display name; omitted = the default), so a new profile never needs a new MCP server.
 
 Lasso does not talk to agents. To prompt another agent, read its screen, or wait for it to finish, use herdr directly (herdr agent prompt / read / wait, or the herdr skill); a Claude Code session can also use its own native agent messaging.
 
