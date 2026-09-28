@@ -12,6 +12,8 @@ import {
   PanelRightOpen,
   Paperclip,
   Pencil,
+  Pin,
+  PinOff,
   Search,
   Send,
   SquareTerminal,
@@ -35,7 +37,14 @@ import {
 } from "@/components/ui/alert-dialog"
 import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
-import { api, type ChatDiffLine, type ChatItem, type ChatTool } from "@/lib/api"
+import { paneKey, renameAgent, useAgents } from "@/lib/agents"
+import {
+  api,
+  type ChatDiffLine,
+  type ChatItem,
+  type ChatTool,
+  type HostPane,
+} from "@/lib/api"
 import { useApp } from "@/lib/app-store"
 import {
   newestUserID,
@@ -44,6 +53,7 @@ import {
 } from "@/lib/chat-queue"
 import { qk } from "@/lib/query"
 import { isStandalone } from "@/lib/standalone"
+import { setAgentPinned, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // The agent session as a conversation: what the terminal shows, rendered so a
@@ -1159,6 +1169,85 @@ function Composer({
   )
 }
 
+// The header's title, which is also the rename: click it, type, Enter (or click
+// away) saves, Escape cancels. It renames what the title shows (renameAgent), so
+// the new name lands here, in both agent lists and in the grid. No pane (not in
+// the listing yet, or no agent) means nothing to rename, and it is plain text.
+function ChatTitle({ title, pane }: { title: string; pane?: HostPane }) {
+  const [draft, setDraft] = React.useState<string | null>(null)
+  const [saving, setSaving] = React.useState(false)
+  // Enter then the blur that disabling the field fires would save twice.
+  const inFlight = React.useRef(false)
+  const paneID = pane ? paneKey(pane) : ""
+  // A focus move to another agent mid-edit drops the edit rather than
+  // renaming the agent that arrived under it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paneID is the trigger — the effect exists to RUN when the pane on screen changes.
+  React.useEffect(() => {
+    setDraft(null)
+  }, [paneID])
+
+  const commit = async () => {
+    if (draft === null || !pane || inFlight.current) return
+    const label = draft.trim()
+    if (!label || label === title) {
+      setDraft(null)
+      return
+    }
+    inFlight.current = true
+    setSaving(true)
+    try {
+      await renameAgent(pane, label)
+      setDraft(null)
+    } catch (e) {
+      toast.error(`could not rename: ${(e as Error).message}`)
+    } finally {
+      inFlight.current = false
+      setSaving(false)
+    }
+  }
+
+  if (!pane) {
+    return (
+      <span className="truncate text-[12.5px] text-foreground">{title}</span>
+    )
+  }
+  if (draft === null) {
+    return (
+      <button
+        type="button"
+        onClick={() => setDraft(title)}
+        title="Rename this agent"
+        className="min-w-0 truncate rounded px-1 text-left text-[12.5px] text-foreground hover:bg-accent"
+      >
+        {title}
+      </button>
+    )
+  }
+  return (
+    <input
+      {...NO_AUTOCORRECT}
+      // biome-ignore lint/a11y/noAutofocus: the input exists only because the title was just clicked to edit it.
+      autoFocus
+      value={draft}
+      disabled={saving}
+      onChange={(e) => setDraft(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => void commit()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault()
+          void commit()
+        } else if (e.key === "Escape") {
+          e.preventDefault()
+          setDraft(null)
+        }
+      }}
+      aria-label="Agent name"
+      className="h-6 min-w-0 max-w-md flex-1 rounded border border-input bg-background px-1 text-[12.5px] outline-none focus:border-primary"
+    />
+  )
+}
+
 export function ChatView({
   onShowTerminal,
   onShowSidebar,
@@ -1195,6 +1284,20 @@ export function ChatView({
     refetchIntervalInBackground: false,
   })
   void panesRev
+
+  // The pane on screen as the fleet listing knows it: its workspace and tab ids
+  // are what a rename addresses, and its key is what a pin stores. Absent until
+  // the listing has it (or for a pane with no agent), which hides both.
+  const { agents } = useAgents()
+  const { pinned_agents: pinnedKeys } = useUIState()
+  const pane = React.useMemo(
+    () =>
+      data
+        ? agents.find((p) => p.host === data.host && p.pane_id === data.pane_id)
+        : undefined,
+    [agents, data]
+  )
+  const pinned = !!pane && (pinnedKeys ?? []).includes(paneKey(pane))
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const stick = React.useRef(true)
@@ -1423,9 +1526,7 @@ export function ChatView({
       )}
     >
       <div className="flex flex-none items-center gap-2 border-border border-b px-2.5 py-1.5">
-        <span className="truncate text-[12.5px] text-foreground">
-          {data?.title || data?.agent || "Chat"}
-        </span>
+        <ChatTitle title={data?.title || data?.agent || "Chat"} pane={pane} />
         <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
           {/* Only when the reader is NOT at the bottom. At the bottom the
               conversation carries the indicator itself, at the point the next
@@ -1439,6 +1540,27 @@ export function ChatView({
           )}
           {data?.tokens ? <span>{Math.round(data.tokens / 1000)}k</span> : null}
         </span>
+        {/* The agents grid's pin, from where the agent is being read. It is the
+            same ui_state entry, so it leads the grid and the chat's sidebar. */}
+        {pane && (
+          <button
+            type="button"
+            onClick={() => setAgentPinned(paneKey(pane), !pinned)}
+            aria-pressed={pinned}
+            title={pinned ? "Unpin" : "Pin to the top of the agents list"}
+            aria-label={pinned ? "Unpin" : "Pin to the top of the agents list"}
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-lg hover:bg-accent hover:text-foreground",
+              pinned ? "text-primary" : "text-muted-foreground"
+            )}
+          >
+            {pinned ? (
+              <PinOff className="size-4" />
+            ) : (
+              <Pin className="size-4" />
+            )}
+          </button>
+        )}
         {/* Below md these two are the chat's whole chrome, as buttons rather
             than items under one glyph: the menu they replace carried five, and
             three of those have moved into the sidebar panel — the agent list is a

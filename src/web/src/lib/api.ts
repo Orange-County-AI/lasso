@@ -1672,12 +1672,21 @@ export const api = {
     reveal?: boolean
   }) => postJSON<{ ok: boolean; reattach?: boolean }>("/api/focus", sel),
 
-  rename: (tab_id: string | undefined, label: string) =>
-    postJSON<unknown>("/api/rename", { tab_id, label }),
+  // Both renames name their machine the way close does: omitted is the tab's
+  // host, explicit is the pane's own.
+  rename: (tab_id: string | undefined, label: string, host?: string) =>
+    postJSON<unknown>(withHost("/api/rename", host), { tab_id, label }),
 
   // Rename a workspace (relabels every pane/agent grouped under it).
-  workspaceRename: (workspace_id: string | undefined, label: string) =>
-    postJSON<unknown>("/api/workspace-rename", { workspace_id, label }),
+  workspaceRename: (
+    workspace_id: string | undefined,
+    label: string,
+    host?: string
+  ) =>
+    postJSON<unknown>(withHost("/api/workspace-rename", host), {
+      workspace_id,
+      label,
+    }),
 
   // Pane ids are unique per host only, so a close names its machine: omitted is
   // the tab's host (the single chat's case — the pane on screen is the tab's),
