@@ -86,9 +86,12 @@ function sameURL(a: string, b: string): boolean {
   }
 }
 
-// The headless window's non-viewport height (see fit). A property of the
-// browser, not of one mount, so a Live -> Embed -> Live round trip keeps it.
-let chromeGap: number | null = null
+// The headless window's non-viewport height (see fit), per profile. It is a
+// property of each profile's Chromium, not of one mount, so a Live -> Embed ->
+// Live round trip keeps it. It differs between profiles (measured: 87px on
+// one, 143px on another), so one shared value made the page taller or shorter
+// than the canvas in every profile but the first, and the frame letterboxed.
+const chromeGaps = new Map<string, number>()
 
 // Editing chords go to the page as key events carrying the editor COMMAND,
 // which is what makes them work in a headless Chromium on any OS: the
@@ -373,6 +376,7 @@ export function LiveBrowser({
       // — one snapshot, so it holds whatever size the window is at — rather
       // than by resizing and re-reading innerHeight, which answers before
       // the resize lands and so reads the previous size.
+      let chromeGap = chromeGaps.get(profile) ?? null
       if (chromeGap === null) {
         chromeGap = await c
           .send<{ result: { value?: number } }>(
@@ -388,6 +392,7 @@ export function LiveBrowser({
             return typeof v === "number" && v >= 0 && v < 400 ? v : null
           })
           .catch(() => null)
+        if (chromeGap !== null) chromeGaps.set(profile, chromeGap)
       }
       await c.send("Browser.setWindowBounds", {
         windowId,
@@ -416,7 +421,7 @@ export function LiveBrowser({
         s.sessionId
       )
       .catch(() => {})
-  }, [paint])
+  }, [paint, profile])
 
   React.useEffect(() => {
     const box = boxRef.current
