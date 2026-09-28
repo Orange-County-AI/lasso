@@ -274,6 +274,14 @@ func runServer() {
 	sharedBrowser.onStop = browserMCP.browserStopped
 	sharedBrowsers.onStop = browserMCP.browserStoppedFor
 
+	// Plugins (plugins.go): sidebar tabs and MCP tools from <lassoDir>/plugins.
+	// Nothing a plugin ships runs until the operator enables it; its MCP server
+	// then runs in a microVM unless the operator marked it trusted. run() is
+	// started once the /mcp server exists (below), since that is where a
+	// plugin's tools are mirrored.
+	plugins = newPluginManager(pluginsDir(), sharedMCPServer.Load)
+	plugins.onChange = hub.bumpPluginsRev
+
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
 	if *spawnTtyd {
@@ -355,6 +363,12 @@ func runServer() {
 	mux.HandleFunc("/api/push/subscribe", servePushSubscribe)
 	mux.HandleFunc("/api/push/unsubscribe", servePushUnsubscribe)
 	mux.HandleFunc("/api/push/test", servePushTest)
+	// Plugins: the listing and its actions are ordinary UI routes behind
+	// UI_AUTH, and so is /plugins/ — the tab documents, served under a CSP
+	// sandbox so they are an opaque origin (see pluginManager.serveFiles).
+	mux.HandleFunc("/api/plugins", plugins.serveAPI)
+	mux.HandleFunc("/api/plugins/", plugins.serveAPI)
+	mux.HandleFunc("/plugins/", plugins.serveFiles)
 	// MCP server: lets an agent session orchestrate other lasso agents over the
 	// Model Context Protocol. Mounted here (before the SPA catch-all) and exempt
 	// from UI_AUTH below — see withAuthExcept. The handler serves both /mcp and
@@ -366,6 +380,7 @@ func runServer() {
 	mcpHandler := withMCPAuth(withRequestBase(newMCPHandler()), authUser, authPass, hasAuth)
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
+	go plugins.run(ctx)
 	// OAuth 2.1 authorization server for /mcp (oauth.go). The discovery
 	// documents, dynamic registration, and the token endpoint must be reachable
 	// without UI_AUTH — they're the credential-less half of the handshake — but
@@ -502,6 +517,9 @@ func runServer() {
 		// likes; closing them (and their children) first keeps the drain to
 		// real work, and lasso never exits ahead of a child.
 		browserMCP.closeAll("lasso shutting down")
+		// Plugin servers likewise: lasso never exits ahead of a child, and a
+		// sandboxed one's microVM is stopped and removed, not orphaned.
+		plugins.stopAll()
 		log.Printf("shutdown: draining in-flight requests (up to %s)", drainTimeout)
 		sh, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		_ = srv.Shutdown(sh)
@@ -1065,6 +1083,7 @@ type Active struct {
 	HostSlug       string `json:"host_slug"`    // Host's URL path segment, so the browser can address /terminal/<slug>/ without re-deriving it
 	CwdHost        string `json:"cwd_host"`     // host Cwd lives on — can differ from Host when the focused pane is an ssh window onto another host's herdr; the sidebar browses Cwd on this host
 	UIStateRev     int    `json:"ui_state_rev"` // bumps when the persisted UI prefs change, so every open tab refetches and converges
+	PluginsRev     int    `json:"plugins_rev"`  // bumps when the plugin listing changes (enable/disable/trust, an MCP server's status, a manifest edit), so every tab refetches /api/plugins
 	TermOwner      string `json:"term_owner"`   // client_id currently allowed to resize this host's shared terminal; "" means the claim is free and the next asker gets it (see uilock.go)
 }
 
@@ -2525,6 +2544,7 @@ type hub struct {
 	mu         sync.RWMutex
 	themeRev   int // theme revision (bumped when the resolved theme changes)
 	uiStateRev int // UI-prefs revision (bumped on every /api/ui-state save)
+	pluginsRev int // plugin-listing revision (plugins.go bumps it on every state change)
 	curTheme   resolvedTheme
 	// strayTheme is the last config.toml theme the poll refused to adopt because
 	// an appearance palette governs (see refreshTheme). Held only to say so ONCE
@@ -2566,6 +2586,22 @@ func (h *hub) revs() (themeRev, uiStateRev int) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.themeRev, h.uiStateRev
+}
+
+// pluginsRevNow reads the plugin-listing revision feeds stamp into every frame.
+func (h *hub) pluginsRevNow() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.pluginsRev
+}
+
+// bumpPluginsRev is bumpUIStateRev for the plugin listing: a plugin is a
+// property of this lasso, not of a host, so the bump reaches every tab.
+func (h *hub) bumpPluginsRev() {
+	h.mu.Lock()
+	h.pluginsRev++
+	h.mu.Unlock()
+	h.eachFeed((*hostFeed).pushCurrent)
 }
 
 // notify fans a notice out to every connected tab, whatever host it is on.

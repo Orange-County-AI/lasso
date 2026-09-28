@@ -448,6 +448,14 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		// itself and skip the save.
 		us.ThemeAtmosphere = nil
 		us.CustomBackgrounds = nil
+		// Detached for the same shared-backing-store reason: the decoder reuses a
+		// slice's array, so decoding into stored's would edit stored too. nil
+		// after the decode means the patch did not name it (or sent null).
+		us.SidebarTabs = nil
+		// Detached too, and then read back as the PATCH: decoding into a nil
+		// map yields exactly the slots the caller named, which are merged per
+		// slot below rather than replacing the stored map.
+		us.Typography = nil
 		if err := json.Unmarshal(body, &us); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -466,6 +474,16 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		}
 		if !validBrowserMode(us.BrowserMode) {
 			http.Error(w, fmt.Sprintf("browser_mode must be one of %s", strings.Join(browserModes, ", ")), http.StatusBadRequest)
+			return
+		}
+		if us.SidebarTabs == nil {
+			us.SidebarTabs = stored.SidebarTabs
+		} else if us.SidebarTabs, err = normalizeSidebarTabs(us.SidebarTabs); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if us.Typography, err = mergeTypography(stored.Typography, us.Typography); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if us.UsageHidden == nil {

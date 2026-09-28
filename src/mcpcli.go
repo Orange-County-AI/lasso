@@ -275,7 +275,17 @@ func cliToolName(wire string) string { return strings.ReplaceAll(wire, "_", "-")
 // spelling. Both are normalized rather than one being canonical: the model-facing
 // docs say list_hosts, every CLI listing says list-hosts, and refusing whichever
 // one someone happens to have in front of them is a papercut with no upside.
+//
+// An exact match wins first. Plugin tools (plugins.go) are named by their
+// author, so one plugin may serve both `get-x` and `get_x` — `hello__get-x` and
+// `hello__get_x` on /mcp — which normalize to the same spelling; without the
+// exact pass, typing either name would call whichever sorted first.
 func findMCPTool(tools []*mcp.Tool, name string) *mcp.Tool {
+	for _, t := range tools {
+		if t.Name == name {
+			return t
+		}
+	}
 	want := normalizeToolName(name)
 	for _, t := range tools {
 		if normalizeToolName(t.Name) == want {

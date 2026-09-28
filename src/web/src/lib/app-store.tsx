@@ -10,9 +10,10 @@ import { clientID } from "@/lib/client-id"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
 import { applyMode, subscribeAppearance, watchSystemMode } from "@/lib/mode"
 import { handleOpenFileEvent } from "@/lib/open-file"
-import { invalidateHostScoped } from "@/lib/query"
+import { invalidateHostScoped, qk, queryClient } from "@/lib/query"
 import { setTermOwner, watchTermIntent } from "@/lib/term-claim"
-import { applyAtmosphere, refreshTheme } from "@/lib/theme"
+import { applyAtmosphere, refreshTheme, refreshThemeCatalog } from "@/lib/theme"
+import { subscribeTypography } from "@/lib/typography"
 import { syncUIState } from "@/lib/ui-state"
 import { subscribeAtmosphere } from "@/lib/wallpaper"
 
@@ -100,6 +101,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Last seen ui_state_rev — a change means some tab saved the persisted UI
   // prefs; refetch so every open tab converges (see syncUIState's echo guard).
   const lastUIStateRev = React.useRef<number | null>(null)
+  // Last seen plugins_rev — the same idea for the plugin listing: a plugin
+  // enabled in another browser, or its MCP child dying, re-renders this tab's
+  // sidebar strip and Settings (lib/plugins.ts:usePlugins).
+  const lastPluginsRev = React.useRef<number | null>(null)
 
   const apply = React.useCallback((a: ActiveState) => {
     // Who currently owns the shared terminal's size. Kept in a module, not in
@@ -123,6 +128,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         syncUIState()
       }
       lastUIStateRev.current = a.ui_state_rev
+    }
+    if (typeof a.plugins_rev === "number") {
+      if (
+        lastPluginsRev.current !== null &&
+        a.plugins_rev !== lastPluginsRev.current
+      ) {
+        void queryClient.invalidateQueries({ queryKey: qk.plugins })
+        // Plugins contribute themes, so the catalog may have changed with
+        // no install response to prime it from: re-read both copies of it
+        // (lib/theme.ts's own, and the Settings pickers' query).
+        void refreshThemeCatalog()
+        void queryClient.invalidateQueries({ queryKey: qk.themeCatalog })
+      }
+      lastPluginsRev.current = a.plugins_rev
     }
     setState((prev) => ({
       activeCwd: a.cwd || prev.activeCwd,
@@ -233,6 +252,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // the chokepoint that reaches both the chrome and every already-loaded
   // terminal iframe, so nothing here has to remount.
   React.useEffect(() => subscribeAtmosphere(applyAtmosphere), [])
+
+  // Apply the typefaces chosen per slot (ui_state.typography) from the fonts
+  // enabled plugins contribute, and re-apply whenever either side changes —
+  // the same arrangement as the backdrop above (lib/typography.ts).
+  React.useEffect(() => subscribeTypography(), [])
 
   // Re-pin the terminals to herdr's theme whenever its theme revision moves
   // (including the priming value, so a reload always converges). The chrome is

@@ -4,7 +4,8 @@
 // to the two places that act on it, which never import each other — FilesPanel
 // opens the viewer (it owns the per-pane viewers and the unsaved drafts) and
 // App reveals the Files tab in the right sidebar. Same tiny pub/sub shape as
-// lib/sidebar-browser.ts.
+// lib/sidebar-browser.ts. A plugin tab's file.open (lib/plugins.ts) enters
+// through the same requestOpenFile, so it gets the same protections.
 
 // The event payload, plus a per-tab sequence number so asking for the same
 // file and line twice still re-scrolls.
@@ -48,6 +49,21 @@ export function revealFiles() {
 
 let seq = 0
 
+// requestOpenFile is the one client-side entry point for "show the human this
+// file", shared by the agent path (the SSE event below) and a plugin tab's
+// file.open (lib/plugins.ts). Both must land in the same place with the same
+// unsaved-edits protection — FilesPanel parks a request behind a toast rather
+// than replacing a dirty draft — so neither gets a route of its own.
+//
+// It hands the request on and returns whether anything was listening. The
+// caller decides visibility: an agent's event is gated below, a plugin's call
+// by its own tab being on screen.
+export function requestOpenFile(req: Omit<OpenFileRequest, "seq">): boolean {
+  const full: OpenFileRequest = { ...req, seq: ++seq }
+  for (const fn of listeners) fn(full)
+  return listeners.size > 0
+}
+
 // handleOpenFileEvent is the SSE listener's body. Only a VISIBLE tab acts: the
 // event goes to every connected tab, and a background browser tab or a phone
 // in a pocket that rearranged itself would only surprise the human later. If
@@ -63,15 +79,13 @@ export function handleOpenFileEvent(raw: string) {
     return
   }
   if (typeof ev?.path !== "string" || !ev.path.startsWith("/")) return
-  const req: OpenFileRequest = {
+  requestOpenFile({
     path: ev.path,
     host: typeof ev.host === "string" && ev.host ? ev.host : "local",
     line: typeof ev.line === "number" && ev.line > 0 ? ev.line : undefined,
     dir: ev.dir === true,
     from: typeof ev.from === "string" && ev.from ? ev.from : "an agent",
-    seq: ++seq,
-  }
-  for (const fn of listeners) fn(req)
+  })
 }
 
 export function baseName(p: string): string {

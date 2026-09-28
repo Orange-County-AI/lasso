@@ -568,6 +568,15 @@ func browserMCPArgs(endpoint, token, extra string) []string {
 // of which a process driving arbitrary web pages should hold. MISE_* is limited
 // to the directory settings, since MISE_GITHUB_TOKEN is a MISE_ variable too.
 func browserMCPEnv(env []string) []string {
+	// Belt and braces: its own opt-out, in case a future version reads only the
+	// environment. CI=1 would do it too, but also changes other behavior.
+	return append(minimalChildEnv(env), "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1")
+}
+
+// minimalChildEnv is the allowlist every child lasso runs on the host starts
+// from — chrome-devtools-mcp above, and a trusted plugin's MCP server
+// (pluginsandbox.go), which gets its manifest env and secrets on top.
+func minimalChildEnv(env []string) []string {
 	keep := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true,
 		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "TZ": true, "TMPDIR": true,
@@ -581,9 +590,7 @@ func browserMCPEnv(env []string) []string {
 			out = append(out, kv)
 		}
 	}
-	// Belt and braces: its own opt-out, in case a future version reads only the
-	// environment. CI=1 would do it too, but also changes other behavior.
-	return append(out, "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1")
+	return out
 }
 
 // reapBrowserMCPChild makes sure nothing of a child is left: SIGKILL to its
@@ -654,6 +661,9 @@ func mcpObjectSchema(s any) bool {
 // keeping the tail for a startup failure's explanation.
 type browserMCPStderr struct {
 	tail *tailBuffer
+	// label prefixes each logged line ("browser-mcp" when empty). Plugin
+	// servers (pluginmcp.go) reuse this writer under their own name.
+	label string
 
 	mu      sync.Mutex
 	pid     int
@@ -664,6 +674,13 @@ type browserMCPStderr struct {
 }
 
 const browserMCPLogPerMinute = 30
+
+func (w *browserMCPStderr) name() string {
+	if w.label != "" {
+		return w.label
+	}
+	return "browser-mcp"
+}
 
 func (w *browserMCPStderr) setPID(pid int) {
 	w.mu.Lock()
@@ -689,7 +706,7 @@ func (w *browserMCPStderr) Write(p []byte) (int, error) {
 		now := time.Now()
 		if now.Sub(w.window) >= time.Minute {
 			if w.dropped > 0 {
-				log.Printf("browser-mcp[%d]: (%d more stderr line(s) not logged)", w.pid, w.dropped)
+				log.Printf("%s[%d]: (%d more stderr line(s) not logged)", w.name(), w.pid, w.dropped)
 			}
 			w.window, w.lines, w.dropped = now, 0, 0
 		}
@@ -702,7 +719,7 @@ func (w *browserMCPStderr) Write(p []byte) (int, error) {
 		if w.pid > 0 {
 			who = fmt.Sprint(w.pid)
 		}
-		log.Printf("browser-mcp[%s]: %s", who, clipLine(line, 400))
+		log.Printf("%s[%s]: %s", w.name(), who, clipLine(line, 400))
 	}
 	if len(w.partial) > 4096 { // a line that never ends is not worth buffering
 		w.partial = w.partial[:0]
