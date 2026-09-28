@@ -1,0 +1,48 @@
+# This worktree's frontend dev container, as an isb compose file
+# (https://github.com/execution-associates/isb). scripts/container.sh computes
+# the name and paths and exports them; nothing here is meant to be run by hand
+# without those set. Overlays: bun-cache.yaml (the shared cache, on unless
+# LASSO_DEV_BUN_CACHE is empty), dev-web.yaml (`mise run dev`'s two proxy
+# devices), icon.yaml (docs/icon for `mise run icons`).
+#
+# Only src/web is mounted, never the repo root: a postinstall script that could
+# reach .git could drop a hook, and the global post-commit hook auto-pushes main.
+
+name: lasso-dev
+
+sandboxes:
+  web:
+    name: "${LASSO_DEV_CONTAINER:?set by scripts/container.sh}"
+    image: "${LASSO_DEV_IMAGE:-dev-base}"
+    # incus-zfs, else default, else the first pool; LASSO_DEV_STORAGE wins.
+    storage: "${LASSO_DEV_STORAGE:-auto}"
+    # Caps, not reservations. See container.sh for why idle ones stay running.
+    cpus: 8
+    memory: 8GiB
+    privileged: false
+    # raw.idmap "both 1000 1000" only where root's subuid range does not already
+    # map host 1000 (titan: needed; a workspace box: refused). isb decides.
+    idmap: auto
+    labels:
+      # dev:containers and dev:prune key on lasso.worktree. Keep the key.
+      lasso.worktree: "${LASSO_WORKTREE:?set by scripts/container.sh}"
+      lasso.web: "${LASSO_WEB:?set by scripts/container.sh}"
+    volumes:
+      # isb leaves a correct device alone. That matters: re-adding it remounts
+      # the tree and silently kills the inotify watches of a running Vite.
+      /home/dev/repo/src/web:
+        bind: "${LASSO_WEB}"
+        device: web
+    ready:
+      - running
+      - default_route # the first thing any task does is `bun install`
+      - user_exists: dev
+      - path_writable: /home/dev/repo/src/web
+    ready_timeout: 60s
+    exec:
+      user: dev
+      cwd: /home/dev/repo/src/web
+      env:
+        HOME: /home/dev
+        # What `mise activate bash --shims` put on PATH: node, bun, uv.
+        PATH: /home/dev/.local/share/mise/shims:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

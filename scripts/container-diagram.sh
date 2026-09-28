@@ -12,7 +12,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GUEST_DIAGRAM=/home/dev/work/architecture
 
+LASSO_DIAGRAM="$(cd "$HERE/../docs/architecture" && pwd -P)"
+export LASSO_DIAGRAM
 sandbox_ensure
-container_mount diagram "$(cd "$HERE/../docs/architecture" && pwd)" "$GUEST_DIAGRAM"
 
 sandbox_run_in "$GUEST_DIAGRAM" 'for f in *.reladraw; do bunx reladraw "$f"; done'

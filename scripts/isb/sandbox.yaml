@@ -1,0 +1,29 @@
+# The general-purpose `sandbox` container for one-off third-party tools
+# (reladraw and the like), kept apart from the dev-lasso-* containers. Plain
+# Debian plus a pinned bun, provisioned by scripts/sandbox.sh; its user has no
+# sudo. One container shared by every worktree: each task mounts only the
+# directory it works on, so the mount follows the last task that ran, as before.
+name: lasso-sandbox
+
+sandboxes:
+  sandbox:
+    name: "${LASSO_SANDBOX_CONTAINER:-sandbox}"
+    image: "${LASSO_SANDBOX_IMAGE:-images:debian/13}"
+    storage: "${LASSO_DEV_STORAGE:-auto}"
+    cpus: 4
+    memory: 4GiB
+    privileged: false
+    idmap: auto
+    volumes:
+      /home/dev/work/architecture:
+        bind: "${LASSO_DIAGRAM:?set by container-diagram.sh}"
+        device: diagram
+    # apt and bunx both fail fast without a route.
+    ready: [running, default_route]
+    ready_timeout: 60s
+    exec:
+      user: "1000:1000"
+      cwd: /home/dev/work
+      env:
+        HOME: /home/dev
+        PATH: /home/dev/.local/bin:/usr/bin:/bin
