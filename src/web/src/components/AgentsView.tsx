@@ -160,10 +160,12 @@ export function AgentsView({
       agentSearchText(p, chats.get(paneKey(p))).includes(q)
     )
   }, [agents, chats, q])
-  // Pinned cards lead the grid in the order they were pinned, outside every
-  // machine section and deaf to the sort: the point of a pin is a card that
-  // holds still while its agent blocks, works and finishes. Server state (like
-  // the sort) so the phone and the desktop agree on which cards those are.
+  // Pinned cards lead the grid in the order they were pinned, deaf to the
+  // sort: the point of a pin is a card that holds still while its agent
+  // blocks, works and finishes. Grouped, they are their own section above the
+  // machines; ungrouped, they simply come first in the one grid, so a half
+  // empty pinned row does not waste the width. Server state (like the sort)
+  // so the phone and the desktop agree on which cards those are.
   const pinnedSet = React.useMemo(() => new Set(pinnedKeys ?? []), [pinnedKeys])
   const pinned = React.useMemo(() => {
     const byKey = new Map(visible.map((p) => [paneKey(p), p]))
@@ -182,7 +184,10 @@ export function AgentsView({
     () => groupAgentsByHost(rest, tabHost, sort),
     [rest, tabHost, sort]
   )
-  const flat = React.useMemo(() => sortAgents(rest, sort), [rest, sort])
+  const flat = React.useMemo(
+    () => [...pinned, ...sortAgents(rest, sort)],
+    [pinned, rest, sort]
+  )
 
   // Drop pins whose agent is gone (see PIN_PRUNE_MISSES). Counted against the
   // unfiltered list, and never for a host that did not answer this pass: an
@@ -214,17 +219,17 @@ export function AgentsView({
   // that re-render this view every few seconds without moving anything.
   const orderKey = React.useMemo(
     () =>
-      `${pinned.map(paneKey).join(",")}#` +
-      (groupByHost
-        ? groups
+      groupByHost
+        ? `${pinned.map(paneKey).join(",")}#` +
+          groups
             .map((g) => `${g.host}:${g.panes.map(paneKey).join(",")}`)
             .join("|")
-        : flat.map(paneKey).join(",")),
+        : flat.map(paneKey).join(","),
     [pinned, groupByHost, groups, flat]
   )
   const flipRef = useFlip(orderKey)
-  const blocked = rest.filter((p) => p.agent_status === "blocked").length
-  const working = rest.filter((p) => p.agent_status === "working").length
+  const blocked = visible.filter((p) => p.agent_status === "blocked").length
+  const working = visible.filter((p) => p.agent_status === "working").length
   const openCard = (p: HostPane) => async () => {
     onShowChat()
     await focusAgent(p)
@@ -371,7 +376,7 @@ export function AgentsView({
             </button>
           </div>
         )}
-        {pinned.length > 0 && (
+        {groupByHost && pinned.length > 0 && (
           <section className="mb-3">
             <header className="mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
               <Pin className="size-3" />
@@ -413,10 +418,10 @@ export function AgentsView({
                 <div className={gridClass}>{g.panes.map(card)}</div>
               </section>
             ))
-          : rest.length > 0 && (
+          : visible.length > 0 && (
               <>
                 <div className="mb-1.5 px-1 text-[11px] text-muted-foreground">
-                  {rest.length} agent{rest.length === 1 ? "" : "s"}
+                  {visible.length} agent{visible.length === 1 ? "" : "s"}
                   {blocked > 0 && (
                     <span className="text-destructive">
                       {" "}
