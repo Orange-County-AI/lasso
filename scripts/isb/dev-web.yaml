@@ -1,0 +1,22 @@
+# Overlay for `mise run dev` (scripts/container-dev-web.sh): the two proxy
+# devices wiring Vite in the container to the Go backend on the host. They are
+# point-to-point TCP forwards for one port each, so the container keeps its own
+# network namespace (no `--network host`).
+sandboxes:
+  web:
+    ports:
+      # container 127.0.0.1:8190 -> host 127.0.0.1:<backend port>. The backend
+      # stays on host loopback and is never exposed on the incus bridge, yet
+      # Vite's proxy still reaches /api and the ttyd websockets.
+      - name: backend
+        bind: guest
+        listen: tcp:127.0.0.1:8190
+        connect: "tcp:127.0.0.1:${LASSO_BACKEND_PORT:?set by container-dev-web.sh}"
+      # host <tailnet ip>:<first free port from 5173> -> container 127.0.0.1:5173.
+      # Vite binds loopback inside the container, so nothing else is published.
+      # The host side gives way (search), the guest side is always 5173.
+      - name: vite
+        bind: host
+        listen: "tcp:${LASSO_LISTEN_IP:?set by container-dev-web.sh}:5173"
+        connect: tcp:127.0.0.1:5173
+        search: 50

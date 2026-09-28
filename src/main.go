@@ -194,7 +194,10 @@ func runServer() {
 	// `herdr config check` until something rewrites it (see
 	// migrateHerdrThemeConfig).
 	tidyHerdrThemeConfig("rewrote the theme into herdr's supported form")
-	theme = loadHerdrTheme(*themeName)
+	// bootTheme, not the file alone: while a palette governs, a config.toml theme
+	// no lasso wrote is refused by every running lasso's poll, and a booting one
+	// has to reach the same decision from the same shared record.
+	theme = bootTheme(loadHerdrTheme(*themeName))
 	if theme.Customized {
 		log.Printf("theme:    %q -> %s (+custom overrides)", theme.Name, theme.Resolved)
 	} else {
@@ -1667,7 +1670,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 			// Switching sync back on converges that host now rather than at its
 			// next theme or host switch. Off the request path: reaching a remote
 			// costs an ssh round trip, and an unreachable one just logs.
-			go convergeThemeSyncFor(req.ThemeSyncHost)
+			goTheme(func() { convergeThemeSyncFor(req.ThemeSyncHost) })
 		}
 	}
 	if req.Name == "" {
@@ -1708,7 +1711,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	// Fan the resolved theme out after the local config write so [theme.custom]
 	// overrides reach local and settled remote agents. Off the request path:
 	// remote SFTP writes can wait on ssh latency.
-	go syncThemeEverywhere(loadHerdrTheme(""))
+	goTheme(func() { syncThemeEverywhere(loadHerdrTheme("")) })
 	// Skip the poll wait so the browser's theme_rev bump (and repaint) is
 	// near-immediate.
 	srvHub.kick("") // every tab, whatever host it is on, repaints on the new theme
@@ -2740,19 +2743,22 @@ func (h *hub) refreshTheme() {
 	if stranded {
 		tidyHerdrThemeConfig("cleared theme overrides stranded by an outside re-theme")
 	}
-	// Read before taking the hub lock: themeSynced has a mutex of its own, and
-	// nothing here needs the two held together.
-	wrote, lassoWrote := themeSyncedFor("local")
+	// Read before taking the hub lock: the record is in lasso.db (shared by every
+	// lasso process on it) and nothing here needs the two held together.
+	owned := lassoOwnsConfigTheme(rt.Resolved)
 	h.mu.Lock()
 	if rt == h.curTheme {
 		h.mu.Unlock()
 		return
 	}
 	// Lasso's own write is the one config theme the poll still adopts while a
-	// palette governs — setLocalHerdrTheme marks the record before it re-resolves
-	// — and it is also the only thing it fans out then, since it IS the palette
-	// the appearance pushed.
-	if fleetThemeIsPalette() && !(lassoWrote && wrote == rt.Resolved) {
+	// palette governs — setLocalHerdrTheme marks the record before it writes —
+	// and it is also the only thing it fans out then, since it IS the palette
+	// the appearance pushed. "Lasso's own" means ANY lasso on this db: the
+	// record is shared, so a dev lasso adopts the production one's palette push
+	// (and vice versa) instead of calling it a stray edit and pushing its own
+	// stale theme back over it.
+	if fleetThemeIsPalette() && !owned {
 		say := h.strayTheme != rt.Resolved
 		h.strayTheme = rt.Resolved
 		on := h.curTheme.Resolved
@@ -2773,10 +2779,13 @@ func (h *hub) refreshTheme() {
 	} else {
 		log.Printf("theme:    reloaded %q -> %s", rt.Name, rt.Resolved)
 	}
+	noteHubTheme(rt.Resolved)
 	// An edit to herdr's config.toml made outside lasso (herdr's own theme
 	// popup, a hand edit) must reach every settled host too, not only local
-	// agents. Async so this loop never blocks on I/O.
-	go syncThemeEverywhere(rt)
+	// agents. Async so this loop never blocks on I/O. Another lasso on this db
+	// adopting the same change fans out the same bytes, which the writers skip
+	// as unchanged — redundant, never a revert, since both hubs now agree.
+	goTheme(func() { syncThemeEverywhere(rt) })
 	h.eachFeed((*hostFeed).pushCurrent)
 }
 

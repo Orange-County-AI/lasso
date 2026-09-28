@@ -27,6 +27,10 @@
 go = "1.25.3"
 bun = "1.3.14"
 node = "26.7.0"
+# Drives the frontend dev containers (scripts/container.sh, scripts/isb/). A
+# prebuilt static binary from the GitHub release, built in isb's CI: never
+# `cargo install` it on a host, since build.rs and proc-macros are arbitrary code.
+"github:execution-associates/isb" = "0.1.0"
 # Runs in this worktree's dev container: the work here is uv resolving Pillow
 # from PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
 # top of build.py. The source is raster art (docs/icon/icon.png); there is no
@@ -74,10 +78,10 @@ dir = "{{config_root}}"
 run = "./scripts/container-web.sh check"
 
 # One dev container per worktree (scripts/container.sh). These two are the
-# on-demand cleanup half. A container is only ever deleted once its worktree is
-# gone -- the one safe signal that it is unused. On titan the weekly
-# lasso-prune timer (titan-iac tools/lasso-prune.sh) applies the same rule to
-# every container carrying a user.lasso.worktree key.
+# on-demand cleanup half, via `isb ls` / `isb prune`. A container is only ever
+# deleted once its worktree is gone -- the one safe signal that it is unused. On
+# titan the weekly lasso-prune timer (titan-iac tools/lasso-prune.sh) applies the
+# same rule to every container carrying a user.lasso.worktree key.
 [tasks."dev:containers"]
 description = "List the per-worktree dev containers, the worktree each belongs to, and whether it still exists"
 dir = "{{config_root}}"

@@ -13,17 +13,26 @@
 # The old shared containers (dev-lasso, dev-lasso-2, ...) carry no such key:
 # their mount followed whichever worktree ran last, so it says nothing about
 # who is using them. They are listed as `legacy` and never pruned here; delete
-# them by hand once nothing runs in them (`incus delete -f dev-lasso`).
+# them by hand once nothing runs in them (`isb rm dev-lasso`).
+#
+# Both halves go through isb, which reads the lasso.worktree label (stored as
+# user.lasso.worktree) that scripts/isb/dev.yaml sets.
 set -euo pipefail
 
-# Every container with a user.lasso.worktree key, plus the legacy names.
+command -v isb >/dev/null 2>&1 || {
+  echo "error: isb is not on PATH. It is pinned in mise.toml: run \`mise install\`" >&2
+  echo "       here, and invoke this through \`mise run\`." >&2
+  exit 1
+}
+
+# Every container with a lasso.worktree label, plus the legacy names.
 # Tab-separated: name, status, worktree ("-" for legacy), web mount source.
 rows() {
-  incus list -f json | jq -r '.[]
-    | select(.config["user.lasso.worktree"] != null
+  isb -q ls --json | jq -r '.[]
+    | select(.labels["lasso.worktree"] != null
              or (.name | test("^dev-lasso(-[0-9]+)?$")))
-    | [.name, .status, (.config["user.lasso.worktree"] // "-"),
-       (.devices.web.source // .expanded_devices.web.source // "-")]
+    | [.name, .status, (.labels["lasso.worktree"] // "-"),
+       (.devices.web.source // "-")]
     | @tsv'
 }
 
@@ -42,26 +51,13 @@ case "$cmd" in
     } | column -t -s $'\t'
     ;;
   prune)
-    yes=""
-    [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ] && yes=1
-    n=0
-    while IFS=$'\t' read -r name _ wt _; do
-      # Legacy containers have no owner to check, and a path that exists means
-      # a live worktree: both are skipped, which is the whole safety property.
-      [ "$wt" != "-" ] && [ ! -d "$wt" ] || continue
-      n=$(( n + 1 ))
-      if [ -n "$yes" ]; then
-        echo "deleting $name  (worktree gone: $wt)"
-        incus delete -f "$name"
-      else
-        echo "would delete $name  (worktree gone: $wt)"
-      fi
-    done < <(rows)
-    if [ "$n" = 0 ]; then
-      echo "nothing to prune"
-    elif [ -z "$yes" ]; then
-      echo "dry run; re-run with -y to delete ($n container(s))"
-    fi
+    # isb only ever considers a container carrying the label, and only deletes
+    # one whose labelled path is gone: legacy containers have no owner to
+    # check, and a path that exists means a live worktree. Both are skipped,
+    # which is the whole safety property. Dry run unless -y.
+    yes=()
+    [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ] && yes=(-y)
+    isb prune --label lasso.worktree --missing-path "${yes[@]}"
     ;;
   *) echo "usage: $0 list | prune [-y]" >&2; exit 2 ;;
 esac

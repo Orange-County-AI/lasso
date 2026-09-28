@@ -1305,11 +1305,11 @@ func tidyHerdrThemeConfig(why string) {
 		return
 	}
 	log.Printf("theme:    %s in %s", why, path)
-	go func() {
+	goTheme(func() {
 		if _, err := herdrCallSock(*herdrSock, "server.reload_config", map[string]any{}); err != nil {
 			log.Printf("theme:    herdr reload-config after %s: %v", why, err)
 		}
-	}()
+	})
 }
 
 // writeHerdrThemeNameVia selects theme name in the herdr config at cfgPath on
