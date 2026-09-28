@@ -1,6 +1,6 @@
 import { api } from "@/lib/api"
 import { DIAL_ID, mountTerminalInputDial } from "@/lib/mobile-input-dial"
-import { openInSidebarBrowser, routeLinkToSidebar } from "@/lib/sidebar-browser"
+import { openInSidebarBrowser, sidebarLinkMode } from "@/lib/sidebar-browser"
 import {
   mayResizeTerminal,
   onTermOwnerChange,
@@ -832,7 +832,8 @@ function wireLinkOpen(doc: Document, win: Window) {
       opener: null as unknown,
       location: {
         set href(url: string) {
-          if (!forceNewTab && routeLinkToSidebar(url)) openInSidebarBrowser(url)
+          const mode = forceNewTab ? null : sidebarLinkMode(url)
+          if (mode) openInSidebarBrowser({ url, mode })
           else openNewTab(url)
         },
       },

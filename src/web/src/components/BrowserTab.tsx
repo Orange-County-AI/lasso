@@ -27,7 +27,7 @@ import { LOOPBACK, normalize } from "@/lib/browser-url"
 import { qk } from "@/lib/query"
 import {
   onSidebarBrowserOpen,
-  setEffectiveBrowserMode,
+  setLiveBrowserAvailable,
 } from "@/lib/sidebar-browser"
 import { patchUIState, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
@@ -328,20 +328,24 @@ const MODE_TIPS: Record<BrowserMode, string> = {
 
 function BrowserModeSwitch({
   mode,
+  pref,
   liveDisabled,
   liveTitle,
   onPick,
 }: {
   mode: BrowserMode
+  // The stored preference, which a temporary switch can differ from: picking
+  // the mode on screen must still save it, or dropping the switch flips back.
+  pref: BrowserMode
   liveDisabled: boolean
   liveTitle: string
-  // Told about every click, so BrowserTab can drop an agent's temporary
-  // switch to Agent mode the moment the human picks a mode themselves.
+  // Told about every click, so BrowserTab can drop a temporary switch (an
+  // agent's page, a terminal link) the moment the human picks a mode.
   onPick: () => void
 }) {
   const pick = (m: BrowserMode) => {
     onPick()
-    if (m !== mode) patchUIState({ browser_mode: m })
+    if (m !== pref) patchUIState({ browser_mode: m })
   }
   const seg = (m: BrowserMode) =>
     cn(
@@ -395,9 +399,9 @@ function BrowserModeSwitch({
 //
 // Live is the stored default but not always what is shown: a lasso with no
 // Chromium (or an older server with no /api/browser) shows Embed with a line
-// saying why, without rewriting the preference. What IS shown is published to
-// lib/sidebar-browser.ts, since whether a terminal link can open here at all
-// depends on it (mixed content only binds an iframe).
+// saying why, without rewriting the preference. Whether Live exists is
+// published to lib/sidebar-browser.ts, since it decides where a terminal link
+// that an iframe cannot show (mixed content) goes.
 //
 // `active` is whether a human can see the tab (selected, sidebar open); Live
 // streams only then, so an unwatched browser costs lasso a closed socket and
@@ -416,14 +420,16 @@ export function BrowserTab({ active }: { active: boolean }) {
   })
   const unavailable = status.isError || status.data?.available === false
 
-  // An agent showing the human a page switches this client to Agent mode
-  // without touching the shared preference: it is one agent's page on one
-  // screen, not a decision about how every browser shows the tab. Any click
-  // on the mode switch hands the choice back.
-  const [forceLive, setForceLive] = React.useState(false)
-  const mode: BrowserMode =
-    (pref === "live" || forceLive) && !unavailable ? "live" : "embed"
-  React.useEffect(() => setEffectiveBrowserMode(mode), [mode])
+  React.useEffect(() => setLiveBrowserAvailable(!unavailable), [unavailable])
+
+  // An agent showing the human a page switches this client to Agent mode, and
+  // a terminal link to the mode it asked for (Iframe, normally), without
+  // touching the shared preference: it is one page on one screen, not a
+  // decision about how every browser shows the tab. Any click on the mode
+  // switch hands the choice back.
+  const [override, setOverride] = React.useState<BrowserMode | null>(null)
+  const wanted = override ?? pref
+  const mode: BrowserMode = wanted === "live" && !unavailable ? "live" : "embed"
 
   // ---- profiles ----------------------------------------------------------
   const profiles = profilesOf(status.data)
@@ -460,7 +466,7 @@ export function BrowserTab({ active }: { active: boolean }) {
   React.useEffect(
     () =>
       onBrowserShowRequest((req) => {
-        setForceLive(true)
+        setOverride("live")
         pickProfile(req.profile)
         setShow(req)
         const st = queryClient.getQueryData<BrowserStatus>(qk.browser)
@@ -477,23 +483,27 @@ export function BrowserTab({ active }: { active: boolean }) {
     ? `this lasso has no shared browser (${status.error instanceof Error ? status.error.message : "status unavailable"})`
     : status.data?.reason || "no Chromium was found"
   const note =
-    (pref === "live" || forceLive) && unavailable
+    wanted === "live" && unavailable
       ? `Agent browser unavailable: ${reason}. Install Chrome or Chromium, or point LASSO_BROWSER at one, to enable it.`
       : ""
 
   const [openRequest, setOpenRequest] = React.useState<OpenRequest | null>(null)
   React.useEffect(() => {
     let seq = 0
-    return onSidebarBrowserOpen((url) => setOpenRequest({ url, seq: ++seq }))
+    return onSidebarBrowserOpen(({ url, mode }) => {
+      setOverride(mode)
+      setOpenRequest({ url, seq: ++seq })
+    })
   }, [])
   const onOpened = React.useCallback(() => setOpenRequest(null), [])
 
   const modeSwitch = (
     <BrowserModeSwitch
       mode={mode}
+      pref={pref}
       liveDisabled={unavailable}
       liveTitle={`Agent browser unavailable: ${reason}`}
-      onPick={() => setForceLive(false)}
+      onPick={() => setOverride(null)}
     />
   )
 
