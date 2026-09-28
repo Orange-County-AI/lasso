@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog"
 import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
-import { agentName, agentSub, paneKey, useAgents } from "@/lib/agents"
+import { agentMatches, paneKey, useAgents } from "@/lib/agents"
 import type { HostPane } from "@/lib/api"
 import { blurHerdrTerminal } from "@/lib/terminal"
 import { cn } from "@/lib/utils"
@@ -63,18 +63,6 @@ export function AgentSwitcher({
   )
 }
 
-// Every whitespace-separated term must appear somewhere in the row's name,
-// harness/worktree or machine — so "norm claude" narrows to claude agents on
-// norm without caring which field each word came from.
-function matches(p: HostPane, terms: string[]): boolean {
-  if (terms.length === 0) return true
-  const hay = [agentName(p), agentSub(p), p.host_label, p.host]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-  return terms.every((t) => hay.includes(t))
-}
-
 function SwitcherBody({ onPick }: { onPick: () => void }) {
   const { agents, isLoading, error, unlisted, current, focusAgent } =
     useAgents()
@@ -87,7 +75,7 @@ function SwitcherBody({ onPick }: { onPick: () => void }) {
 
   const filtered = React.useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return agents.filter((p) => matches(p, terms))
+    return agents.filter((p) => agentMatches(p, terms))
   }, [agents, query])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on filter change

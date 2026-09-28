@@ -8,7 +8,7 @@ import { toast } from "sonner"
 
 import { type AgentSort, api, type HostPane } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
-import { qk } from "@/lib/query"
+import { qk, queryClient } from "@/lib/query"
 
 // paneKey is an identity for a pane across the whole fleet. herdr's own ids are
 // unique only WITHIN a host, and this list spans every machine lasso can reach,
@@ -43,6 +43,47 @@ export function agentSub(p: HostPane): string {
   return [p.agent, (p.cwd ?? "").split("/").filter(Boolean).pop()]
     .filter(Boolean)
     .join(" · ")
+}
+
+// Every whitespace-separated term must appear somewhere in the row's name,
+// harness/worktree or machine — so "norm claude" narrows to claude agents on
+// norm without caring which field each word came from.
+export function agentMatches(p: HostPane, terms: string[]): boolean {
+  if (terms.length === 0) return true
+  const hay = [agentName(p), agentSub(p), p.host_label, p.host]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+  return terms.every((t) => hay.includes(t))
+}
+
+// pinFirst puts the agents grid's pins (ui_state.pinned_agents, oldest pin
+// first) ahead of everything else, keeping the rest in the order given. A pin
+// whose agent is not in the list is skipped here; the grid is what forgets it.
+export function pinFirst(panes: HostPane[], pinnedKeys?: string[]): HostPane[] {
+  if (!pinnedKeys?.length) return panes
+  const byKey = new Map(panes.map((p) => [paneKey(p), p]))
+  const pinned = pinnedKeys.flatMap((k) => byKey.get(k) ?? [])
+  const pinnedSet = new Set(pinnedKeys)
+  return [...pinned, ...panes.filter((p) => !pinnedSet.has(paneKey(p)))]
+}
+
+// renameAgent relabels whatever agentName reads first, which is also what the
+// chat header shows: the workspace, or the tab for a scratch agent (Scratch is
+// shared, so renaming it would rename every scratch agent). A workspace rename
+// also retitles the agent record, so MCP's list_agents follows.
+export async function renameAgent(p: HostPane, label: string) {
+  if (p.workspace_label === SCRATCH_WORKSPACE) {
+    if (!p.tab_id) throw new Error("no tab to rename")
+    await api.rename(p.tab_id, label, p.host)
+  } else {
+    if (!p.workspace_id) throw new Error("no workspace to rename")
+    await api.workspaceRename(p.workspace_id, label, p.host)
+  }
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: qk.allPanesAny }),
+    queryClient.invalidateQueries({ queryKey: ["chat"] }),
+  ])
 }
 
 // orderByHost puts this tab's own machine first and the rest in name order,
