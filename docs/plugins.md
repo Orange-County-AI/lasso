@@ -23,7 +23,7 @@ A complete working example is in [`examples/plugins/hello`](../examples/plugins/
 
 A plugin gets there in one of three ways (see [Installing and sharing](#installing-and-sharing)):
 
-- **From GitHub**: `lasso plugin install owner/repo[/subdir]`, or Settings → Plugins → Install from GitHub.
+- **From GitHub**: `lasso plugin install owner/repo[/subdir]`, or Settings → General → Plugins → Install from GitHub.
 - **Linked**: `lasso plugin link <path>` uses a checkout where it is, without copying it. This is the way to develop one.
 - **By hand**: put its directory there. The directory name **is** the plugin's name.
 
@@ -40,7 +40,7 @@ lasso plugin enable hello
   "name": "hello",
   "version": "0.1.0",
   "description": "one line",
-  "min_lasso_version": "3.6.0",
+  "min_lasso_version": "4.2.0",
   "platforms": ["linux", "darwin"],
   "tabs": [
     { "id": "main", "label": "Hello", "icon": "sparkles", "entry": "ui/index.html" },
@@ -81,7 +81,7 @@ An invalid manifest never loads anything. The plugin is listed as `invalid` with
 
 ## Approval and trust
 
-A manifest is written by whoever wrote the directory, so nothing in it can grant itself anything. You grant it, in Settings → Plugins or with `lasso plugin`.
+A manifest is written by whoever wrote the directory, so nothing in it can grant itself anything. You grant it, in Settings → General → Plugins or with `lasso plugin`.
 
 - **A new plugin is disabled.** Enabling it (Settings shows the exact permissions in a dialog first) approves the permissions shown: its tabs' entries and URLs, the image, the command, the network allowlist, the env variable names, each secret with the hosts it may go to, its theme ids, and its fonts' ids, families and categories. lasso stores a fingerprint of that set in its own database, never in the plugin directory.
 - **If a later edit changes any of those**, the plugin reads as `needs_approval`. Its tabs and its MCP server stop loading until you approve the new set. Changes to the version, the description, a tab's label or icon, a theme's label or palette, a font's license, or the font files themselves do not need re-approval. lasso rescans the directory every 10 seconds, and on every Settings visit, so an edit is noticed without a reload.
@@ -127,7 +127,7 @@ The plugin directory is read-only to the plugin. Its one writable place is `<LAS
 
 ## Tabs
 
-Each tab lands in the sidebar's strip before Settings. You choose which tabs show and in what order, built-in and plugin alike, in Settings → General → Sidebar. That layout is lasso's `ui_state` (`sidebar_tabs`), so every browser on the same lasso follows it. Settings itself cannot be hidden, and a hidden Files or Browser tab still opens when something needs it (an agent opening a file, a terminal link) until you pick another tab. A disabled plugin's entries are kept in the layout, so re-enabling it puts its tab back where it was.
+Each tab lands in the sidebar's strip before Settings. You choose which tabs show and in what order, built-in and plugin alike, in Settings → General → Sidebar & usage. That layout is lasso's `ui_state` (`sidebar_tabs`), so every browser on the same lasso follows it. Settings itself cannot be hidden, and a hidden Files or Browser tab still opens when something needs it (an agent opening a file, a terminal link) until you pick another tab. A disabled plugin's entries are kept in the layout, so re-enabling it puts its tab back where it was.
 
 A tab with an `entry` is served from `/plugins/<name>/<path>` and framed in the sidebar. Every response carries
 

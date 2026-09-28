@@ -177,8 +177,8 @@ its toolbar (and remembered on the server, so every device opens the same one):
   page in a new tab. A bare port means that port on the hostname you reached
   lasso by. With no Chromium installed, the tab uses Embed and says why.
 
-Links you click in a terminal open here too (Settings → General turns that
-off; Cmd/Ctrl-click always opens a new browser tab). In Agent mode each link
+Links you click in a terminal open here too (Settings → General → Terminal &
+browser turns that off; Cmd/Ctrl-click always opens a new browser tab). In Agent mode each link
 opens as a **new page**, so it never navigates away from a page an agent is
 using.
 
@@ -189,7 +189,7 @@ using.
 The footer tracks each provider's rate-limit window — 5-hour and weekly — so
 you can see a budget running out before an agent stops mid-task. Providers you
 have no credentials for stay hidden automatically; the rest you order and
-switch on/off under **Settings → Usage tracking**. Switching one off stops the
+switch on/off under **Settings → General → Sidebar & usage**. Switching one off stops the
 polling too, so a provider you don't use costs no requests.
 
 The desktop footer also holds **New**, **Sidebar**, **Host**, and **Keybindings**.
@@ -246,10 +246,13 @@ Two resizable, collapsible columns:
   (bars, pace, reset countdowns — the footer's detail view), and **Settings**
   (the lasso version and whether an update is available, the herdr
   protocol/version with a one-click `herdr update`, notifications for blocked
-  agents, and the New-Agent defaults).
+  agents, and the New-Agent defaults). Settings folds into collapsible groups,
+  all closed by default; a closed group's header still summarizes its state
+  (a plugin waiting for approval shows there in warning colour), and which
+  groups you keep open is remembered per browser.
 
 Which of those tabs show, and in what order, is yours: Settings → General →
-Sidebar. [Plugins](#plugins) add tabs of their own to the same strip.
+Sidebar & usage. [Plugins](#plugins) add tabs of their own to the same strip.
 
 Desktop navigation lives in the footer, not a floating overlay. On phones the
 footer stays out of the terminal viewport and the existing ⌘ input dial supplies
@@ -257,7 +260,7 @@ New, host switching, sidebar access, and the keys a touch keyboard lacks.
 
 The UI follows herdr's active pane live. The **terminal** adopts herdr's theme
 (its xterm palette tracks `~/.config/herdr/config.toml`); the surrounding
-**chrome** wears whatever Settings → Appearance says — herdr's own colors, each
+**chrome** wears whatever Settings → Themes → Appearance says — herdr's own colors, each
 device's system light/dark preference, or a pinned scheme — and that choice is
 stored on the server, so every browser on the same lasso agrees.
 
@@ -303,7 +306,7 @@ agent testing a login flow opens its page in the shared browser and you watch
 it happen — and can take the mouse — from your phone.
 
 It costs nothing until it's used. The first `/cdp` connection, the Browser tab
-or **Settings → General → Shared browser** starts it; it stops again after 15
+or **Settings → General → Terminal & browser** starts it; it stops again after 15
 minutes with nothing connected. It is the same browser whatever host a tab is
 on, so `localhost` inside it always means **lasso's machine**.
 
@@ -413,7 +416,7 @@ close yours when you're done.
 
 ### Proxy
 
-**Settings → General → Shared browser → Proxy** sends all of the shared
+**Settings → General → Terminal & browser → Proxy** sends all of the shared
 browser's traffic through `socks5://`, `socks4://`, `http://` or `https://`
 `host:port`. With `socks5://`, DNS is resolved through the proxy too. Proxies
 that need a username and password are not supported — Chromium can't
@@ -506,7 +509,7 @@ carry the GitHub topic `lasso-plugin`, which anyone can apply: it is not a
 reviewed catalog, and the approval and the microVM are the safety, not the
 listing.
 
-Settings → General has a **Plugins** section (install, update, uninstall,
+Settings → General has a **Plugins** group (install, update, uninstall,
 logs, enable, disable, trust, restart, MCP status) and a **Sidebar** section for arranging every tab:
 
 <img src="docs/screenshots/sidebar-tabs.png" alt="Settings' Sidebar section: every tab with a visibility toggle and up/down arrows, the hello plugin's tab among them; Settings has no toggle" width="460">
@@ -653,7 +656,7 @@ wrote there against the live one and pushes if they differ, so a laptop converge
 within a refresh cycle of coming back rather than staying behind until the next
 theme change.
 
-Settings → Herdr theme switches that off: "Sync agent themes" for the agent CLIs
+Settings → Themes → Fleet sync switches that off: "Sync agent themes" for the agent CLIs
 everywhere, or "Sync theme to hosts" per host, which leaves an unchecked
 machine's herdr config and agent themes entirely alone (re-checking it pushes the
 current theme straight back).
