@@ -50,6 +50,7 @@ const DEFAULTS: UIState = {
   creator_last_host: "",
   // Mirrors getUIState in db.go: the grid's historical order.
   agents_sort: "priority",
+  pinned_agents: [],
   // Mirrors getUIState in db.go. BrowserTab still shows embed until the
   // server says a Chromium is available.
   browser_mode: "live",
@@ -63,6 +64,9 @@ const DEFAULTS: UIState = {
 // copy needs it — the server trims what it stores either way — but a list that
 // grows past the cap for one round trip and then snaps back is a flicker.
 const MAX_CUSTOM_BACKGROUNDS = 24
+
+// The pin cap, mirroring maxPinnedAgents in db.go, for the same reason.
+const MAX_PINNED_AGENTS = 64
 
 // useUIState returns the persisted prefs (defaults until the first fetch lands).
 // Kept fresh across tabs by syncUIState (SSE-driven), not by polling.
@@ -157,6 +161,9 @@ function mergePatch(a: UIStatePatch, b: UIStatePatch): UIStatePatch {
   // the first.
   if (a.typography && b.typography)
     out.typography = { ...a.typography, ...b.typography }
+  // Pin ops are per key too: two cards pinned in one round trip both land.
+  if (a.agent_pins && b.agent_pins)
+    out.agent_pins = { ...a.agent_pins, ...b.agent_pins }
   return out
 }
 
@@ -166,6 +173,7 @@ function mergeLocal(cached: UIState, patch: UIStatePatch): UIState {
     typography,
     remember_background: remember,
     forget_background: forget,
+    agent_pins: pins,
     ...fields
   } = patch
   const out: UIState = { ...cached, ...fields }
@@ -186,7 +194,23 @@ function mergeLocal(cached: UIState, patch: UIStatePatch): UIState {
       MAX_CUSTOM_BACKGROUNDS
     )
   }
+  if (pins) {
+    // mergePinnedAgents' rules: unpins drop, new pins append in key order,
+    // re-pinning moves nothing, the oldest go past the cap.
+    const kept = (cached.pinned_agents ?? []).filter((k) => pins[k] !== false)
+    const adds = Object.keys(pins)
+      .filter((k) => pins[k] && !kept.includes(k))
+      .sort()
+    out.pinned_agents = [...kept, ...adds].slice(-MAX_PINNED_AGENTS)
+  }
   return out
+}
+
+// setAgentPinned pins or unpins one agents-grid card, by paneKey. An op rather
+// than a list write, so a tab holding a stale list cannot drop another
+// device's pin.
+export function setAgentPinned(key: string, pinned: boolean) {
+  patchUIState({ agent_pins: { [key]: pinned } })
 }
 
 // A pending write, either held back by `coalesceMs` or waiting for the request

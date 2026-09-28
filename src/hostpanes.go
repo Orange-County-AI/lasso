@@ -387,6 +387,11 @@ type uiStateWriter struct {
 	// added) out of a copy it fetched minutes ago; one URL and a verb cannot.
 	RememberBackground string `json:"remember_background"`
 	ForgetBackground   string `json:"forget_background"`
+	// AgentPins are OPS on PinnedAgents, per key: true pins (appended, so the
+	// newest pin sits last), false unpins. A map rather than one verb because
+	// a client coalesces queued writes into one patch, and two pins clicked in
+	// one round trip must both land.
+	AgentPins map[string]bool `json:"agent_pins"`
 }
 
 // atmospherePatch is one theme's backdrop as a CALLER sends it: every field
@@ -456,6 +461,9 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		// map yields exactly the slots the caller named, which are merged per
 		// slot below rather than replacing the stored map.
 		us.Typography = nil
+		// Detached, and whatever the body says about it is discarded below: it
+		// changes only through the agent_pins ops.
+		us.PinnedAgents = nil
 		if err := json.Unmarshal(body, &us); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -494,6 +502,13 @@ func serveUIState(w http.ResponseWriter, r *http.Request) {
 		}
 		us.ThemeAtmosphere = mergeThemeAtmosphere(stored.ThemeAtmosphere, who.ThemeAtmosphere)
 		us.CustomBackgrounds = mergeCustomBackgrounds(stored.CustomBackgrounds, who.RememberBackground, who.ForgetBackground)
+		for k := range who.AgentPins {
+			if k == "" || len(k) > pinnedAgentKeyMax {
+				http.Error(w, fmt.Sprintf("agent_pins: every key must be 1-%d bytes", pinnedAgentKeyMax), http.StatusBadRequest)
+				return
+			}
+		}
+		us.PinnedAgents = mergePinnedAgents(stored.PinnedAgents, who.AgentPins)
 
 		// The sidebar layout is the one field group several clients write
 		// unprompted, so it is arbitrated rather than merged (see uilock.go).
@@ -600,6 +615,39 @@ func mergeCustomBackgrounds(stored []string, remember, forget string) []string {
 	}
 	if len(out) > maxCustomBackgrounds {
 		out = out[:maxCustomBackgrounds]
+	}
+	return out
+}
+
+// mergePinnedAgents applies pin ops to the stored list: an unpin removes the
+// key, a pin appends it unless already pinned (re-pinning does not move a card
+// the reader already placed), and past maxPinnedAgents the oldest pins go.
+// Pins are applied in key order so one patch always yields one result. With
+// no ops it just repairs a stored list: drops blanks and duplicates, applies
+// the cap.
+func mergePinnedAgents(stored []string, ops map[string]bool) []string {
+	out := make([]string, 0, len(stored)+len(ops))
+	seen := make(map[string]bool, len(stored))
+	for _, k := range stored {
+		if k == "" || seen[k] {
+			continue
+		}
+		if pin, ok := ops[k]; ok && !pin {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	var adds []string
+	for k, pin := range ops {
+		if pin && !seen[k] {
+			adds = append(adds, k)
+		}
+	}
+	sort.Strings(adds)
+	out = append(out, adds...)
+	if len(out) > maxPinnedAgents {
+		out = out[len(out)-maxPinnedAgents:]
 	}
 	return out
 }

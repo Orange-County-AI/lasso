@@ -189,7 +189,7 @@ export function groupAgentsByHost(
 export function useAgents() {
   const { activePaneID, host: tabHost, panesRev } = useApp()
   const queryClient = useQueryClient()
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, dataUpdatedAt } = useQuery({
     // panes_rev is this TAB's host's revision, so it covers a create, a close or
     // a rename on the machine the reader is looking at without waiting for the
     // poll; the interval covers everything else — the other hosts, and the one
@@ -284,6 +284,10 @@ export function useAgents() {
     // and saying so is the difference between "that agent is gone" and "that
     // machine did not answer".
     unlisted: Object.keys(data?.errors ?? {}),
+    // When the listing last landed. Moves on every successful poll even when
+    // the list reads the same (structural sharing keeps `agents` stable), so
+    // it is what counts "this agent was missing again".
+    updatedAt: dataUpdatedAt,
     // The pane the highlight belongs on: the selection in flight, else herdr's
     // own answer, which only means anything on the host this tab is showing.
     current:
