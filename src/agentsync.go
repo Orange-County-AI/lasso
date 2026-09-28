@@ -32,6 +32,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -358,12 +360,16 @@ func syncAgentThemesEverywhere(rt resolvedTheme) {
 // against the live theme, so a machine converges within a refresh cycle of
 // coming back and a host already in step costs nothing.
 //
-// Deliberately in memory, not the settings table: it records what THIS process
-// wrote and can vouch for, so a restarted lasso reconciles the fleet once
-// rather than trusting a note on disk about files it never saw.
+// The record is SHARED by every lasso process on this lasso.db (see
+// themeWritten below); what stays in memory is only what THIS process wrote
+// (by) and what it has in flight. It used to be memory only, and that is how a
+// dev lasso and the production one reverted each other: each read the other's
+// writes as foreign — the palette-governs rule refused to adopt them, and the
+// convergence, finding its private record out of step with nothing, pushed its
+// own stale theme back.
 var themeSynced struct {
 	mu       sync.Mutex
-	by       map[string]themeStamp // host -> what was last written successfully
+	by       map[string]themeStamp // host -> what THIS process last wrote successfully
 	inFlight map[string]bool       // hosts with a convergence push running
 }
 
@@ -383,13 +389,86 @@ func themeStampFor(rt resolvedTheme) themeStamp {
 	return themeStamp{name: rt.Resolved, legibility: backdropSig(rt.Resolved)}
 }
 
+// themeInstance names this process in the shared record, so a hub can tell a
+// write it made from one another lasso on the same db made (and is fanning
+// out itself). pid alone could be reused across a restart.
+var themeInstance = fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+
+// themeRecord is one host's entry in the shared record: the stamp, plus which
+// process wrote it and with which build. Build matters because a record says
+// "these bytes are on that host", and a different build may generate different
+// bytes for the same theme — see claimThemeConverge.
+type themeRecord struct {
+	Name       string    `json:"name"`
+	Legibility string    `json:"legibility,omitempty"`
+	By         string    `json:"by"`
+	Build      string    `json:"build"`
+	At         time.Time `json:"at"`
+}
+
+func (r themeRecord) stamp() themeStamp {
+	return themeStamp{name: r.Name, legibility: r.Legibility}
+}
+
+// themeWrittenKey is the settings row holding host's shared record. One row
+// per host rather than one JSON map, so two processes recording two hosts at
+// once cannot lose each other's update in a read-modify-write.
+func themeWrittenKey(host string) string { return "theme_written:" + host }
+
+// themeRecordFor reports the last theme ANY lasso on this db wrote to host.
+// With no db (tests, CLI paths) it falls back to this process's own memory,
+// which is exactly the old single-process record.
+//
+// An unreadable db (closed at shutdown, locked past busy_timeout) degrades the
+// same way rather than reading as "nothing written", which would have the
+// convergence re-push every host.
+func themeRecordFor(host string) (themeRecord, bool) {
+	var v string
+	err := errors.New("no db")
+	if db != nil {
+		err = db.QueryRow(`SELECT value FROM settings WHERE key=?`, themeWrittenKey(host)).Scan(&v)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		themeSynced.mu.Lock()
+		defer themeSynced.mu.Unlock()
+		st, ok := themeSynced.by[host]
+		return themeRecord{Name: st.name, Legibility: st.legibility, By: themeInstance, Build: lassoVersion()}, ok
+	}
+	if v == "" {
+		return themeRecord{}, false
+	}
+	var r themeRecord
+	if json.Unmarshal([]byte(v), &r) != nil || r.Name == "" {
+		return themeRecord{}, false
+	}
+	return r, true
+}
+
+// putThemeRecord writes st as host's shared record, attributed to this process.
+func putThemeRecord(host string, st themeStamp) {
+	if db == nil {
+		return
+	}
+	b, err := json.Marshal(themeRecord{
+		Name: st.name, Legibility: st.legibility,
+		By: themeInstance, Build: lassoVersion(), At: time.Now().UTC(),
+	})
+	if err != nil {
+		return
+	}
+	if err := setSetting(themeWrittenKey(host), string(b)); err != nil {
+		log.Printf("theme:    record write for %s: %v", host, err)
+	}
+}
+
 func markThemeSynced(host string, st themeStamp) {
 	themeSynced.mu.Lock()
-	defer themeSynced.mu.Unlock()
 	if themeSynced.by == nil {
 		themeSynced.by = map[string]themeStamp{}
 	}
 	themeSynced.by[host] = st
+	themeSynced.mu.Unlock()
+	putThemeRecord(host, st)
 }
 
 // restampLegibility records a new backdrop fingerprint for a host lasso has
@@ -400,28 +479,35 @@ func markThemeSynced(host string, st themeStamp) {
 // agent theme files.
 func restampLegibility(host, name, sig string) {
 	themeSynced.mu.Lock()
-	defer themeSynced.mu.Unlock()
 	if st, ok := themeSynced.by[host]; ok && st.name == name {
 		themeSynced.by[host] = themeStamp{name: name, legibility: sig}
 	}
+	themeSynced.mu.Unlock()
+	if r, ok := themeRecordFor(host); ok && r.Name == name {
+		putThemeRecord(host, themeStamp{name: name, legibility: sig})
+	}
 }
 
-// forgetThemeSynced drops a host's record so the next probe retries it.
+// forgetThemeSynced drops a host's record so the next probe — any lasso's —
+// retries it.
 func forgetThemeSynced(host string) {
 	themeSynced.mu.Lock()
-	defer themeSynced.mu.Unlock()
 	delete(themeSynced.by, host)
+	themeSynced.mu.Unlock()
+	if db != nil {
+		if _, err := db.Exec(`DELETE FROM settings WHERE key=?`, themeWrittenKey(host)); err != nil {
+			log.Printf("theme:    record delete for %s: %v", host, err)
+		}
+	}
 }
 
-// themeSyncedFor reports the theme lasso last WROTE to host, and whether it has
-// written one at all. The convergence compares against it; the hub's theme poll
-// uses the local entry to tell a change lasso made from one somebody else made
-// (see hub.refreshTheme).
+// themeSyncedFor reports the theme lasso — any lasso on this db — last WROTE
+// to host, and whether one has written one at all. The convergence compares
+// against it; the hub's theme poll uses the local entry to tell a change lasso
+// made from one somebody else made (see hub.refreshTheme).
 func themeSyncedFor(host string) (string, bool) {
-	themeSynced.mu.Lock()
-	defer themeSynced.mu.Unlock()
-	st, ok := themeSynced.by[host]
-	return st.name, ok
+	r, ok := themeRecordFor(host)
+	return r.Name, ok
 }
 
 // claimThemeConverge reports whether this caller should push st to host: true
@@ -430,10 +516,23 @@ func themeSyncedFor(host string) (string, bool) {
 // and no push is in flight. The in-flight half matters because probes arrive in
 // bursts (a sweep, then the footer's refresh) and a push takes seconds — without
 // it one stale host would be written by several goroutines at once.
+//
+// "The last write" is the SHARED record, so a host another lasso already put on
+// st is in step here too, and a host another lasso wrote something ELSE to
+// after this one wrote st (a stale push landing late) is behind again. One
+// exception: a record left by a different BUILD is re-verified once per
+// process — a new build may generate different bytes for the same theme, and
+// reaching the fleet with them on restart is what `lasso update` relies on. A
+// record this process wrote itself never needs it, which is what keeps two
+// builds sharing a db (dev and production) from re-pushing each other forever.
 func claimThemeConverge(host string, st themeStamp) bool {
+	r, ok := themeRecordFor(host) // outside the lock: it may read sqlite
 	themeSynced.mu.Lock()
 	defer themeSynced.mu.Unlock()
-	if themeSynced.inFlight[host] || themeSynced.by[host] == st {
+	if themeSynced.inFlight[host] {
+		return false
+	}
+	if ok && r.stamp() == st && (r.Build == lassoVersion() || themeSynced.by[host] == st) {
 		return false
 	}
 	if themeSynced.inFlight == nil {
@@ -449,6 +548,91 @@ func releaseThemeConverge(host string) {
 	delete(themeSynced.inFlight, host)
 }
 
+// themeHubKey holds the theme lasso's hub last ADOPTED — the fleet's theme as
+// every lasso on this db should wear it. The poll adopts a config.toml theme
+// matching it while a palette governs (another process adopted it first), and
+// a booting lasso holds at it rather than adopting a stray edit it cannot
+// otherwise tell from lasso's own (see bootTheme).
+const themeHubKey = "theme_hub"
+
+// hubRecord is the shared "adopted" row: the theme, and which process adopted it.
+type hubRecord struct {
+	Name string `json:"name"`
+	By   string `json:"by"`
+}
+
+// noteHubTheme records name as the adopted fleet theme. A pinned -theme hub
+// wears a theme it chose alone, so it records nothing.
+func noteHubTheme(name string) {
+	if db == nil || name == "" || (*themeName != "" && *themeName != "auto") {
+		return
+	}
+	if cur, ok := hubThemeRecorded(); ok && cur.Name == name && cur.By == themeInstance {
+		return
+	}
+	b, _ := json.Marshal(hubRecord{Name: name, By: themeInstance})
+	if err := setSetting(themeHubKey, string(b)); err != nil {
+		log.Printf("theme:    %s: %v", themeHubKey, err)
+	}
+}
+
+// hubThemeRecorded is the fleet theme some lasso's hub last adopted.
+func hubThemeRecorded() (hubRecord, bool) {
+	if db == nil {
+		return hubRecord{}, false
+	}
+	v, _ := getSetting(themeHubKey)
+	var r hubRecord
+	if v == "" || json.Unmarshal([]byte(v), &r) != nil || r.Name == "" {
+		return hubRecord{}, false
+	}
+	return r, true
+}
+
+// lassoOwnsConfigTheme reports whether a config.toml theme is one lasso put
+// there: written by some lasso on this db (the shared local record), or
+// adopted by ANOTHER lasso's hub. While a palette governs, only such a theme
+// may be adopted; anything else is herdr's own popup or a hand edit. This
+// process's own adoptions are not counted — in a single process that is the
+// hub's current theme, and counting it would adopt a hand edit to it, which a
+// single lasso never did.
+func lassoOwnsConfigTheme(name string) bool {
+	if r, ok := themeRecordFor("local"); ok && r.Name == name {
+		return true
+	}
+	if h, ok := hubThemeRecorded(); ok && h.Name == name && h.By != themeInstance {
+		return true
+	}
+	return false
+}
+
+// bootTheme is the theme a starting lasso wears: config.toml's, unless an
+// appearance palette governs and config names a theme no lasso wrote or
+// adopted, in which case it holds at the one the running lassos wear. Without
+// this a process booting over a stray edit adopted it while every running one
+// refused it, and the two then re-converged the fleet onto their own themes
+// forever — the same settings have to reach the same decision in every process.
+func bootTheme(rt resolvedTheme) resolvedTheme {
+	if *themeName != "" && *themeName != "auto" {
+		return rt
+	}
+	hub, ok := hubThemeRecorded()
+	hubName := hub.Name
+	if !ok || hubName == rt.Resolved || !fleetThemeIsPalette() {
+		noteHubTheme(rt.Resolved)
+		return rt
+	}
+	if lassoOwnsConfigTheme(rt.Resolved) {
+		noteHubTheme(rt.Resolved)
+		return rt
+	}
+	if _, ok := lookupThemeDef(normalizeThemeName(hubName)); !ok {
+		return rt // a theme this build cannot resolve cannot be worn either
+	}
+	log.Printf("theme:    herdr's config.toml names %q, which lasso did not write; an appearance palette governs, so this lasso boots on %s", rt.Name, hubName)
+	return resolveThemeByName(hubName)
+}
+
 // syncThemeToHostFn is the seam convergence pushes go through, so the probe path
 // can be driven in tests without ssh (mirroring hosts.go's probeHostFn).
 var syncThemeToHostFn = syncThemeToHost
@@ -460,8 +644,9 @@ var syncThemeToHostFn = syncThemeToHost
 // its next probe rather than waiting for the next theme change.
 //
 // Runs in a goroutine and holds a themeSem slot for the duration, so a sweep
-// that finds the whole fleet stale (a fresh lasso, whose record is empty by
-// design) converges it in waves instead of one ssh burst.
+// that finds the whole fleet stale (a new build re-verifying another build's
+// records, or a first boot with none) converges it in waves instead of one ssh
+// burst.
 func convergeThemeOnProbe(hi HostInfo) {
 	if srvHub == nil || db == nil { // not a running server: boot, CLI, tests
 		return
@@ -480,6 +665,14 @@ func convergeThemeOnProbe(hi HostInfo) {
 		defer releaseThemeConverge(hi.Alias)
 		themeSem <- struct{}{}
 		defer func() { <-themeSem }()
+		// The slot can take seconds to come free, and the theme can move under
+		// it — here or in another lasso on this db, whose write this hub adopts
+		// on its next poll. A push of the theme it WAS would land a stale write
+		// after the fresh one; the change's own fan-out and the next probe cover
+		// this host instead.
+		if live := liveTheme(); live.Resolved != rt.Resolved {
+			return
+		}
 		syncThemeToHostFn(hi.Alias, rt)
 	}()
 }
@@ -1930,16 +2123,24 @@ func setLocalHerdrTheme(name string) error {
 	if !themeSyncEnabledFor("local") {
 		return nil
 	}
-	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
-		return err
-	}
-	// Record it BEFORE re-resolving, which is what tells the hub's poll that the
+	// Record it BEFORE the write, which is what tells a hub's poll that the
 	// change it is about to see is lasso's own: while an appearance palette is
 	// named the poll adopts only a config.toml theme lasso wrote (anything else
 	// is herdr's own popup or a hand edit, and the fleet stays on the palette),
-	// and the write above has not reached the fan-out that would otherwise mark
-	// it yet.
+	// and the fan-out that would otherwise mark it has not run yet. Before the
+	// write rather than after it, because the record is shared: another lasso
+	// on this db polls on its own clock and may read the file the instant it
+	// lands. A failed write puts the previous record back.
+	prev, hadPrev := themeRecordFor("local")
 	markThemeSynced("local", themeStamp{name: name, legibility: backdropSig(name)})
+	if err := setHerdrThemeName(herdrConfigPath(), name); err != nil {
+		if hadPrev {
+			markThemeSynced("local", prev.stamp())
+		} else {
+			forgetThemeSynced("local")
+		}
+		return err
+	}
 	// herdr does not watch its config file, so ask the server to re-read it.
 	// Best-effort: with herdr down the theme still applies on its next start,
 	// and it must not turn a successful write into a reported failure.
