@@ -250,15 +250,19 @@ func runServer() {
 	// The shared browser launches lazily (first /cdp request, the Browser tab's
 	// start, or the MCP tool); nothing runs until then. run() is its idle stop
 	// and, on ctx, its shutdown — the same ctx ttyd's children hang off.
-	sharedBrowser = newBrowserManager(browserConfig{
+	// Every other browser profile (browserprofiles.go) is its own Chromium with
+	// the same config, supervised by the fleet, whose run() reaps them all.
+	browserCfg := browserConfig{
 		Explicit:     *browserBin,
 		Idle:         *browserIdle,
 		Cap:          browserCap{CPU: capLimit(*browserCPU), Mem: capLimit(*browserMem)},
 		Dir:          lassoDir(),
 		Scale:        validBrowserScale(*browserScale),
 		AuthRequired: hasAuth || oauthCfg.Enabled,
-	})
-	go sharedBrowser.run(ctx)
+	}
+	sharedBrowser = newBrowserManager(browserCfg)
+	sharedBrowsers = newBrowserFleet(browserCfg)
+	go sharedBrowsers.run(ctx)
 	// Its sessions' children hold CDP connections to one browser process, so
 	// when that process goes away (stop, idle stop, relaunch, crash) they are
 	// closed and their clients re-initialize onto the next one.
@@ -268,6 +272,7 @@ func runServer() {
 		Max:       *browserMCPMax,
 	})
 	sharedBrowser.onStop = browserMCP.browserStopped
+	sharedBrowsers.onStop = browserMCP.browserStoppedFor
 
 	// handles WS upgrade natively (the hijacked conn is dialed via Transport too)
 	var proxy *httputil.ReverseProxy
@@ -321,8 +326,10 @@ func runServer() {
 	mux.HandleFunc("/api/agent-history", serveAgentHistory)
 	mux.HandleFunc("/api/paste-file", servePasteFile)
 	mux.HandleFunc("/api/frameable", serveFrameable)
-	mux.HandleFunc("/api/browser", sharedBrowser.serveStatus)
-	mux.HandleFunc("/api/browser/proxy", sharedBrowser.serveProxy)
+	mux.HandleFunc("/api/browser", sharedBrowsers.serveStatus)
+	mux.HandleFunc("/api/browser/proxy", sharedBrowsers.serveProxy)
+	mux.HandleFunc("/api/browser/profiles", sharedBrowsers.serveProfiles)
+	mux.HandleFunc("/api/browser/profiles/", sharedBrowsers.serveProfiles)
 	mux.HandleFunc("/api/diff", serveDiff)
 	mux.HandleFunc("/api/diff-file", serveDiffFile)
 	mux.HandleFunc("/api/version", serveVersion)
@@ -378,7 +385,7 @@ func runServer() {
 	// UI_AUTH below like /mcp, because it carries its own gate: withCDPAuth
 	// applies /mcp's rule when MCP_OAUTH is set and UI_AUTH's otherwise, and
 	// serveCDP refuses any foreign Origin before either matters.
-	cdpHandler := withCDPAuth(http.HandlerFunc(sharedBrowser.serveCDP), authUser, authPass, hasAuth)
+	cdpHandler := withCDPAuth(http.HandlerFunc(serveCDPRouted), authUser, authPass, hasAuth)
 	mux.Handle("/cdp", cdpHandler)
 	mux.Handle("/cdp/", cdpHandler)
 	// The shared browser as an MCP server (browsermcp.go): one URL an agent adds
@@ -427,7 +434,7 @@ func runServer() {
 	))
 	// lasso's own chrome-devtools-mcp children reach /cdp on an internal token,
 	// ahead of every gate above (see withInternalCDP for why outermost).
-	handler = withInternalCDP(handler, http.HandlerFunc(sharedBrowser.serveCDP))
+	handler = withInternalCDP(handler, http.HandlerFunc(serveCDPRouted))
 
 	// Bind now (not via ListenAndServe) so dev can fall forward to the next free
 	// port if the requested one is taken. Outside dev a busy port is fatal — we
@@ -502,10 +509,10 @@ func runServer() {
 		// Only now tear down what in-flight requests depended on.
 		cancelBackends()
 		closeBackendsOnExit()
-		// Cancelling ctx asks run() to stop the shared browser, but nothing
-		// waits on that goroutine: stop it here too, synchronously, so lasso
-		// never exits ahead of its Chromium. The second stop is a no-op.
-		sharedBrowser.shutdown()
+		// Cancelling ctx asks run() to stop the shared browsers, but nothing
+		// waits on that goroutine: stop them here too, synchronously, so lasso
+		// never exits ahead of a Chromium. The second stop is a no-op.
+		sharedBrowsers.shutdown()
 	}()
 
 	gate.logStatus(*listenAddr, hasAuth)

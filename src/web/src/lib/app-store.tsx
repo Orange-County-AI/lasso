@@ -2,6 +2,10 @@ import * as React from "react"
 import { toast } from "sonner"
 
 import { type ActiveState, api } from "@/lib/api"
+import {
+  handleBrowserOpenEvent,
+  handleBrowserProfilesEvent,
+} from "@/lib/browser-profiles"
 import { clientID } from "@/lib/client-id"
 import { setTabHost, tabHost, withTabHost } from "@/lib/host"
 import { applyMode, subscribeAppearance, watchSystemMode } from "@/lib/mode"
@@ -164,6 +168,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       es.addEventListener("open-file", (e) =>
         handleOpenFileEvent((e as MessageEvent).data)
       )
+      // An agent opened (or asked to show) a page in the shared browser, and
+      // a profile changed somewhere (lib/browser-profiles.ts).
+      es.addEventListener("browser-open", (e) =>
+        handleBrowserOpenEvent((e as MessageEvent).data)
+      )
+      es.addEventListener("browser-profiles", handleBrowserProfilesEvent)
     }
 
     // A tab that remembers a host from a previous page load must re-attach

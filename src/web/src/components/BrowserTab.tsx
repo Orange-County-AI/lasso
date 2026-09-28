@@ -1,6 +1,8 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ExternalLink, RotateCw } from "lucide-react"
 import * as React from "react"
+import { toast } from "sonner"
+import { BrowserProfileBar } from "@/components/BrowserProfileBar"
 import { LiveBrowser } from "@/components/LiveBrowser"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,8 +13,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { api, type BrowserMode } from "@/lib/api"
+import { api, type BrowserMode, type BrowserStatus } from "@/lib/api"
 import { lsGet, lsSet } from "@/lib/app-store"
+import {
+  type BrowserShowRequest,
+  DEFAULT_PROFILE,
+  onBrowserShowRequest,
+  profilesOf,
+  storedProfile,
+  storeProfile,
+} from "@/lib/browser-profiles"
 import { LOOPBACK, normalize } from "@/lib/browser-url"
 import { qk } from "@/lib/query"
 import {
@@ -320,12 +330,17 @@ function BrowserModeSwitch({
   mode,
   liveDisabled,
   liveTitle,
+  onPick,
 }: {
   mode: BrowserMode
   liveDisabled: boolean
   liveTitle: string
+  // Told about every click, so BrowserTab can drop an agent's temporary
+  // switch to Agent mode the moment the human picks a mode themselves.
+  onPick: () => void
 }) {
   const pick = (m: BrowserMode) => {
+    onPick()
     if (m !== mode) patchUIState({ browser_mode: m })
   }
   const seg = (m: BrowserMode) =>
@@ -374,7 +389,8 @@ function BrowserModeSwitch({
 //   - Live: the shared headless Chromium lasso runs on its own machine, shown
 //     as a CDP screencast and driven with forwarded input (LiveBrowser). Agents
 //     connect to the same Chromium over /cdp, so its tab strip is where their
-//     pages show up.
+//     pages show up. Each browser PROFILE (own cookies, own proxy) is its own
+//     Chromium; the bar along the bottom picks which one this client shows.
 //   - Embed: an iframe, exactly as the tab always was.
 //
 // Live is the stored default but not always what is shown: a lasso with no
@@ -387,6 +403,7 @@ function BrowserModeSwitch({
 // streams only then, so an unwatched browser costs lasso a closed socket and
 // lets its idle timer stop Chromium.
 export function BrowserTab({ active }: { active: boolean }) {
+  const queryClient = useQueryClient()
   const pref = useUIState().browser_mode
   const status = useQuery({
     queryKey: qk.browser,
@@ -398,14 +415,69 @@ export function BrowserTab({ active }: { active: boolean }) {
     refetchInterval: active ? 30_000 : false,
   })
   const unavailable = status.isError || status.data?.available === false
-  const mode: BrowserMode = pref === "live" && !unavailable ? "live" : "embed"
+
+  // An agent showing the human a page switches this client to Agent mode
+  // without touching the shared preference: it is one agent's page on one
+  // screen, not a decision about how every browser shows the tab. Any click
+  // on the mode switch hands the choice back.
+  const [forceLive, setForceLive] = React.useState(false)
+  const mode: BrowserMode =
+    (pref === "live" || forceLive) && !unavailable ? "live" : "embed"
   React.useEffect(() => setEffectiveBrowserMode(mode), [mode])
+
+  // ---- profiles ----------------------------------------------------------
+  const profiles = profilesOf(status.data)
+  const manageable = !!status.data?.profiles?.length
+  const [profile, setProfileState] = React.useState(storedProfile)
+  // When the selection last changed, so a status fetched BEFORE a profile
+  // existed (an agent creating one and opening a page in it straight away)
+  // does not read as "that profile is gone" and bounce back to default.
+  const pickedAt = React.useRef(0)
+  const pickProfile = React.useCallback((id: string) => {
+    pickedAt.current = Date.now()
+    storeProfile(id)
+    setProfileState(id)
+  }, [])
+  const known = profiles.some((p) => p.id === profile)
+  React.useEffect(() => {
+    if (!status.data || known) return
+    if (status.dataUpdatedAt < pickedAt.current) {
+      void queryClient.invalidateQueries({ queryKey: qk.browser })
+      return
+    }
+    pickProfile(DEFAULT_PROFILE)
+  }, [status.data, status.dataUpdatedAt, known, pickProfile, queryClient])
+  const currentProfile = profiles.find((p) => p.id === profile)
+  // Until the status catches up with a just-picked profile, its paths follow
+  // the server's convention so the connection can already start.
+  const wsPath =
+    currentProfile?.ws_path ||
+    (profile === DEFAULT_PROFILE
+      ? "/cdp"
+      : `/cdp/p/${encodeURIComponent(profile)}`)
+
+  const [show, setShow] = React.useState<BrowserShowRequest | null>(null)
+  React.useEffect(
+    () =>
+      onBrowserShowRequest((req) => {
+        setForceLive(true)
+        pickProfile(req.profile)
+        setShow(req)
+        const st = queryClient.getQueryData<BrowserStatus>(qk.browser)
+        const name =
+          profilesOf(st).find((p) => p.id === req.profile)?.name ?? req.profile
+        toast(`${req.from} opened a page in ${name}`, {
+          description: req.url && req.url !== "about:blank" ? req.url : "",
+        })
+      }),
+    [pickProfile, queryClient]
+  )
 
   const reason = status.isError
     ? `this lasso has no shared browser (${status.error instanceof Error ? status.error.message : "status unavailable"})`
     : status.data?.reason || "no Chromium was found"
   const note =
-    pref === "live" && unavailable
+    (pref === "live" || forceLive) && unavailable
       ? `Agent browser unavailable: ${reason}. Install Chrome or Chromium, or point LASSO_BROWSER at one, to enable it.`
       : ""
 
@@ -421,15 +493,30 @@ export function BrowserTab({ active }: { active: boolean }) {
       mode={mode}
       liveDisabled={unavailable}
       liveTitle={`Agent browser unavailable: ${reason}`}
+      onPick={() => setForceLive(false)}
     />
   )
 
   return mode === "live" ? (
     <LiveBrowser
+      // A profile is a different Chromium, so switching is a fresh
+      // connection with fresh state rather than a filter over one browser.
+      key={profile}
+      profile={profile}
+      wsPath={wsPath}
       active={active}
       openRequest={openRequest}
       onOpened={onOpened}
+      showRequest={show?.profile === profile ? show : null}
       modeSwitch={modeSwitch}
+      footer={
+        <BrowserProfileBar
+          profiles={profiles}
+          current={profile}
+          onPick={pickProfile}
+          manageable={manageable}
+        />
+      }
     />
   ) : (
     <EmbedBrowser

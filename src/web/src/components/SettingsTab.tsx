@@ -1684,7 +1684,10 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
         OpenCode, …) add the same URL as a streamable-HTTP MCP server. Behind
         UI_AUTH or MCP_OAUTH a remote agent sends an Authorization header (a
         token from <code className="font-mono">lasso mcp-client token</code>, or
-        Basic credentials for UI_AUTH).
+        Basic credentials for UI_AUTH). This URL and the fields above are the
+        default profile's; each other browser profile has its own at{" "}
+        <code className="font-mono">/browser-mcp/&lt;id&gt;</code>, and profiles
+        are managed from the bar along the bottom of the Browser tab.
       </p>
       <CopyLine label="CDP endpoint" text={endpoint} />
       <p className="text-[11px] text-muted-foreground">

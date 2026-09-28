@@ -119,8 +119,9 @@ func newBrowserMCPBridge(cfg browserMCPConfig) *browserMCPBridge {
 	// fails initialization and the SDK closes it). Each gets a server of its
 	// own, because a session's tool list IS its child's, and nothing is spawned
 	// until the initialize actually runs (browserMCPSession.start).
-	b.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return b.newSessionServer()
+	b.handler = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		profile, _ := browserMCPProfile(r.URL.Path)
+		return b.newSessionServer(profile)
 	}, &mcp.StreamableHTTPOptions{
 		// Same reason as newMCPHandler: lasso is loopback-bound and reached
 		// through a tunnel under a public Host, which the SDK's DNS-rebinding
@@ -187,6 +188,28 @@ func (b *browserMCPBridge) sessions() int {
 	return len(b.live)
 }
 
+// browserMCPProfile is the browser profile a /browser-mcp path names:
+// /browser-mcp is the default profile's, /browser-mcp/<id> another's.
+// ok=false is a path with more than one segment after the prefix.
+func browserMCPProfile(p string) (string, bool) {
+	rest := strings.Trim(strings.TrimPrefix(p, "/browser-mcp"), "/")
+	if rest == "" {
+		return defaultBrowserProfile, true
+	}
+	if strings.Contains(rest, "/") {
+		return "", false
+	}
+	return rest, true
+}
+
+// browserMCPPathFor is the /browser-mcp address of a profile.
+func browserMCPPathFor(profile string) string {
+	if profile == "" || profile == defaultBrowserProfile {
+		return "/browser-mcp"
+	}
+	return "/browser-mcp/" + profile
+}
+
 // ServeHTTP refuses a NEW session up front when the endpoint cannot work (off,
 // or no chrome-devtools-mcp), with the reason in the body, instead of letting
 // the client find out from a failed initialize. A request that names a session
@@ -201,6 +224,17 @@ func (b *browserMCPBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, reason, http.StatusServiceUnavailable)
 			return
 		}
+		profile, ok := browserMCPProfile(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if profile != defaultBrowserProfile {
+			if _, err := browserFor(profile); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+		}
 	}
 	b.handler.ServeHTTP(w, r)
 }
@@ -209,6 +243,9 @@ func (b *browserMCPBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type browserMCPSession struct {
 	b   *browserMCPBridge
 	srv *mcp.Server
+	// profile is the browser profile this session's child drives; a stop of
+	// that profile's browser ends the session, a stop of another's does not.
+	profile string
 
 	mu      sync.Mutex
 	ss      *mcp.ServerSession
@@ -219,14 +256,21 @@ type browserMCPSession struct {
 	closed  bool
 }
 
-func (b *browserMCPBridge) newSessionServer() *mcp.Server {
-	s := &browserMCPSession{b: b}
+func (b *browserMCPBridge) newSessionServer(profile string) *mcp.Server {
+	if profile == "" {
+		profile = defaultBrowserProfile
+	}
+	s := &browserMCPSession{b: b, profile: profile}
+	instructions := browserMCPInstructions
+	if profile != defaultBrowserProfile {
+		instructions += "\n- This session drives the browser PROFILE \"" + profile + "\": its own Chromium, with its own cookies, logins and proxy. Other profiles' pages are not visible here."
+	}
 	s.srv = mcp.NewServer(&mcp.Implementation{
 		Name:    "lasso-browser",
 		Title:   "Lasso shared browser (chrome-devtools-mcp)",
 		Version: lassoSemver,
 	}, &mcp.ServerOptions{
-		Instructions: browserMCPInstructions,
+		Instructions: instructions,
 		// The tools are registered while initialize is being answered. Declaring
 		// the capability up front, with listChanged off, keeps AddTool from
 		// queueing a tools/list_changed notification at a session that has not
@@ -282,6 +326,13 @@ func (s *browserMCPSession) start(ctx context.Context, ss *mcp.ServerSession) er
 	if endpoint == "" {
 		return errors.New("lasso is not listening yet; retry in a moment")
 	}
+	if s.profile != defaultBrowserProfile {
+		if _, err := browserFor(s.profile); err != nil {
+			return err
+		}
+		// cdpEndpoint is ws://<addr>/cdp; the profile's browser is one level down.
+		endpoint += strings.TrimPrefix(cdpPathFor(s.profile), "/cdp")
+	}
 
 	cmd := exec.Command(bin, browserMCPArgs(endpoint, internalCDPToken, b.cfg.ExtraArgs)...)
 	cmd.Env = append(browserMCPEnv(os.Environ()), b.cfg.ExtraEnv...)
@@ -335,7 +386,7 @@ func (s *browserMCPSession) start(ctx context.Context, ss *mcp.ServerSession) er
 	n := len(b.live)
 	b.mu.Unlock()
 	registered = true
-	log.Printf("browser-mcp: session started, child pid %d (%d tools; %d of %d live)", pid, len(tools), n, b.cfg.Max)
+	log.Printf("browser-mcp: session started for profile %q, child pid %d (%d tools; %d of %d live)", s.profile, pid, len(tools), n, b.cfg.Max)
 
 	// Either end going away ends both. The session ending (DELETE, idle
 	// timeout, a relaunch closing it) kills the child; the child dying (a
@@ -440,13 +491,25 @@ func (b *browserMCPBridge) closeSessions(sessions []*browserMCPSession, why stri
 	wg.Wait()
 }
 
-// browserStopped is the shared browser's stop hook (browserManager.onStop). The
-// set of sessions is taken NOW, synchronously — a session that connects after
-// this moment is talking to the next browser and must survive — and closed in
-// the background, since the hook runs with the browser's launch lock held.
+// browserStopped is the default profile's stop hook (browserManager.onStop).
 func (b *browserMCPBridge) browserStopped(why string) {
-	if ss := b.snapshot(); len(ss) > 0 {
-		go b.closeSessions(ss, "the shared browser stopped ("+why+")")
+	b.browserStoppedFor(defaultBrowserProfile, why)
+}
+
+// browserStoppedFor closes the sessions driving one profile's browser, which
+// just went away. The set is taken NOW, synchronously — a session that
+// connects after this moment is talking to the next browser and must survive —
+// and closed in the background, since the hook runs with the browser's launch
+// lock held. Other profiles' sessions are other processes and are untouched.
+func (b *browserMCPBridge) browserStoppedFor(profile, why string) {
+	var mine []*browserMCPSession
+	for _, s := range b.snapshot() {
+		if s.profile == profile {
+			mine = append(mine, s)
+		}
+	}
+	if len(mine) > 0 {
+		go b.closeSessions(mine, "the shared browser stopped ("+why+")")
 	}
 }
 

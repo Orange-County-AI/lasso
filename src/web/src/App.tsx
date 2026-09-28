@@ -45,6 +45,7 @@ import {
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppProvider, lsGet, lsSet, useApp } from "@/lib/app-store"
+import { onBrowserShowRequest } from "@/lib/browser-profiles"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
@@ -355,6 +356,18 @@ function Shell() {
       onSidebarBrowserOpen(() => {
         setRightView("browser")
         openSidebar()
+      }),
+    [openSidebar]
+  )
+
+  // An agent opened a page in the shared browser (lib/browser-profiles.ts):
+  // reveal the Browser tab, opening the sidebar with intent for the same
+  // reason as open_file below. BrowserTab switches profile and page itself.
+  React.useEffect(
+    () =>
+      onBrowserShowRequest(() => {
+        setRightView("browser")
+        if (rightPanel.current?.isCollapsed()) openSidebar()
       }),
     [openSidebar]
   )
