@@ -4,6 +4,8 @@ import {
   Loader2,
   Maximize2,
   Paperclip,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Send,
@@ -43,7 +45,7 @@ import {
 import { useApp } from "@/lib/app-store"
 import { useFlip } from "@/lib/flip"
 import { qk, queryClient } from "@/lib/query"
-import { patchUIState, useUIState } from "@/lib/ui-state"
+import { patchUIState, setAgentPinned, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
 
 // The fleet as parallel conversations: every agent lasso can reach in a grid,
@@ -64,6 +66,12 @@ import { cn } from "@/lib/utils"
 // portrait, up to three on a wide desktop.
 const gridClass =
   "grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]"
+
+// How many successful listings in a row a pinned agent may be missing from
+// before its pin is dropped. A pane id can be reused by a later agent, which
+// must not inherit a stale pin, but one listing that misses an agent mid
+// restart must not cost the human a pin either: at the 5s poll this is ~15s.
+const PIN_PRUNE_MISSES = 3
 
 // Everything a filter may match, lowercased once: the name and labels the
 // header shows, the harness and cwd it works in, the machine it runs on, and
@@ -110,7 +118,8 @@ export function AgentsView({
   onNewAgent: () => void
   className?: string
 }) {
-  const { agents, isLoading, error, unlisted, focusAgent } = useAgents()
+  const { agents, isLoading, error, unlisted, updatedAt, focusAgent } =
+    useAgents()
   const { host: tabHost } = useApp()
   const [groupByHost, setGroupByHost] = React.useState(true)
   const [filter, setFilter] = React.useState("")
@@ -119,7 +128,7 @@ export function AgentsView({
   // stops moving, and an order that reverts on the next reload — or differs on
   // the phone — does not deliver that. Grouping stays local: it changes what
   // the layout says, not whether it holds still.
-  const sort = useUIState().agents_sort
+  const { agents_sort: sort, pinned_agents: pinnedKeys } = useUIState()
   const setSort = (next: AgentSort) => {
     if (next !== sort) patchUIState({ agents_sort: next })
   }
@@ -151,32 +160,89 @@ export function AgentsView({
       agentSearchText(p, chats.get(paneKey(p))).includes(q)
     )
   }, [agents, chats, q])
+  // Pinned cards lead the grid in the order they were pinned, outside every
+  // machine section and deaf to the sort: the point of a pin is a card that
+  // holds still while its agent blocks, works and finishes. Server state (like
+  // the sort) so the phone and the desktop agree on which cards those are.
+  const pinnedSet = React.useMemo(() => new Set(pinnedKeys ?? []), [pinnedKeys])
+  const pinned = React.useMemo(() => {
+    const byKey = new Map(visible.map((p) => [paneKey(p), p]))
+    return (pinnedKeys ?? []).flatMap((k) => {
+      const p = byKey.get(k)
+      return p ? [p] : []
+    })
+  }, [visible, pinnedKeys])
+  const rest = React.useMemo(
+    () => visible.filter((p) => !pinnedSet.has(paneKey(p))),
+    [visible, pinnedSet]
+  )
   // The two controls compose: Sort decides card order, Group decides whether
   // machine sections divide the grid. All four combinations mean something.
   const groups = React.useMemo(
-    () => groupAgentsByHost(visible, tabHost, sort),
-    [visible, tabHost, sort]
+    () => groupAgentsByHost(rest, tabHost, sort),
+    [rest, tabHost, sort]
   )
-  const flat = React.useMemo(() => sortAgents(visible, sort), [visible, sort])
+  const flat = React.useMemo(() => sortAgents(rest, sort), [rest, sort])
+
+  // Drop pins whose agent is gone (see PIN_PRUNE_MISSES). Counted against the
+  // unfiltered list, and never for a host that did not answer this pass: an
+  // unreachable machine says nothing about whether its agents still exist.
+  const pinMisses = React.useRef(new Map<string, number>())
+  // biome-ignore lint/correctness/useExhaustiveDependencies: updatedAt is the trigger; a poll that returns the same list must still count as a miss.
+  React.useEffect(() => {
+    if (isLoading || error || !updatedAt) return
+    const live = new Set(agents.map(paneKey))
+    const down = new Set(unlisted)
+    const misses = pinMisses.current
+    for (const k of pinnedKeys ?? []) {
+      if (live.has(k) || down.has(k.split("\u0000")[0])) {
+        misses.delete(k)
+        continue
+      }
+      const n = (misses.get(k) ?? 0) + 1
+      if (n < PIN_PRUNE_MISSES) {
+        misses.set(k, n)
+        continue
+      }
+      misses.delete(k)
+      setAgentPinned(k, false)
+    }
+  }, [updatedAt, isLoading, error])
   // What tells the FLIP hook a reorder may have happened. Derived from the
   // order actually RENDERED (sections included, since grouping moves cards
   // too), so the grid pays no layout reads for the per-agent transcript polls
   // that re-render this view every few seconds without moving anything.
   const orderKey = React.useMemo(
     () =>
-      groupByHost
+      `${pinned.map(paneKey).join(",")}#` +
+      (groupByHost
         ? groups
             .map((g) => `${g.host}:${g.panes.map(paneKey).join(",")}`)
             .join("|")
-        : flat.map(paneKey).join(","),
-    [groupByHost, groups, flat]
+        : flat.map(paneKey).join(",")),
+    [pinned, groupByHost, groups, flat]
   )
   const flipRef = useFlip(orderKey)
-  const blocked = visible.filter((p) => p.agent_status === "blocked").length
-  const working = visible.filter((p) => p.agent_status === "working").length
+  const blocked = rest.filter((p) => p.agent_status === "blocked").length
+  const working = rest.filter((p) => p.agent_status === "working").length
   const openCard = (p: HostPane) => async () => {
     onShowChat()
     await focusAgent(p)
+  }
+  const card = (p: HostPane) => {
+    const key = paneKey(p)
+    const isPinned = pinnedSet.has(key)
+    return (
+      <AgentCard
+        key={key}
+        flipRef={flipRef(key)}
+        pane={p}
+        data={chats.get(key)}
+        onOpen={openCard(p)}
+        pinned={isPinned}
+        onTogglePin={() => setAgentPinned(key, !isPinned)}
+      />
+    )
   }
 
   return (
@@ -305,6 +371,15 @@ export function AgentsView({
             </button>
           </div>
         )}
+        {pinned.length > 0 && (
+          <section className="mb-3">
+            <header className="mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+              <Pin className="size-3" />
+              Pinned · {pinned.length}
+            </header>
+            <div className={gridClass}>{pinned.map(card)}</div>
+          </section>
+        )}
         {groupByHost
           ? groups.map((g) => (
               <section key={g.host} className="mb-3 last:mb-0">
@@ -335,23 +410,13 @@ export function AgentsView({
                     viewport, so viewport breakpoints cannot know a card's
                     width. One column on a narrow tablet portrait, up to three
                     on a wide desktop. */}
-                <div className={gridClass}>
-                  {g.panes.map((p) => (
-                    <AgentCard
-                      key={paneKey(p)}
-                      flipRef={flipRef(paneKey(p))}
-                      pane={p}
-                      data={chats.get(paneKey(p))}
-                      onOpen={openCard(p)}
-                    />
-                  ))}
-                </div>
+                <div className={gridClass}>{g.panes.map(card)}</div>
               </section>
             ))
-          : visible.length > 0 && (
+          : rest.length > 0 && (
               <>
                 <div className="mb-1.5 px-1 text-[11px] text-muted-foreground">
-                  {visible.length} agent{visible.length === 1 ? "" : "s"}
+                  {rest.length} agent{rest.length === 1 ? "" : "s"}
                   {blocked > 0 && (
                     <span className="text-destructive">
                       {" "}
@@ -362,17 +427,7 @@ export function AgentsView({
                     <span className="text-primary"> · {working} working</span>
                   )}
                 </div>
-                <div className={gridClass}>
-                  {flat.map((p) => (
-                    <AgentCard
-                      key={paneKey(p)}
-                      flipRef={flipRef(paneKey(p))}
-                      pane={p}
-                      data={chats.get(paneKey(p))}
-                      onOpen={openCard(p)}
-                    />
-                  ))}
-                </div>
+                <div className={gridClass}>{flat.map(card)}</div>
               </>
             )}
       </div>
@@ -422,10 +477,14 @@ function AgentCard({
   data,
   onOpen,
   flipRef,
+  pinned,
+  onTogglePin,
 }: {
   pane: HostPane
   data: ChatPayload | undefined
   onOpen: () => void
+  pinned: boolean
+  onTogglePin: () => void
   // Registers this card with the grid's reorder animation. The transform lands
   // on the card's own element, so a resort moves it without remounting it —
   // scroll position, focus and an unsent draft all survive (see lib/flip).
@@ -569,6 +628,23 @@ function AgentCard({
           />
         </div>
         <div className="flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={onTogglePin}
+            aria-pressed={pinned}
+            title={pinned ? "Unpin" : "Pin to the top of the grid"}
+            aria-label={pinned ? "Unpin" : "Pin to the top of the grid"}
+            className={cn(
+              "flex size-7 items-center justify-center rounded-lg hover:bg-accent hover:text-foreground",
+              pinned ? "text-primary" : "text-muted-foreground"
+            )}
+          >
+            {pinned ? (
+              <PinOff className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5" />
+            )}
+          </button>
           <button
             type="button"
             onClick={onOpen}

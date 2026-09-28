@@ -437,6 +437,11 @@ export interface UIState {
   // send "" — the server answers 400 and drops the whole patch, exactly as it
   // does for appearance_mode.
   agents_sort: AgentSort
+  // The agents grid's pinned cards, oldest pin first, each a paneKey (host +
+  // NUL + pane id). Pinned cards sit above the rest and ignore agents_sort.
+  // Read-only here: write it through the agent_pins ops (setAgentPinned).
+  // Optional because an older server never sends it.
+  pinned_agents?: string[]
   // What the Browser tab shows (see BrowserMode). Never send "" — the server
   // answers 400 and drops the whole patch, as it does for agents_sort.
   browser_mode: BrowserMode
@@ -476,6 +481,8 @@ export interface SidebarTabPref {
 export interface UIStatePatch extends Partial<UIState> {
   remember_background?: string
   forget_background?: string
+  // Pin ops on pinned_agents, per paneKey: true pins, false unpins.
+  agent_pins?: Record<string, boolean>
 }
 
 // What a POST /api/ui-state write sends beyond the preferences themselves: who

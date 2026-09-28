@@ -340,6 +340,14 @@ type uiState struct {
 	// not answer that. The grid's own group-by-machine toggle stays ephemeral
 	// — it changes what the layout SAYS, not whether it holds still.
 	AgentsSort string `json:"agents_sort"`
+	// PinnedAgents are the agents grid's pinned cards, in the order they were
+	// pinned, each as the frontend's paneKey (host + NUL + pane id, since pane
+	// ids are unique per host only). A pinned card sits above every other card
+	// and never moves on a status change, whatever AgentsSort says. Written
+	// only through the agent_pins OPS (see uiStateWriter), never as a list:
+	// a tab holding a stale copy would otherwise drop a pin another device
+	// just added.
+	PinnedAgents []string `json:"pinned_agents"`
 	// BrowserMode is what the sidebar's Browser tab shows: "live" (the
 	// default — the shared headless Chromium lasso supervises, streamed as a
 	// screencast and driven by humans and agents alike) or "embed" (the plain
@@ -467,6 +475,15 @@ const atmosphereNoBackground = "none"
 // maxCustomBackgrounds caps the hand-given gallery. It is a list of URLs a
 // human curates, not a store: past a couple of dozen the picker is the problem.
 const maxCustomBackgrounds = 24
+
+// maxPinnedAgents caps PinnedAgents. Pins for agents that closed are pruned by
+// the grid, but one that closed while no grid was open lingers until it is
+// seen missing, and a list nobody reads must not grow without bound. Past the
+// cap the OLDEST pin goes.
+const maxPinnedAgents = 64
+
+// pinnedAgentKeyMax bounds one pin key: a host name plus a herdr pane id.
+const pinnedAgentKeyMax = 300
 
 // The appearance modes a browser may name. "herdr" is the historical behavior
 // (the chrome follows the shared herdr palette); "system" — the default —
@@ -596,6 +613,7 @@ func getUIState() (uiState, error) {
 		PaletteLight:           defaultPaletteLight,
 		PaletteDark:            defaultPaletteDark,
 		AgentsSort:             agentsSortPriority,
+		PinnedAgents:           []string{},
 		BrowserMode:            browserModeLive,
 		SidebarTabs:            []sidebarTab{},
 		Typography:             map[string]string{},
@@ -623,6 +641,7 @@ func getUIState() (uiState, error) {
 	}
 	us.AppearanceMode = normalizeAppearanceMode(us.AppearanceMode)
 	us.AgentsSort = normalizeAgentsSort(us.AgentsSort)
+	us.PinnedAgents = mergePinnedAgents(us.PinnedAgents, nil)
 	us.BrowserMode = normalizeBrowserMode(us.BrowserMode)
 	if tabs, err := normalizeSidebarTabs(us.SidebarTabs); err == nil {
 		us.SidebarTabs = tabs
