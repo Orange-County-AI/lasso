@@ -92,12 +92,12 @@ var (
 		"device scale factor the shared browser renders at, so the Browser tab is sharp on a HiDPI screen (1 = Chromium's default; costs raster CPU and makes agent screenshots larger). env LASSO_BROWSER_SCALE")
 	browserMem = flag.String("browser-mem", envOrDefault("LASSO_BROWSER_MEM", "2G"),
 		"MemoryHigh for the shared browser's systemd user scope (linux), e.g. 4G; \"off\" or empty lifts it (both limits off = no scope). env LASSO_BROWSER_MEM")
-	// /browser-mcp (browsermcp.go): chrome-devtools-mcp, one child per MCP
-	// session, bridged to agents over HTTP and pointed at the shared browser.
+	// /browser-mcp (browsermcp.go): chrome-devtools-mcp bridged to agents over
+	// HTTP, one child per session per profile it uses, spawned on first use.
 	browserMCPBin = flag.String("browser-mcp", os.Getenv("LASSO_BROWSER_MCP"),
 		"chrome-devtools-mcp binary behind /browser-mcp (a path or a PATH name); empty = chrome-devtools-mcp on PATH; \"off\" disables the endpoint. There is no npx fallback. env LASSO_BROWSER_MCP")
-	browserMCPMax = flag.Int("browser-mcp-max", envInt("LASSO_BROWSER_MCP_MAX", browserMCPDefaultMax),
-		"most concurrent /browser-mcp sessions (each is one chrome-devtools-mcp process); env LASSO_BROWSER_MCP_MAX")
+	browserMCPMax = flag.Int("browser-mcp-max", envInt("LASSO_BROWSER_MCP_MAX", 0),
+		"most chrome-devtools-mcp processes /browser-mcp runs at once (one per session per profile it has used); 0 = no limit, the default. env LASSO_BROWSER_MCP_MAX")
 )
 
 // theme is resolved at startup (mirroring herdr's config) and drives both the
@@ -266,9 +266,9 @@ func runServer() {
 	sharedBrowser = newBrowserManager(browserCfg)
 	sharedBrowsers = newBrowserFleet(browserCfg)
 	go sharedBrowsers.run(ctx)
-	// Its sessions' children hold CDP connections to one browser process, so
-	// when that process goes away (stop, idle stop, relaunch, crash) they are
-	// closed and their clients re-initialize onto the next one.
+	// A session's child for a profile holds a CDP connection to that profile's
+	// browser process, so when it goes away (stop, idle stop, relaunch, crash)
+	// that child is closed and the next call to the profile spawns a fresh one.
 	browserMCP = newBrowserMCPBridge(browserMCPConfig{
 		Binary:    *browserMCPBin,
 		ExtraArgs: os.Getenv("LASSO_BROWSER_MCP_ARGS"),

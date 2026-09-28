@@ -20,7 +20,8 @@ import (
 //
 // These tools manage WHICH pages exist and which one the human is looking at.
 // Driving a page (clicking, typing, reading it) is still /browser-mcp's job —
-// per profile at /browser-mcp/<id> — or raw CDP's at /cdp/p/<id>.
+// one server for every profile, each tool taking `profile` — or raw CDP's at
+// /cdp/p/<id>.
 
 const browserProfileArg = "Browser profile: its id (e.g. \"work\") or its display name. Omit for the default profile. list_browser_profiles shows them."
 
@@ -33,7 +34,7 @@ type browserProfileOut struct {
 	Default     bool          `json:"default"`
 	Running     bool          `json:"running"`
 	Tabs        []browserPage `json:"tabs"`
-	MCPEndpoint string        `json:"mcp_endpoint"` // streamable-HTTP MCP URL driving THIS profile's browser
+	MCPEndpoint string        `json:"mcp_endpoint"` // the one /browser-mcp URL; its tools take profile: <id>
 	WSEndpoint  string        `json:"ws_endpoint"`  // CDP websocket for THIS profile's browser
 	Note        string        `json:"note,omitempty"`
 }
@@ -66,7 +67,7 @@ func requireLocalBrowser(req *mcp.CallToolRequest) error {
 
 // ---- list_browser_profiles --------------------------------------------------
 
-const listBrowserProfilesDescription = "List lasso's shared-browser PROFILES. Each profile is its own Chromium on lasso's machine, with its own persistent cookies and logins and optionally its own proxy (e.g. socks5://host:1080), shown to the human in lasso's Browser tab (they pick the profile at the bottom of it). `default` is the profile lasso always had. For each profile you get its open `tabs` (only while it runs), `mcp_endpoint` — the streamable-HTTP MCP URL whose chrome-devtools-mcp tools drive THAT profile's browser — and `ws_endpoint` for raw CDP/Playwright."
+const listBrowserProfilesDescription = "List lasso's shared-browser PROFILES. Each profile is its own Chromium on lasso's machine, with its own persistent cookies and logins and optionally its own proxy (e.g. socks5://host:1080), shown to the human in lasso's Browser tab (they pick the profile at the bottom of it). `default` is the profile lasso always had. For each profile you get its open `tabs` (only while it runs), `mcp_endpoint` — lasso's ONE browser MCP URL (/browser-mcp, the same for every profile): its chrome-devtools-mcp tools each take an optional `profile`, so pass this profile's `id` to drive its browser; no per-profile MCP server is needed — and `ws_endpoint` for raw CDP/Playwright, which IS per profile."
 
 type listBrowserProfilesIn struct{}
 
@@ -87,7 +88,7 @@ func listBrowserProfilesTool(ctx context.Context, req *mcp.CallToolRequest, _ li
 
 // ---- create / update / delete -------------------------------------------------
 
-const createBrowserProfileDescription = "Create a shared-browser profile: a separate Chromium with its own persistent cookies/logins and, optionally, a proxy all its traffic goes through. It appears in the human's Browser-tab profile picker at once. It starts on first use (open_browser_tab, or connecting to its endpoints). `proxy` is scheme://host[:port] with scheme socks5, socks4, http or https — no credentials (Chromium cannot authenticate to a SOCKS proxy) and no socks5h (Chromium's socks5 already resolves DNS through the proxy). `id` is optional and derived from the name when omitted; it is what appears in the profile's URLs (/browser-mcp/<id>, /cdp/p/<id>)."
+const createBrowserProfileDescription = "Create a shared-browser profile: a separate Chromium with its own persistent cookies/logins and, optionally, a proxy all its traffic goes through. It appears in the human's Browser-tab profile picker at once. It starts on first use (open_browser_tab, or connecting to its endpoints). `proxy` is scheme://host[:port] with scheme socks5, socks4, http or https — no credentials (Chromium cannot authenticate to a SOCKS proxy) and no socks5h (Chromium's socks5 already resolves DNS through the proxy). `id` is optional and derived from the name when omitted; it is what you pass as `profile` to the /browser-mcp tools, and what appears in its CDP URL (/cdp/p/<id>). The /browser-mcp server you already have drives it at once: no new MCP server, no reconnect."
 
 type createBrowserProfileIn struct {
 	Name  string `json:"name" jsonschema:"Display name, e.g. \"Work\" or \"US exit\"."`
@@ -110,7 +111,7 @@ func createBrowserProfileTool(ctx context.Context, req *mcp.CallToolRequest, in 
 	return nil, profileOut(req, sharedBrowsers.statusOf(p)), nil
 }
 
-const updateBrowserProfileDescription = "Rename a shared-browser profile and/or change its proxy. Pass only what changes: `proxy: \"\"` switches it to a direct connection, an omitted proxy leaves it alone. A proxy change on a RUNNING profile relaunches its Chromium (Chromium reads its proxy once, at launch): the URLs of its open tabs are reopened, but tab ids change and any CDP or /browser-mcp session on it is closed and must reconnect. The default profile can be renamed and re-proxied too."
+const updateBrowserProfileDescription = "Rename a shared-browser profile and/or change its proxy. Pass only what changes: `proxy: \"\"` switches it to a direct connection, an omitted proxy leaves it alone. A proxy change on a RUNNING profile relaunches its Chromium (Chromium reads its proxy once, at launch): the URLs of its open tabs are reopened, but tab ids change and any CDP connection to it is closed and must reconnect, and /browser-mcp's page ids for it are gone (its next call starts fresh: list_pages again). The default profile can be renamed and re-proxied too."
 
 type updateBrowserProfileIn struct {
 	Profile string  `json:"profile" jsonschema:"The profile to change: its id or display name."`
@@ -228,7 +229,7 @@ func listBrowserTabsTool(ctx context.Context, req *mcp.CallToolRequest, in listB
 	return nil, out, nil
 }
 
-const openBrowserTabDescription = "Open a NEW tab in lasso's shared browser and put it on the human's screen: every visible lasso tab switches its Browser tab to that profile and tab (opening the sidebar if needed), the way open_file shows a file. Use it when the human asks you to open a page for them, or in a particular profile (\"open this in my work profile\"). Starts the profile's browser if it is stopped. The page loads from LASSO's machine, through the profile's proxy if it has one, so `localhost` means lasso's machine. To then drive the page, use the profile's `mcp_endpoint` (chrome-devtools-mcp: find the tab with list_pages by its URL) or `ws_endpoint`. Check `delivered`: 0 means no lasso tab is open and the human did NOT see it (the tab is still open in the browser). A profile's browser stops after lasso's idle timeout with nothing connected to it, and its tabs close with it: keep a /browser-mcp or CDP session open while you still need the page. Pass your $HERDR_PANE_ID as pane_id so the human is told which agent opened it."
+const openBrowserTabDescription = "Open a NEW tab in lasso's shared browser and put it on the human's screen: every visible lasso tab switches its Browser tab to that profile and tab (opening the sidebar if needed), the way open_file shows a file. Use it when the human asks you to open a page for them, or in a particular profile (\"open this in my work profile\"). Starts the profile's browser if it is stopped. The page loads from LASSO's machine, through the profile's proxy if it has one, so `localhost` means lasso's machine. To then drive the page, use the /browser-mcp tools (`mcp_endpoint`) with `profile` set to this profile (find the tab with list_pages by its URL), or `ws_endpoint`. Check `delivered`: 0 means no lasso tab is open and the human did NOT see it (the tab is still open in the browser). A profile's browser stops after lasso's idle timeout with nothing connected to it, and its tabs close with it: keep a /browser-mcp or CDP session open while you still need the page. Pass your $HERDR_PANE_ID as pane_id so the human is told which agent opened it."
 
 type openBrowserTabIn struct {
 	URL     string `json:"url" jsonschema:"The page to open: a full http(s) URL. A bare host[:port] gets https:// (http:// for localhost/127.0.0.1). about:blank opens an empty tab."`
