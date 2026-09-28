@@ -20,8 +20,8 @@
 set -euo pipefail
 
 command -v isb >/dev/null 2>&1 || {
-  echo "error: isb is not on PATH. Install it with:" >&2
-  echo "  mise use -g \"cargo:https://github.com/execution-associates/isb@branch:main\"" >&2
+  echo "error: isb is not on PATH. It is pinned in mise.toml: run \`mise install\`" >&2
+  echo "       here, and invoke this through \`mise run\`." >&2
   exit 1
 }
 

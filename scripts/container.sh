@@ -3,9 +3,12 @@
 # instead of on titan. The container itself is declared in scripts/isb/*.yaml
 # and driven by isb (https://github.com/execution-associates/isb), which talks
 # to incusd over its unix socket: every step has a deadline, a stalled create
-# is cancelled and retried instead of hanging (a bare `incus init` once sat for
-# 11 minutes on an operation the server never had), and the container is
-# created with every mount and label in one request, before its first boot.
+# is cancelled and retried instead of hanging, and the container is created
+# with every mount and label in one request, before its first boot. The incus
+# CLI is gone from this path on purpose: `incus init`/`launch` read instance
+# YAML from stdin whenever stdin is not a terminal, so under an agent or a task
+# runner whose stdin is an inherited socket that never closes, it blocked
+# forever before ever reaching the server (seen: 11 minutes, no operation).
 # This file only computes the per-worktree name and paths and wraps the calls.
 #
 # Why: `bun install` and the Vite dev server are the only places in this repo
@@ -106,12 +109,11 @@ GUEST_WEB="$GUEST_ROOT/src/web"
 GUEST_ICON="$GUEST_ROOT/docs/icon"
 
 # require_isb — fail with the install line rather than "command not found".
-# Installed from its git repo until it is on crates.io. Build it somewhere
-# isolated if you rebuild: build.rs and proc-macros are arbitrary code.
+# mise.toml pins it to a prebuilt release binary, so `mise run` puts it on PATH.
 require_isb() {
   command -v isb >/dev/null 2>&1 && return 0
-  echo "error: isb is not on PATH. Install it with:" >&2
-  echo "  mise use -g \"cargo:https://github.com/execution-associates/isb@branch:main\"" >&2
+  echo "error: isb is not on PATH. It is pinned in mise.toml: run \`mise install\`" >&2
+  echo "       here, and invoke this through \`mise run\`." >&2
   return 1
 }
 
@@ -129,7 +131,9 @@ container_isb() { isb -q "${ISB_FILES[@]}" "$@"; }
 # `mise run lint` next to a running `mise run dev` is a no-op, not a remount.
 container_ensure() {
   require_isb || return 1
-  container_isb up
+  # Not quiet: a first create copies the whole image into a `dir` pool and can
+  # take a minute or more, which should not look like a hang.
+  isb "${ISB_FILES[@]}" up
 }
 
 # container_run_in <dir> <command string> — run as the unprivileged `dev` user

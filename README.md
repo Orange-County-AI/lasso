@@ -545,8 +545,8 @@ on your machine, so a compromised npm dependency executes as a throwaway uid wit
 nothing but `src/web` mounted. The Go backend still runs on the host, and two
 incus proxy devices carry the one port each direction needs. The container is
 declared in `scripts/isb/*.yaml` and driven by
-[isb](https://github.com/execution-associates/isb), which has to be on your PATH
-(`mise use -g "cargo:https://github.com/execution-associates/isb@branch:main"`).
+[isb](https://github.com/execution-associates/isb), pinned in `mise.toml` as a
+prebuilt release binary (`mise install` fetches it).
 `scripts/container.sh` documents the arrangement; the container rebuilds itself
 from a base image if you delete it.
 

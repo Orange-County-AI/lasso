@@ -28,7 +28,7 @@ sandbox_isb() { isb -q "${SANDBOX_FILES[@]}" "$@"; }
 # interrupted run resumes rather than leaving a half-built box that looks ready.
 sandbox_ensure() {
   require_isb || return 1
-  sandbox_isb up || return 1
+  isb "${SANDBOX_FILES[@]}" up || return 1
 
   sandbox_isb exec -n -u root sandbox -- test -e /etc/lasso-sandbox-ready && return 0
 

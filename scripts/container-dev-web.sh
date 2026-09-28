@@ -58,7 +58,7 @@ container_ensure
 
 # The listen address isb actually settled on, which is not 5173 when another
 # worktree's dev server already holds it.
-listen="$(isb port ls "$CONTAINER" --json | jq -r '.vite.listen // empty')"
+listen="$(isb -q port get "$CONTAINER" vite 2>/dev/null || true)"
 hostport="${listen##*:}"
 [ -n "$hostport" ] ||
   { echo "error: could not publish Vite on any port of $ip from 5173" >&2; exit 1; }
