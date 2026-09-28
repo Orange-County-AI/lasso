@@ -154,16 +154,53 @@ func newestPlaywrightChromium(s browserSearch) string {
 	return cs[0].path
 }
 
-// validateBrowserProxy checks a proxy URL against what Chromium's
+// validateBrowserProxy checks a proxy setting against what Chromium's
 // --proxy-server actually honours and returns it normalized. "" means none.
+//
+// It may be a comma-separated FALLBACK list, tried in order —
+// "socks5://127.0.0.1:1080,direct://" uses the proxy and connects directly
+// when the proxy refuses (a tunnel that is down). That is Chromium's own
+// --proxy-server list syntax, so it is passed through as-is; direct:// is only
+// accepted last, since nothing after it would ever be tried.
 func validateBrowserProxy(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return "", nil
 	}
+	if !strings.Contains(s, ",") {
+		return validateOneProxy(s)
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if strings.EqualFold(p, "direct://") || strings.EqualFold(p, "direct") {
+			if i != len(parts)-1 {
+				return "", fmt.Errorf("direct:// must come last in a proxy list: nothing after it is ever tried")
+			}
+			if i == 0 {
+				return "", fmt.Errorf("a proxy list needs a proxy before direct://")
+			}
+			out = append(out, "direct://")
+			continue
+		}
+		v, err := validateOneProxy(p)
+		if err != nil {
+			return "", err
+		}
+		if v == "" {
+			return "", fmt.Errorf("empty entry in proxy list %q", s)
+		}
+		out = append(out, v)
+	}
+	return strings.Join(out, ","), nil
+}
+
+// validateOneProxy checks one proxy URL of a --proxy-server setting.
+func validateOneProxy(s string) (string, error) {
 	u, err := url.Parse(s)
 	if err != nil || u.Opaque != "" || u.Scheme == "" {
-		return "", fmt.Errorf("proxy must be a URL like socks5://host:1080 (schemes: socks5, socks4, http, https)")
+		return "", fmt.Errorf("proxy must be a URL like socks5://host:1080 (schemes: socks5, socks4, http, https), or a fallback list like socks5://host:1080,direct://")
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "socks5", "socks4", "http", "https":
@@ -214,6 +251,11 @@ func browserArgs(profile, proxy string, root bool, scale, extra string) []string
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--window-size=1280,800",
+		// navigator.webdriver reads true without this, and bot checks
+		// (Cloudflare's Turnstile among them) refuse such a browser outright —
+		// including for the human logging in by hand in the Browser tab. CDP
+		// keeps working; only the page-visible automation flag goes.
+		"--disable-blink-features=AutomationControlled",
 	}
 	if scale != "" && scale != "1" {
 		args = append(args, "--force-device-scale-factor="+scale)
@@ -226,6 +268,55 @@ func browserArgs(profile, proxy string, root bool, scale, extra string) []string
 	}
 	args = append(args, strings.Fields(extra)...)
 	return append(args, "about:blank")
+}
+
+// browserUAs caches browserUserAgent per binary: asking costs a process spawn.
+var browserUAs sync.Map // bin -> string
+
+// browserUserAgent is the user agent a regular (headed) Chrome of this
+// binary's version sends, "" when the version cannot be read. Headless Chrome
+// announces itself as "HeadlessChrome/<v>", which bot checks refuse on sight,
+// and --user-agent is the one place to change it for every page and worker at
+// once. The version is the binary's own, in the reduced form Chrome itself
+// sends (<major>.0.0.0), so the string stays true to what is running.
+func browserUserAgent(bin string) string {
+	if v, ok := browserUAs.Load(bin); ok {
+		return v.(string)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	ua := ""
+	if err == nil {
+		ua = userAgentFor(string(out), runtime.GOOS)
+	}
+	browserUAs.Store(bin, ua)
+	return ua
+}
+
+// userAgentFor builds the UA from `chrome --version` output ("Google Chrome
+// 154.0.8037.57", "Chromium 140.0.7339.80 built on Debian") for goos.
+func userAgentFor(version, goos string) string {
+	major := ""
+	for _, f := range strings.Fields(version) {
+		if i := strings.IndexByte(f, '.'); i > 0 {
+			if _, err := strconv.Atoi(f[:i]); err == nil {
+				major = f[:i]
+				break
+			}
+		}
+	}
+	if major == "" {
+		return ""
+	}
+	platform := "X11; Linux x86_64"
+	switch goos {
+	case "darwin":
+		platform = "Macintosh; Intel Mac OS X 10_15_7"
+	case "windows":
+		platform = "Windows NT 10.0; Win64; x64"
+	}
+	return "Mozilla/5.0 (" + platform + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + ".0.0.0 Safari/537.36"
 }
 
 // validBrowserScale accepts a positive number up to 4 and answers "" for
@@ -415,11 +506,22 @@ type browserConfig struct {
 	AuthRequired bool
 }
 
-// browserManager supervises the shared Chromium. At most one runs.
+// browserManager supervises one profile's Chromium. At most one runs per
+// profile; every profile is its own process (see browserprofiles.go for why).
 type browserManager struct {
 	cfg    browserConfig
 	search func() browserSearch
 	proxy  func() string // the stored proxy setting
+	// saveProxy stores a new proxy for this profile. The default profile keeps
+	// it in the browser_proxy setting it always had; nil means that.
+	saveProxy func(string) error
+	// id is the profile this manager runs ("" reads as the default profile)
+	// and dir its user-data-dir ("" = the default <lassoDir>/browser-profile).
+	id  string
+	dir string
+	// retired marks a deleted profile: a request still holding the manager
+	// must not relaunch a browser into the directory being removed.
+	retired atomic.Bool
 
 	// sem serializes launches and stops, and is a channel rather than a mutex
 	// so a request waiting on someone else's launch can give up with its ctx.
@@ -456,8 +558,22 @@ func newBrowserManager(cfg browserConfig) *browserManager {
 // feature that is not configured.
 var sharedBrowser *browserManager
 
-func (m *browserManager) profileDir() string { return filepath.Join(m.cfg.Dir, "browser-profile") }
-func (m *browserManager) pidFile() string    { return filepath.Join(m.profileDir(), "lasso-browser.pid") }
+func (m *browserManager) profileDir() string {
+	if m.dir != "" {
+		return m.dir
+	}
+	return filepath.Join(m.cfg.Dir, "browser-profile")
+}
+
+// profileID is the profile this manager runs.
+func (m *browserManager) profileID() string {
+	if m.id == "" {
+		return defaultBrowserProfile
+	}
+	return m.id
+}
+
+func (m *browserManager) pidFile() string { return filepath.Join(m.profileDir(), "lasso-browser.pid") }
 
 // begin/end bracket every /cdp request. A proxied websocket holds ServeHTTP for
 // the life of the connection, so the in-flight count IS the number of live CDP
@@ -506,6 +622,9 @@ func (m *browserManager) ensure(ctx context.Context) (*browserProc, error) {
 
 // startLocked launches Chromium. The caller holds sem.
 func (m *browserManager) startLocked() (*browserProc, error) {
+	if m.retired.Load() {
+		return nil, fmt.Errorf("the browser profile %q was deleted", m.profileID())
+	}
 	bin, reason, ok := resolveBrowserBinary(m.search())
 	if !ok {
 		m.setErr(reason)
@@ -527,7 +646,12 @@ func (m *browserManager) startLocked() (*browserProc, error) {
 		m.setErr(err.Error())
 		return nil, err
 	}
-	args := browserArgs(m.profileDir(), proxy, os.Geteuid() == 0, m.cfg.Scale, os.Getenv("LASSO_BROWSER_ARGS"))
+	extra := os.Getenv("LASSO_BROWSER_ARGS")
+	args := browserArgs(m.profileDir(), proxy, os.Geteuid() == 0, m.cfg.Scale, extra)
+	if ua := browserUserAgent(bin); ua != "" && !strings.Contains(extra, "--user-agent") {
+		// Before the trailing about:blank, which must stay last.
+		args = append(args[:len(args)-1:len(args)-1], "--user-agent="+ua, "about:blank")
+	}
 	capped := !m.cfg.Cap.empty() && canCapBrowser()
 	var p *browserProc
 	if capped {
@@ -564,7 +688,7 @@ func (m *browserManager) startLocked() (*browserProc, error) {
 			how += " MemoryHigh=" + m.cfg.Cap.Mem
 		}
 	}
-	log.Printf("browser: started %s (pid %d, %s) on 127.0.0.1:%d", bin, p.pid, how, p.port)
+	log.Printf("browser: started %s for profile %q (pid %d, %s) on 127.0.0.1:%d", bin, m.profileID(), p.pid, how, p.port)
 	return p, nil
 }
 
@@ -757,7 +881,7 @@ func (m *browserManager) stopLocked(why string) {
 	if p == nil {
 		return
 	}
-	log.Printf("browser: stopping pid %d (%s)", p.pid, why)
+	log.Printf("browser: stopping profile %q, pid %d (%s)", m.profileID(), p.pid, why)
 	m.kill(p)
 	_ = os.Remove(m.pidFile())
 	if m.onStop != nil {
@@ -1022,10 +1146,56 @@ type browserStatus struct {
 	MCPBinary    string `json:"mcp_binary"`
 	MCPReason    string `json:"mcp_reason"`
 	MCPSessions  int    `json:"mcp_sessions"`
+	// Profiles is every browser profile, the default first (browserprofiles.go).
+	// The fields above describe the default profile, as they always have.
+	Profiles []browserProfileStatus `json:"profiles"`
+}
+
+// browserProfileStatus is one profile's browser, as /api/browser and the
+// profile MCP tools report it.
+type browserProfileStatus struct {
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Proxy     string        `json:"proxy"`
+	Default   bool          `json:"default"`
+	Running   bool          `json:"running"`
+	StartedAt string        `json:"started_at"`
+	Capped    bool          `json:"capped"`
+	Reason    string        `json:"reason"` // the last launch's failure, while stopped
+	Note      string        `json:"note,omitempty"`
+	Pages     []browserPage `json:"pages"`
+	WSPath    string        `json:"ws_path"`  // /cdp, or /cdp/p/<id>
+	MCPPath   string        `json:"mcp_path"` // /browser-mcp, or /browser-mcp/<id>
+}
+
+// profileStatus is this manager's slice of the status. It lists the pages of a
+// running browser, which is one loopback round trip.
+func (m *browserManager) profileStatus() browserProfileStatus {
+	id := m.profileID()
+	st := browserProfileStatus{
+		ID: id, Default: id == defaultBrowserProfile, Pages: []browserPage{},
+		WSPath: cdpPathFor(id), MCPPath: browserMCPPathFor(id),
+	}
+	st.Proxy = m.proxy()
+	m.mu.Lock()
+	p, lastErr, note := m.proc, m.lastErr, m.note
+	m.mu.Unlock()
+	st.Note = note
+	if p == nil {
+		st.Reason = lastErr
+		return st
+	}
+	st.Running = true
+	st.StartedAt = p.started.UTC().Format(time.RFC3339)
+	st.Capped = p.capped
+	if pages, err := browserPages(p); err == nil {
+		st.Pages = pages
+	}
+	return st
 }
 
 func (m *browserManager) status() browserStatus {
-	st := browserStatus{Pages: []browserPage{}, WSPath: "/cdp"}
+	st := browserStatus{Pages: []browserPage{}, WSPath: "/cdp", Profiles: []browserProfileStatus{}}
 	st.MCPBinary, st.MCPReason, st.MCPAvailable = browserMCP.resolve()
 	st.MCPSessions = browserMCP.sessions()
 	if m == nil {
@@ -1128,29 +1298,54 @@ func (m *browserManager) serveProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	proxy, err := validateBrowserProxy(body.Proxy)
+	m.writeProxyResult(w, m.applyProxy(r.Context(), body.Proxy), m.status)
+}
+
+// errBadProxy marks an applyProxy failure that is the caller's input, which
+// the HTTP handlers answer with 400 and the validator's sentence.
+type errBadProxy struct{ error }
+
+// applyProxy validates, stores and (when the browser runs) applies a proxy.
+// --proxy-server is read once, at launch, so a running browser only takes a
+// new proxy by being relaunched, which reopens the pages it had.
+func (m *browserManager) applyProxy(ctx context.Context, raw string) error {
+	proxy, err := validateBrowserProxy(raw)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return errBadProxy{err}
 	}
 	prev := m.proxy()
-	if err := setSetting(browserProxySetting, proxy); err != nil {
-		http.Error(w, "save: "+err.Error(), http.StatusInternalServerError)
-		return
+	save := m.saveProxy
+	if save == nil {
+		save = func(v string) error { return setSetting(browserProxySetting, v) }
 	}
-	// --proxy-server is read once, at launch: a running browser only takes a
-	// new proxy by being restarted.
+	if err := save(proxy); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
 	if proxy != prev && m.current() != nil {
-		if err := m.relaunch(r.Context(), "proxy changed"); err != nil {
-			st := m.status()
-			if st.Reason == "" {
-				st.Reason = err.Error()
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_ = json.NewEncoder(w).Encode(st)
-			return
-		}
+		return m.relaunch(ctx, "proxy changed")
 	}
-	writeJSON(w, m.status())
+	return nil
+}
+
+// writeProxyResult answers a proxy change: 400 for a proxy that did not
+// validate, 500 for one that could not be stored, 502 (with the status, whose
+// reason says why) for one stored but not applied, and the status otherwise.
+func (m *browserManager) writeProxyResult(w http.ResponseWriter, err error, status func() browserStatus) {
+	var bad errBadProxy
+	switch {
+	case err == nil:
+		writeJSON(w, status())
+	case errors.As(err, &bad):
+		http.Error(w, bad.Error(), http.StatusBadRequest)
+	case strings.HasPrefix(err.Error(), "save: "):
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	default:
+		st := status()
+		if st.Reason == "" {
+			st.Reason = err.Error()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(st)
+	}
 }

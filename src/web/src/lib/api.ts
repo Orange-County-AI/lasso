@@ -824,6 +824,28 @@ export interface BrowserStatus {
   mcp_binary?: string
   mcp_reason?: string
   mcp_sessions?: number
+  // Every profile, default first. Absent from an older server, which has only
+  // the one browser the top-level fields describe.
+  profiles?: BrowserProfileStatus[]
+}
+
+// One browser profile: its own Chromium, its own persistent user-data dir
+// (cookies, logins) and optionally its own proxy. `ws_path` / `mcp_path` are
+// lasso-origin paths ("/cdp" and "/browser-mcp" for the default profile,
+// "/cdp/p/<id>" and "/browser-mcp/<id>" otherwise).
+export interface BrowserProfileStatus {
+  id: string
+  name: string
+  proxy: string
+  default: boolean
+  running: boolean
+  started_at: string
+  capped: boolean
+  reason: string
+  note?: string
+  pages: BrowserPage[] | null
+  ws_path: string
+  mcp_path: string
 }
 
 export type BrowserAction = "start" | "stop" | "restart"
@@ -963,12 +985,37 @@ export const api = {
   // The shared browser (browser.go). Server-level: it always runs on lasso's
   // own machine, so the tab's host is irrelevant to it.
   browserStatus: () => getJSON<BrowserStatus>("/api/browser", 10_000),
-  browserAction: (action: BrowserAction) =>
-    postBrowser("/api/browser", { action }),
+  // `profile` omitted = the default profile (what an older server has).
+  browserAction: (action: BrowserAction, profile?: string) =>
+    postBrowser("/api/browser", profile ? { action, profile } : { action }),
   // A 400 carries the validation message as plain text, which is what the
   // Settings field shows under the input.
-  setBrowserProxy: (proxy: string) =>
-    postBrowser("/api/browser/proxy", { proxy }),
+  setBrowserProxy: (proxy: string, profile?: string) =>
+    postBrowser("/api/browser/proxy", profile ? { proxy, profile } : { proxy }),
+  createBrowserProfile: (p: { name: string; id?: string; proxy?: string }) =>
+    postJSON<BrowserProfileStatus>("/api/browser/profiles", p),
+  updateBrowserProfile: async (
+    id: string,
+    patch: { name?: string; proxy?: string }
+  ): Promise<BrowserProfileStatus> => {
+    const r = await hostFetch(
+      `/api/browser/profiles/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }
+    )
+    if (!r.ok) throw await httpError(r)
+    return (await r.json()) as BrowserProfileStatus
+  },
+  deleteBrowserProfile: async (id: string): Promise<void> => {
+    const r = await hostFetch(
+      `/api/browser/profiles/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    )
+    if (!r.ok) throw await httpError(r)
+  },
   autoTitle: () => getJSON<{ enabled: boolean }>("/api/auto-title"),
   setAutoTitle: (enabled: boolean) =>
     postJSON<{ enabled: boolean }>("/api/auto-title", { enabled }),

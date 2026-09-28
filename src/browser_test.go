@@ -35,6 +35,10 @@ func TestValidateBrowserProxy(t *testing.T) {
 		"https://proxy.lan":       "https://proxy.lan",
 		"socks5://[::1]:1080":     "socks5://[::1]:1080",
 		" http://proxy.lan:8080 ": "http://proxy.lan:8080",
+		// Chromium's fallback list: tried in order, direct:// last.
+		"socks5://127.0.0.1:1080,direct://":   "socks5://127.0.0.1:1080,direct://",
+		"SOCKS5://a:1 , http://b:2/ , DIRECT": "socks5://a:1,http://b:2,direct://",
+		"socks5://a:1,socks5://b:2":           "socks5://a:1,socks5://b:2",
 	}
 	for in, want := range ok {
 		got, err := validateBrowserProxy(in)
@@ -57,6 +61,10 @@ func TestValidateBrowserProxy(t *testing.T) {
 		"socks5:host":                 "",
 		"http://host:3128/?":          "no path",
 		"socks5://host:1080/wpad.dat": "no path",
+		"direct://,socks5://a:1":      "must come last",
+		"direct://":                   "",
+		"socks5://a:1,,direct://":     "",
+		"socks5://a:1,socks5h://b:2":  "unsupported proxy scheme",
 	}
 	for in, want := range bad {
 		if _, err := validateBrowserProxy(in); err == nil {
@@ -70,7 +78,8 @@ func TestValidateBrowserProxy(t *testing.T) {
 func TestBrowserArgs(t *testing.T) {
 	got := browserArgs("/d/browser-profile", "", false, "", "")
 	want := []string{"--headless=new", "--remote-debugging-port=0", "--user-data-dir=/d/browser-profile",
-		"--no-first-run", "--no-default-browser-check", "--window-size=1280,800", "about:blank"}
+		"--no-first-run", "--no-default-browser-check", "--window-size=1280,800",
+		"--disable-blink-features=AutomationControlled", "about:blank"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plain args = %q", got)
 	}
@@ -93,6 +102,19 @@ func TestBrowserArgs(t *testing.T) {
 	}
 	if got[len(got)-1] != "about:blank" {
 		t.Fatal("about:blank must be last so extra args cannot be read as URLs after it")
+	}
+}
+
+func TestUserAgentFor(t *testing.T) {
+	for in, want := range map[[2]string]string{
+		{"Google Chrome 154.0.8037.57\n", "linux"}:          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+		{"Chromium 140.0.7339.80 built on Debian", "linux"}: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+		{"Google Chrome 150.0.1.2", "darwin"}:               "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+		{"something unexpected", "linux"}:                   "",
+	} {
+		if got := userAgentFor(in[0], in[1]); got != want {
+			t.Errorf("userAgentFor(%q, %s) = %q, want %q", in[0], in[1], got, want)
+		}
 	}
 }
 
@@ -348,6 +370,11 @@ func newFakeChromium(t *testing.T) *fakeChromium {
 			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 			fmt.Fprintf(w, `[{"id":"P1","type":"page","title":"Ex","url":"https://example.com/","webSocketDebuggerUrl":"ws://%s/devtools/page/P1"},
 				{"id":"W1","type":"service_worker","url":"https://example.com/sw.js"}]`, self)
+		case r.URL.Path == "/json/new" && r.Method == http.MethodPut:
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			fmt.Fprintf(w, `{"id":"NEW1","type":"page","title":"","url":%q,"webSocketDebuggerUrl":"ws://%s/devtools/page/NEW1"}`, r.URL.RawQuery, self)
+		case strings.HasPrefix(r.URL.Path, "/json/close/"):
+			fmt.Fprint(w, "Target is closing")
 		case strings.HasPrefix(r.URL.Path, "/devtools/") && strings.EqualFold(r.Header.Get("Upgrade"), "websocket"):
 			hj, _ := w.(http.Hijacker)
 			conn, buf, err := hj.Hijack()

@@ -31,17 +31,50 @@ import (
 // /cdp itself is the stable address: Chromium's browser id changes on every
 // launch (an idle stop, a proxy change), and an agent configured with
 // --wsEndpoint ws://<lasso>/cdp keeps working across all of them.
+//
+// Every other browser profile (browserprofiles.go) is its own Chromium, served
+// the same way one level down: /cdp/p/<id>, /cdp/p/<id>/devtools/...,
+// /cdp/p/<id>/json/.... Bare /cdp stays the default profile's, so nothing that
+// was configured before profiles existed changes meaning.
+
+// cdpProfilePrefix is the /cdp prefix a request path names and the profile it
+// belongs to: "/cdp" for the default profile, "/cdp/p/<id>" for another.
+// ok=false is a /cdp/p/ path with no id.
+func cdpProfilePrefix(p string) (prefix, profile string, ok bool) {
+	rest, found := strings.CutPrefix(p, "/cdp/p/")
+	if !found {
+		return "/cdp", defaultBrowserProfile, true
+	}
+	id, _, _ := strings.Cut(rest, "/")
+	if id == "" {
+		return "", "", false
+	}
+	return "/cdp/p/" + id, id, true
+}
+
+// cdpPathFor is the /cdp address of a profile's browser target.
+func cdpPathFor(profile string) string {
+	if profile == "" || profile == defaultBrowserProfile {
+		return "/cdp"
+	}
+	return "/cdp/p/" + profile
+}
 
 // cdpUpstreamPath maps an inbound /cdp path onto Chromium's own. ok=false is a
 // path the proxy does not serve.
 func cdpUpstreamPath(p, browserPath string) (string, bool) {
+	return cdpUpstreamPathAt("/cdp", p, browserPath)
+}
+
+// cdpUpstreamPathAt is cdpUpstreamPath under a profile's prefix.
+func cdpUpstreamPathAt(prefix, p, browserPath string) (string, bool) {
 	switch {
-	case p == "/cdp" || p == "/cdp/":
+	case p == prefix || p == prefix+"/":
 		return browserPath, true
-	case strings.HasPrefix(p, "/cdp/devtools/"):
-		return strings.TrimPrefix(p, "/cdp"), true
-	case p == "/cdp/json" || strings.HasPrefix(p, "/cdp/json/"):
-		return strings.TrimPrefix(p, "/cdp"), true
+	case strings.HasPrefix(p, prefix+"/devtools/"):
+		return strings.TrimPrefix(p, prefix), true
+	case p == prefix+"/json" || strings.HasPrefix(p, prefix+"/json/"):
+		return strings.TrimPrefix(p, prefix), true
 	}
 	return "", false
 }
@@ -134,17 +167,22 @@ func normHostPort(scheme, hp string) string {
 // which, for anyone not on lasso's own machine, is unreachable, and for anyone
 // who is, would bypass both the auth gate and the Origin guard.
 func rewriteCDPJSON(body []byte, wsBase string) ([]byte, error) {
+	return rewriteCDPJSONAt(body, wsBase, "/cdp")
+}
+
+// rewriteCDPJSONAt is rewriteCDPJSON for the browser served under prefix.
+func rewriteCDPJSONAt(body []byte, wsBase, prefix string) ([]byte, error) {
 	var v any
 	if err := json.Unmarshal(body, &v); err != nil {
 		return nil, err
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		rewriteCDPTarget(t, wsBase)
+		rewriteCDPTarget(t, wsBase, prefix)
 	case []any:
 		for _, e := range t {
 			if m, ok := e.(map[string]any); ok {
-				rewriteCDPTarget(m, wsBase)
+				rewriteCDPTarget(m, wsBase, prefix)
 			}
 		}
 	}
@@ -158,16 +196,16 @@ func rewriteCDPJSON(body []byte, wsBase string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func rewriteCDPTarget(m map[string]any, wsBase string) {
+func rewriteCDPTarget(m map[string]any, wsBase, prefix string) {
 	if s, ok := m["webSocketDebuggerUrl"].(string); ok {
 		if u, err := url.Parse(s); err == nil {
-			m["webSocketDebuggerUrl"] = wsBase + cdpPublicPath(u.Path)
+			m["webSocketDebuggerUrl"] = wsBase + cdpPublicPathAt(prefix, u.Path)
 		} else {
 			delete(m, "webSocketDebuggerUrl")
 		}
 	}
 	if s, ok := m["devtoolsFrontendUrl"].(string); ok {
-		if r, ok := rewriteFrontendURL(s, wsBase); ok {
+		if r, ok := rewriteFrontendURLAt(s, wsBase, prefix); ok {
 			m["devtoolsFrontendUrl"] = r
 		} else {
 			delete(m, "devtoolsFrontendUrl")
@@ -178,11 +216,13 @@ func rewriteCDPTarget(m map[string]any, wsBase string) {
 // cdpPublicPath is the /cdp path for one of Chromium's websocket paths. The
 // browser target maps to bare /cdp — the stable address — rather than to its
 // per-launch id.
-func cdpPublicPath(p string) string {
+func cdpPublicPath(p string) string { return cdpPublicPathAt("/cdp", p) }
+
+func cdpPublicPathAt(prefix, p string) string {
 	if strings.HasPrefix(p, "/devtools/browser/") {
-		return "/cdp"
+		return prefix
 	}
-	return "/cdp" + p
+	return prefix + p
 }
 
 // rewriteFrontendURL repoints a DevTools frontend link's ws= parameter (a
@@ -190,6 +230,10 @@ func cdpPublicPath(p string) string {
 // on TLS. Anything not in that shape is dropped rather than half-rewritten: a
 // link that still names 127.0.0.1:<port> is worse than no link.
 func rewriteFrontendURL(s, wsBase string) (string, bool) {
+	return rewriteFrontendURLAt(s, wsBase, "/cdp")
+}
+
+func rewriteFrontendURLAt(s, wsBase, prefix string) (string, bool) {
 	u, err := url.Parse(s)
 	if err != nil {
 		return "", false
@@ -206,12 +250,12 @@ func rewriteFrontendURL(s, wsBase string) (string, bool) {
 	scheme, host, _ := strings.Cut(wsBase, "://")
 	q.Del("ws")
 	q.Del("wss")
-	q.Set(scheme, host+cdpPublicPath("/"+path))
+	q.Set(scheme, host+cdpPublicPathAt(prefix, "/"+path))
 	u.RawQuery = q.Encode()
 	if u.Scheme == "" && strings.HasPrefix(u.Path, "/devtools/") {
 		// A relative link to Chromium's bundled frontend: served through the
 		// same passthrough as everything else under /devtools/.
-		u.Path = "/cdp" + u.Path
+		u.Path = prefix + u.Path
 	}
 	return u.String(), true
 }
@@ -226,13 +270,39 @@ var cdpTransport = &http.Transport{
 	IdleConnTimeout:       60 * time.Second,
 }
 
-// serveCDP is the /cdp handler.
-func (m *browserManager) serveCDP(w http.ResponseWriter, r *http.Request) {
+// serveCDPRouted is the /cdp handler main mounts: it picks the profile the
+// path names and hands the request to that profile's browser. The Origin guard
+// runs first, before anything about the path is looked up.
+func serveCDPRouted(w http.ResponseWriter, r *http.Request) {
 	if !cdpOriginAllowed(r) {
 		http.Error(w, "cross-origin request to /cdp refused", http.StatusForbidden)
 		return
 	}
-	if _, ok := cdpUpstreamPath(r.URL.Path, "/devtools/browser/x"); !ok {
+	prefix, profile, ok := cdpProfilePrefix(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	m, err := browserFor(profile)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	m.serveCDPAt(w, r, prefix)
+}
+
+// serveCDP is the default profile's /cdp handler.
+func (m *browserManager) serveCDP(w http.ResponseWriter, r *http.Request) {
+	m.serveCDPAt(w, r, "/cdp")
+}
+
+// serveCDPAt serves one profile's browser under prefix (/cdp or /cdp/p/<id>).
+func (m *browserManager) serveCDPAt(w http.ResponseWriter, r *http.Request, prefix string) {
+	if !cdpOriginAllowed(r) {
+		http.Error(w, "cross-origin request to /cdp refused", http.StatusForbidden)
+		return
+	}
+	if _, ok := cdpUpstreamPathAt(prefix, r.URL.Path, "/devtools/browser/x"); !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -247,7 +317,7 @@ func (m *browserManager) serveCDP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "shared browser unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	upstream, _ := cdpUpstreamPath(r.URL.Path, p.wsPath)
+	upstream, _ := cdpUpstreamPathAt(prefix, r.URL.Path, p.wsPath)
 	isJSON := strings.HasPrefix(upstream, "/json")
 	wsBase := cdpWSBase(r)
 	rp := &httputil.ReverseProxy{
@@ -288,7 +358,7 @@ func (m *browserManager) serveCDP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			if nb, err := rewriteCDPJSON(b, wsBase); err == nil {
+			if nb, err := rewriteCDPJSONAt(b, wsBase, prefix); err == nil {
 				b = nb
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(b))

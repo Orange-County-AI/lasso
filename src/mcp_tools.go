@@ -85,6 +85,8 @@ func registerMCPTools(s *mcp.Server) {
 		Name:        "shared_browser",
 		Description: sharedBrowserDescription,
 	}, sharedBrowserTool)
+
+	registerBrowserProfileTools(s)
 }
 
 // ---------------------------------------------------------------------------

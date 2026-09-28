@@ -1,5 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, ArrowRight, Keyboard, Plus, RotateCw } from "lucide-react"
+import {
+  ArrowLeft,
+  ArrowRight,
+  Keyboard,
+  Plus,
+  RotateCw,
+  X,
+} from "lucide-react"
 import * as React from "react"
 import type { OpenRequest } from "@/components/BrowserTab"
 import { Button } from "@/components/ui/button"
@@ -7,8 +14,13 @@ import { Input, NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import { api, type BrowserPage } from "@/lib/api"
 import { lsGet, lsSet } from "@/lib/app-store"
+import {
+  type BrowserShowRequest,
+  DEFAULT_PROFILE,
+  profilesOf,
+} from "@/lib/browser-profiles"
 import { resolveLive } from "@/lib/browser-url"
-import { CDPClient, type CDPParams, reconnectDelay } from "@/lib/cdp"
+import { CDPClient, type CDPParams, cdpURL, reconnectDelay } from "@/lib/cdp"
 import { qk } from "@/lib/query"
 import { APP_KEYS, APP_SHIFT_KEYS } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -20,11 +32,15 @@ import { cn } from "@/lib/utils"
 // assumes it is alone: pages appear and vanish under it
 // (Target.setDiscoverTargets, not a list it keeps).
 //
-// ONE page is shown at a time, with no tab strip: the view follows the page
-// most recently opened, so when an agent opens one the human is looking at
-// what the agent is working on, and a terminal link loads into the page on
-// screen rather than stacking up pages nobody can see. Other pages keep
-// running in the browser; they are simply not drawn.
+// A tab strip lists the profile's pages and one of them is drawn. The view
+// follows the page most recently opened, so when an agent opens one the human
+// is looking at what the agent is working on; an agent can also name the page
+// to show (a `browser-open` event, arriving here as showRequest). A terminal
+// link opens a NEW tab rather than navigating the one on screen, which may be
+// an agent's mid-task. Pages not drawn keep running in the browser.
+//
+// It shows ONE profile's Chromium (BrowserTab keys it by profile, so a switch
+// is a fresh mount and a fresh socket to that profile's /cdp path).
 //
 // One socket, to the BROWSER target. Pages are reached through flat sessions
 // (Target.attachToTarget with flatten:true), so following a new page is a
@@ -162,11 +178,27 @@ function namedKey(key: "Enter" | "Backspace"): CDPParams[] {
   return [down, { ...common, type: "keyUp" }]
 }
 
-// The target a remount resumes on. Module-level on purpose: switching the
-// sidebar to Files and back unmounts nothing (the Pane is hidden, not
-// removed), but a mode switch or an ErrorBoundary reset does, and landing on
-// some other page afterwards would read as the browser having navigated.
-let lastSelected: string | null = null
+// The target a remount resumes on, per profile. Module-level on purpose:
+// switching the sidebar to Files and back unmounts nothing (the Pane is
+// hidden, not removed), but a mode switch, a profile switch or an
+// ErrorBoundary reset does, and landing on some other page afterwards would
+// read as the browser having navigated.
+const lastSelected = new Map<string, string | null>()
+
+// How long a page an agent asked to show is waited for: it can be announced
+// by discovery a moment after the event that names it.
+const WANT_TIMEOUT_MS = 10_000
+
+// tabLabel is what the strip shows for a page: its title, else its host.
+function tabLabel(p: BrowserPage): string {
+  if (p.title && p.title !== p.url && p.title !== "about:blank") return p.title
+  if (!p.url || p.url === "about:blank") return "New tab"
+  try {
+    return new URL(p.url).host || p.url
+  } catch {
+    return p.url
+  }
+}
 
 function useDocumentVisible(): boolean {
   const [visible, setVisible] = React.useState(
@@ -185,15 +217,25 @@ function errText(e: unknown): string {
 }
 
 export function LiveBrowser({
+  profile,
+  wsPath,
   active,
   openRequest,
   onOpened,
+  showRequest,
   modeSwitch,
+  footer,
 }: {
+  profile: string
+  // This profile's CDP path on lasso's origin ("/cdp", "/cdp/p/<id>").
+  wsPath: string
   active: boolean
   openRequest: OpenRequest | null
   onOpened: () => void
+  // An agent asked for one of this profile's pages to be shown.
+  showRequest: BrowserShowRequest | null
   modeSwitch: React.ReactNode
+  footer: React.ReactNode
 }) {
   const queryClient = useQueryClient()
   const visible = useDocumentVisible()
@@ -204,7 +246,7 @@ export function LiveBrowser({
   const [client, setClient] = React.useState<CDPClient | null>(null)
   const [pages, setPages] = React.useState<BrowserPage[]>([])
   const [selected, setSelectedState] = React.useState<string | null>(
-    lastSelected
+    () => lastSelected.get(profile) ?? null
   )
   const [urlInput, setUrlInput] = React.useState("")
   // Bumped to force a re-attach to the same target (its session detached
@@ -235,10 +277,26 @@ export function LiveBrowser({
   const urlSynced = React.useRef(false)
   const selectedRef = React.useRef(selected)
   selectedRef.current = selected
+  // A page an agent asked to show that discovery has not announced yet, and
+  // until when it is worth waiting for. While set, nothing else may take the
+  // selection (the fallback below, a different new page).
+  const wantRef = React.useRef<{ id: string; until: number } | null>(null)
+  const [wantNonce, setWantNonce] = React.useState(0)
 
-  const select = React.useCallback((id: string | null) => {
-    lastSelected = id
-    setSelectedState(id)
+  const select = React.useCallback(
+    (id: string | null) => {
+      lastSelected.set(profile, id)
+      setSelectedState(id)
+    },
+    [profile]
+  )
+
+  // wanting reports whether a pending show request still holds the selection.
+  const wanting = React.useCallback(() => {
+    const w = wantRef.current
+    if (w && Date.now() < w.until) return w
+    wantRef.current = null
+    return null
   }, [])
 
   // ---- drawing -----------------------------------------------------------
@@ -406,13 +464,19 @@ export function LiveBrowser({
         if (!st.available) {
           throw new Error(st.reason || "the shared browser is unavailable")
         }
-        if (!st.running) {
-          st = await api.browserAction("start")
+        const mine = profilesOf(st).find((p) => p.id === profile)
+        if (!mine?.running) {
+          // The default profile goes out without a name, which is all an
+          // older server (one browser, no profiles) understands.
+          st = await api.browserAction(
+            "start",
+            profile === DEFAULT_PROFILE ? undefined : profile
+          )
           queryClient.setQueryData(qk.browser, st)
         }
         if (cancelled) return
         setConn("connecting")
-        const next = await CDPClient.connect()
+        const next = await CDPClient.connect(cdpURL(wsPath))
         if (cancelled) {
           next.close()
           return
@@ -438,7 +502,14 @@ export function LiveBrowser({
         next.on("Target.targetCreated", (p) => {
           upsert(p)
           const t = p.targetInfo as TargetInfo | undefined
-          if (discovered && t?.type === "page") select(t.targetId)
+          if (t?.type !== "page") return
+          const w = wanting()
+          if (w?.id === t.targetId) {
+            wantRef.current = null
+            select(t.targetId)
+          } else if (discovered && !w) {
+            select(t.targetId)
+          }
         })
         next.on("Target.targetInfoChanged", upsert)
         next.on("Target.targetDestroyed", (p) => {
@@ -493,7 +564,7 @@ export function LiveBrowser({
       sessionRef.current = null
       setClient(null)
     }
-  }, [streaming, queryClient, retryNonce, select])
+  }, [streaming, queryClient, retryNonce, select, profile, wsPath, wanting])
 
   // Keep a selection whenever there is anything to select: the one this tab
   // (or its last mount) had, else the first page. A selected page closing —
@@ -503,12 +574,38 @@ export function LiveBrowser({
   // An EMPTY list keeps the selection: it is also what a fresh connection
   // reads for the instant before discovery reports what is open, and
   // clearing it then would drop this tab's page for whichever comes first.
+  //
+  // A page an agent asked to show wins as soon as it is there, and holds the
+  // selection until then (bounded by WANT_TIMEOUT_MS; wantNonce re-runs this
+  // when the wait expires).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: wantNonce re-runs the check when a wait expires
   React.useEffect(() => {
-    if (!client || pages.length === 0) return
+    const w = wanting()
+    if (w && pages.some((p) => p.id === w.id)) {
+      wantRef.current = null
+      select(w.id)
+      return
+    }
+    if (w || !client || pages.length === 0) return
     const cur = selectedRef.current
     if (cur && pages.some((p) => p.id === cur)) return
     select(pages[0].id)
-  }, [client, pages, select])
+  }, [client, pages, select, wanting, wantNonce])
+
+  // An agent's show request (open_browser_tab / show_browser_tab).
+  React.useEffect(() => {
+    if (!showRequest?.tabId) return
+    wantRef.current = {
+      id: showRequest.tabId,
+      until: Date.now() + WANT_TIMEOUT_MS,
+    }
+    setWantNonce((n) => n + 1)
+    const t = window.setTimeout(
+      () => setWantNonce((n) => n + 1),
+      WANT_TIMEOUT_MS + 50
+    )
+    return () => window.clearTimeout(t)
+  }, [showRequest])
 
   // Attach only to a page discovery has reported: a remembered id from
   // before a relaunch names a target that no longer exists.
@@ -566,7 +663,9 @@ export function LiveBrowser({
       // the last visit) left, so switching modes keeps the page. Done here,
       // once a session exists, because navigating without one opens a new
       // page. A page already there is left alone.
-      if (!urlSynced.current && !dead) {
+      // Default profile only: the slot is one address, and carrying it into
+      // every profile switched to would load the same page in each.
+      if (!urlSynced.current && !dead && profile === DEFAULT_PROFILE) {
         urlSynced.current = true
         const want = resolveLive(lsGet("browserUrl") ?? "")
         const have = targets.current.get(selected)?.url ?? ""
@@ -596,7 +695,7 @@ export function LiveBrowser({
           )
       }
     }
-  }, [client, attachable, attachNonce, fit, paint])
+  }, [client, attachable, attachNonce, fit, paint, profile])
 
   // The URL bar follows the selected page — its own navigations, and ones an
   // agent makes — except while someone is typing in it.
@@ -613,11 +712,16 @@ export function LiveBrowser({
   // sync has run, or the page's old URL would overwrite the one being
   // carried over before it was ever applied.
   React.useEffect(() => {
-    if (!urlSynced.current || !currentURL || currentURL === "about:blank") {
+    if (
+      profile !== DEFAULT_PROFILE ||
+      !urlSynced.current ||
+      !currentURL ||
+      currentURL === "about:blank"
+    ) {
       return
     }
     lsSet("browserUrl", currentURL)
-  }, [currentURL])
+  }, [currentURL, profile])
 
   // ---- page actions ---------------------------------------------------------
 
@@ -633,6 +737,14 @@ export function LiveBrowser({
           "Target.createTarget",
           { url }
         )
+        // Held like an agent's page until discovery announces it, or the
+        // fallback would select some other tab in the meantime.
+        if (!targets.current.has(targetId)) {
+          wantRef.current = {
+            id: targetId,
+            until: Date.now() + WANT_TIMEOUT_MS,
+          }
+        }
         select(targetId)
       } catch (e) {
         setErr(errText(e))
@@ -641,9 +753,9 @@ export function LiveBrowser({
     [select]
   )
 
-  // A terminal link: always a NEW page, never the selected one — an agent may
-  // be mid-task in it, and navigating its page away would be taking the
-  // browser out from under it.
+  // A terminal link: always a NEW tab in this profile, never the selected
+  // page — an agent may be mid-task in it, and navigating its page away would
+  // be taking the browser out from under it.
   React.useEffect(() => {
     if (!openRequest) return
     onOpened()
@@ -682,20 +794,13 @@ export function LiveBrowser({
     [openNew]
   )
 
-  // A terminal link loads into the page on screen (one page at a time; see
-  // the header). With no page yet, navigate opens one.
-  React.useEffect(() => {
-    if (!openRequest) return
-    onOpened()
-    void navigate(openRequest.url)
-  }, [openRequest, onOpened, navigate])
-
-  React.useEffect(() => {
-    if (!client || !pendingOpen.current) return
-    const url = pendingOpen.current
-    pendingOpen.current = null
-    void navigate(url)
-  }, [client, navigate])
+  const closeTab = React.useCallback((id: string) => {
+    const c = clientRef.current
+    if (!c?.isOpen) return
+    void c
+      .send("Target.closeTarget", { targetId: id })
+      .catch((e) => setErr(errText(e)))
+  }, [])
 
   const history = React.useCallback(async (delta: -1 | 1) => {
     const c = clientRef.current
@@ -1131,6 +1236,62 @@ export function LiveBrowser({
         </Button>
       </div>
 
+      {client && pages.length > 0 && (
+        <div
+          role="tablist"
+          aria-label="Browser tabs"
+          className="flex flex-shrink-0 items-stretch overflow-x-auto border-border border-b bg-background [scrollbar-width:thin]"
+        >
+          {pages.map((p) => {
+            const on = p.id === selected
+            return (
+              <div
+                key={p.id}
+                className={cn(
+                  "group flex max-w-44 flex-shrink-0 items-center border-border border-r text-[12px]",
+                  on
+                    ? "bg-muted font-medium text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60"
+                )}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  title={p.url}
+                  className="min-w-0 flex-1 truncate py-1 pr-1 pl-2 text-left"
+                  onClick={() => select(p.id)}
+                >
+                  {tabLabel(p)}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`close ${tabLabel(p)}`}
+                  title="close tab"
+                  className={cn(
+                    "mr-1 flex size-4 flex-shrink-0 items-center justify-center rounded-sm hover:bg-foreground/10",
+                    !on &&
+                      "pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
+                  )}
+                  onClick={() => closeTab(p.id)}
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            )
+          })}
+          <button
+            type="button"
+            title="new tab"
+            aria-label="new tab"
+            className="flex flex-shrink-0 items-center px-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            onClick={() => void openNew("about:blank")}
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
+      )}
+
       {(statusLine || err) && (
         <div className="flex flex-shrink-0 items-center gap-2 border-border border-b bg-background px-2 py-1 text-[12px]">
           {statusLine && <Orb state="working" px={14} />}
@@ -1202,6 +1363,7 @@ export function LiveBrowser({
           onCompositionEnd={drainKbd}
         />
       </div>
+      {footer}
     </div>
   )
 }
