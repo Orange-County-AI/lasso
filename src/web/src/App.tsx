@@ -561,7 +561,7 @@ function Shell() {
 
   // ⌘K → herdr's own pane search, ⌘O/⌘I → the agent/terminal tabs in the New
   // dialog, ⌘J/⌘E/⌘B → the left column's views and sidebar, ⌘\ and ⌘⇧F/S/B →
-  // the right sidebar, ⌘/ → the keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
+  // the right sidebar, ⌘/ → toggles the keyboard-shortcuts reference. Bound to the Cmd key only (not Ctrl) so it
   // never clobbers terminal control keys like Ctrl-H (backspace). The
   // herdr/shell terminal iframes re-dispatch Cmd-shortcuts to this document, so
   // these work even while a terminal holds focus. (See SHORTCUTS, the reference
@@ -610,7 +610,7 @@ function Shell() {
         setNewOpen(true)
       } else if (k === "/") {
         e.preventDefault()
-        setShortcutsOpen(true)
+        setShortcutsOpen((o) => !o)
       } else if (k === "j") {
         e.preventDefault()
         toggleLeftView()
