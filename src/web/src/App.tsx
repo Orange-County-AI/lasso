@@ -903,10 +903,7 @@ function Shell() {
                   <UsageTab active={rightView === "usage"} />
                 </Pane>
                 <Pane show={rightView === "settings"}>
-                  <SettingsTab
-                    active={rightView === "settings"}
-                    onOpenShortcuts={() => setShortcutsOpen(true)}
-                  />
+                  <SettingsTab active={rightView === "settings"} />
                 </Pane>
                 {pluginTabs
                   .filter(({ tab }) => visitedPlugins.has(tab.global_id))
