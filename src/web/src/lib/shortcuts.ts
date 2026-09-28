@@ -29,7 +29,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       },
       { keys: "⌘O", label: "New agent…" },
       { keys: "⌘I", label: "New terminal…" },
-      { keys: "⌘/", label: "Show keyboard shortcuts" },
+      { keys: "⌘/", label: "Toggle keyboard shortcuts" },
     ],
   },
   {
