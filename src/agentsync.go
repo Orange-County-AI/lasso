@@ -39,7 +39,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -50,35 +49,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// devThemeSyncEnv is the explicit opt-in that lets a -dev lasso write theme
-// state after all — for someone deliberately testing theme sync itself.
-const devThemeSyncEnv = "LASSO_DEV_THEME_SYNC"
-
-// errThemeReadOnly is what a dev lasso answers a theme write with. It names the
-// way out, because the human reading it clicked something and needs to know
-// which lasso to click it in.
-var errThemeReadOnly = errors.New("this is a dev lasso (-dev): it follows the fleet's theme but never writes it — " +
-	"change the theme from the production lasso, or restart this one with " + devThemeSyncEnv + "=1 to test theme sync")
-
-// themeWritesAllowed reports whether this process may write theme state
-// anywhere: herdr's config.toml (local or remote), any agent CLI's theme file,
-// the fan-out, the per-probe convergence and the boot mirror. It is true for
-// every production lasso, and false for a -dev one unless LASSO_DEV_THEME_SYNC=1.
-//
-// A dev instance shares ~/.lasso/lasso.db, the local herdr config and the ssh
-// fleet with the production lasso, but none of that lasso's in-memory state —
-// above all themeSynced, its record of its own writes. So a fresh dev process
-// converged the whole fleet onto whatever it booted with (an empty record reads
-// as "every host is behind"), and refused the production lasso's own palette
-// pushes as edits "lasso did not write" — then pushed the stale theme it kept
-// to any host it touched. Four dev instances starting at once re-themed every
-// host. A dev lasso is therefore a pure FOLLOWER: it reads and displays the
-// theme and writes none of it. Checked at the write chokepoints, not by
-// callers, so a new caller cannot forget it.
-func themeWritesAllowed() bool {
-	return devMode == nil || !*devMode || os.Getenv(devThemeSyncEnv) == "1"
-}
 
 // syncAgentThemesKey is the settings-table key for the toggle. Unset means on.
 const syncAgentThemesKey = "sync_agent_themes"
@@ -255,7 +225,7 @@ func syncThemeToHost(host string, rt resolvedTheme) { _ = syncThemeToHostErr(hos
 // A host excluded by the per-host opt-out, or a foreign resolution, is not a
 // failure and reports none: nothing was attempted.
 func syncThemeToHostErr(host string, rt resolvedTheme) error {
-	if !themeWritesAllowed() || !themeSyncEnabledFor(host) || rt.Foreign {
+	if !themeSyncEnabledFor(host) || rt.Foreign {
 		return nil
 	}
 	if isLocalHost(host) {
@@ -285,9 +255,6 @@ func syncThemeToHostErr(host string, rt resolvedTheme) error {
 // Callers run it off their request/poll paths because remote SFTP writes can
 // wait on ssh; themeSem caps the fleet-wide connection burst.
 func syncThemeEverywhere(rt resolvedTheme) {
-	if !themeWritesAllowed() { // a dev lasso follows; see themeWritesAllowed
-		return
-	}
 	themeFanoutMu.Lock()
 	defer themeFanoutMu.Unlock()
 
@@ -338,8 +305,7 @@ func liveTheme() resolvedTheme {
 // probe pushes the whole thing rather than be told it is in step by a pass that
 // wrote none of it.
 func syncAgentThemesEverywhere(rt resolvedTheme) {
-	// Gated before anything dials: a dev lasso follows (themeWritesAllowed).
-	if !themeWritesAllowed() || rt.Resolved == "" || rt.Foreign {
+	if rt.Resolved == "" || rt.Foreign {
 		return
 	}
 	themeFanoutMu.Lock()
@@ -500,11 +466,6 @@ func convergeThemeOnProbe(hi HostInfo) {
 	if srvHub == nil || db == nil { // not a running server: boot, CLI, tests
 		return
 	}
-	// A dev lasso's record is empty by construction, so every host reads as
-	// behind — this is the path that re-themed the fleet on a dev boot.
-	if !themeWritesAllowed() {
-		return
-	}
 	if hi.Alias == "" || isLocalHost(hi.Alias) || hi.State != "" || !hi.Reachable {
 		return
 	}
@@ -538,7 +499,7 @@ func opencodeConfigDir(home string) string { return filepath.Join(home, ".config
 // host that isn't is retried on its next probe). Callers that only want the
 // side effect can ignore it; nothing here is fatal to a theme switch.
 func syncAgentThemesVia(b Backend, rt resolvedTheme) error {
-	if b == nil || !themeWritesAllowed() || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
+	if b == nil || !syncAgentThemesEnabled() || !themeSyncEnabledFor(b.Name()) {
 		return nil
 	}
 	home, err := b.HomeDir()
@@ -1865,18 +1826,6 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	// A dev lasso never pushes (themeWritesAllowed). Refused out loud rather
-	// than dropped: "Sync now" toasts the error itself, but the automatic push
-	// an appearance change makes is quiet and swallows it, so that one is told
-	// with a notice — once per palette, since the client retries.
-	if !themeWritesAllowed() {
-		if body.Quiet {
-			noteDevThemeRefusal(body.Palette)
-		}
-		http.Error(w, errThemeReadOnly.Error(), http.StatusConflict)
-		return
-	}
-
 	rt := liveTheme()
 	if body.Palette != "" {
 		key := normalizeThemeName(body.Palette)
@@ -1955,34 +1904,6 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"started": true, "theme": rt.Resolved, "hosts": targets})
 }
 
-// devThemeRefused is the palette a dev lasso last told its tabs it would not
-// push, so a quiet push and its retry raise one notice, not two.
-var devThemeRefused struct {
-	mu      sync.Mutex
-	palette string
-	said    bool
-}
-
-// noteDevThemeRefusal tells this lasso's tabs that an appearance change made
-// here repainted only this lasso's browsers — the fleet (herdr, agents, other
-// hosts) stays on whatever the production lasso gave it. Silence would leave a
-// human believing the fleet had followed their pick.
-func noteDevThemeRefusal(palette string) {
-	devThemeRefused.mu.Lock()
-	if devThemeRefused.said && devThemeRefused.palette == palette {
-		devThemeRefused.mu.Unlock()
-		return
-	}
-	devThemeRefused.palette, devThemeRefused.said = palette, true
-	devThemeRefused.mu.Unlock()
-	log.Printf("theme:    dev: not pushing palette %q to the fleet (%s=1 allows it)", palette, devThemeSyncEnv)
-	notifyUI(notice{
-		Level:  "info",
-		Title:  "Dev lasso: palette not synced to the fleet",
-		Detail: errThemeReadOnly.Error(),
-	})
-}
-
 func plural(n int) string {
 	if n == 1 {
 		return ""
@@ -2006,9 +1927,6 @@ func plural(n int) string {
 // Respects the per-host opt-out like any other write: a human who unchecked
 // "titan (this machine)" has said lasso may not theme it.
 func setLocalHerdrTheme(name string) error {
-	if !themeWritesAllowed() {
-		return errThemeReadOnly
-	}
 	if !themeSyncEnabledFor("local") {
 		return nil
 	}
