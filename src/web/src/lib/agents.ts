@@ -1,4 +1,8 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -197,6 +201,13 @@ export function useAgents() {
     // one way a list like this can lie).
     queryKey: qk.allPanes(panesRev),
     queryFn: () => api.allPanes(),
+    // Every create, close or rename bumps panes_rev and so starts a NEW cache
+    // entry. Without this the list reads as loading until it lands, and the
+    // grid unmounts behind a spinner: closing one card threw away the reader's
+    // scroll position with every other card. The old list stands in instead,
+    // and dataUpdatedAt stays 0 until the real answer arrives, so nothing that
+    // counts polls mistakes the stand-in for a fresh listing.
+    placeholderData: keepPreviousData,
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
   })
