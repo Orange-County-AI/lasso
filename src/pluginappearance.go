@@ -391,7 +391,9 @@ func (m *pluginManager) syncThemes() bool {
 	}
 	newDef, ok := lookupThemeDef(cur)
 	forced := *themeName != "" && *themeName != "auto"
-	if hadOld && ok && newDef != oldDef && themeSourceOf(cur) == "plugin" && !forced {
+	// A dev lasso may not rewrite the file (themeWritesAllowed), so it only
+	// re-resolves below, repainting its own tabs.
+	if hadOld && ok && newDef != oldDef && themeSourceOf(cur) == "plugin" && !forced && themeWritesAllowed() {
 		// herdr's config.toml spells a lasso-only theme as base + a generated
 		// override block holding the palette, so the file has to be rewritten
 		// for the local TUI to repaint; setLocalHerdrTheme does that, marks it

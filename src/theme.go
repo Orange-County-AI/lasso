@@ -1295,6 +1295,11 @@ func migrateHerdrThemeConfig(path string) (bool, error) {
 // picks the file up when it starts, and the reload is off this goroutine so
 // neither boot nor the theme poll waits on a socket nobody is listening on.
 func tidyHerdrThemeConfig(why string) {
+	// A dev lasso never rewrites herdr's config (themeWritesAllowed); the
+	// production lasso sharing it does this tidy itself.
+	if !themeWritesAllowed() {
+		return
+	}
 	path := herdrConfigPath()
 	changed, err := migrateHerdrThemeConfig(path)
 	if err != nil {

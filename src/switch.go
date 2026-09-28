@@ -415,6 +415,11 @@ func syncRemoteTheme(t themeTarget, name string) error {
 		return nil
 	}
 	host := t.Name()
+	// A dev lasso never writes a theme (themeWritesAllowed) — this is also the
+	// host-attach path, so a dev tab opening a host must not re-theme it.
+	if !themeWritesAllowed() {
+		return nil
+	}
 	if !themeSyncEnabledFor(host) {
 		log.Printf("host:     theme sync to %s off (disabled for this host)", host)
 		return nil

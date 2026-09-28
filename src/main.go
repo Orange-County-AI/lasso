@@ -203,6 +203,11 @@ func runServer() {
 	// Mirror into local agents' theme files at boot too (the poll only syncs on
 	// a theme CHANGE, so without this a sync-logic upgrade — or files drifted
 	// while lasso was down — would wait for the next theme switch to converge).
+	// A dev lasso skips it inside (themeWritesAllowed); say so once here, since
+	// every theme write it would have made is now silent by design.
+	if !themeWritesAllowed() {
+		log.Printf("theme:    dev: following the theme read-only — no herdr config, agent theme file or host is written (%s=1 to allow)", devThemeSyncEnv)
+	}
 	go syncAgentThemesVia(localFsBackend(), theme)
 
 	// Shutdown is sequenced in two stages: the signal context only *starts* a
@@ -1646,6 +1651,15 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
+	// A dev lasso follows the theme and writes none of it (themeWritesAllowed):
+	// not herdr's config.toml, and not the sync policy either — those two
+	// settings live in the lasso.db it shares with the production lasso, so a
+	// flip here would change what THAT lasso writes. A read (no field set) is
+	// still answered.
+	if !themeWritesAllowed() && (req.Name != "" || req.SyncAgentThemes != nil || req.ThemeSync != nil) {
+		http.Error(w, errThemeReadOnly.Error(), http.StatusConflict)
+		return
+	}
 	if req.SyncAgentThemes != nil {
 		if err := setSetting(syncAgentThemesKey, strconv.FormatBool(*req.SyncAgentThemes)); err != nil {
 			http.Error(w, "save setting: "+err.Error(), http.StatusInternalServerError)
@@ -2752,7 +2766,13 @@ func (h *hub) refreshTheme() {
 	// palette governs — setLocalHerdrTheme marks the record before it re-resolves
 	// — and it is also the only thing it fans out then, since it IS the palette
 	// the appearance pushed.
-	if fleetThemeIsPalette() && !(lassoWrote && wrote == rt.Resolved) {
+	//
+	// A dev lasso skips the refusal and adopts whatever config.toml says: it
+	// writes nothing (themeWritesAllowed), so it has no record of its own to
+	// tell the production lasso's palette push from a hand edit — the refusal
+	// kept it on a theme the fleet had left — and with no fan-out and no
+	// convergence behind it, following the file is display only.
+	if themeWritesAllowed() && fleetThemeIsPalette() && !(lassoWrote && wrote == rt.Resolved) {
 		say := h.strayTheme != rt.Resolved
 		h.strayTheme = rt.Resolved
 		on := h.curTheme.Resolved
