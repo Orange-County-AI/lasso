@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   Keyboard,
   Plus,
   RotateCw,
@@ -1220,6 +1221,33 @@ export function LiveBrowser({
             }
           }}
         />
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          disabled={!urlInput.trim()}
+          // Keep focus in the URL bar: its blur resets the field to the
+          // current page, which would throw away what was just typed.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            urlFocused.current = false
+            void navigate(urlInput)
+          }}
+        >
+          go
+        </Button>
+        {/* Opens the page in the human's own browser, not the shared one:
+            their cookies, not the shared profile's. */}
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-7"
+          title="open in new tab"
+          disabled={!currentURL || currentURL === "about:blank"}
+          onClick={() => window.open(currentURL, "_blank", "noopener")}
+        >
+          <ExternalLink />
+        </Button>
         {/* Touch only: a phone has no physical keyboard to reach the canvas,
             so this focuses the hidden textarea that raises the software one.
             With a mouse and keyboard the canvas takes keys directly and the
@@ -1325,7 +1353,12 @@ export function LiveBrowser({
           ref={canvasRef}
           tabIndex={0}
           aria-label="shared browser"
-          className="absolute inset-0 size-full touch-none select-none outline-none"
+          // A blank page (or none) screencasts as solid white, and the last
+          // frame lingers after a tab closes; hide it so the theme shows.
+          className={cn(
+            "absolute inset-0 size-full touch-none select-none outline-none",
+            (!currentURL || currentURL === "about:blank") && "opacity-0"
+          )}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
