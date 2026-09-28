@@ -852,10 +852,11 @@ export interface BrowserStatus {
   ws_path: string
   // What a relaunch did (e.g. which pages it reopened after a proxy change).
   note?: string
-  // /browser-mcp: chrome-devtools-mcp bridged to agents over HTTP, one child
-  // per MCP session. `mcp_available` is false when it is not installed on
-  // lasso's machine or LASSO_BROWSER_MCP=off, with `mcp_reason` saying which
-  // (and how to install it); `mcp_sessions` is the live session count.
+  // /browser-mcp: chrome-devtools-mcp bridged to agents over HTTP, one URL
+  // for every profile, one child per session per profile it has used.
+  // `mcp_available` is false when it is not installed on lasso's machine or
+  // LASSO_BROWSER_MCP=off, with `mcp_reason` saying which (and how to install
+  // it); `mcp_sessions` counts sessions actually using the browser.
   mcp_available?: boolean
   mcp_binary?: string
   mcp_reason?: string
@@ -867,8 +868,8 @@ export interface BrowserStatus {
 
 // One browser profile: its own Chromium, its own persistent user-data dir
 // (cookies, logins) and optionally its own proxy. `ws_path` / `mcp_path` are
-// lasso-origin paths ("/cdp" and "/browser-mcp" for the default profile,
-// "/cdp/p/<id>" and "/browser-mcp/<id>" otherwise).
+// lasso-origin paths: "/cdp" for the default profile and "/cdp/p/<id>"
+// otherwise; "/browser-mcp" for every profile (its tools take `profile`).
 export interface BrowserProfileStatus {
   id: string
   name: string

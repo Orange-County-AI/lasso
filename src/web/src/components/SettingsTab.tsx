@@ -2118,7 +2118,7 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
         <span className={labelClass}>Connect an agent</span>
         {mcpSessions > 0 && (
           <Pill tone="good">
-            {mcpSessions} {mcpSessions === 1 ? "agent" : "agents"} connected
+            {mcpSessions} {mcpSessions === 1 ? "agent" : "agents"} using it
           </Pill>
         )}
       </div>
@@ -2135,10 +2135,13 @@ function SharedBrowserSettings({ active }: { active: boolean }) {
         OpenCode, …) add the same URL as a streamable-HTTP MCP server. Behind
         UI_AUTH or MCP_OAUTH a remote agent sends an Authorization header (a
         token from <code className="font-mono">lasso mcp-client token</code>, or
-        Basic credentials for UI_AUTH). This URL and the fields above are the
-        default profile's; each other browser profile has its own at{" "}
-        <code className="font-mono">/browser-mcp/&lt;id&gt;</code>, and profiles
-        are managed from the bar along the bottom of the Browser tab.
+        Basic credentials for UI_AUTH). This one URL drives every browser
+        profile: each tool takes an optional{" "}
+        <code className="font-mono">profile</code> (id or name; omitted = the
+        default), so a new profile needs no new MCP server. Connecting is free;
+        a chrome-devtools-mcp process starts only when an agent first uses a
+        profile. Profiles are managed from the bar along the bottom of the
+        Browser tab; the CDP endpoint below is the default profile's.
       </p>
       <CopyLine label="CDP endpoint" text={endpoint} />
       <p className="text-[11px] text-muted-foreground">

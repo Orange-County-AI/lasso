@@ -163,7 +163,7 @@ func TestBrowserProfileHTTP(t *testing.T) {
 		f.serveProfiles(w, httptest.NewRequest(method, path, strings.NewReader(body)))
 		return w.Code, w.Body.String()
 	}
-	if code, body := do("POST", "/api/browser/profiles", `{"name":"US","proxy":"socks5://10.0.0.1:1080"}`); code != 200 || !strings.Contains(body, `"ws_path":"/cdp/p/us"`) || !strings.Contains(body, `"mcp_path":"/browser-mcp/us"`) {
+	if code, body := do("POST", "/api/browser/profiles", `{"name":"US","proxy":"socks5://10.0.0.1:1080"}`); code != 200 || !strings.Contains(body, `"ws_path":"/cdp/p/us"`) || !strings.Contains(body, `"mcp_path":"/browser-mcp"`) {
 		t.Fatalf("create: %d %s", code, body)
 	}
 	if code, body := do("POST", "/api/browser/profiles", `{"name":"Bad","proxy":"socks5://u:p@h:1"}`); code != 400 || !strings.Contains(body, "credentials") {
@@ -334,7 +334,7 @@ func TestBrowserProfileMCPTools(t *testing.T) {
 	if msg := callTool(t, sess, "create_browser_profile", map[string]any{"name": "Work", "proxy": "socks5://127.0.0.1:9050"}, &prof); msg != "" {
 		t.Fatal(msg)
 	}
-	if prof.ID != "work" || prof.MCPEndpoint != "http://"+su.Host+"/browser-mcp/work" || prof.WSEndpoint != "ws://"+su.Host+"/cdp/p/work" {
+	if prof.ID != "work" || prof.MCPEndpoint != "http://"+su.Host+"/browser-mcp" || prof.WSEndpoint != "ws://"+su.Host+"/cdp/p/work" {
 		t.Fatalf("created %+v", prof)
 	}
 
@@ -412,7 +412,7 @@ func TestBrowserProfileMCPTools(t *testing.T) {
 	if msg := callTool(t, sess, "shared_browser", map[string]any{"profile": "work", "start": false}, &sb); msg != "" {
 		t.Fatal(msg)
 	}
-	if sb.Profile != "work" || sb.MCPEndpoint != "http://"+su.Host+"/browser-mcp/work" || sb.WSPath != "/cdp/p/work" || len(sb.Pages) != 1 {
+	if sb.Profile != "work" || sb.MCPEndpoint != "http://"+su.Host+"/browser-mcp" || sb.WSPath != "/cdp/p/work" || len(sb.Pages) != 1 {
 		t.Errorf("shared_browser(work) = %+v", sb)
 	}
 
