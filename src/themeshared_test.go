@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // simLasso is one lasso PROCESS as far as theme ownership goes: its identity,
@@ -53,10 +52,16 @@ func newSharedThemeWorld(t *testing.T) *sharedThemeWorld {
 	// The shared settings of the incident: "system" with the brand pair, so the
 	// fleet's theme is a palette and the palette-governs rule is in force.
 	postUIState(t, `{"appearance_mode":"system","palette_light":"ocai","palette_dark":"execution-associates","client_id":"A","user_intent":true}`)
+	// Registered last so it runs FIRST: every background theme write the code
+	// under test started (fan-outs, convergence pushes) finishes before the db
+	// closes and the temp HOME is removed, instead of writing into both after.
+	t.Cleanup(drainThemeBackground)
 	return w
 }
 
-// as runs fn as process p: its identity, its own write record, its hub.
+// as runs fn as process p: its identity, its own write record, its hub. The
+// background work fn starts is drained before the swap back out, so a fan-out
+// p kicked records its writes as p's, not as whichever process runs next.
 func (w *sharedThemeWorld) as(p *simLasso, fn func()) {
 	themeInstance = p.instance
 	themeSynced.mu.Lock()
@@ -64,6 +69,7 @@ func (w *sharedThemeWorld) as(p *simLasso, fn func()) {
 	themeSynced.mu.Unlock()
 	srvHub = p.hub
 	fn()
+	drainThemeBackground()
 	themeSynced.mu.Lock()
 	p.by = themeSynced.by
 	themeSynced.mu.Unlock()
@@ -81,17 +87,18 @@ func (w *sharedThemeWorld) boot(instance string) *simLasso {
 }
 
 // converge delivers one probe of host to p and reports what it pushed, "" if
-// nothing. Synchronous, so the next process swap cannot race the push.
+// nothing. as drains the push before returning, so the answer is final — no
+// timeout to guess at — and the next process swap cannot race it.
 func (w *sharedThemeWorld) converge(p *simLasso, host string) string {
-	var got string
 	w.as(p, func() {
 		convergeThemeOnProbe(HostInfo{Alias: host, Reachable: true, Running: true})
-		select {
-		case got = <-w.pushed:
-		case <-time.After(300 * time.Millisecond):
-		}
 	})
-	return got
+	select {
+	case got := <-w.pushed:
+		return got
+	default:
+		return ""
+	}
 }
 
 func (w *sharedThemeWorld) theme(p *simLasso) string { return p.hub.themeSnapshot().Resolved }

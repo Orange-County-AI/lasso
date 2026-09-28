@@ -633,6 +633,28 @@ func bootTheme(rt resolvedTheme) resolvedTheme {
 	return resolveThemeByName(hubName)
 }
 
+// themeBackground counts the theme writes lasso runs off the calling goroutine
+// — fan-outs, convergence pushes, the manual sync — so a test can drain them
+// (drainThemeBackground) before its temp HOME and db go away. Without it a
+// fan-out kicked by the code under test went on writing agent theme files and
+// shared records after the test returned: into a removed dir, a closed db, or
+// the NEXT test's state. Production never waits on it; goTheme is otherwise
+// exactly the `go` it replaces.
+var themeBackground sync.WaitGroup
+
+// goTheme runs fn in the background, counted in themeBackground.
+func goTheme(fn func()) {
+	themeBackground.Add(1)
+	go func() {
+		defer themeBackground.Done()
+		fn()
+	}()
+}
+
+// drainThemeBackground waits for every goTheme job, including ones those jobs
+// start themselves (a push that re-resolves and fans out again).
+func drainThemeBackground() { themeBackground.Wait() }
+
 // syncThemeToHostFn is the seam convergence pushes go through, so the probe path
 // can be driven in tests without ssh (mirroring hosts.go's probeHostFn).
 var syncThemeToHostFn = syncThemeToHost
@@ -661,7 +683,7 @@ func convergeThemeOnProbe(hi HostInfo) {
 	if rt.Resolved == "" || !claimThemeConverge(hi.Alias, themeStampFor(rt)) {
 		return
 	}
-	go func() {
+	goTheme(func() {
 		defer releaseThemeConverge(hi.Alias)
 		themeSem <- struct{}{}
 		defer func() { <-themeSem }()
@@ -674,7 +696,7 @@ func convergeThemeOnProbe(hi HostInfo) {
 			return
 		}
 		syncThemeToHostFn(hi.Alias, rt)
-	}()
+	})
 }
 
 // Where each agent CLI keeps its per-user config, relative to a home dir. The
@@ -2047,7 +2069,7 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 
 	rows, _ := hostSnapshot()
 	targets := len(themeFanoutHosts(rows)) + 1 // +1 for local
-	go func() {
+	goTheme(func() {
 		defer themeSyncRunning.Store(false)
 		// Local herdr's own config.toml FIRST, so liveTheme() and the theme_rev
 		// repaint already agree with what the fleet is about to be given — and
@@ -2092,7 +2114,7 @@ func serveThemeSync(w http.ResponseWriter, r *http.Request) {
 			Title:  fmt.Sprintf("Synced %s to %d of %d hosts", rt.Resolved, len(results)-len(failed), len(results)),
 			Detail: detail,
 		})
-	}()
+	})
 
 	writeJSON(w, map[string]any{"started": true, "theme": rt.Resolved, "hosts": targets})
 }

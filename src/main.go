@@ -1670,7 +1670,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 			// Switching sync back on converges that host now rather than at its
 			// next theme or host switch. Off the request path: reaching a remote
 			// costs an ssh round trip, and an unreachable one just logs.
-			go convergeThemeSyncFor(req.ThemeSyncHost)
+			goTheme(func() { convergeThemeSyncFor(req.ThemeSyncHost) })
 		}
 	}
 	if req.Name == "" {
@@ -1711,7 +1711,7 @@ func serveThemeSet(w http.ResponseWriter, r *http.Request) {
 	// Fan the resolved theme out after the local config write so [theme.custom]
 	// overrides reach local and settled remote agents. Off the request path:
 	// remote SFTP writes can wait on ssh latency.
-	go syncThemeEverywhere(loadHerdrTheme(""))
+	goTheme(func() { syncThemeEverywhere(loadHerdrTheme("")) })
 	// Skip the poll wait so the browser's theme_rev bump (and repaint) is
 	// near-immediate.
 	srvHub.kick("") // every tab, whatever host it is on, repaints on the new theme
@@ -2785,7 +2785,7 @@ func (h *hub) refreshTheme() {
 	// agents. Async so this loop never blocks on I/O. Another lasso on this db
 	// adopting the same change fans out the same bytes, which the writers skip
 	// as unchanged — redundant, never a revert, since both hubs now agree.
-	go syncThemeEverywhere(rt)
+	goTheme(func() { syncThemeEverywhere(rt) })
 	h.eachFeed((*hostFeed).pushCurrent)
 }
 
