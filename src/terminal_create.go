@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
@@ -24,6 +25,10 @@ type createTerminalReq struct {
 	// Host names the machine to create the terminal on; empty means the calling
 	// tab's own host (and, for a caller that names none, the default one).
 	Host string `json:"host"`
+	// Cwd is the directory the new shell starts in, on that host ("~" expands
+	// against its home). Empty keeps the old default: home for a new workspace
+	// or Scratch, herdr's own choice for a tab in an existing workspace.
+	Cwd string `json:"cwd"`
 }
 
 type createTerminalResp struct {
@@ -96,6 +101,17 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	cwd, err := resolveTerminalCwd(b, req.Cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// A new workspace (Scratch included) is rooted at home unless told
+	// otherwise; a tab in an existing workspace inherits herdr's default.
+	rootCwd := cwd
+	if rootCwd == "" {
+		rootCwd = expandTildeOn(b, "~")
+	}
 	focus := req.Focus == nil || *req.Focus
 	workspaceID := strings.TrimSpace(req.WorkspaceID)
 	workspaceName := strings.TrimSpace(req.WorkspaceName)
@@ -111,7 +127,7 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	createWorkspace := func() (json.RawMessage, error) {
 		return b.HerdrCall("workspace.create", map[string]any{
-			"cwd":   expandTildeOn(b, "~"),
+			"cwd":   rootCwd,
 			"label": workspaceName,
 			"focus": focus,
 		})
@@ -129,7 +145,7 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		// Scratch is shared with scratch agents: find-or-create it under the
 		// same per-host lock they use, so a terminal and an agent created at
 		// once cannot each make their own "Scratch".
-		ws, tab, pane, err := openScratchTabID(b, expandTildeOn(b, "~"), tabName, focus)
+		ws, tab, pane, err := openScratchTabID(b, rootCwd, tabName, focus)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -149,6 +165,9 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		if tabName != "" {
 			params["label"] = tabName
 		}
+		if cwd != "" {
+			params["cwd"] = cwd
+		}
 		res, err = b.HerdrCall(method, params)
 		// Workspace cleanup can race the picker. Resolve the persisted label
 		// again first (another workspace with that label may still exist), then
@@ -162,6 +181,9 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 				}
 				if tabName != "" {
 					params["label"] = tabName
+				}
+				if cwd != "" {
+					params["cwd"] = cwd
 				}
 				res, err = b.HerdrCall("tab.create", params)
 			}
@@ -196,6 +218,30 @@ func serveCreateTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	finishCreateTerminal(w, b, out, command, aiTitle)
+}
+
+// resolveTerminalCwd turns the caller's working directory into an absolute
+// path on b's host: "~" expands against THAT host's home, and it must already
+// be a directory. Checked up front because herdr does not refuse a missing cwd:
+// the shell would start somewhere else and the command would run there. ""
+// stays "", so each create path keeps its own default.
+func resolveTerminalCwd(b Backend, cwd string) (string, error) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return "", nil
+	}
+	cwd = filepath.Clean(expandTildeOn(b, cwd))
+	if !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("working directory must be absolute (or start with ~): %q", cwd)
+	}
+	fi, err := b.Stat(cwd)
+	if err != nil {
+		return "", fmt.Errorf("working directory %s: %w", cwd, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("working directory %s is not a directory", cwd)
+	}
+	return cwd, nil
 }
 
 // finishCreateTerminal starts the background tab titler, types the command into
