@@ -12,7 +12,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Orb } from "@/components/ui/orb"
-import { agentName, paneKey, useAgents } from "@/lib/agents"
+import {
+  agentName,
+  paneKey,
+  sortAgentsByPriority,
+  useAgents,
+} from "@/lib/agents"
 import type { HostPane } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -44,6 +49,9 @@ export function AgentsTab({ onPick }: { onPick: () => void }) {
     focusAgent,
     closeAgent,
   } = useAgents()
+  // Priority order (blocked first), matching the docked AgentSidebar this tab
+  // stands in for below md.
+  const sorted = React.useMemo(() => sortAgentsByPriority(agents), [agents])
   // The row whose pane the ✕ would end. Closing is herdr's own pane.close — what
   // ends the agent in that pane, there being no softer "detach" — so it is asked
   // before it happens, and the question names the agent because the button that
@@ -69,7 +77,7 @@ export function AgentsTab({ onPick }: { onPick: () => void }) {
         </div>
       )}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {agents.map((p) => (
+        {sorted.map((p) => (
           <Tile
             key={paneKey(p)}
             pane={p}

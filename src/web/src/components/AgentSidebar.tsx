@@ -3,7 +3,13 @@ import * as React from "react"
 import { AgentLines } from "@/components/AgentParts"
 import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
-import { agentMatches, paneKey, pinFirst, useAgents } from "@/lib/agents"
+import {
+  agentMatches,
+  paneKey,
+  pinFirst,
+  sortAgentsByPriority,
+  useAgents,
+} from "@/lib/agents"
 import type { HostPane } from "@/lib/api"
 import { setAgentPinned, useUIState } from "@/lib/ui-state"
 import { cn } from "@/lib/utils"
@@ -28,10 +34,14 @@ export function AgentSidebar() {
   const [query, setQuery] = React.useState("")
   // The agents grid's pins lead here too, in the grid's pin order: one pin, one
   // meaning, whichever surface set it (the grid's card or the chat header).
+  // Everything after them is always in priority order (blocked first), so the
+  // agent that needs an answer is at the top whichever machine it is on.
   const pinnedSet = React.useMemo(() => new Set(pinnedKeys ?? []), [pinnedKeys])
   const shown = React.useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return pinFirst(agents, pinnedKeys).filter((p) => agentMatches(p, terms))
+    return pinFirst(sortAgentsByPriority(agents), pinnedKeys).filter((p) =>
+      agentMatches(p, terms)
+    )
   }, [agents, query, pinnedKeys])
 
   return (
