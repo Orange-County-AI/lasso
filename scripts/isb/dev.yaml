@@ -3,7 +3,7 @@
 # the name and paths and exports them; nothing here is meant to be run by hand
 # without those set. Overlays: bun-cache.yaml (the shared cache, on unless
 # LASSO_DEV_BUN_CACHE is empty), dev-web.yaml (`mise run dev`'s two proxy
-# devices), icon.yaml (docs/icon for `mise run icons`).
+# devices and its Vite command), icon.yaml (docs/icon for `mise run icons`).
 #
 # Only src/web is mounted, never the repo root: a postinstall script that could
 # reach .git could drop a hook, and the global post-commit hook auto-pushes main.

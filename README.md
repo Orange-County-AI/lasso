@@ -563,8 +563,9 @@ nothing but `src/web` mounted. The Go backend still runs on the host, and two
 incus proxy devices carry the one port each direction needs. The container is
 declared in `scripts/isb/*.yaml` and driven by
 [isb](https://github.com/execution-associates/isb), pinned in `mise.toml` as a
-prebuilt release binary (`mise install` fetches it).
-`scripts/container.sh` documents the arrangement; the container rebuilds itself
+prebuilt release binary (`mise install` fetches it). `mise run dev` holds a
+foreground `isb up`, so its container stops when the dev server ends or when
+whatever launched it goes away. `scripts/container.sh` documents the arrangement; the container rebuilds itself
 from a base image if you delete it.
 
 ## Architecture

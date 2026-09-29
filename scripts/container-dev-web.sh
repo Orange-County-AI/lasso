@@ -22,10 +22,24 @@
 # from 8190. Several dev instances run at once because each worktree has its own
 # container (scripts/container.sh).
 #
+# Vite runs as dev-web.yaml's `command:` under a FOREGROUND `isb up`, not as
+# an `isb exec`, so the container's life is tied to whoever started it. isb
+# stops the container when Vite exits, on SIGINT/SIGTERM/SIGHUP, and, the
+# reason for all this, when any process that started it exits: it polls its
+# ancestors every second. An agent that ran `mise run dev` as a background task
+# and then went away did not always signal its descendants, which left the
+# container and its tailnet port up with nobody attached. Now isb notices, stops
+# the container, and this script and the dev task's backend unwind behind it.
+# The cost: ending the dev server stops the container under any other task
+# running in this worktree at that moment (a `mise run lint`), and the next
+# task pays a few seconds of boot.
+#
 # Both devices are removed on exit; leaving them behind would hold the tailscale
 # port. One left by a run that died without its trap is reclaimed by the next
 # `up`: a stale `backend` differs and is replaced, and a stale `vite` still
-# inside the search range is this worktree's own and is kept.
+# inside the search range is this worktree's own and is kept. Since isb stopped
+# the container either way, such a leftover holds the port only once another
+# task starts the container again.
 set -euo pipefail
 
 port="${1:?backend port required}"
@@ -70,4 +84,7 @@ echo "vite: http://$ip:$hostport  (in $CONTAINER, backend on host 127.0.0.1:$por
 # the dev loop is where you add a dependency, and it should pick it up and
 # update bun.lock rather than refuse. The build is the strict one.
 container_run "bun install"
-container_run "env LASSO_BACKEND=http://127.0.0.1:8190 bun run dev --host 127.0.0.1 --port 5173 --strictPort"
+
+# Vite itself (dev-web.yaml's `command:`). Not `exec`: the trap still has to
+# remove the devices once isb has stopped the container.
+container_up_foreground
