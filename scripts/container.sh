@@ -41,7 +41,10 @@
 # stopped dev-base container, update it, `incus publish dev-base --alias
 # dev-base --reuse -f`.
 #
-# Idle containers are left running, not stopped after each task. An idle one
+# Idle containers are left running, not stopped after each task, with one
+# exception: `mise run dev` holds a foreground `isb up`, which stops this
+# worktree's container when the dev server ends (container-dev-web.sh says
+# why), and the next task starts it again. An idle one
 # holds ~11 MiB of anonymous memory (measured on titan, 2026-09-27, cgroup
 # memory.stat after a build); `incus info` shows over a GiB, but that is page
 # cache from reading node_modules, which the kernel reclaims under pressure.
@@ -129,11 +132,27 @@ container_isb() { isb -q "${ISB_FILES[@]}" "$@"; }
 # per-container lock around this, so two tasks started together in a fresh
 # worktree don't both create it, and it only touches a device that is wrong:
 # `mise run lint` next to a running `mise run dev` is a no-op, not a remount.
+# -d because since isb 0.4 a bare `up` stays in the foreground until its
+# commands exit (like `docker compose up`); every task here runs its work with
+# exec afterwards, so it needs `up` to return. Only the dev server holds one
+# (container_up_foreground).
 container_ensure() {
   require_isb || return 1
   # Not quiet: a first create copies the whole image into a `dir` pool and can
   # take a minute or more, which should not look like a hang.
-  isb "${ISB_FILES[@]}" up
+  isb "${ISB_FILES[@]}" up -d
+}
+
+# container_up_foreground — `isb up` held in the foreground: run the overlays'
+# `command:` and stop the container when it exits, on a signal, or when any
+# process that started isb goes away (isb polls its ancestors every second).
+# Call container_ensure first: that `up -d` does the create and reconcile, so
+# this one finds everything correct and touches no device. Not quiet, so the
+# log says why it stopped; no log prefix, since there is one service and Vite's
+# output reads better without `web | `.
+container_up_foreground() {
+  require_isb || return 1
+  isb "${ISB_FILES[@]}" up --no-log-prefix
 }
 
 # container_run_in <dir> <command string> — run as the unprivileged `dev` user
