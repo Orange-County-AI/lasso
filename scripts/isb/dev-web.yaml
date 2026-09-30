@@ -1,9 +1,25 @@
-# Overlay for `mise run dev` (scripts/container-dev-web.sh): the two proxy
-# devices wiring Vite in the container to the Go backend on the host. They are
-# point-to-point TCP forwards for one port each, so the container keeps its own
-# network namespace (no `--network host`).
+# Overlay for `mise run dev` (scripts/container-dev-web.sh): the Vite command a
+# foreground `isb up` runs, and the two proxy devices wiring Vite in the
+# container to the Go backend on the host. They are point-to-point TCP forwards
+# for one port each, so the container keeps its own network namespace (no
+# `--network host`).
 sandboxes:
   web:
+    # Run by the foreground `isb up` in container-dev-web.sh, with dev.yaml's
+    # exec defaults (user dev, cwd src/web, the mise PATH). Inside the
+    # container Vite is always on 5173; LASSO_BACKEND is the `backend` device
+    # below. `-d` ignores it, so the other tasks' `up -d` never start a Vite.
+    command:
+      - env
+      - LASSO_BACKEND=http://127.0.0.1:8190
+      - bun
+      - run
+      - dev
+      - --host
+      - 127.0.0.1
+      - --port
+      - "5173"
+      - --strictPort
     ports:
       # container 127.0.0.1:8190 -> host 127.0.0.1:<backend port>. The backend
       # stays on host loopback and is never exposed on the incus bridge, yet

@@ -30,7 +30,7 @@ node = "26.7.0"
 # Drives the frontend dev containers (scripts/container.sh, scripts/isb/). A
 # prebuilt static binary from the GitHub release, built in isb's CI: never
 # `cargo install` it on a host, since build.rs and proc-macros are arbitrary code.
-"github:execution-associates/isb" = "0.1.0"
+"github:execution-associates/isb" = "0.4.0"
 # Runs in this worktree's dev container: the work here is uv resolving Pillow
 # from PyPI, not the few lines of resizing. The deps live in PEP 723 metadata at the
 # top of build.py. The source is raster art (docs/icon/icon.png); there is no
