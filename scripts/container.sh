@@ -127,6 +127,45 @@ container_with() { ISB_FILES+=(-f "$ISB_DIR/$1"); }
 # container_isb <isb args...> — isb with this worktree's compose files.
 container_isb() { isb -q "${ISB_FILES[@]}" "$@"; }
 
+# The dev session's lock. container-dev-web.sh holds an flock on this file for
+# its whole life (container_dev_lock), and the kernel drops it when the last
+# process holding the fd dies, SIGKILL included, which no trap survives. That
+# makes it the one reliable answer to "is a dev server alive for this
+# container": a pgrep inside the container cannot tell a dev run that is still
+# in `bun install` from one that was killed and left its devices behind.
+# One directory level, so `mkdir -p -m 700` below applies the mode to all of it.
+DEV_LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/lasso-dev-$(id -u)"
+DEV_LOCK="$DEV_LOCK_DIR/$CONTAINER.lock"
+
+# container_dev_lock — take the dev lock on fd 9 for the rest of this process
+# (and its children: isb inherits the fd). Fails if a dev session holds it.
+container_dev_lock() {
+  command -v flock >/dev/null 2>&1 ||
+    { echo "error: flock (util-linux) is required for mise run dev" >&2; exit 1; }
+  # shellcheck disable=SC2174  # DEV_LOCK_DIR is a single level
+  mkdir -p -m 700 "$DEV_LOCK_DIR" && exec 9>"$DEV_LOCK" && flock -n 9
+}
+
+# container_reap_dev_ports — remove the dev server's `backend` and `vite`
+# devices when no dev session is alive. They are dev-web.yaml's, and only that
+# script's trap removes them; a dev run killed outright (an agent's background
+# task stopped with SIGKILL) leaves them on the container isb stopped, and the
+# next task to start it would publish the tailnet port again with no Vite
+# behind it. The lock is taken non-blocking, so a live session (or this very
+# script, when it is the dev one) is simply skipped, and it is released before
+# `up`, so a dev run starting meanwhile is never refused. `port rm` of a device
+# that is not there is a no-op; a container that does not exist yet fails,
+# which is fine to ignore.
+container_reap_dev_ports() {
+  command -v flock >/dev/null 2>&1 || return 0
+  # shellcheck disable=SC2174  # DEV_LOCK_DIR is a single level
+  mkdir -p -m 700 "$DEV_LOCK_DIR" 2>/dev/null || return 0
+  (
+    flock -n 9 || exit 0
+    isb -q port rm "$CONTAINER" backend vite >/dev/null 2>&1 || true
+  ) 9>"$DEV_LOCK"
+}
+
 # container_ensure — create this worktree's container if missing, start it if
 # stopped, and reconcile its devices and labels with the spec. isb holds a
 # per-container lock around this, so two tasks started together in a fresh
@@ -138,6 +177,7 @@ container_isb() { isb -q "${ISB_FILES[@]}" "$@"; }
 # (container_up_foreground).
 container_ensure() {
   require_isb || return 1
+  container_reap_dev_ports
   # Not quiet: a first create copies the whole image into a `dir` pool and can
   # take a minute or more, which should not look like a hang.
   isb "${ISB_FILES[@]}" up -d

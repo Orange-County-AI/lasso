@@ -35,11 +35,12 @@
 # task pays a few seconds of boot.
 #
 # Both devices are removed on exit; leaving them behind would hold the tailscale
-# port. One left by a run that died without its trap is reclaimed by the next
-# `up`: a stale `backend` differs and is replaced, and a stale `vite` still
-# inside the search range is this worktree's own and is kept. Since isb stopped
-# the container either way, such a leftover holds the port only once another
-# task starts the container again.
+# port. A run that died without its trap (SIGKILL) leaves them on the container
+# isb stopped, and whichever task starts it next removes them first: every
+# container_ensure reaps them unless this script's dev lock is held (container.sh,
+# container_reap_dev_ports). The next `mise run dev` needs no reap: a stale
+# `backend` differs and is replaced, and a stale `vite` still inside the search
+# range is this worktree's own and is kept.
 set -euo pipefail
 
 port="${1:?backend port required}"
@@ -51,13 +52,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One dev session per worktree. A second `mise run dev` here would share the
 # container's 5173 and, worse, its `backend`/`vite` devices — its cleanup would
 # delete the first session's. Refuse BEFORE the trap is armed so nothing of the
-# live session is touched. Test for the live process, not for the `vite`
-# device: a device left behind by a run that died without its trap (SIGKILL, a
-# closed terminal) is garbage to reclaim, not a session to make way for. isb
-# exits 125 for a container that does not exist yet, which is the
-# fresh-worktree case and falls through.
+# live session is touched. The test is the dev lock (container.sh), not the
+# `vite` device: a device left behind by a run that died without its trap
+# (SIGKILL, a closed terminal) is garbage to reclaim, not a session to make way
+# for. Holding the lock is also what keeps other tasks' container_ensure from
+# reaping this session's devices.
 require_isb
-if container_isb exec -n -T web -- pgrep -f 'bun run dev' >/dev/null 2>&1; then
+if ! container_dev_lock; then
   echo "error: a dev server is already running for this worktree in $CONTAINER" >&2
   echo "       (stop it first; other worktrees have their own containers)" >&2
   exit 1
