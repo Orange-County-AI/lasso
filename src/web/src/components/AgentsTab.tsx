@@ -1,4 +1,4 @@
-import { SquareX } from "lucide-react"
+import { Search, SquareX, X } from "lucide-react"
 import * as React from "react"
 import { AgentLines } from "@/components/AgentParts"
 import {
@@ -11,8 +11,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { NO_AUTOCORRECT } from "@/components/ui/input"
 import { Orb } from "@/components/ui/orb"
 import {
+  agentMatches,
   agentName,
   paneKey,
   sortAgentsByPriority,
@@ -49,9 +51,14 @@ export function AgentsTab({ onPick }: { onPick: () => void }) {
     focusAgent,
     closeAgent,
   } = useAgents()
-  // Priority order (blocked first), matching the docked AgentSidebar this tab
-  // stands in for below md.
-  const sorted = React.useMemo(() => sortAgentsByPriority(agents), [agents])
+  const [query, setQuery] = React.useState("")
+  // Priority order (blocked first) and the same filter as the docked
+  // AgentSidebar this tab stands in for below md (agentMatches: name, harness,
+  // worktree and machine, every term required).
+  const shown = React.useMemo(() => {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+    return sortAgentsByPriority(agents).filter((p) => agentMatches(p, terms))
+  }, [agents, query])
   // The row whose pane the ✕ would end. Closing is herdr's own pane.close — what
   // ends the agent in that pane, there being no softer "detach" — so it is asked
   // before it happens, and the question names the agent because the button that
@@ -59,52 +66,92 @@ export function AgentsTab({ onPick }: { onPick: () => void }) {
   const [closing, setClosing] = React.useState<HostPane | null>(null)
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-2">
-      {isLoading && (
-        <div className="flex items-center justify-center gap-2 py-3 text-[12px] text-muted-foreground">
-          <Orb state="working" px={16} />
-          loading…
-        </div>
-      )}
-      {error && (
-        <div className="px-1 py-3 text-[11.5px] text-destructive">
-          could not list agents: {(error as Error).message}
-        </div>
-      )}
-      {!isLoading && !error && agents.length === 0 && (
-        <div className="px-1 py-3 text-[11.5px] text-muted-foreground">
-          No agents on any connected host.
-        </div>
-      )}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {sorted.map((p) => (
-          <Tile
-            key={paneKey(p)}
-            pane={p}
-            current={paneKey(p) === current}
-            // Focus then dismiss, in that order and without waiting: the
-            // conversation on screen is the answer to the tap, and below md this
-            // panel covers it whole, so staying open would hide what was picked.
-            // The highlight follows herdr's own report a beat later (lib/agents).
-            onSelect={(pane) => {
-              void focusAgent(pane)
-              onPick()
-            }}
-            onClose={setClosing}
-          />
-        ))}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Outside the scroller so it stays put while the list moves under it.
+          Not autofocused: on a phone that would raise the keyboard over the
+          list every time the tab is opened. text-base (16px) because iOS
+          zooms the page on focus into anything smaller. */}
+      <div className="relative flex-none border-border border-b p-2">
+        <Search className="pointer-events-none absolute top-1/2 left-4.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          {...NO_AUTOCORRECT}
+          type="search"
+          enterKeyHint="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("")
+          }}
+          placeholder={
+            agents.length > 0 ? `Filter ${agents.length} agents…` : "Filter…"
+          }
+          aria-label="Filter agents"
+          className="h-9 w-full appearance-none rounded-md border border-input bg-background pr-9 pl-9 text-base outline-none placeholder:text-muted-foreground focus:border-primary [&::-webkit-search-cancel-button]:hidden"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            title="Clear filter"
+            aria-label="Clear filter"
+            className="absolute top-1/2 right-3 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        )}
       </div>
-      {/* A host that did not answer is the one reason an agent you expect is
-          not here, so it is said rather than left to be inferred. */}
-      {unlisted.length > 0 && (
-        <div
-          className="px-1 py-2 text-[11px] text-muted-foreground"
-          title={unlisted.join(", ")}
-        >
-          {unlisted.length} host{unlisted.length === 1 ? "" : "s"} could not be
-          listed
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {isLoading && (
+          <div className="flex items-center justify-center gap-2 py-3 text-[12px] text-muted-foreground">
+            <Orb state="working" px={16} />
+            loading…
+          </div>
+        )}
+        {error && (
+          <div className="px-1 py-3 text-[11.5px] text-destructive">
+            could not list agents: {(error as Error).message}
+          </div>
+        )}
+        {!isLoading && !error && agents.length === 0 && (
+          <div className="px-1 py-3 text-[11.5px] text-muted-foreground">
+            No agents on any connected host.
+          </div>
+        )}
+        {query && agents.length > 0 && shown.length === 0 && (
+          <div className="px-1 py-3 text-[11.5px] text-muted-foreground">
+            No agents match.
+          </div>
+        )}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {shown.map((p) => (
+            <Tile
+              key={paneKey(p)}
+              pane={p}
+              current={paneKey(p) === current}
+              // Focus then dismiss, in that order and without waiting: the
+              // conversation on screen is the answer to the tap, and below md this
+              // panel covers it whole, so staying open would hide what was picked.
+              // The highlight follows herdr's own report a beat later (lib/agents).
+              onSelect={(pane) => {
+                void focusAgent(pane)
+                onPick()
+              }}
+              onClose={setClosing}
+            />
+          ))}
         </div>
-      )}
+        {/* A host that did not answer is the one reason an agent you expect is
+          not here, so it is said rather than left to be inferred. */}
+        {unlisted.length > 0 && (
+          <div
+            className="px-1 py-2 text-[11px] text-muted-foreground"
+            title={unlisted.join(", ")}
+          >
+            {unlisted.length} host{unlisted.length === 1 ? "" : "s"} could not
+            be listed
+          </div>
+        )}
+      </div>
       <AlertDialog
         open={closing !== null}
         onOpenChange={(open) => {
