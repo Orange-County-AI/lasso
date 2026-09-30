@@ -1,6 +1,11 @@
-// Shorten a $HOME path to ~ for display (matches the original UI).
+// Shorten a $HOME path to ~ for display. The path may come from another host
+// (a Mac, or root's home), so this matches home layouts by shape rather than
+// asking the browser, which knows nothing about that host's $HOME.
 export function tilde(p: string | undefined): string {
-  return (p || "").replace(/^\/home\/[^/]+/, "~")
+  return (p || "").replace(
+    /^(?:\/home\/[^/]+|\/Users\/[^/]+|\/root)(?=\/|$)/,
+    "~"
+  )
 }
 
 // Human-readable byte size: 1.2K, 3.4M, … (matches the original fmtSize).
