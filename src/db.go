@@ -373,6 +373,13 @@ type uiState struct {
 	// is disabled right now is KEPT: the frontend falls back to the default
 	// while it is gone, and re-enabling the plugin brings the choice back.
 	Typography map[string]string `json:"typography"`
+	// OnboardingDone records that the first-run tour was finished or skipped,
+	// so it opens once per lasso rather than once per browser. A fresh install
+	// (no blob) starts false; a blob written before this field existed reads
+	// true in getUIState, because that lasso has already been used and its
+	// human does not need a welcome after an upgrade. Settings can replay the
+	// tour at any time without touching this.
+	OnboardingDone bool `json:"onboarding_done"`
 }
 
 // typographySlots are the keys ui_state.typography may hold. Where each one
@@ -627,6 +634,12 @@ func getUIState() (uiState, error) {
 		return us, err
 	}
 	_ = json.Unmarshal([]byte(v), &us)
+	var present map[string]json.RawMessage
+	if json.Unmarshal([]byte(v), &present) == nil {
+		if _, ok := present["onboarding_done"]; !ok {
+			us.OnboardingDone = true
+		}
+	}
 	if us.UsageHidden == nil {
 		us.UsageHidden = []string{}
 	}

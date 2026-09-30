@@ -58,6 +58,9 @@ const DEFAULTS: UIState = {
   sidebar_tabs: [],
   // Every slot on lasso's own default typeface.
   typography: {},
+  // true until the server says otherwise, so the tour never flashes open in
+  // the instant before the first fetch lands.
+  onboarding_done: true,
 }
 
 // The gallery cap, mirroring maxCustomBackgrounds in db.go. Only the optimistic

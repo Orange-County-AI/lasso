@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  GraduationCap,
   Monitor,
   Moon,
   Palette,
@@ -82,6 +83,7 @@ import {
   subscribeSystemScheme,
   systemPrefersDark,
 } from "@/lib/mode"
+import { startOnboarding } from "@/lib/onboarding"
 import {
   githubCommitURL,
   pluginSourceOf,
@@ -464,6 +466,23 @@ export function SettingsTab({ active }: { active: boolean }) {
           >
             {(open) => <PluginsSettings active={generalActive && open} />}
           </SettingsGroup>
+          {/* Not a group: one action, nothing to configure, and it should be
+              findable without opening anything. */}
+          <div className="flex items-center gap-3 border-border/60 border-t pt-3">
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-[13px] text-foreground">
+                Getting started
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                A one-minute walk through the terminal, chat, agents and
+                sidebar.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={startOnboarding}>
+              <GraduationCap />
+              Take the tour
+            </Button>
+          </div>
         </TabsContent>
         <TabsContent
           value="themes"
@@ -1079,41 +1098,42 @@ function PalettePrefs({
 function ThemePickerOptions({ themes }: { themes: ThemeCatalogEntry[] }) {
   return (
     <>
-      {(["brand", "builtin", "official", "installed", "plugin"] as const).flatMap(
-        (source) =>
-          [false, true].map((light) => {
-            const options = themes.filter(
-              (theme) => theme.source === source && theme.light === light
-            )
-            if (!options.length) return null
-            const label =
-              source === "builtin"
-                ? "Herdr"
-                : source === "brand"
-                  ? "Brand"
-                  : source === "official"
-                    ? "Omarchy"
-                    : source === "installed"
-                      ? "Omarchy · Installed"
-                      : "Plugin"
-            return (
-              <optgroup
-                key={`${source}-${light}`}
-                label={`${label} · ${light ? "Light" : "Dark"}`}
-              >
-                {options.map((theme) => (
-                  <option key={theme.name} value={theme.name}>
-                    {theme.label}
-                    {/* Which plugin, since two plugins' themes share a group
+      {(
+        ["brand", "builtin", "official", "installed", "plugin"] as const
+      ).flatMap((source) =>
+        [false, true].map((light) => {
+          const options = themes.filter(
+            (theme) => theme.source === source && theme.light === light
+          )
+          if (!options.length) return null
+          const label =
+            source === "builtin"
+              ? "Herdr"
+              : source === "brand"
+                ? "Brand"
+                : source === "official"
+                  ? "Omarchy"
+                  : source === "installed"
+                    ? "Omarchy · Installed"
+                    : "Plugin"
+          return (
+            <optgroup
+              key={`${source}-${light}`}
+              label={`${label} · ${light ? "Light" : "Dark"}`}
+            >
+              {options.map((theme) => (
+                <option key={theme.name} value={theme.name}>
+                  {theme.label}
+                  {/* Which plugin, since two plugins' themes share a group
                       and disabling that plugin withdraws the theme. */}
-                    {theme.source === "plugin" && theme.plugin
-                      ? ` — plugin ${theme.plugin}`
-                      : ""}
-                  </option>
-                ))}
-              </optgroup>
-            )
-          })
+                  {theme.source === "plugin" && theme.plugin
+                    ? ` — plugin ${theme.plugin}`
+                    : ""}
+                </option>
+              ))}
+            </optgroup>
+          )
+        })
       )}
     </>
   )

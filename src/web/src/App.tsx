@@ -31,6 +31,7 @@ import { FilesPanel } from "@/components/FilesPanel"
 import { GitStatusBadge } from "@/components/GitStatusBadge"
 import { HostSwitcher } from "@/components/HostSwitcher"
 import { NewDialog, type NewDialogTab } from "@/components/NewDialog"
+import { OnboardingTour, type TourPrepare } from "@/components/OnboardingTour"
 import { PluginTab } from "@/components/PluginTab"
 import { ScratchTab } from "@/components/ScratchTab"
 import { SettingsTab, ShortcutsDialog } from "@/components/SettingsTab"
@@ -50,6 +51,7 @@ import { onBrowserShowRequest } from "@/lib/browser-profiles"
 import { useDiff } from "@/lib/git"
 import { MOBILE_COMMAND_EVENT, type MobileCommand } from "@/lib/mobile-command"
 import { syncViewportHeight } from "@/lib/mobile-viewport"
+import { onStartOnboarding } from "@/lib/onboarding"
 import { onRevealFiles } from "@/lib/open-file"
 import { restoreHost } from "@/lib/pane-focus"
 import { pluginIcon, pluginTabsOf, usePlugins } from "@/lib/plugins"
@@ -111,9 +113,12 @@ function FitTabs({
   tabs,
   listClassName,
   trailing,
+  tour,
 }: {
   tabs: TabDef[]
   listClassName?: string
+  // The onboarding tour's anchor (see lib/onboarding.ts).
+  tour?: string
   // Pinned to the right of the strip, outside the scrolling track so it stays
   // reachable however many tabs there are.
   trailing?: React.ReactNode
@@ -140,7 +145,7 @@ function FitTabs({
   }, [])
 
   return (
-    <TabsList className={cn(stripClass, listClassName)}>
+    <TabsList className={cn(stripClass, listClassName)} data-tour={tour}>
       {/* no-scrollbar hides the scrollbar so it doesn't steal row height. */}
       <div
         ref={scrollRef}
@@ -451,6 +456,64 @@ function Shell() {
     setNewOpen(true)
   }, [])
 
+  // The first-run tour. It opens by itself once the server says this lasso has
+  // never finished or skipped it (the client default reads true, so nothing
+  // flashes before the first fetch lands), and again whenever Settings asks.
+  // Closing it records onboarding_done either way; a replay leaves the right
+  // sidebar on the tab it started from, which is Settings when it came from
+  // there.
+  const [tourOpen, setTourOpen] = React.useState(false)
+  const tourReturn = React.useRef<RightView | null>(null)
+  const rightViewRef = React.useRef(rightView)
+  rightViewRef.current = rightView
+  const beginTour = React.useCallback(() => {
+    tourReturn.current = rightViewRef.current
+    setNewOpen(false)
+    setShortcutsOpen(false)
+    setSwitcherOpen(false)
+    setHostMenuOpen(false)
+    setTourOpen(true)
+  }, [])
+  React.useEffect(() => onStartOnboarding(beginTour), [beginTour])
+  const autoTourDone = React.useRef(false)
+  React.useEffect(() => {
+    if (autoTourDone.current || ui.onboarding_done !== false) return
+    autoTourDone.current = true
+    beginTour()
+  }, [ui.onboarding_done, beginTour])
+  // Below md an open sidebar covers the terminal, so the tour closes it to
+  // show the terminal and reopens it at the end (a replay from Settings).
+  const tourReopen = React.useRef(false)
+  const endTour = React.useCallback(() => {
+    setTourOpen(false)
+    if (tourReturn.current) selectRightView(tourReturn.current)
+    tourReturn.current = null
+    if (tourReopen.current) openSidebar()
+    tourReopen.current = false
+    if (uiStateNow().onboarding_done !== true)
+      patchUIState({ onboarding_done: true })
+  }, [selectRightView, openSidebar])
+  const prepareTour = React.useCallback(
+    (what: TourPrepare) => {
+      if (what === "terminal") {
+        setLeftView("terminal")
+        blurHerdrTerminal()
+        if (
+          !window.matchMedia("(min-width: 768px)").matches &&
+          rightPanel.current?.isCollapsed() === false
+        ) {
+          tourReopen.current = true
+          markSidebarIntent()
+          collapseSidebar()
+        }
+      } else {
+        selectRightView("files")
+        if (rightPanel.current?.isCollapsed()) openSidebar()
+      }
+    },
+    [selectRightView, openSidebar, collapseSidebar]
+  )
+
   // Collapsing the sidebar hands the screen back to the terminal, so hand it
   // the keyboard too rather than leaving focus parked on the footer button.
   // Expanding leaves focus where it is — the user is looking at what they just
@@ -735,7 +798,10 @@ function Shell() {
             {/* term-shell is the hook the Retro 82 atmosphere draws its
                 amber/teal hairline on (index.css); inert under every other
                 theme. */}
-            <div className="term-shell relative isolate flex min-h-0 flex-1 flex-col">
+            <div
+              data-tour="terminal"
+              className="term-shell relative isolate flex min-h-0 flex-1 flex-col"
+            >
               <TerminalFrame
                 id="term"
                 base="/terminal"
@@ -828,6 +894,7 @@ function Shell() {
               className="flex h-full flex-col gap-0"
             >
               <FitTabs
+                tour="sidebar-tabs"
                 tabs={strip.map((id): TabDef => {
                   if (isBuiltinTab(id)) return builtinTabs[id]
                   const p = pluginTabs.find((t) => t.tab.global_id === id)
@@ -944,6 +1011,11 @@ function Shell() {
           // page: nothing can change the view out from under it.
           agentsOnly={leftView !== "terminal" || rightView === "agents"}
         />
+        <OnboardingTour
+          open={tourOpen}
+          onClose={endTour}
+          prepare={prepareTour}
+        />
         {/* ⌘? keyboard-shortcuts reference — also opened by the Settings tab's
           keyboard button. Lives here so ⌘? works from any tab. */}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
@@ -1017,6 +1089,7 @@ function Shell() {
             size="icon-sm"
             title="Switch host"
             aria-label="Switch host"
+            data-tour="host"
             aria-haspopup="menu"
             aria-expanded={hostMenuOpen}
             onPointerDownCapture={() => {
@@ -1037,6 +1110,7 @@ function Shell() {
             size="icon-sm"
             title="Keyboard shortcuts (⌘/)"
             aria-label="Keyboard shortcuts"
+            data-tour="shortcuts"
             onClick={() => setShortcutsOpen(true)}
           >
             <Keyboard />
@@ -1053,6 +1127,7 @@ function Shell() {
             variant="ghost"
             size="sm"
             aria-pressed={leftView === "agents"}
+            data-tour="agents"
             title={
               leftView === "agents"
                 ? "Back to the terminal (⌘E)"
@@ -1070,6 +1145,7 @@ function Shell() {
             variant="ghost"
             size="sm"
             aria-pressed={leftView === "chat"}
+            data-tour="chat"
             title={
               leftView === "chat"
                 ? "Back to the terminal (⌘J)"
@@ -1084,6 +1160,7 @@ function Shell() {
             variant="ghost"
             size="sm"
             title="New agent or terminal (⌘O / ⌘I)"
+            data-tour="new"
             onClick={openNew}
           >
             <Plus />
