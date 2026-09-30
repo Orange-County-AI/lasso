@@ -1,3 +1,4 @@
+import { Upload } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { DiffTab } from "@/components/DiffTab"
@@ -71,6 +72,10 @@ function classify(status: string): FileChange {
 export function FilesPanel() {
   const { activeCwd, cwdHost, activePaneID, host } = useApp()
   const [sub, setSub] = React.useState<SubView>("files")
+  // FilesTab owns the tree's root and the upload call; the button below just
+  // picks files and hands them over.
+  const uploadRef = React.useRef<((files: File[]) => void) | null>(null)
+  const uploadInput = React.useRef<HTMLInputElement>(null)
   // The sidebar's file state belongs to the pane it was browsed in. Selecting
   // another agent (or workspace) in herdr swaps in THAT pane's open file, tree
   // root, browsed host and expansion, and switching back brings this one's
@@ -242,6 +247,37 @@ export function FilesPanel() {
             Diff
           </span>
         </SubTab>
+        {sub === "files" && (
+          <>
+            <button
+              type="button"
+              title="Upload files to the open directory"
+              aria-label="Upload files"
+              className="ml-auto flex items-center rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              onClick={() => {
+                if (!uploadRef.current) {
+                  toast.error("No directory is open yet")
+                  return
+                }
+                uploadInput.current?.click()
+              }}
+            >
+              <Upload className="size-3.5" />
+            </button>
+            <input
+              ref={uploadInput}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? [])
+                // Cleared so picking the same file again still fires onChange.
+                e.target.value = ""
+                if (files.length > 0) uploadRef.current?.(files)
+              }}
+            />
+          </>
+        )}
       </div>
 
       <div className="relative min-h-0 flex-1">
@@ -259,6 +295,7 @@ export function FilesPanel() {
             host={cwdHost}
             initial={tabStates.current.get(pane) ?? null}
             onStateChange={saveTabState}
+            uploadRef={uploadRef}
           />
         </div>
         <div
