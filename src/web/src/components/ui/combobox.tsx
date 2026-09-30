@@ -96,6 +96,24 @@ export function Combobox({
     }
   }
 
+  const trigger = (
+    <Popover.Trigger
+      id={id}
+      type="button"
+      disabled={disabled}
+      className={cn(
+        "flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
+        !selected && "text-muted-foreground",
+        className
+      )}
+    >
+      <span className="truncate">
+        {selected ? selected.label : placeholder}
+      </span>
+      <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+    </Popover.Trigger>
+  )
+
   return (
     <Popover.Root
       open={open}
@@ -104,21 +122,20 @@ export function Combobox({
         if (!o) setQuery("")
       }}
     >
-      <Popover.Trigger
-        id={id}
-        type="button"
-        disabled={disabled}
-        className={cn(
-          "flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm shadow-well outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
-          !selected && "text-muted-foreground",
-          className
-        )}
-      >
-        <span className="truncate">
-          {selected ? selected.label : placeholder}
-        </span>
-        <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
-      </Popover.Trigger>
+      {showFullLabelOnHover && selected ? (
+        <TooltipProvider delayDuration={300}>
+          {/* Held shut while the list is open: the rows have their own
+              tooltips, and this one would sit on top of the filter input. */}
+          <Tooltip open={open ? false : undefined}>
+            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6}>
+              {selected.hint ?? selected.label}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        trigger
+      )}
       {/* Deliberately NOT wrapped in Popover.Portal. Inside a modal Dialog,
           react-remove-scroll only permits wheel/touch scrolling within the
           dialog's own DOM subtree; a portaled popover renders on document.body
