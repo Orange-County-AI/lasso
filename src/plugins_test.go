@@ -706,3 +706,27 @@ func TestFindMCPToolPluginNames(t *testing.T) {
 		t.Errorf("%q did not resolve", cliToolName("hello__greet"))
 	}
 }
+
+func TestOnboardingDoneUIState(t *testing.T) {
+	openTestDB(t)
+	// A fresh install has not seen the tour.
+	if us, _ := getUIState(); us.OnboardingDone {
+		t.Fatal("fresh install: onboarding_done = true; want false")
+	}
+	// An unrelated write (a sidebar persist on first load) must not mark it
+	// seen: the blob now exists, but it carries the field as false.
+	postUIState(t, `{"usage_compact":true}`)
+	if us, _ := getUIState(); us.OnboardingDone {
+		t.Fatal("after an unrelated patch: onboarding_done = true; want false")
+	}
+	if resp := postUIState(t, `{"onboarding_done":true}`); !resp.OnboardingDone {
+		t.Fatal("patch did not set onboarding_done")
+	}
+	// A blob from before the field existed is an install already in use.
+	if err := setSetting("ui_state", `{"usage_compact":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if us, _ := getUIState(); !us.OnboardingDone {
+		t.Fatal("legacy blob: onboarding_done = false; want true")
+	}
+}

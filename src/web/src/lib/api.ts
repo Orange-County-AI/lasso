@@ -457,6 +457,10 @@ export interface UIState {
   // provides is kept and falls back to the default. Optional because an older
   // server never sends it.
   typography?: Typography
+  // The first-run tour was finished or skipped on this lasso (any browser).
+  // Optional because an older server never sends it, and absent must read as
+  // done: an older lasso has no tour state to consult.
+  onboarding_done?: boolean
 }
 
 // The places a typeface can be chosen for (see lib/typography.ts for where
