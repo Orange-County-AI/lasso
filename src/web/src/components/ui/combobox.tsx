@@ -10,7 +10,9 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-export type ComboOption = { value: string; label: string }
+// `hint` replaces the label in the hover tooltip (showFullLabelOnHover), for
+// options whose label is a short name for something longer, like a path.
+export type ComboOption = { value: string; label: string; hint?: string }
 
 // A filter-as-you-type select. Built on radix-ui's Popover (the same unified
 // primitive package the rest of the UI uses) with our own substring filter and
@@ -195,7 +197,7 @@ export function Combobox({
                   <Tooltip key={opt.value}>
                     <TooltipTrigger asChild>{option}</TooltipTrigger>
                     <TooltipContent side="right" sideOffset={6}>
-                      {opt.label}
+                      {opt.hint ?? opt.label}
                     </TooltipContent>
                   </Tooltip>
                 )

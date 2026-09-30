@@ -26,6 +26,7 @@ import {
   type HostInfo,
 } from "@/lib/api"
 import { moveTabToHost, useApp } from "@/lib/app-store"
+import { tilde } from "@/lib/format"
 import { groupHosts, memberLabel } from "@/lib/hosts"
 import { focusCreatedAgent } from "@/lib/pane-focus"
 import { qk } from "@/lib/query"
@@ -1124,6 +1125,7 @@ export function NewDialog({
                         items={repos.map((r) => ({
                           value: r.path,
                           label: r.name,
+                          hint: tilde(r.path),
                         }))}
                         value={repo}
                         onValueChange={setRepo}
