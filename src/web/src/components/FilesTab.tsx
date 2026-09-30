@@ -98,6 +98,7 @@ export function FilesTab({
   host,
   initial,
   onStateChange,
+  uploadRef,
 }: {
   viewerPath: string | null
   // `path` is joined by the host the tree was browsing when the file was
@@ -117,6 +118,10 @@ export function FilesTab({
   initial: FilesTabState | null
   // Published on every change, so the parent can stash it against this pane.
   onStateChange: (s: FilesTabState) => void
+  // Filled with "upload these into the directory the tree is rooted at" (null
+  // while nothing is loaded), for the parent's upload button, which lives in
+  // the Files/Diff row outside this component.
+  uploadRef?: React.MutableRefObject<((files: File[]) => void) | null>
 }) {
   const { activeCwd } = useApp()
   // When true, clicking a folder re-roots the tree into it; when false it
@@ -430,6 +435,16 @@ export function FilesTab({
       toast.error((e as Error).message)
     }
   }
+
+  React.useEffect(() => {
+    if (!uploadRef) return
+    uploadRef.current = rootPath
+      ? (files) => void uploadTo(rootPath, files)
+      : null
+    return () => {
+      uploadRef.current = null
+    }
+  })
 
   // Trigger a browser download of a file via a synthetic anchor.
   const downloadFile = (full: string, name: string) => {
