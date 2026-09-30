@@ -1800,17 +1800,26 @@ func outsideHerdrEnv() []string {
 }
 
 // lassoHerdrProtocol is the private client/server protocol of the released Herdr
-// this build is tested against (v0.9.1). Lasso's JSON socket calls retain their
+// this build is tested against (v0.9.2). Lasso's JSON socket calls retain their
 // shapes, but its embedded terminals launch Herdr clients, so fleet hosts must
 // still match the local release. Do not infer compatibility from the source
 // tree's protocol or from the endpoint generation alone.
 //
-// Verified against a live v0.9.1 install: ping reports protocol 22 (unchanged
-// from v0.9.0, so a fleet mid-upgrade stays compatible in both directions) with
+// Verified against a live v0.9.2 install: ping reports protocol 22 (unchanged
+// since v0.9.0, so a fleet mid-upgrade stays compatible in both directions) with
 // capabilities live_handoff, detached_server_daemon, surface_interest,
-// health_check and endpoint_protocol_generation 1; workspace.create/list,
-// tab.list, pane.list/get/read/process_info, agent.list, and Lasso's lifecycle
+// health_check, ssh_agent_registration (new in 0.9.2) and
+// endpoint_protocol_generation 1; workspace.create/list, tab.list,
+// pane.list/get/read/process_info, agent.list, and Lasso's lifecycle
 // subscription payload retain their response shapes.
+//
+// Two v0.9.2 changes lasso rides through without code. A subscriber that falls
+// behind herdr's retained history now gets one `events_lost` error line and
+// then EOF, instead of silently skipped events; subscribeEvents already
+// treats any line as "re-poll" and any EOF as "redial", which is exactly the
+// resync herdr asks for. And agent records may carry a self-reported
+// `resume_argv`, additive and unread here. The removed pane.graphics.* methods
+// were never called.
 //
 // Two v0.9.1 notes that this build depends on. pane.focus takes {"pane_id"} and
 // focuses the pane's workspace, tab AND the pane — it is absent from the
