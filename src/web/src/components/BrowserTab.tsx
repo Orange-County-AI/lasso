@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ExternalLink, RotateCw } from "lucide-react"
+import { ArrowLeft, ArrowRight, ExternalLink, RotateCw } from "lucide-react"
 import * as React from "react"
 import { toast } from "sonner"
 import { BrowserProfileBar } from "@/components/BrowserProfileBar"
@@ -138,10 +138,17 @@ function EmbedBrowser({
   >("idle")
   const [err, setErr] = React.useState("")
   const seqRef = React.useRef(0)
+  // hist is this tab's own back/forward stack of what the URL bar loaded. The
+  // frame's own history is out of reach: a cross-origin frame hides it, and
+  // the top window's history.back() walks the JOINT session history, which
+  // would navigate lasso itself away once the frame's entries run out. So a
+  // link clicked inside the page is not an entry here.
+  const [hist, setHist] = React.useState<{ entries: string[]; idx: number }>({
+    entries: [],
+    idx: -1,
+  })
 
-  const nav = React.useCallback((raw: string) => {
-    const input = raw.trim()
-    if (!input) return
+  const load = React.useCallback((input: string) => {
     const seq = ++seqRef.current
     setUrl(input)
     lsSet("browserUrl", input)
@@ -197,6 +204,30 @@ function EmbedBrowser({
     }
   }, [])
 
+  // nav loads a new target and records it, dropping any forward entries the
+  // way a browser does. Re-entering the current entry is a reload, not a step.
+  const nav = React.useCallback(
+    (raw: string) => {
+      const input = raw.trim()
+      if (!input) return
+      setHist((h) => {
+        if (h.entries[h.idx] === input) return h
+        const entries = [...h.entries.slice(0, h.idx + 1), input]
+        return { entries, idx: entries.length - 1 }
+      })
+      load(input)
+    },
+    [load]
+  )
+
+  const step = (delta: number) => {
+    const idx = hist.idx + delta
+    const target = hist.entries[idx]
+    if (target === undefined) return
+    setHist({ ...hist, idx })
+    load(target)
+  }
+
   // Re-resolve any saved value on mount, so a reload restores the last target.
   React.useEffect(() => {
     const saved = lsGet("browserUrl")
@@ -220,6 +251,26 @@ function EmbedBrowser({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-shrink-0 items-center gap-1.5 border-border border-b bg-background px-2 py-1.5">
         {modeSwitch}
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-7 max-sm:hidden"
+          title="back"
+          disabled={hist.idx <= 0}
+          onClick={() => step(-1)}
+        >
+          <ArrowLeft />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-7 max-sm:hidden"
+          title="forward"
+          disabled={hist.idx >= hist.entries.length - 1}
+          onClick={() => step(1)}
+        >
+          <ArrowRight />
+        </Button>
         <Button
           variant="outline"
           size="icon"
