@@ -3,10 +3,10 @@
 # container to the Go backend on the host. They are point-to-point TCP forwards
 # for one port each, so the container keeps its own network namespace (no
 # `--network host`).
-sandboxes:
+services:
   web:
-    # Run by the foreground `isb up` in container-dev-web.sh, with dev.yaml's
-    # exec defaults (user dev, cwd src/web, the mise PATH). Inside the
+    # Run by the foreground `isb up` in container-dev-web.sh, as dev.yaml's
+    # user in its working_dir (dev, src/web) with the mise PATH. Inside the
     # container Vite is always on 5173; LASSO_BACKEND is the `backend` device
     # below. `-d` ignores it, so the other tasks' `up -d` never start a Vite.
     command:
@@ -28,11 +28,11 @@ sandboxes:
         bind: guest
         listen: tcp:127.0.0.1:8190
         connect: "tcp:127.0.0.1:${LASSO_BACKEND_PORT:?set by container-dev-web.sh}"
-      # host <tailnet ip>:<first free port from 5173> -> container 127.0.0.1:5173.
-      # Vite binds loopback inside the container, so nothing else is published.
-      # The host side gives way (search), the guest side is always 5173.
+      # host <tailnet ip>:<first free port of 5173-5223> -> container
+      # 127.0.0.1:5173. Vite binds loopback inside the container, so nothing
+      # else is published. The host side gives way (the published range), the
+      # guest side is always 5173.
       - name: vite
-        bind: host
-        listen: "tcp:${LASSO_LISTEN_IP:?set by container-dev-web.sh}:5173"
-        connect: tcp:127.0.0.1:5173
-        search: 50
+        host_ip: "${LASSO_LISTEN_IP:?set by container-dev-web.sh}"
+        published: 5173-5223
+        target: 5173

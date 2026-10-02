@@ -1,9 +1,7 @@
 # Overlay for `mise run icons`: docs/icon at its real position relative to
 # src/web, because build.py walks up to parents[1]/src/web/public to find where
 # to write. Nothing else from the repo is mounted.
-sandboxes:
+services:
   web:
     volumes:
-      /home/dev/repo/docs/icon:
-        bind: "${LASSO_ICON:?set by container-icons.sh}"
-        device: icon
+      - "${LASSO_ICON:?set by container-icons.sh}:/home/dev/repo/docs/icon:device=icon"

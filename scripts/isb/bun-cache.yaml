@@ -4,12 +4,12 @@
 # sharing is safe for correctness; it is also a channel between worktrees (see
 # container.sh). container.sh leaves this file out when LASSO_DEV_BUN_CACHE is
 # set empty, which is the opt-out.
-sandboxes:
+volumes:
+  bun-cache:
+    name: "${LASSO_DEV_BUN_CACHE}"
+services:
   web:
     volumes:
-      /home/dev/.bun/install/cache:
-        named: "${LASSO_DEV_BUN_CACHE}"
-        device: bun-cache
-        # A fresh volume's root is container-root owned, and so are the
-        # ~/.bun parents the mount conjures; isb chowns them all to dev.
-        owner: dev
+      # A fresh volume's root is container-root owned, and so are the ~/.bun
+      # parents the mount conjures; owner=dev has isb chown them all to dev.
+      - bun-cache:/home/dev/.bun/install/cache:device=bun-cache,owner=dev

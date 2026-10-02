@@ -10,15 +10,15 @@
 
 name: lasso-dev
 
-sandboxes:
+services:
   web:
-    name: "${LASSO_DEV_CONTAINER:?set by scripts/container.sh}"
+    container_name: "${LASSO_DEV_CONTAINER:?set by scripts/container.sh}"
     image: "${LASSO_DEV_IMAGE:-dev-base}"
     # incus-zfs, else default, else the first pool; LASSO_DEV_STORAGE wins.
     storage: "${LASSO_DEV_STORAGE:-auto}"
     # Caps, not reservations. See container.sh for why idle ones stay running.
     cpus: 8
-    memory: 8GiB
+    mem_limit: 8g
     privileged: false
     # raw.idmap "both 1000 1000" only where root's subuid range does not already
     # map host 1000 (titan: needed; a workspace box: refused). isb decides.
@@ -30,18 +30,16 @@ sandboxes:
     volumes:
       # isb leaves a correct device alone. That matters: re-adding it remounts
       # the tree and silently kills the inotify watches of a running Vite.
-      /home/dev/repo/src/web:
-        bind: "${LASSO_WEB}"
-        device: web
+      - "${LASSO_WEB}:/home/dev/repo/src/web:device=web"
     ready:
       - running
       - default_route # the first thing any task does is `bun install`
       - user_exists: dev
       - path_writable: /home/dev/repo/src/web
     ready_timeout: 60s
+    user: dev
+    working_dir: /home/dev/repo/src/web
     exec:
-      user: dev
-      cwd: /home/dev/repo/src/web
       env:
         HOME: /home/dev
         # What `mise activate bash --shims` put on PATH: node, bun, uv.

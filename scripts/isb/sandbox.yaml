@@ -5,25 +5,23 @@
 # directory it works on, so the mount follows the last task that ran, as before.
 name: lasso-sandbox
 
-sandboxes:
+services:
   sandbox:
-    name: "${LASSO_SANDBOX_CONTAINER:-sandbox}"
+    container_name: "${LASSO_SANDBOX_CONTAINER:-sandbox}"
     image: "${LASSO_SANDBOX_IMAGE:-images:debian/13}"
     storage: "${LASSO_DEV_STORAGE:-auto}"
     cpus: 4
-    memory: 4GiB
+    mem_limit: 4g
     privileged: false
     idmap: auto
     volumes:
-      /home/dev/work/architecture:
-        bind: "${LASSO_DIAGRAM:?set by container-diagram.sh}"
-        device: diagram
+      - "${LASSO_DIAGRAM:?set by container-diagram.sh}:/home/dev/work/architecture:device=diagram"
     # apt and bunx both fail fast without a route.
     ready: [running, default_route]
     ready_timeout: 60s
+    user: "1000:1000"
+    working_dir: /home/dev/work
     exec:
-      user: "1000:1000"
-      cwd: /home/dev/work
       env:
         HOME: /home/dev
         PATH: /home/dev/.local/bin:/usr/bin:/bin
