@@ -16,6 +16,7 @@ func resetHostStore(t *testing.T) {
 	hostStore.order = nil
 	hostStore.sweep = nil
 	hostStore.at = time.Time{}
+	hostStore.backoff = nil
 	hostStore.mu.Unlock()
 }
 
@@ -326,5 +327,84 @@ func TestDiscoverHostsSharesOneSweep(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("probed %d times across 5 concurrent readers, want 2 (one sweep of two hosts)", calls)
+	}
+}
+
+// TestSweepBacksOffUnreachableHosts checks that background sweeps leave a host
+// that keeps failing alone for a doubling interval, keep its last row, and
+// probe it again on an explicit refresh or once it answers.
+func TestSweepBacksOffUnreachableHosts(t *testing.T) {
+	resetHostStore(t)
+
+	probed := map[string]int{}
+	up := false
+	oldProbe, oldHosts := probeHostFn, sshConfigHostsFn
+	sshConfigHostsFn = func() []string { return []string{"good", "dead"} }
+	probeHostFn = func(_ context.Context, alias string, _ int) HostInfo {
+		hostStore.mu.Lock()
+		probed[alias]++
+		hostStore.mu.Unlock()
+		if alias == "dead" && !up {
+			return HostInfo{Alias: alias, Err: "unreachable"}
+		}
+		return HostInfo{Alias: alias, Reachable: true, Running: true, Compatible: true}
+	}
+	t.Cleanup(func() {
+		drainSweep(t)
+		probeHostFn, sshConfigHostsFn = oldProbe, oldHosts
+		resetHostStore(t)
+	})
+
+	sweep := func(honorBackoff bool) {
+		done, mine := beginSweep(true)
+		if !mine {
+			t.Fatal("could not claim a sweep")
+		}
+		runSweep(context.Background(), done, honorBackoff)
+	}
+
+	sweep(true)
+	sweep(true)
+	if probed["good"] != 2 || probed["dead"] != 1 {
+		t.Fatalf("after two background sweeps probed %v, want good=2 dead=1", probed)
+	}
+	hosts, _ := hostSnapshot()
+	if len(hosts) != 2 {
+		t.Fatalf("a skipped host must keep its row; got %+v", hosts)
+	}
+
+	// The wait doubles per failure and stops at the cap.
+	hostStore.mu.Lock()
+	hostStore.backoff["dead"] = hostBackoff{failures: 1, next: time.Now().Add(-time.Second)}
+	hostStore.mu.Unlock()
+	sweep(true)
+	hostStore.mu.Lock()
+	b := hostStore.backoff["dead"]
+	hostStore.mu.Unlock()
+	if b.failures != 2 || time.Until(b.next) < hostRefreshInterval*2-time.Minute/2 {
+		t.Errorf("after the second failure got %+v, want failures=2 and ~%v to wait", b, hostRefreshInterval*2)
+	}
+	recordProbe("x", false, time.Now())
+	for i := 0; i < 40; i++ {
+		recordProbe("x", false, time.Now())
+	}
+	hostStore.mu.Lock()
+	x := hostStore.backoff["x"]
+	hostStore.mu.Unlock()
+	if w := time.Until(x.next); w > hostBackoffMax || w < hostBackoffMax-time.Minute {
+		t.Errorf("after many failures the wait is %v, want the %v cap", w, hostBackoffMax)
+	}
+
+	// An explicit refresh probes it regardless; once it answers, it is probed
+	// every sweep again.
+	before := probed["dead"]
+	up = true
+	sweep(false)
+	if probed["dead"] != before+1 {
+		t.Fatalf("explicit refresh did not probe the backed-off host: %v", probed)
+	}
+	sweep(true)
+	if probed["dead"] != before+2 {
+		t.Errorf("a host that answered must leave backoff: %v", probed)
 	}
 }

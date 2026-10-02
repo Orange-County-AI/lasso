@@ -370,10 +370,17 @@ func firstLine(s string) string {
 // map lookup.
 var hostStore struct {
 	mu      sync.Mutex
-	entries map[string]HostInfo // alias -> latest known row
-	order   []string            // aliases in ssh-config order (authoritative membership)
-	sweep   chan struct{}       // non-nil while a sweep runs; closed when it ends
-	at      time.Time           // when the last sweep COMPLETED
+	entries map[string]HostInfo    // alias -> latest known row
+	order   []string               // aliases in ssh-config order (authoritative membership)
+	sweep   chan struct{}          // non-nil while a sweep runs; closed when it ends
+	at      time.Time              // when the last sweep COMPLETED
+	backoff map[string]hostBackoff // alias -> when an unreachable host is next probed
+}
+
+// hostBackoff spaces out probes of a host that keeps failing to answer.
+type hostBackoff struct {
+	failures int       // consecutive unreachable or timed-out probes
+	next     time.Time // background sweeps skip the host until then
 }
 
 const (
@@ -395,6 +402,13 @@ const (
 	hostStaleAfter = 2 * time.Minute
 	// hostRefreshInterval is the background refresher's period.
 	hostRefreshInterval = 45 * time.Second
+	// hostBackoffMax caps how long a background sweep leaves an unreachable host
+	// alone. The wait doubles from hostRefreshInterval with each failed probe.
+	// A probe is not free: a host whose ProxyCommand fetches credentials costs
+	// that lookup every time (measured 2026-10-02: one box's lasso spent four
+	// 1Password-backed secret reads every 45s on a host whose DNS name no longer
+	// existed). An explicit refresh still probes every host.
+	hostBackoffMax = 15 * time.Minute
 	// hostProbeConcurrency bounds concurrent ssh probes. Above the fleet size we
 	// see in practice, so a typical sweep is one wave rather than two — under the
 	// old semaphore of 8, an 11-host config needed two waves and the second wave
@@ -487,10 +501,43 @@ func endSweep(done chan struct{}) {
 	close(done)
 }
 
+// probeDue reports whether a sweep that honours backoff should probe alias now.
+func probeDue(alias string, now time.Time) bool {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	b, ok := hostStore.backoff[alias]
+	return !ok || !now.Before(b.next)
+}
+
+// recordProbe updates alias's backoff from a probe result: a host that answered
+// is probed every sweep again, one that did not waits twice as long as last time.
+func recordProbe(alias string, reachable bool, now time.Time) {
+	hostStore.mu.Lock()
+	defer hostStore.mu.Unlock()
+	if reachable {
+		delete(hostStore.backoff, alias)
+		return
+	}
+	if hostStore.backoff == nil {
+		hostStore.backoff = map[string]hostBackoff{}
+	}
+	b := hostStore.backoff[alias]
+	b.failures++
+	wait := hostBackoffMax
+	if b.failures <= 16 { // past this the shift overflows; the cap applies anyway
+		wait = min(hostRefreshInterval<<(b.failures-1), hostBackoffMax)
+	}
+	b.next = now.Add(wait)
+	hostStore.backoff[alias] = b
+}
+
 // runSweep re-reads the ssh config and probes every alias, publishing each row
 // as it resolves. It returns only when every probe has landed — callers that
 // must not block use waitFor/discoverHosts instead of calling this directly.
-func runSweep(ctx context.Context, done chan struct{}) {
+//
+// With honorBackoff, a host still inside its backoff window keeps its last row
+// and is not probed. An explicit refresh passes false.
+func runSweep(ctx context.Context, done chan struct{}, honorBackoff bool) {
 	defer endSweep(done)
 
 	_, wantProto := localProtocol()
@@ -541,7 +588,11 @@ func runSweep(ctx context.Context, done chan struct{}) {
 	// Phase 2 — probe. Each result is published the moment it lands.
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, hostProbeConcurrency)
+	now := time.Now()
 	for _, alias := range aliases {
+		if honorBackoff && !probeDue(alias, now) {
+			continue
+		}
 		wg.Add(1)
 		go func(alias string) {
 			defer wg.Done()
@@ -554,6 +605,7 @@ func runSweep(ctx context.Context, done chan struct{}) {
 			// Carry the resolved target forward; the probe doesn't know it.
 			hi.Hostname, hi.User = prev.Hostname, prev.User
 			hi.CheckedAt = time.Now().Format(time.RFC3339)
+			recordProbe(alias, hi.Reachable, time.Now())
 			putHost(hi)
 		}(alias)
 	}
@@ -577,7 +629,7 @@ func discoverHostsState(ctx context.Context, force bool) (hosts []HostInfo, prob
 		// Run the sweep detached from this request: it must keep going (and keep
 		// publishing rows) after we answer, and it must not be cancelled when the
 		// client that happened to trigger it disconnects.
-		go runSweep(sweepCtx(), done)
+		go runSweep(sweepCtx(), done, !force)
 	}
 	// Only ever block when waiting could change the answer: on an explicit
 	// refresh, or when nothing has completed a probe yet and returning now would
@@ -624,7 +676,7 @@ func startHostRefresher() {
 			defer t.Stop()
 			for {
 				if done, mine := beginSweep(true); mine {
-					runSweep(sweepCtx(), done)
+					runSweep(sweepCtx(), done, true)
 				}
 				select {
 				case <-sweepCtx().Done():
