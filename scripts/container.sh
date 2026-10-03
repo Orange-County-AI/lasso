@@ -37,9 +37,10 @@
 # the dev-base image in about a minute. `mise run dev:containers` lists them
 # with the worktree each belongs to; `mise run dev:prune` removes the ones whose
 # worktree is gone, which titan's weekly lasso-prune timer also does (keyed on
-# user.lasso.worktree, so keep that label). To refresh the toolchain: start the
-# stopped dev-base container, update it, `incus publish dev-base --alias
-# dev-base --reuse -f`.
+# user.lasso.worktree, so keep that label). The dev-base image itself comes
+# from scripts/dev-base.sh (--force rebuilds it from scratch). To refresh the
+# toolchain in place: start the stopped dev-base container, update it,
+# `incus publish dev-base --alias dev-base --reuse -f`.
 #
 # Idle containers are left running, not stopped after each task, with one
 # exception: `mise run dev` holds a foreground `isb up`, which stops this
